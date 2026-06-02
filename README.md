@@ -61,6 +61,20 @@ Logs:
 
 The existing Node-based `ccs` tool lives under `tools/code-change-summary/` for now. It is intentionally not ported to Rust yet.
 
+### `agent-tools morph-mcp`
+
+Manage runaway `@morphllm/morphmcp` workers from the Rust CLI.
+
+```bash
+agent-tools morph-mcp status
+agent-tools morph-mcp janitor --dry-run
+agent-tools morph-mcp janitor
+agent-tools morph-mcp install-launch-agent --program ~/.cargo/bin/agent-tools
+agent-tools morph-mcp migrate-launch-agent --program ~/.cargo/bin/agent-tools
+```
+
+See [docs/morph-mcp.md](/Users/ianwatts/code_projects/agent-tools/docs/morph-mcp.md).
+
 ## Default Roots
 
 When no roots are passed and no config exists, `agent-tools` scans:

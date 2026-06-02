@@ -1,4 +1,5 @@
 use agent_tools_core::launch_agent::{LaunchAgentAction, LaunchAgentOptions, launch_agent};
+use agent_tools_core::morph_mcp::{MorphMcpAction, MorphMcpOptions, morph_mcp};
 use agent_tools_core::skills::{
     OutputFormat, SkillsDoctorOptions, SkillsScanOptions, SkillsSyncOptions, default_roots,
     load_user_config, skills_doctor, skills_scan, skills_sync,
@@ -22,6 +23,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     match args[0].as_str() {
         "skills" => run_skills(&args[1..]),
         "launch-agent" => run_launch_agent(&args[1..]),
+        "morph-mcp" => run_morph_mcp(&args[1..]),
         "--help" | "-h" | "help" => {
             print_help();
             Ok(())
@@ -128,6 +130,53 @@ fn run_launch_agent(args: &[String]) -> Result<(), String> {
     }
 
     let report = launch_agent(action, &options)?;
+    for line in report.lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn run_morph_mcp(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        print_morph_mcp_help();
+        return Ok(());
+    }
+
+    let action = match args[0].as_str() {
+        "status" => MorphMcpAction::Status,
+        "janitor" => MorphMcpAction::Janitor,
+        "install-launch-agent" => MorphMcpAction::InstallLaunchAgent,
+        "migrate-launch-agent" => MorphMcpAction::MigrateLaunchAgent,
+        "retire-legacy-launch-agent" => MorphMcpAction::RetireLegacyLaunchAgent,
+        "uninstall-launch-agent" => MorphMcpAction::UninstallLaunchAgent,
+        "--help" | "-h" | "help" => {
+            print_morph_mcp_help();
+            return Ok(());
+        }
+        other => return Err(format!("unknown morph-mcp command: {other}")),
+    };
+
+    let mut options = MorphMcpOptions::default();
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--program" => {
+                options.program = Some(PathBuf::from(read_value(args, index)?));
+                index += 2;
+            }
+            "--dry-run" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            other => return Err(format!("unknown morph-mcp flag: {other}")),
+        }
+    }
+
+    if options.dry_run && action != MorphMcpAction::Janitor {
+        return Err("--dry-run is only supported for morph-mcp janitor".to_string());
+    }
+
+    let report = morph_mcp(action, &options)?;
     for line in report.lines {
         println!("{line}");
     }
@@ -326,7 +375,7 @@ fn print_sync_report(report: &agent_tools_core::skills::SkillsSyncReport) {
 
 fn print_help() {
     println!(
-        "agent-tools\n\nUsage:\n  agent-tools skills <scan|sync|doctor> [flags]\n  agent-tools launch-agent <install|uninstall|status> [flags]\n"
+        "agent-tools\n\nUsage:\n  agent-tools skills <scan|sync|doctor> [flags]\n  agent-tools launch-agent <install|uninstall|status> [flags]\n  agent-tools morph-mcp <status|janitor|install-launch-agent|migrate-launch-agent|retire-legacy-launch-agent|uninstall-launch-agent> [flags]\n"
     );
 }
 
@@ -339,5 +388,11 @@ fn print_skills_help() {
 fn print_launch_agent_help() {
     println!(
         "agent-tools launch-agent\n\nUsage:\n  agent-tools launch-agent install [--program PATH] [--interval SECONDS]\n  agent-tools launch-agent status\n  agent-tools launch-agent uninstall\n"
+    );
+}
+
+fn print_morph_mcp_help() {
+    println!(
+        "agent-tools morph-mcp\n\nUsage:\n  agent-tools morph-mcp status\n  agent-tools morph-mcp janitor [--dry-run]\n  agent-tools morph-mcp install-launch-agent [--program PATH]\n  agent-tools morph-mcp migrate-launch-agent [--program PATH]\n  agent-tools morph-mcp retire-legacy-launch-agent\n  agent-tools morph-mcp uninstall-launch-agent\n"
     );
 }

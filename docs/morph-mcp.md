@@ -1,0 +1,95 @@
+# Morph MCP Janitor
+
+`agent-tools morph-mcp` manages runaway `@morphllm/morphmcp` background
+workers spawned by local agent sessions.
+
+The repo implementation is the canonical source:
+
+```bash
+agent-tools morph-mcp status
+agent-tools morph-mcp janitor --dry-run
+agent-tools morph-mcp janitor
+agent-tools morph-mcp install-launch-agent --program ~/.cargo/bin/agent-tools
+agent-tools morph-mcp migrate-launch-agent --program ~/.cargo/bin/agent-tools
+```
+
+## Policy
+
+The janitor is conservative by design.
+
+- It counts actual morph worker commands: `npm exec @morphllm/morphmcp` and
+  `node .../morph-mcp`.
+- It does not count parent agent commands that only mention `morph-mcp` in MCP
+  config JSON.
+- Routine cleanup only kills detached processes that were previously observed
+  as Codex-owned workers.
+- Emergency cleanup only trims Codex-owned workers when the attached pool is
+  above high-water limits.
+- `--dry-run` reports eligible kills without refreshing state or sending
+  signals.
+- Claude-owned or other non-Codex workers are counted in status but are not
+  eligible for cleanup unless they become a known detached Codex-owned identity.
+
+Default thresholds:
+
+| Setting | Default |
+| --- | --- |
+| `MAX_PCPU` | `1.0` |
+| `ORPHAN_MIN_AGE_SEC` | `900` |
+| `ORPHAN_MAX_KILL_PER_KIND` | `6` |
+| `EMERGENCY_NODE_KEEP` | `24` |
+| `EMERGENCY_NPM_KEEP` | `24` |
+| `EMERGENCY_TOTAL_KEEP` | `40` |
+| `EMERGENCY_MIN_AGE_SEC` | `5400` |
+| `EMERGENCY_MAX_KILL_PER_KIND` | `4` |
+
+The janitor stores process identity state in:
+
+```text
+~/.local/state/agent-tools/morph-mcp-janitor/known_codex_pids.txt
+```
+
+Override with `STATE_DIR` or `KNOWN_CODEX_PIDS_FILE` only for testing or
+temporary diagnostics.
+
+## LaunchAgent
+
+Install or reload the project-owned LaunchAgent:
+
+```bash
+agent-tools morph-mcp install-launch-agent --program ~/.cargo/bin/agent-tools
+```
+
+The project-owned job label is:
+
+```text
+com.ianwatts.agent-tools.morph-mcp-janitor
+```
+
+To switch a stale machine from the old `codex-morphmcp` job to the
+project-owned job:
+
+```bash
+agent-tools morph-mcp migrate-launch-agent --program ~/.cargo/bin/agent-tools
+```
+
+That command merges old known-process state into the project state before the
+new janitor can run, then writes and loads the project-owned plist, unloads the
+legacy job, and moves the legacy plist to Trash.
+
+`agent-tools morph-mcp status` reports legacy details only if a legacy job or
+legacy artifact is detected.
+
+It writes:
+
+```text
+~/Library/LaunchAgents/com.ianwatts.agent-tools.morph-mcp-janitor.plist
+~/Library/Logs/agent-tools/morph-mcp-janitor.out.log
+~/Library/Logs/agent-tools/morph-mcp-janitor.err.log
+```
+
+Uninstall unloads the project-owned job and moves its plist to Trash:
+
+```bash
+agent-tools morph-mcp uninstall-launch-agent
+```

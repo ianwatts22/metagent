@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug)]
@@ -141,12 +141,7 @@ fn status(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
     Ok(LaunchAgentReport { lines })
 }
 
-fn render_plist(
-    label: &str,
-    program: &PathBuf,
-    interval_seconds: u64,
-    logs_dir: &PathBuf,
-) -> String {
+fn render_plist(label: &str, program: &Path, interval_seconds: u64, logs_dir: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -12,6 +12,7 @@ Rust owns all behavior that needs to be deterministic, testable, and usable by a
 - preserving or backing up existing `.claude/skills`
 - invoking `npx @sentry/dotagents sync`
 - generating LaunchAgent plists
+- managing recurring agent-runtime maintenance flows such as the morph-mcp janitor
 
 The CLI is the automation API:
 
@@ -20,6 +21,8 @@ agent-tools skills scan
 agent-tools skills sync --apply
 agent-tools skills doctor
 agent-tools launch-agent install
+agent-tools morph-mcp status
+agent-tools morph-mcp janitor
 ```
 
 ## Swift Menu Bar
@@ -47,5 +50,11 @@ Logs belong in:
 ~/Library/Logs/agent-tools/
 ```
 
-Generated project state belongs in project-local dotagents files such as `agents.toml`, `agents.lock`, `.agents/.gitignore`, and `.claude/skills`.
+The morph-mcp janitor is project-owned by `agent-tools` and writes:
 
+```text
+~/Library/Logs/agent-tools/morph-mcp-janitor.out.log
+~/Library/Logs/agent-tools/morph-mcp-janitor.err.log
+```
+
+Generated project state belongs in project-local dotagents files such as `agents.toml`, `agents.lock`, `.agents/.gitignore`, and `.claude/skills`.

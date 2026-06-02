@@ -447,10 +447,10 @@ fn render_agents_toml(project: &ProjectSkills, agents: &[String]) -> String {
 
     for skill in &project.valid_skills {
         out.push_str("\n[[skills]]\n");
-        write!(out, "name = {}\n", toml_string(&skill.name)).expect("write to string");
-        write!(
+        writeln!(out, "name = {}", toml_string(&skill.name)).expect("write to string");
+        writeln!(
             out,
-            "source = {}\n",
+            "source = {}",
             toml_string(&format!("path:.agents/skills/{}", skill.name))
         )
         .expect("write to string");
