@@ -17,6 +17,7 @@ pub enum OutputFormat {
 #[derive(Debug)]
 pub struct SkillsScanOptions {
     pub roots: Vec<PathBuf>,
+    pub ignore_projects: Vec<PathBuf>,
     pub max_depth: usize,
     pub output_format: OutputFormat,
 }
@@ -24,6 +25,7 @@ pub struct SkillsScanOptions {
 #[derive(Debug)]
 pub struct SkillsSyncOptions {
     pub roots: Vec<PathBuf>,
+    pub ignore_projects: Vec<PathBuf>,
     pub max_depth: usize,
     pub agents: Vec<String>,
     pub apply: bool,
@@ -36,12 +38,14 @@ pub struct SkillsSyncOptions {
 #[derive(Debug)]
 pub struct SkillsDoctorOptions {
     pub roots: Vec<PathBuf>,
+    pub ignore_projects: Vec<PathBuf>,
     pub max_depth: usize,
 }
 
 #[derive(Debug, Default)]
 pub struct AgentToolsConfig {
     pub roots: Vec<PathBuf>,
+    pub ignore_projects: Vec<PathBuf>,
     pub max_depth: Option<usize>,
     pub agents: Vec<String>,
 }
@@ -178,8 +182,15 @@ pub fn skills_scan(options: &SkillsScanOptions) -> Result<SkillsScanReport, Stri
             .map_err(|error| format!("failed scanning {}: {error}", expanded.display()))?;
     }
 
+    let ignored = expanded_paths(&options.ignore_projects);
     let mut projects = Vec::new();
     for root in project_roots {
+        if ignored
+            .iter()
+            .any(|ignored_root| same_path(&root, ignored_root))
+        {
+            continue;
+        }
         projects.push(read_project_skills(root)?);
     }
 
@@ -189,6 +200,7 @@ pub fn skills_scan(options: &SkillsScanOptions) -> Result<SkillsScanReport, Stri
 pub fn skills_sync(options: &SkillsSyncOptions) -> Result<SkillsSyncReport, String> {
     let scan = skills_scan(&SkillsScanOptions {
         roots: options.roots.clone(),
+        ignore_projects: options.ignore_projects.clone(),
         max_depth: options.max_depth,
         output_format: OutputFormat::Text,
     })?;
@@ -207,6 +219,7 @@ pub fn skills_sync(options: &SkillsSyncOptions) -> Result<SkillsSyncReport, Stri
 pub fn skills_doctor(options: &SkillsDoctorOptions) -> Result<SkillsDoctorReport, String> {
     let scan = skills_scan(&SkillsScanOptions {
         roots: options.roots.clone(),
+        ignore_projects: options.ignore_projects.clone(),
         max_depth: options.max_depth,
         output_format: OutputFormat::Text,
     })?;
@@ -656,6 +669,16 @@ fn expand_tilde(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+fn expanded_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths.iter().map(|path| expand_tilde(path)).collect()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
 fn home_dir() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
@@ -753,6 +776,12 @@ fn parse_config(text: &str) -> Result<AgentToolsConfig, String> {
         match key {
             "roots" => {
                 config.roots = parse_string_array(value)?
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect();
+            }
+            "ignore_projects" => {
+                config.ignore_projects = parse_string_array(value)?
                     .into_iter()
                     .map(PathBuf::from)
                     .collect();
@@ -867,6 +896,7 @@ mod tests {
 
         let report = skills_scan(&SkillsScanOptions {
             roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
             max_depth: 4,
             output_format: OutputFormat::Text,
         })
@@ -887,6 +917,7 @@ mod tests {
 
         let report = skills_sync(&SkillsSyncOptions {
             roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
             max_depth: 4,
             agents: vec!["claude".to_string()],
             apply: false,
@@ -913,12 +944,14 @@ mod tests {
             r#"
 roots = ["~/code_projects", "~/Documents/Codex"]
 max_depth = 6
+ignore_projects = ["~/code_projects"]
 agents = ["claude", "codex"]
 "#,
         )
         .unwrap();
 
         assert_eq!(config.roots.len(), 2);
+        assert_eq!(config.ignore_projects.len(), 1);
         assert_eq!(config.max_depth, Some(6));
         assert_eq!(config.agents, vec!["claude", "codex"]);
     }
@@ -932,12 +965,16 @@ roots = [
   "~/Library/CloudStorage",
 ]
 max_depth = 6
+ignore_projects = [
+  "~/code_projects",
+]
 agents = ["claude", "codex", "cursor"]
 "#,
         )
         .unwrap();
 
         assert_eq!(config.roots.len(), 2);
+        assert_eq!(config.ignore_projects.len(), 1);
         assert_eq!(config.max_depth, Some(6));
         assert_eq!(config.agents.len(), 3);
     }

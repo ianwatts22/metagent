@@ -41,6 +41,7 @@ fn run_skills(args: &[String]) -> Result<(), String> {
             let parsed = parse_common(&args[1..])?;
             let projects = skills_scan(&SkillsScanOptions {
                 roots: parsed.roots,
+                ignore_projects: parsed.ignore_projects,
                 max_depth: parsed.max_depth,
                 output_format: parsed.output_format,
             })?;
@@ -68,6 +69,7 @@ fn run_skills(args: &[String]) -> Result<(), String> {
             let parsed = parse_common(&args[1..])?;
             let report = skills_doctor(&SkillsDoctorOptions {
                 roots: parsed.roots,
+                ignore_projects: parsed.ignore_projects,
                 max_depth: parsed.max_depth,
             })?;
             for item in &report.items {
@@ -134,12 +136,14 @@ fn run_launch_agent(args: &[String]) -> Result<(), String> {
 
 struct CommonArgs {
     roots: Vec<PathBuf>,
+    ignore_projects: Vec<PathBuf>,
     max_depth: usize,
     output_format: OutputFormat,
 }
 
 fn parse_common(args: &[String]) -> Result<CommonArgs, String> {
     let mut roots = Vec::new();
+    let mut ignore_projects = Vec::new();
     let mut max_depth = None;
     let mut output_format = OutputFormat::Text;
     let mut index = 0;
@@ -158,6 +162,10 @@ fn parse_common(args: &[String]) -> Result<CommonArgs, String> {
                 );
                 index += 2;
             }
+            "--ignore-project" => {
+                ignore_projects.push(PathBuf::from(read_value(args, index)?));
+                index += 2;
+            }
             "--json" => {
                 output_format = OutputFormat::Json;
                 index += 1;
@@ -168,10 +176,12 @@ fn parse_common(args: &[String]) -> Result<CommonArgs, String> {
 
     let config = load_user_config()?;
     let roots = choose_roots(roots, &config.roots);
+    let ignore_projects = choose_ignore_projects(ignore_projects, &config.ignore_projects);
     let max_depth = max_depth.or(config.max_depth).unwrap_or(8);
 
     Ok(CommonArgs {
         roots,
+        ignore_projects,
         max_depth,
         output_format,
     })
@@ -180,6 +190,7 @@ fn parse_common(args: &[String]) -> Result<CommonArgs, String> {
 fn parse_sync(args: &[String]) -> Result<SkillsSyncOptions, String> {
     let mut common = CommonArgs {
         roots: Vec::new(),
+        ignore_projects: Vec::new(),
         max_depth: 0,
         output_format: OutputFormat::Text,
     };
@@ -204,6 +215,12 @@ fn parse_sync(args: &[String]) -> Result<SkillsSyncOptions, String> {
                         .parse()
                         .map_err(|_| "invalid --max-depth value".to_string())?,
                 );
+                index += 2;
+            }
+            "--ignore-project" => {
+                common
+                    .ignore_projects
+                    .push(PathBuf::from(read_value(args, index)?));
                 index += 2;
             }
             "--agents" => {
@@ -241,6 +258,8 @@ fn parse_sync(args: &[String]) -> Result<SkillsSyncOptions, String> {
 
     let config = load_user_config()?;
     common.roots = choose_roots(common.roots, &config.roots);
+    common.ignore_projects =
+        choose_ignore_projects(common.ignore_projects, &config.ignore_projects);
     common.max_depth = max_depth.or(config.max_depth).unwrap_or(8);
     if agents.is_empty() {
         agents = if config.agents.is_empty() {
@@ -256,6 +275,7 @@ fn parse_sync(args: &[String]) -> Result<SkillsSyncOptions, String> {
 
     Ok(SkillsSyncOptions {
         roots: common.roots,
+        ignore_projects: common.ignore_projects,
         max_depth: common.max_depth,
         agents,
         apply,
@@ -274,6 +294,13 @@ fn choose_roots(cli_roots: Vec<PathBuf>, config_roots: &[PathBuf]) -> Vec<PathBu
         return config_roots.to_vec();
     }
     default_roots()
+}
+
+fn choose_ignore_projects(cli_ignored: Vec<PathBuf>, config_ignored: &[PathBuf]) -> Vec<PathBuf> {
+    if !cli_ignored.is_empty() {
+        return cli_ignored;
+    }
+    config_ignored.to_vec()
 }
 
 fn read_value(args: &[String], index: usize) -> Result<String, String> {
@@ -305,7 +332,7 @@ fn print_help() {
 
 fn print_skills_help() {
     println!(
-        "agent-tools skills\n\nUsage:\n  agent-tools skills scan [--root PATH] [--max-depth N] [--json]\n  agent-tools skills sync [--apply] [--replace-claude-skills] [--root PATH] [--max-depth N]\n  agent-tools skills doctor [--root PATH] [--max-depth N]\n"
+        "agent-tools skills\n\nUsage:\n  agent-tools skills scan [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]\n  agent-tools skills sync [--apply] [--replace-claude-skills] [--root PATH] [--ignore-project PATH] [--max-depth N]\n  agent-tools skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N]\n"
     );
 }
 

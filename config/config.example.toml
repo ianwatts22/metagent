@@ -7,3 +7,6 @@ roots = [
 max_depth = 6
 agents = ["claude", "codex", "cursor"]
 
+# Optional: skip parent workspaces that provide inherited skills but should not
+# be treated as dotagents projects.
+ignore_projects = []

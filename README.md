@@ -85,6 +85,7 @@ roots = [
 ]
 max_depth = 6
 agents = ["claude", "codex", "cursor"]
+ignore_projects = []
 ```
 
 ## Swift Menu Bar App

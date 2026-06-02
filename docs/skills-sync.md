@@ -44,10 +44,16 @@ Check current state:
 agent-tools skills doctor
 ```
 
+Skip a parent workspace that should provide inherited skills but should not be
+treated as a dotagents project:
+
+```toml
+ignore_projects = ["~/code_projects"]
+```
+
 ## Safety
 
 - Hidden skill folders are ignored because dotagents rejects names like `.system`.
 - Existing `agents.toml` is preserved unless `--rewrite-agents-toml` is passed.
 - Existing real `.claude/skills` paths are not moved unless `--replace-claude-skills` is passed.
 - Background sync should not pass `--replace-claude-skills`; that flag is for explicit migrations.
-
