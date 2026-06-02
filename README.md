@@ -106,6 +106,12 @@ cd apps/AgentToolsMenuBar
 swift build
 ```
 
+Package a local `.app` bundle:
+
+```bash
+scripts/build-menu-bar-app.sh
+```
+
 ## Verification
 
 ```bash

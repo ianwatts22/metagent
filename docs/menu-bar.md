@@ -26,5 +26,16 @@ cd apps/AgentToolsMenuBar
 swift build
 ```
 
-The next step is packaging it as a real `.app` bundle with a bundled helper binary or a first-run CLI locator.
+Build a local `.app` bundle:
 
+```bash
+scripts/build-menu-bar-app.sh
+```
+
+The generated app is written to:
+
+```text
+dist/AgentToolsMenuBar.app
+```
+
+The next packaging step is signing/notarization and either bundling the Rust helper binary or improving first-run CLI location.
