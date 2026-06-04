@@ -6,7 +6,7 @@ final class AgentToolsModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Ready"
     @Published private(set) var lastRunText: String?
-    @Published private(set) var systemImage = "hammer"
+    @Published private(set) var systemImage = "wrench.and.screwdriver"
 
     private let fileManager = FileManager.default
 
