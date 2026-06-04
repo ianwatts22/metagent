@@ -76,14 +76,14 @@ impl JanitorConfig {
             .unwrap_or_else(|| state_dir.join("known_codex_pids.txt"));
 
         Self {
-            max_pcpu: env_f32("MAX_PCPU").unwrap_or(1.0),
-            orphan_min_age_sec: env_u64("ORPHAN_MIN_AGE_SEC").unwrap_or(900),
-            orphan_max_kill_per_kind: env_usize("ORPHAN_MAX_KILL_PER_KIND").unwrap_or(6),
-            emergency_node_keep: env_usize("EMERGENCY_NODE_KEEP").unwrap_or(24),
-            emergency_npm_keep: env_usize("EMERGENCY_NPM_KEEP").unwrap_or(24),
-            emergency_total_keep: env_usize("EMERGENCY_TOTAL_KEEP").unwrap_or(40),
-            emergency_min_age_sec: env_u64("EMERGENCY_MIN_AGE_SEC").unwrap_or(5400),
-            emergency_max_kill_per_kind: env_usize("EMERGENCY_MAX_KILL_PER_KIND").unwrap_or(4),
+            max_pcpu: 1.0,
+            orphan_min_age_sec: 900,
+            orphan_max_kill_per_kind: 6,
+            emergency_node_keep: 8,
+            emergency_npm_keep: 8,
+            emergency_total_keep: 16,
+            emergency_min_age_sec: 1800,
+            emergency_max_kill_per_kind: 4,
             state_dir,
             known_codex_pids_file,
         }
@@ -305,15 +305,17 @@ fn janitor(options: &MorphMcpOptions) -> Result<MorphMcpReport, String> {
 
     if node_need > 0 || npm_need > 0 {
         lines.push(log_line(&format!(
-            "emergency trim: codex-owned node={codex_node_total} (keep {}, need {node_need}); npm={codex_npm_total} (keep {}, need {npm_need}); total={codex_total} (keep {})",
+            "attached trim: codex-owned node={codex_node_total} (keep {}, need {node_need}); npm={codex_npm_total} (keep {}, need {npm_need}); total={codex_total} (keep {}); minAge={}s pcpu<={}",
             config.emergency_node_keep,
             config.emergency_npm_keep,
-            config.emergency_total_keep
+            config.emergency_total_keep,
+            config.emergency_min_age_sec,
+            config.max_pcpu
         )));
         kill_some(
             node_need,
             &mut emergency_node_candidates,
-            "emergency node",
+            "attached node",
             config.emergency_max_kill_per_kind,
             options.dry_run,
             &mut lines,
@@ -321,7 +323,7 @@ fn janitor(options: &MorphMcpOptions) -> Result<MorphMcpReport, String> {
         kill_some(
             npm_need,
             &mut emergency_npm_candidates,
-            "emergency npm",
+            "attached npm",
             config.emergency_max_kill_per_kind,
             options.dry_run,
             &mut lines,
@@ -330,7 +332,7 @@ fn janitor(options: &MorphMcpOptions) -> Result<MorphMcpReport, String> {
 
     if !lines
         .iter()
-        .any(|line| line.contains("candidates") || line.contains("emergency trim"))
+        .any(|line| line.contains("candidates") || line.contains("attached trim"))
     {
         lines.push(log_line("no eligible cleanup candidates"));
     }
@@ -705,7 +707,7 @@ fn kill_some(
         .arg("-TERM")
         .arg("--")
         .args(&pid_args)
-        .status();
+        .output();
     thread::sleep(Duration::from_millis(250));
 
     for pid in pids {
@@ -713,7 +715,7 @@ fn kill_some(
             let _ = Command::new("kill")
                 .arg("-KILL")
                 .arg(pid.to_string())
-                .status();
+                .output();
         }
     }
 }
@@ -769,22 +771,6 @@ fn render_launch_agent_plist(program: &Path) -> String {
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>ORPHAN_MIN_AGE_SEC</key>
-    <string>900</string>
-    <key>MAX_PCPU</key>
-    <string>1.0</string>
-    <key>ORPHAN_MAX_KILL_PER_KIND</key>
-    <string>6</string>
-    <key>EMERGENCY_NODE_KEEP</key>
-    <string>24</string>
-    <key>EMERGENCY_NPM_KEEP</key>
-    <string>24</string>
-    <key>EMERGENCY_TOTAL_KEEP</key>
-    <string>40</string>
-    <key>EMERGENCY_MIN_AGE_SEC</key>
-    <string>5400</string>
-    <key>EMERGENCY_MAX_KILL_PER_KIND</key>
-    <string>4</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -1010,18 +996,6 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name).map(PathBuf::from)
 }
 
-fn env_u64(name: &str) -> Option<u64> {
-    env::var(name).ok()?.parse().ok()
-}
-
-fn env_usize(name: &str) -> Option<usize> {
-    env::var(name).ok()?.parse().ok()
-}
-
-fn env_f32(name: &str) -> Option<f32> {
-    env::var(name).ok()?.parse().ok()
-}
-
 fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_symlink())
@@ -1125,6 +1099,8 @@ mod tests {
         assert!(plist.contains("<string>morph-mcp</string>"));
         assert!(plist.contains("<string>janitor</string>"));
         assert!(plist.contains(JANITOR_LABEL));
+        assert!(!plist.contains("EMERGENCY_NODE_KEEP"));
+        assert!(!plist.contains("ORPHAN_MIN_AGE_SEC"));
     }
 
     #[test]
@@ -1133,17 +1109,17 @@ mod tests {
             max_pcpu: 1.0,
             orphan_min_age_sec: 900,
             orphan_max_kill_per_kind: 6,
-            emergency_node_keep: 24,
-            emergency_npm_keep: 24,
-            emergency_total_keep: 40,
-            emergency_min_age_sec: 5400,
+            emergency_node_keep: 8,
+            emergency_npm_keep: 8,
+            emergency_total_keep: 16,
+            emergency_min_age_sec: 1800,
             emergency_max_kill_per_kind: 4,
             state_dir: PathBuf::from("/tmp/state"),
             known_codex_pids_file: PathBuf::from("/tmp/state/known.txt"),
         };
 
-        assert_eq!(emergency_trim_needs(30, 20, &config), (10, 0));
-        assert_eq!(emergency_trim_needs(21, 21, &config), (2, 0));
-        assert_eq!(emergency_trim_needs(20, 30, &config), (0, 10));
+        assert_eq!(emergency_trim_needs(20, 8, &config), (12, 0));
+        assert_eq!(emergency_trim_needs(9, 9, &config), (1, 1));
+        assert_eq!(emergency_trim_needs(8, 20, &config), (0, 12));
     }
 }
