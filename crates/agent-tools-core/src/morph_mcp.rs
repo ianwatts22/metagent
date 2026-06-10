@@ -1,3 +1,5 @@
+use crate::file_ops::trash_path;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -727,22 +729,6 @@ fn process_exists(pid: i32) -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
-}
-
-fn trash_path(path: &Path) -> Result<(), String> {
-    let output = Command::new("/usr/bin/trash")
-        .arg(path)
-        .output()
-        .map_err(|error| format!("failed launching trash for {}: {error}", path.display()))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(format!(
-        "trash failed for {}: {}{}",
-        path.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    ))
 }
 
 fn join_pids(pids: &[i32]) -> String {

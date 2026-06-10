@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 cargo fmt --check
 cargo test
+sg scan --config "$repo_root/sgconfig.yml" --filter no-direct-hard-delete --report-style short
 
 (
   cd "$repo_root/apps/AgentToolsMenuBar"

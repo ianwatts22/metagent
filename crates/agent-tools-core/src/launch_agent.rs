@@ -1,3 +1,5 @@
+use crate::file_ops::trash_path;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -109,9 +111,8 @@ fn uninstall(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> 
     }
 
     if plist.exists() {
-        fs::remove_file(&plist)
-            .map_err(|error| format!("failed removing {}: {error}", plist.display()))?;
-        lines.push(format!("removed {}", plist.display()));
+        trash_path(&plist)?;
+        lines.push(format!("moved {} to Trash", plist.display()));
     } else {
         lines.push(format!("not installed: {}", plist.display()));
     }

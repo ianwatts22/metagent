@@ -132,3 +132,5 @@ scripts/build-menu-bar-app.sh
 ```bash
 scripts/verify.sh
 ```
+
+Requires `sg` from ast-grep on `PATH` for structural guardrail warnings.
