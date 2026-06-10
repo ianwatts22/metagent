@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "AgentToolsMenuBar",
     platforms: [
-        .macOS(.v14)
+        .macOS("14.4")
     ],
     products: [
         .executable(name: "AgentToolsMenuBar", targets: ["AgentToolsMenuBar"])
@@ -13,8 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "AgentToolsMenuBar",
-            path: "Sources"
+            path: "Sources",
+            resources: [
+                .process("Resources")
+            ]
         )
     ]
 )
-
