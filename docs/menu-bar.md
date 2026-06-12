@@ -60,6 +60,12 @@ Build a local `.app` bundle:
 scripts/build-menu-bar-app.sh
 ```
 
+The build regenerates app branding from `public/brand/logo.svg` before compiling:
+
+- `apps/MetagentMenuBar/Sources/Resources/AppIcon.icns` for Dock/Finder/app switcher
+- `apps/MetagentMenuBar/Sources/Resources/MenuBarIconTemplate.pdf` for the menu bar template image
+- `apps/MetagentMenuBar/Sources/Resources/MenuBarIconTemplate.svg` as the generated template source
+
 The generated app is written to:
 
 ```text

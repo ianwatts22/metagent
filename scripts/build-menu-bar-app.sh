@@ -8,6 +8,8 @@ contents="$app_bundle/Contents"
 macos="$contents/MacOS"
 resources="$contents/Resources"
 
+"$repo_root/scripts/generate-menu-bar-assets.sh"
+
 (
   cd "$app_source"
   swift build -c release

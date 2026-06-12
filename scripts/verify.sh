@@ -8,6 +8,7 @@ cargo fmt --check
 cargo test
 cargo build -p metagent-cli
 sg scan --config "$repo_root/sgconfig.yml" --filter no-direct-hard-delete --report-style short
+bash -n "$repo_root/scripts/generate-menu-bar-assets.sh"
 bash -n "$repo_root/scripts/install-menu-bar-app.sh"
 
 (
