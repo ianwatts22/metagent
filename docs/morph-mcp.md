@@ -1,16 +1,16 @@
 # Morph MCP Janitor
 
-`agent-tools morph-mcp` manages runaway `@morphllm/morphmcp` background
+`metagent morph-mcp` manages runaway `@morphllm/morphmcp` background
 workers spawned by local agent sessions.
 
 The repo implementation is the canonical source:
 
 ```bash
-agent-tools morph-mcp status
-agent-tools morph-mcp janitor --dry-run
-agent-tools morph-mcp janitor
-agent-tools morph-mcp install-launch-agent --program ~/.cargo/bin/agent-tools
-agent-tools morph-mcp migrate-launch-agent --program ~/.cargo/bin/agent-tools
+metagent morph-mcp status
+metagent morph-mcp janitor --dry-run
+metagent morph-mcp janitor
+metagent morph-mcp install-launch-agent --program ~/.cargo/bin/metagent
+metagent morph-mcp migrate-launch-agent --program ~/.cargo/bin/metagent
 ```
 
 ## Policy
@@ -53,7 +53,7 @@ Default thresholds:
 The janitor stores process identity state in:
 
 ```text
-~/.local/state/agent-tools/morph-mcp-janitor/known_codex_pids.txt
+~/.local/state/metagent/morph-mcp-janitor/known_codex_pids.txt
 ```
 
 Override `STATE_DIR` or `KNOWN_CODEX_PIDS_FILE` only for testing or temporary
@@ -65,35 +65,35 @@ stale LaunchAgent plists cannot pin old policy values.
 Install or reload the project-owned LaunchAgent:
 
 ```bash
-agent-tools morph-mcp install-launch-agent --program ~/.cargo/bin/agent-tools
+metagent morph-mcp install-launch-agent --program ~/.cargo/bin/metagent
 ```
 
 The project-owned job label is:
 
 ```text
-com.ianwatts.agent-tools.morph-mcp-janitor
+com.ianwatts.metagent.morph-mcp-janitor
 ```
 
 To switch a stale machine from the old `codex-morphmcp` job to the
 project-owned job:
 
 ```bash
-agent-tools morph-mcp migrate-launch-agent --program ~/.cargo/bin/agent-tools
+metagent morph-mcp migrate-launch-agent --program ~/.cargo/bin/metagent
 ```
 
 That command merges old known-process state into the project state before the
 new janitor can run, then writes and loads the project-owned plist, unloads the
 legacy job, and moves the legacy plist to Trash.
 
-`agent-tools morph-mcp status` reports legacy details only if a legacy job or
+`metagent morph-mcp status` reports legacy details only if a legacy job or
 legacy artifact is detected.
 
 It writes:
 
 ```text
-~/Library/LaunchAgents/com.ianwatts.agent-tools.morph-mcp-janitor.plist
-~/Library/Logs/agent-tools/morph-mcp-janitor.out.log
-~/Library/Logs/agent-tools/morph-mcp-janitor.err.log
+~/Library/LaunchAgents/com.ianwatts.metagent.morph-mcp-janitor.plist
+~/Library/Logs/metagent/morph-mcp-janitor.out.log
+~/Library/Logs/metagent/morph-mcp-janitor.err.log
 ```
 
 The plist sets `PATH` only. Cleanup policy thresholds live in the binary
@@ -102,5 +102,5 @@ defaults.
 Uninstall unloads the project-owned job and moves its plist to Trash:
 
 ```bash
-agent-tools morph-mcp uninstall-launch-agent
+metagent morph-mcp uninstall-launch-agent
 ```

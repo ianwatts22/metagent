@@ -1,6 +1,6 @@
 # Architecture
 
-`agent-tools` is one repo with two frontends.
+`metagent` is one repo with two frontends.
 
 ## Rust Core and CLI
 
@@ -13,24 +13,28 @@ Rust owns all behavior that needs to be deterministic, testable, and usable by a
 - invoking `npx @sentry/dotagents sync`
 - generating LaunchAgent plists
 - managing recurring agent-runtime maintenance flows such as the morph-mcp janitor
+- summarizing TypeScript/TSX code churn through `git` and `scc`
+- exposing machine-readable config/status surfaces for UI wrappers
 
 The CLI is the automation API:
 
 ```bash
-agent-tools skills scan
-agent-tools skills sync --apply
-agent-tools skills doctor
-agent-tools launch-agent install
-agent-tools morph-mcp status
-agent-tools morph-mcp janitor
+metagent config show --json
+metagent skills scan
+metagent skills sync --apply
+metagent skills doctor
+metagent launch-agent install
+metagent code-summary --repo /path/to/repo
+metagent morph-mcp status
+metagent morph-mcp janitor
 ```
 
 ## Swift Menu Bar
 
 Swift owns only macOS UI:
 
-- status display
-- sync button
+- status display for CLI path, roots, discovered skill repos, doctor issues, and background sync
+- command buttons for doctor, dry-run sync, apply sync, background install, morph-mcp status, and code summaries
 - config/log shortcuts
 - future root picker and notifications
 
@@ -41,20 +45,20 @@ The menu bar app shells out to the Rust CLI. It should not duplicate scanner, sy
 Machine-local config belongs in:
 
 ```text
-~/.config/agent-tools/config.toml
+~/.config/metagent/config.toml
 ```
 
 Logs belong in:
 
 ```text
-~/Library/Logs/agent-tools/
+~/Library/Logs/metagent/
 ```
 
-The morph-mcp janitor is project-owned by `agent-tools` and writes:
+The morph-mcp janitor is project-owned by `metagent` and writes:
 
 ```text
-~/Library/Logs/agent-tools/morph-mcp-janitor.out.log
-~/Library/Logs/agent-tools/morph-mcp-janitor.err.log
+~/Library/Logs/metagent/morph-mcp-janitor.out.log
+~/Library/Logs/metagent/morph-mcp-janitor.err.log
 ```
 
 Generated project state belongs in project-local dotagents files such as `agents.toml`, `agents.lock`, `.agents/.gitignore`, and `.claude/skills`.

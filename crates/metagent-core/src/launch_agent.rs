@@ -5,6 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const DEFAULT_LABEL: &str = "com.ianwatts.metagent.skills-sync";
+const LEGACY_AGENT_TOOLS_LABEL: &str = "com.ianwatts.agent-tools.skills-sync";
+
 #[derive(Debug)]
 pub enum LaunchAgentAction {
     Install,
@@ -49,7 +52,7 @@ fn install(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
     let label = label(options);
     let plist = plist_path(&label);
     let program = program_path(options)?;
-    let logs_dir = home_dir().join("Library/Logs/agent-tools");
+    let logs_dir = home_dir().join("Library/Logs/metagent");
     fs::create_dir_all(&logs_dir)
         .map_err(|error| format!("failed creating {}: {error}", logs_dir.display()))?;
     fs::create_dir_all(plist.parent().expect("plist has parent"))
@@ -59,12 +62,15 @@ fn install(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
     fs::write(&plist, content)
         .map_err(|error| format!("failed writing {}: {error}", plist.display()))?;
 
-    let domain = format!("gui/{}", unsafe { libc_getuid() });
+    let domain = launch_agent_domain();
     let _ = Command::new("launchctl")
         .arg("bootout")
-        .arg(&domain)
-        .arg(&plist)
+        .arg(launch_agent_job(&label))
         .output();
+    let mut lines = vec![format!("wrote {}", plist.display())];
+    if should_retire_legacy(options) {
+        retire_label(LEGACY_AGENT_TOOLS_LABEL, &mut lines)?;
+    }
 
     let bootstrap = Command::new("launchctl")
         .arg("bootstrap")
@@ -72,7 +78,6 @@ fn install(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
         .arg(&plist)
         .output();
 
-    let mut lines = vec![format!("wrote {}", plist.display())];
     match bootstrap {
         Ok(output) if output.status.success() => lines.push("loaded LaunchAgent".to_string()),
         Ok(output) => {
@@ -91,30 +96,11 @@ fn install(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
 
 fn uninstall(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
     let label = label(options);
-    let plist = plist_path(&label);
     let mut lines = Vec::new();
 
-    let bootout = Command::new("launchctl")
-        .arg("bootout")
-        .arg(format!("gui/{}", unsafe { libc_getuid() }))
-        .arg(&plist)
-        .output();
-
-    match bootout {
-        Ok(output) if output.status.success() => lines.push("unloaded LaunchAgent".to_string()),
-        Ok(output) => lines.push(format!(
-            "launchctl bootout reported: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )),
-        Err(error) => lines.push(format!("launchctl bootout not run: {error}")),
-    }
-
-    if plist.exists() {
-        trash_path(&plist)?;
-        lines.push(format!("moved {} to Trash", plist.display()));
-    } else {
-        lines.push(format!("not installed: {}", plist.display()));
+    retire_label(&label, &mut lines)?;
+    if should_retire_legacy(options) {
+        retire_label(LEGACY_AGENT_TOOLS_LABEL, &mut lines)?;
     }
 
     Ok(LaunchAgentReport { lines })
@@ -138,6 +124,14 @@ fn status(options: &LaunchAgentOptions) -> Result<LaunchAgentReport, String> {
         Ok(output) if output.status.success() => lines.push("launchctl status: loaded".to_string()),
         Ok(_) => lines.push("launchctl status: not loaded or unavailable".to_string()),
         Err(error) => lines.push(format!("launchctl status unavailable: {error}")),
+    }
+    if should_retire_legacy(options) && legacy_label_present(LEGACY_AGENT_TOOLS_LABEL) {
+        let legacy_plist = plist_path(LEGACY_AGENT_TOOLS_LABEL);
+        lines.push(format!("legacy plist present: {}", legacy_plist.display()));
+        lines.extend(status_lines_for_label(
+            LEGACY_AGENT_TOOLS_LABEL,
+            "legacy launchctl status",
+        ));
     }
     Ok(LaunchAgentReport { lines })
 }
@@ -184,7 +178,7 @@ fn label(options: &LaunchAgentOptions) -> String {
     options
         .label
         .clone()
-        .unwrap_or_else(|| "com.ianwatts.agent-tools.skills-sync".to_string())
+        .unwrap_or_else(|| DEFAULT_LABEL.to_string())
 }
 
 fn plist_path(label: &str) -> PathBuf {
@@ -198,6 +192,69 @@ fn program_path(options: &LaunchAgentOptions) -> Result<PathBuf, String> {
         return Ok(program.clone());
     }
     env::current_exe().map_err(|error| format!("failed resolving current executable: {error}"))
+}
+
+fn should_retire_legacy(options: &LaunchAgentOptions) -> bool {
+    options.label.is_none()
+}
+
+fn retire_label(label: &str, lines: &mut Vec<String>) -> Result<(), String> {
+    let plist = plist_path(label);
+    let bootout = Command::new("launchctl")
+        .arg("bootout")
+        .arg(launch_agent_job(label))
+        .output();
+
+    match bootout {
+        Ok(output) if output.status.success() => {
+            lines.push(format!("unloaded LaunchAgent {label}"))
+        }
+        Ok(output) => lines.push(format!(
+            "launchctl bootout {label} reported: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
+        Err(error) => lines.push(format!("launchctl bootout {label} not run: {error}")),
+    }
+
+    if plist.exists() {
+        trash_path(&plist)?;
+        lines.push(format!("moved {} to Trash", plist.display()));
+    } else {
+        lines.push(format!("not installed: {}", plist.display()));
+    }
+
+    Ok(())
+}
+
+fn legacy_label_present(label: &str) -> bool {
+    plist_path(label).exists()
+        || Command::new("launchctl")
+            .arg("print")
+            .arg(launch_agent_job(label))
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+}
+
+fn status_lines_for_label(label: &str, prefix: &str) -> Vec<String> {
+    let print = Command::new("launchctl")
+        .arg("print")
+        .arg(launch_agent_job(label))
+        .output();
+    match print {
+        Ok(output) if output.status.success() => vec![format!("{prefix}: loaded")],
+        Ok(_) => vec![format!("{prefix}: not loaded or unavailable")],
+        Err(error) => vec![format!("{prefix}: unavailable: {error}")],
+    }
+}
+
+fn launch_agent_domain() -> String {
+    format!("gui/{}", unsafe { libc_getuid() })
+}
+
+fn launch_agent_job(label: &str) -> String {
+    format!("{}/{}", launch_agent_domain(), label)
 }
 
 fn home_dir() -> PathBuf {

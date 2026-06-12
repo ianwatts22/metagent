@@ -17,32 +17,82 @@ project/.claude/skills -> ../.agents/skills
 Scan:
 
 ```bash
-agent-tools skills scan
+metagent skills scan
 ```
+
+Structured scan output for UI wrappers:
+
+```bash
+metagent skills scan --json
+```
+
+The JSON keeps `valid_skills` as the dotagents-compatible `.agents/skills`
+set and also includes a `skills` inventory with each skill's path, location
+(`.agents`, `.codex`, or `.claude`), symlink-container flag, and `.agents`
+origin. `.agents` skills with a matching `.agents/.skill-lock.json` entry are
+reported as `npx-skills`; other `.agents` skills are reported as `native`.
+
+Each skill inventory row also includes table-oriented metadata:
+
+- `folder_kind`: `native`, `npx-installed`, `codex-local`, `claude-local`, `symlinked`, or `system`
+- `character_count`, `word_count`, and `token_estimate` across text files in the skill folder
+- `skill_file_character_count`, `skill_file_word_count`, and `skill_file_token_estimate` for `SKILL.md`
+- `text_file_count`
+- `reference_file_count`, `script_file_count`, `asset_file_count`
+- `other_file_count` and `other_folder_count`
+- `has_openai_yaml`, `has_icon_small`, `has_icon_large`, and `has_icon_and_logo`
+- optional `icon_small_path` and `icon_large_path` from `agents/openai.yaml`
+
+Token counts are fast estimates based on roughly one token per four characters.
 
 Dry-run sync:
 
 ```bash
-agent-tools skills sync
+metagent skills sync
+```
+
+Structured dry-run output for UI wrappers:
+
+```bash
+metagent skills sync --json
 ```
 
 Apply:
 
 ```bash
-agent-tools skills sync --apply
+metagent skills sync --apply
 ```
 
 Allow migration from old copied `.claude/skills` directories:
 
 ```bash
-agent-tools skills sync --apply --replace-claude-skills
+metagent skills sync --apply --replace-claude-skills
 ```
 
 Check current state:
 
 ```bash
-agent-tools skills doctor
+metagent skills doctor
 ```
+
+Mine Codex session history for evidence that a skill was actually loaded:
+
+```bash
+metagent skills usage --days 30
+metagent skills usage --all --json
+```
+
+`activation_count` is evidence that Codex read a concrete `SKILL.md` through a
+tool call. `reference_count` is a weaker signal for other tool calls that
+mentioned a concrete `.../SKILL.md` path. The miner deliberately ignores prompt
+and instruction message bodies so the always-injected skill inventory does not
+count as usage.
+
+Session parsing is cached per JSONL file at
+`~/.local/state/metagent/skill-usage/cache.json`. A file is reused when its
+size and modified time match the cache entry. Use `--refresh-cache` after parser
+changes, `--no-cache` for cold verification, and `--cache PATH` for temporary
+experiments.
 
 Skip a parent workspace that should provide inherited skills but should not be
 treated as a dotagents project:

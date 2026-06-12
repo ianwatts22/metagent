@@ -3,23 +3,23 @@ import Foundation
 import SwiftUI
 
 @main
-struct AgentToolsMenuBarApp: App {
-    @StateObject private var model = AgentToolsModel()
+struct MetagentMenuBarApp: App {
+    @StateObject private var model = MetagentModel()
 
     var body: some Scene {
-        WindowGroup("Agent Tools", id: "main") {
-            AgentToolsPanel(model: model, showsOpenWindowButton: false)
+        WindowGroup("Metagent", id: "main") {
+            MetagentPanel(model: model, showsOpenWindowButton: false)
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
         }
         .windowResizability(.contentMinSize)
 
         MenuBarExtra {
-            AgentToolsPanel(model: model, showsOpenWindowButton: true)
+            MetagentPanel(model: model, showsOpenWindowButton: true)
                 .frame(width: 560, height: 640)
         } label: {
             MenuBarIcon()
                 .frame(width: 18, height: 18)
-                .accessibilityLabel("Agent Tools")
+                .accessibilityLabel("Metagent")
         }
         .menuBarExtraStyle(.window)
     }
@@ -54,8 +54,8 @@ private enum AppBrand {
     }()
 }
 
-private struct AgentToolsPanel: View {
-    @ObservedObject var model: AgentToolsModel
+private struct MetagentPanel: View {
+    @ObservedObject var model: MetagentModel
     let showsOpenWindowButton: Bool
     @Environment(\.openWindow) private var openWindow
     @State private var selectedSection = PanelSection.overview
@@ -83,7 +83,7 @@ private struct AgentToolsPanel: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Agent Tools")
+                Text("Metagent")
                     .font(.title3.weight(.semibold))
                 Text(model.statusText)
                     .font(.callout)
@@ -257,7 +257,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
 }
 
 private struct OverviewSection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -338,7 +338,7 @@ private struct OverviewSection: View {
 }
 
 private struct ReposSection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -376,10 +376,10 @@ private struct ReposSection: View {
 }
 
 private struct InventorySection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
     @State private var selection = Set<InventorySkillRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\InventorySkillRow.skillName)]
-    @SceneStorage("agent-tools.inventory.columns")
+    @SceneStorage("metagent.inventory.columns")
     private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
 
     private var rows: [InventorySkillRow] {
@@ -446,7 +446,7 @@ private struct InventorySection: View {
 }
 
 private struct InventoryMenuSection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
     let openMainWindow: () -> Void
 
     var body: some View {
@@ -745,7 +745,7 @@ private func formatNumber(_ value: Int) -> String {
 }
 
 private struct SyncSection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -795,7 +795,7 @@ private struct SyncSection: View {
 }
 
 private struct ToolsSection: View {
-    @ObservedObject var model: AgentToolsModel
+    @ObservedObject var model: MetagentModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

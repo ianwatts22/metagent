@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 @MainActor
-final class AgentToolsModel: ObservableObject {
+final class MetagentModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Checking status..."
     @Published private(set) var lastRunText: String?
@@ -59,12 +59,12 @@ final class AgentToolsModel: ObservableObject {
         let homePath = homeURL().path
 
         Task {
-            async let scanResult = runAgentTools(arguments: ["skills", "scan", "--json"])
-            async let homeScanResult = runAgentTools(
+            async let scanResult = runMetagent(arguments: ["skills", "scan", "--json"])
+            async let homeScanResult = runMetagent(
                 arguments: ["skills", "scan", "--root", homePath, "--max-depth", "2", "--json"]
             )
-            async let doctorResult = runAgentTools(arguments: ["skills", "doctor"])
-            async let launchAgentResult = runAgentTools(arguments: ["launch-agent", "status"])
+            async let doctorResult = runMetagent(arguments: ["skills", "doctor"])
+            async let launchAgentResult = runMetagent(arguments: ["launch-agent", "status"])
 
             let (scan, homeScan, doctor, launchAgent) = await (
                 scanResult,
@@ -168,7 +168,7 @@ final class AgentToolsModel: ObservableObject {
     func openConfig() {
         let configURL = homeURL()
             .appending(path: ".config")
-            .appending(path: "agent-tools")
+            .appending(path: "metagent")
             .appending(path: "config.toml")
         NSWorkspace.shared.open(configURL)
     }
@@ -177,7 +177,7 @@ final class AgentToolsModel: ObservableObject {
         let logsURL = homeURL()
             .appending(path: "Library")
             .appending(path: "Logs")
-            .appending(path: "agent-tools")
+            .appending(path: "metagent")
         NSWorkspace.shared.open(logsURL)
     }
 
@@ -261,7 +261,7 @@ final class AgentToolsModel: ObservableObject {
         systemImage = "arrow.triangle.2.circlepath"
 
         Task {
-            let result = await runAgentTools(arguments: arguments)
+            let result = await runMetagent(arguments: arguments)
             isRunning = false
             lastRunText = Self.timestamp()
             lastOutputTitle = title
@@ -281,14 +281,14 @@ final class AgentToolsModel: ObservableObject {
         }
     }
 
-    private func runAgentTools(arguments: [String]) async -> ProcessResult {
+    private func runMetagent(arguments: [String]) async -> ProcessResult {
         await Task.detached {
             let process = Process()
             let cliPath = Self.cliPath()
 
             if cliPath == "/usr/bin/env" {
                 process.executableURL = URL(fileURLWithPath: cliPath)
-                process.arguments = ["agent-tools"] + arguments
+                process.arguments = ["metagent"] + arguments
             } else {
                 process.executableURL = URL(fileURLWithPath: cliPath)
                 process.arguments = arguments
@@ -320,16 +320,16 @@ final class AgentToolsModel: ObservableObject {
     }
 
     nonisolated private static func cliPath() -> String {
-        if let override = ProcessInfo.processInfo.environment["AGENT_TOOLS_CLI"],
+        if let override = ProcessInfo.processInfo.environment["METAGENT_CLI"],
            !override.isEmpty
         {
             return override
         }
 
         let candidates = [
-            "/opt/homebrew/bin/agent-tools",
-            "/usr/local/bin/agent-tools",
-            "\(NSHomeDirectory())/.cargo/bin/agent-tools"
+            "/opt/homebrew/bin/metagent",
+            "/usr/local/bin/metagent",
+            "\(NSHomeDirectory())/.cargo/bin/metagent"
         ]
 
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {

@@ -7,7 +7,7 @@ The macOS app is a thin SwiftUI wrapper around the Rust CLI. It exposes both:
 
 Current surface:
 
-- standalone app window that opens when launching `Agent Tools.app`
+- standalone app window that opens when launching `Metagent.app`
 - persistent menu bar window
 - CLI path, configured roots, discovered repo count, skill count, doctor issue count, and background sync status
 - `Skills` menu with `.agents`, `.codex`, and `.claude` skill locations
@@ -39,16 +39,16 @@ Refresh behavior:
 
 The app looks for the CLI in this order:
 
-1. `AGENT_TOOLS_CLI`
-2. `/opt/homebrew/bin/agent-tools`
-3. `/usr/local/bin/agent-tools`
-4. `~/.cargo/bin/agent-tools`
-5. `env agent-tools`
+1. `METAGENT_CLI`
+2. `/opt/homebrew/bin/metagent`
+3. `/usr/local/bin/metagent`
+4. `~/.cargo/bin/metagent`
+5. `env metagent`
 
 Build:
 
 ```bash
-cd apps/AgentToolsMenuBar
+cd apps/MetagentMenuBar
 swift build
 ```
 
@@ -63,7 +63,7 @@ scripts/build-menu-bar-app.sh
 The generated app is written to:
 
 ```text
-dist/AgentToolsMenuBar.app
+dist/MetagentMenuBar.app
 ```
 
 Install the app where macOS and Spotlight can find it:
@@ -75,7 +75,7 @@ scripts/install-menu-bar-app.sh --restart
 The installed app is written to:
 
 ```text
-~/Applications/Agent Tools.app
+~/Applications/Metagent.app
 ```
 
 Local deployment model:
@@ -85,6 +85,6 @@ Local deployment model:
 - `scripts/install-menu-bar-app.sh` rebuilds, copies that bundle to `~/Applications`, and can launch or restart it.
 - `--launch` opens the app after install.
 - `--restart` asks the existing app to quit and opens the installed copy.
-- CLI changes still need `scripts/install-cli.sh` so the installed menu bar app can find the updated `agent-tools` binary.
+- CLI changes still need `scripts/install-cli.sh` so the installed menu bar app can find the updated `metagent` binary.
 
 The next packaging step is signing/notarization and either bundling the Rust helper binary or improving first-run CLI location/root picking.

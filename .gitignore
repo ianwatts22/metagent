@@ -4,4 +4,4 @@
 **/.build/
 /.DS_Store
 **/.DS_Store
-/.agent-tools.local.toml
+/.metagent.local.toml

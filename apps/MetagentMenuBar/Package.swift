@@ -3,16 +3,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "AgentToolsMenuBar",
+    name: "MetagentMenuBar",
     platforms: [
         .macOS("14.4")
     ],
     products: [
-        .executable(name: "AgentToolsMenuBar", targets: ["AgentToolsMenuBar"])
+        .executable(name: "MetagentMenuBar", targets: ["MetagentMenuBar"])
     ],
     targets: [
         .executableTarget(
-            name: "AgentToolsMenuBar",
+            name: "MetagentMenuBar",
             path: "Sources",
             resources: [
                 .process("Resources")

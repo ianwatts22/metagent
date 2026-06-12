@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cargo install \
-  --path "$repo_root/crates/agent-tools-cli" \
+  --path "$repo_root/crates/metagent-cli" \
   --locked
 
-echo "Installed agent-tools to $(command -v agent-tools || echo "$HOME/.cargo/bin/agent-tools")"
+echo "Installed metagent to $(command -v metagent || echo "$HOME/.cargo/bin/metagent")"
 

@@ -8,9 +8,11 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const JANITOR_LABEL: &str = "com.ianwatts.agent-tools.morph-mcp-janitor";
+const JANITOR_LABEL: &str = "com.ianwatts.metagent.morph-mcp-janitor";
+const AGENT_TOOLS_JANITOR_LABEL: &str = "com.ianwatts.agent-tools.morph-mcp-janitor";
 const LEGACY_JANITOR_LABEL: &str = "com.ianwatts.codex-morphmcp-janitor";
 const PROJECT_LOG_BASENAME: &str = "morph-mcp-janitor";
+const AGENT_TOOLS_LOG_BASENAME: &str = "morph-mcp-janitor";
 const LEGACY_LOG_BASENAME: &str = "codex-morphmcp-janitor";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,7 +75,7 @@ struct JanitorConfig {
 impl JanitorConfig {
     fn from_env() -> Self {
         let state_dir = env_path("STATE_DIR")
-            .unwrap_or_else(|| home_dir().join(".local/state/agent-tools/morph-mcp-janitor"));
+            .unwrap_or_else(|| home_dir().join(".local/state/metagent/morph-mcp-janitor"));
         let known_codex_pids_file = env_path("KNOWN_CODEX_PIDS_FILE")
             .unwrap_or_else(|| state_dir.join("known_codex_pids.txt"));
 
@@ -152,8 +154,11 @@ fn status() -> Result<MorphMcpReport, String> {
         lines.push(String::new());
         lines.push("Legacy LaunchAgent".to_string());
         lines.extend(legacy_surface_lines());
-        lines.extend(installed_launch_agent_program_lines(LEGACY_JANITOR_LABEL));
-        lines.extend(launch_agent_status_lines(LEGACY_JANITOR_LABEL));
+        for label in legacy_janitor_labels() {
+            lines.push(format!("label: {label}"));
+            lines.extend(installed_launch_agent_program_lines(label));
+            lines.extend(launch_agent_status_lines(label));
+        }
     }
 
     lines.push(String::new());
@@ -352,13 +357,13 @@ fn migrate_launch_agent(options: &MorphMcpOptions) -> Result<MorphMcpReport, Str
     let mut lines = Vec::new();
     migrate_legacy_state_if_needed(&mut lines)?;
     install_project_launch_agent(options, &mut lines)?;
-    retire_launch_agent(LEGACY_JANITOR_LABEL, &mut lines)?;
+    retire_legacy_launch_agents(&mut lines)?;
     Ok(MorphMcpReport { lines })
 }
 
 fn retire_legacy_launch_agent() -> Result<MorphMcpReport, String> {
     let mut lines = Vec::new();
-    retire_launch_agent(LEGACY_JANITOR_LABEL, &mut lines)?;
+    retire_legacy_launch_agents(&mut lines)?;
     Ok(MorphMcpReport { lines })
 }
 
@@ -404,6 +409,7 @@ fn install_project_launch_agent(
 fn uninstall_launch_agent() -> Result<MorphMcpReport, String> {
     let mut lines = Vec::new();
     retire_launch_agent(JANITOR_LABEL, &mut lines)?;
+    retire_legacy_launch_agents(&mut lines)?;
     Ok(MorphMcpReport { lines })
 }
 
@@ -441,14 +447,8 @@ fn retire_launch_agent(label: &str, lines: &mut Vec<String>) -> Result<(), Strin
 }
 
 fn migrate_legacy_state_if_needed(lines: &mut Vec<String>) -> Result<(), String> {
-    let old_state = legacy_known_codex_pids_file();
     let new_config = JanitorConfig::from_env();
     let new_state = new_config.known_codex_pids_file;
-
-    if !old_state.is_file() {
-        lines.push(format!("legacy state missing: {}", old_state.display()));
-        return Ok(());
-    }
 
     if let Some(parent) = new_state.parent() {
         fs::create_dir_all(parent)
@@ -456,18 +456,31 @@ fn migrate_legacy_state_if_needed(lines: &mut Vec<String>) -> Result<(), String>
     }
 
     let mut merged = read_identity_set(&new_state)?;
-    let original_len = merged.len();
-    let legacy = read_identity_set(&old_state)?;
-    merged.extend(legacy);
-    let added = merged.len().saturating_sub(original_len);
-    write_identity_set(&new_state, merged)?;
+    let mut found_legacy_state = false;
+    for old_state in legacy_known_codex_pids_files() {
+        if !old_state.is_file() {
+            lines.push(format!("legacy state missing: {}", old_state.display()));
+            continue;
+        }
 
-    lines.push(format!(
-        "merged legacy state {} into {} (added {})",
-        old_state.display(),
-        new_state.display(),
-        added
-    ));
+        found_legacy_state = true;
+        let original_len = merged.len();
+        let legacy = read_identity_set(&old_state)?;
+        merged.extend(legacy);
+        let added = merged.len().saturating_sub(original_len);
+        lines.push(format!(
+            "merged legacy state {} into {} (added {})",
+            old_state.display(),
+            new_state.display(),
+            added
+        ));
+    }
+
+    if !found_legacy_state {
+        return Ok(());
+    }
+
+    write_identity_set(&new_state, merged)?;
 
     Ok(())
 }
@@ -825,7 +838,12 @@ fn installed_launch_agent_program_lines(label: &str) -> Vec<String> {
         return vec![format!("plist missing: {}", plist.display())];
     };
     if text.contains("<string>morph-mcp</string>") && text.contains("<string>janitor</string>") {
-        return vec!["program: agent-tools morph-mcp janitor".to_string()];
+        let command = if label == AGENT_TOOLS_JANITOR_LABEL {
+            "agent-tools morph-mcp janitor"
+        } else {
+            "metagent morph-mcp janitor"
+        };
+        return vec![format!("program: {command}")];
     }
     if text.contains("codex-morphmcp-janitor") {
         return vec!["program: legacy codex-morphmcp-janitor script".to_string()];
@@ -834,11 +852,14 @@ fn installed_launch_agent_program_lines(label: &str) -> Vec<String> {
 }
 
 fn legacy_surface_exists() -> bool {
-    launch_agent_plist_path(LEGACY_JANITOR_LABEL).exists()
+    legacy_janitor_labels()
+        .iter()
+        .any(|label| launch_agent_plist_path(label).exists() || launch_agent_loaded(label))
         || legacy_entrypoint_path().exists()
-        || legacy_known_codex_pids_file().exists()
+        || legacy_known_codex_pids_files()
+            .iter()
+            .any(|path| path.exists())
         || legacy_janitor_log_paths().iter().any(|path| path.exists())
-        || launch_agent_loaded(LEGACY_JANITOR_LABEL)
 }
 
 fn legacy_surface_lines() -> Vec<String> {
@@ -916,15 +937,18 @@ fn status_log_paths() -> Vec<PathBuf> {
 }
 
 fn project_janitor_log_paths() -> [PathBuf; 2] {
-    let logs_dir = home_dir().join("Library/Logs/agent-tools");
+    let logs_dir = home_dir().join("Library/Logs/metagent");
     [
         logs_dir.join(format!("{PROJECT_LOG_BASENAME}.out.log")),
         logs_dir.join(format!("{PROJECT_LOG_BASENAME}.err.log")),
     ]
 }
 
-fn legacy_janitor_log_paths() -> [PathBuf; 2] {
-    [
+fn legacy_janitor_log_paths() -> Vec<PathBuf> {
+    let agent_tools_logs_dir = home_dir().join("Library/Logs/agent-tools");
+    vec![
+        agent_tools_logs_dir.join(format!("{AGENT_TOOLS_LOG_BASENAME}.out.log")),
+        agent_tools_logs_dir.join(format!("{AGENT_TOOLS_LOG_BASENAME}.err.log")),
         home_dir().join(format!("Library/Logs/{LEGACY_LOG_BASENAME}.log")),
         home_dir().join(format!("Library/Logs/{LEGACY_LOG_BASENAME}.err.log")),
     ]
@@ -944,8 +968,22 @@ fn launch_agent_job(label: &str) -> String {
     format!("{}/{}", launch_agent_domain(), label)
 }
 
-fn legacy_known_codex_pids_file() -> PathBuf {
-    home_dir().join(".local/state/codex-morphmcp-janitor/known_codex_pids.txt")
+fn legacy_janitor_labels() -> [&'static str; 2] {
+    [AGENT_TOOLS_JANITOR_LABEL, LEGACY_JANITOR_LABEL]
+}
+
+fn retire_legacy_launch_agents(lines: &mut Vec<String>) -> Result<(), String> {
+    for label in legacy_janitor_labels() {
+        retire_launch_agent(label, lines)?;
+    }
+    Ok(())
+}
+
+fn legacy_known_codex_pids_files() -> [PathBuf; 2] {
+    [
+        home_dir().join(".local/state/agent-tools/morph-mcp-janitor/known_codex_pids.txt"),
+        home_dir().join(".local/state/codex-morphmcp-janitor/known_codex_pids.txt"),
+    ]
 }
 
 fn legacy_entrypoint_path() -> PathBuf {
@@ -1080,8 +1118,8 @@ mod tests {
 
     #[test]
     fn launch_agent_plist_calls_morph_janitor_command() {
-        let plist = render_launch_agent_plist(Path::new("/Users/ianwatts/.cargo/bin/agent-tools"));
-        assert!(plist.contains("<string>/Users/ianwatts/.cargo/bin/agent-tools</string>"));
+        let plist = render_launch_agent_plist(Path::new("/Users/ianwatts/.cargo/bin/metagent"));
+        assert!(plist.contains("<string>/Users/ianwatts/.cargo/bin/metagent</string>"));
         assert!(plist.contains("<string>morph-mcp</string>"));
         assert!(plist.contains("<string>janitor</string>"));
         assert!(plist.contains(JANITOR_LABEL));

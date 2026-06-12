@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-install_dir="${AGENT_TOOLS_APPLICATIONS_DIR:-$HOME/Applications}"
-installed_app="$install_dir/Agent Tools.app"
+install_dir="${METAGENT_APPLICATIONS_DIR:-$HOME/Applications}"
+installed_app="$install_dir/Metagent.app"
 launch_mode="none"
 
 usage() {
@@ -12,13 +12,13 @@ Usage:
   scripts/install-menu-bar-app.sh [--launch|--restart]
 
 Builds the menu bar app and installs it to:
-  ~/Applications/Agent Tools.app
+  ~/Applications/Metagent.app
 
 Options:
   --launch    Open the installed app after installing.
   --restart   Ask the existing app to quit, then open the installed app.
 
-Set AGENT_TOOLS_APPLICATIONS_DIR to install somewhere else.
+Set METAGENT_APPLICATIONS_DIR to install somewhere else.
 USAGE
 }
 
@@ -57,7 +57,7 @@ mkdir -p "$install_dir"
 
 backup_app=""
 if [[ -e "$installed_app" ]]; then
-  backup_app="$install_dir/.Agent Tools.app.previous-$(date +%Y%m%d%H%M%S)"
+  backup_app="$install_dir/.Metagent.app.previous-$(date +%Y%m%d%H%M%S)"
   mv "$installed_app" "$backup_app"
 fi
 
@@ -77,7 +77,7 @@ case "$launch_mode" in
     open "$installed_app"
     ;;
   restart)
-    osascript -e 'tell application id "com.ianwatts.agent-tools.menu-bar" to quit' >/dev/null 2>&1 || true
+    osascript -e 'tell application id "com.ianwatts.metagent.menu-bar" to quit' >/dev/null 2>&1 || true
     sleep 0.5
     open "$installed_app"
     ;;
