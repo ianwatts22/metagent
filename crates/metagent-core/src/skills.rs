@@ -190,6 +190,17 @@ pub struct ProjectSkills {
     pub hidden_skill_dirs: Vec<PathBuf>,
 }
 
+#[derive(Debug, Default)]
+struct AgentsTomlSkills {
+    declarations: Vec<AgentsTomlSkillDeclaration>,
+}
+
+#[derive(Debug, Default)]
+struct AgentsTomlSkillDeclaration {
+    name: Option<String>,
+    source: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct SkillsScanReport {
     pub projects: Vec<ProjectSkills>,
@@ -572,16 +583,46 @@ pub fn skills_doctor(options: &SkillsDoctorOptions) -> Result<SkillsDoctorReport
         max_depth: options.max_depth,
         output_format: OutputFormat::Text,
     })?;
+    let ignored = expanded_paths(&options.ignore_projects);
+    let mut project_roots = scan
+        .projects
+        .iter()
+        .map(|project| project.root.clone())
+        .collect::<BTreeSet<_>>();
+    for root in &options.roots {
+        let expanded = expand_tilde(root);
+        if !expanded.is_dir() {
+            continue;
+        }
+        discover_dotagents_config_dirs(&expanded, options.max_depth, 0, &mut project_roots)
+            .map_err(|error| format!("failed scanning {}: {error}", expanded.display()))?;
+    }
+
+    let mut projects = scan.projects;
+    for root in project_roots {
+        if projects
+            .iter()
+            .any(|project| same_path(&project.root, &root))
+            || ignored
+                .iter()
+                .any(|ignored_root| same_path(&root, ignored_root))
+        {
+            continue;
+        }
+        projects.push(read_project_skills(root)?);
+    }
+    projects.sort_by(|left, right| left.root.cmp(&right.root));
+
     let mut items = Vec::new();
 
-    if scan.projects.is_empty() {
+    if projects.is_empty() {
         items.push(DoctorItem {
             level: DoctorLevel::Warn,
             message: "no projects with .agents/skills found".to_string(),
         });
     }
 
-    for project in scan.projects {
+    for project in projects {
         if project.valid_skills.is_empty() {
             items.push(DoctorItem {
                 level: DoctorLevel::Warn,
@@ -605,18 +646,10 @@ pub fn skills_doctor(options: &SkillsDoctorOptions) -> Result<SkillsDoctorReport
             });
         }
 
-        let agents_toml = project.root.join("agents.toml");
-        if agents_toml.is_file() {
-            items.push(DoctorItem {
-                level: DoctorLevel::Ok,
-                message: format!("{} exists", agents_toml.display()),
-            });
-        } else {
-            items.push(DoctorItem {
-                level: DoctorLevel::Warn,
-                message: format!("{} missing", agents_toml.display()),
-            });
-        }
+        check_agents_toml(&project, &mut items);
+        check_competing_skill_registries(&project, &mut items);
+        check_cleanup_candidates(&project, &mut items);
+        check_legacy_command_prompts(&project, &mut items);
 
         let claude_skills = project.root.join(".claude/skills");
         if is_symlink(&claude_skills) {
@@ -638,6 +671,152 @@ pub fn skills_doctor(options: &SkillsDoctorOptions) -> Result<SkillsDoctorReport
     }
 
     Ok(SkillsDoctorReport { items })
+}
+
+fn check_agents_toml(project: &ProjectSkills, items: &mut Vec<DoctorItem>) {
+    let Some(agents_toml) = agents_toml_path(project) else {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!("{} missing", expected_agents_toml_path(project).display()),
+        });
+        return;
+    };
+
+    items.push(DoctorItem {
+        level: DoctorLevel::Ok,
+        message: format!("{} exists", agents_toml.display()),
+    });
+
+    let Ok(text) = fs::read_to_string(&agents_toml) else {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!("{} could not be read", agents_toml.display()),
+        });
+        return;
+    };
+
+    let declared = parse_agents_toml_skills(&text);
+    if declared.declarations.is_empty() {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!("{} declares no skills", agents_toml.display()),
+        });
+        return;
+    }
+
+    let actual = project
+        .valid_skills
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect::<BTreeSet<_>>();
+    let declared_names = declared_skill_names(&declared);
+    for (name, source_name) in declaration_name_source_mismatches(&declared) {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!(
+                "{} declares skill {} with mismatched path source basename {}",
+                agents_toml.display(),
+                name,
+                source_name
+            ),
+        });
+    }
+
+    for name in actual.difference(&declared_names) {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!(
+                "{} has on-disk skill not declared in {}: {}",
+                project.skills_dir.display(),
+                agents_toml.display(),
+                name
+            ),
+        });
+    }
+
+    for name in declared_names.difference(&actual) {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!(
+                "{} declares missing skill folder: {}",
+                agents_toml.display(),
+                name
+            ),
+        });
+    }
+}
+
+fn check_competing_skill_registries(project: &ProjectSkills, items: &mut Vec<DoctorItem>) {
+    let dotagents_config = agents_toml_path(project);
+    let dotagents_lock = dotagents_lock_path(project, dotagents_config.as_deref());
+    let legacy_lock = legacy_skill_lock_path(project);
+
+    if legacy_lock.is_file() && dotagents_config.is_some() {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!(
+                "{} exists beside dotagents config; treat agents.toml/agents.lock and skills/ as source of truth",
+                legacy_lock.display()
+            ),
+        });
+    }
+
+    if dotagents_config.is_some() && !dotagents_lock.is_file() {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: format!("{} missing", dotagents_lock.display()),
+        });
+    }
+
+    if is_user_agents_project(project) {
+        items.push(DoctorItem {
+            level: DoctorLevel::Warn,
+            message: "user-space ~/.agents layout detected; validate with `npx @sentry/dotagents --user list` before sync/apply mutations".to_string(),
+        });
+    }
+}
+
+fn check_cleanup_candidates(project: &ProjectSkills, items: &mut Vec<DoctorItem>) {
+    for root in cleanup_search_roots(project) {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if name.starts_with(".system-skills.bak-") || name.starts_with("agents.toml.bak-") {
+                items.push(DoctorItem {
+                    level: DoctorLevel::Warn,
+                    message: format!("{} looks like a backup cleanup candidate", path.display()),
+                });
+            }
+        }
+    }
+}
+
+fn check_legacy_command_prompts(project: &ProjectSkills, items: &mut Vec<DoctorItem>) {
+    for commands_dir in command_prompt_dirs(project) {
+        let Ok(entries) = fs::read_dir(&commands_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if name.starts_with("rp-") && name.ends_with(".md") {
+                items.push(DoctorItem {
+                    level: DoctorLevel::Warn,
+                    message: format!(
+                        "{} is a RepoPrompt command prompt; verify RepoPrompt MCP is configured, loaded, and read-only verified before keeping it",
+                        path.display()
+                    ),
+                });
+            }
+        }
+    }
 }
 
 pub fn skills_format(options: &SkillsFormatOptions) -> Result<SkillsFormatReport, String> {
@@ -947,6 +1126,66 @@ fn retire_nested_agents_toml(
         ));
     }
     Ok(())
+}
+
+fn agents_toml_path(project: &ProjectSkills) -> Option<PathBuf> {
+    let primary = project.root.join("agents.toml");
+    if primary.is_file() {
+        return Some(primary);
+    }
+
+    let user_space = project.root.join(".agents/agents.toml");
+    if user_space.is_file() {
+        return Some(user_space);
+    }
+
+    None
+}
+
+fn expected_agents_toml_path(project: &ProjectSkills) -> PathBuf {
+    project.root.join("agents.toml")
+}
+
+fn dotagents_lock_path(project: &ProjectSkills, agents_toml: Option<&Path>) -> PathBuf {
+    if agents_toml.is_some_and(|path| same_path(path, &project.root.join(".agents/agents.toml"))) {
+        project.root.join(".agents/agents.lock")
+    } else {
+        project.root.join("agents.lock")
+    }
+}
+
+fn legacy_skill_lock_path(project: &ProjectSkills) -> PathBuf {
+    if is_user_agents_project(project) {
+        project.root.join(".agents/.skill-lock.json")
+    } else {
+        project.root.join(".agents/.skill-lock.json")
+    }
+}
+
+fn is_user_agents_project(project: &ProjectSkills) -> bool {
+    same_path(&project.skills_dir, &project.root.join(".agents/skills"))
+        && same_path(&project.root, &home_dir())
+}
+
+fn cleanup_search_roots(project: &ProjectSkills) -> Vec<PathBuf> {
+    let mut roots = vec![project.root.clone()];
+    let agents_root = project.skills_dir.parent().unwrap_or(&project.root);
+    if !same_path(agents_root, &project.root) {
+        roots.push(agents_root.to_path_buf());
+    }
+    roots
+}
+
+fn command_prompt_dirs(project: &ProjectSkills) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        project.root.join("commands"),
+        project.root.join(".codex/prompts"),
+        project.root.join(".claude/commands"),
+    ];
+    if let Some(agents_root) = project.skills_dir.parent() {
+        dirs.push(agents_root.join("commands"));
+    }
+    dirs
 }
 
 fn read_project_skills(root: PathBuf) -> Result<ProjectSkills, String> {
@@ -1621,6 +1860,62 @@ fn discover_skill_dirs(
     Ok(())
 }
 
+fn discover_dotagents_config_dirs(
+    dir: &Path,
+    max_depth: usize,
+    depth: usize,
+    projects: &mut BTreeSet<PathBuf>,
+) -> io::Result<()> {
+    if dir.file_name() == Some(OsStr::new(".agents")) {
+        if depth == 0 && dir.join("agents.toml").is_file() {
+            if let Some(parent) = dir.parent() {
+                projects.insert(parent.to_path_buf());
+            }
+        }
+        return Ok(());
+    }
+
+    if depth > max_depth {
+        return Ok(());
+    }
+
+    if should_prune(dir) && depth > 0 {
+        return Ok(());
+    }
+
+    if dir.join("agents.toml").is_file() || dir.join(".agents/agents.toml").is_file() {
+        projects.insert(dir.to_path_buf());
+    }
+
+    if depth == max_depth {
+        return Ok(());
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if is_permission_error(&error) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if is_permission_error(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) if is_permission_error(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if file_type.is_dir() {
+            discover_dotagents_config_dirs(&entry.path(), max_depth, depth + 1, projects)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn is_known_skills_dir(path: &Path) -> bool {
     if path.file_name() != Some(OsStr::new("skills")) {
         return false;
@@ -1772,6 +2067,135 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn parse_agents_toml_skills(text: &str) -> AgentsTomlSkills {
+    let mut declared = AgentsTomlSkills::default();
+    let mut current: Option<AgentsTomlSkillDeclaration> = None;
+
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if is_skills_array_header(line) {
+            push_skill_declaration(&mut declared, current.take());
+            current = Some(AgentsTomlSkillDeclaration::default());
+            continue;
+        }
+        if line.starts_with('[') {
+            push_skill_declaration(&mut declared, current.take());
+            continue;
+        }
+        let Some(declaration) = &mut current else {
+            continue;
+        };
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(value) = parse_quoted_value(value.trim()) else {
+            continue;
+        };
+
+        match key.trim() {
+            "name" => {
+                declaration.name = Some(value);
+            }
+            "source" => {
+                declaration.source = Some(value);
+            }
+            _ => {}
+        }
+    }
+
+    push_skill_declaration(&mut declared, current);
+    declared
+}
+
+fn is_skills_array_header(line: &str) -> bool {
+    let Some(inner) = line
+        .strip_prefix("[[")
+        .and_then(|line| line.strip_suffix("]]"))
+    else {
+        return false;
+    };
+    inner.trim() == "skills"
+}
+
+fn push_skill_declaration(
+    declared: &mut AgentsTomlSkills,
+    declaration: Option<AgentsTomlSkillDeclaration>,
+) {
+    let Some(declaration) = declaration else {
+        return;
+    };
+    if declaration.name.is_some() || declaration.source.is_some() {
+        declared.declarations.push(declaration);
+    }
+}
+
+fn declared_skill_names(declared: &AgentsTomlSkills) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for declaration in &declared.declarations {
+        match (&declaration.name, &declaration.source) {
+            (Some(name), _) => {
+                names.insert(name.clone());
+            }
+            (None, Some(source)) => {
+                if let Some(name) = skill_name_from_source(source) {
+                    names.insert(name);
+                }
+            }
+            (None, None) => {}
+        };
+    }
+    names
+}
+
+fn declaration_name_source_mismatches(declared: &AgentsTomlSkills) -> Vec<(String, String)> {
+    declared
+        .declarations
+        .iter()
+        .filter_map(|declaration| {
+            let name = declaration.name.as_ref()?;
+            let source_name = skill_name_from_source(declaration.source.as_ref()?)?;
+            if name == &source_name {
+                None
+            } else {
+                Some((name.clone(), source_name))
+            }
+        })
+        .collect()
+}
+
+fn skill_name_from_source(source: &str) -> Option<String> {
+    let path = source.strip_prefix("path:")?;
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn parse_quoted_value(value: &str) -> Option<String> {
+    if value.starts_with('"') {
+        return parse_json_string(value, 0).map(|(parsed, _)| parsed);
+    }
+
+    parse_toml_literal_string(value)
+}
+
+fn parse_toml_literal_string(value: &str) -> Option<String> {
+    let rest = value.strip_prefix('\'')?;
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_string())
 }
 
 fn parse_config(text: &str) -> Result<MetagentConfig, String> {
@@ -2482,6 +2906,352 @@ mod tests {
         assert!(report.to_json().contains("\"mode\":\"DRY-RUN\""));
         assert!(report.to_json().contains("\"valid_skill_count\":1"));
         assert!(!project.join("agents.toml").exists());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_flags_agents_toml_skill_drift_and_legacy_lock() {
+        let temp = temp_dir("doctor-drift");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::create_dir_all(project.join(".agents/skills/beta")).unwrap();
+        fs::write(project.join(".agents/skills/beta/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"version = 1
+
+[[skills]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+
+[[skills]]
+name = "missing"
+source = "path:.agents/skills/missing"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+        fs::write(project.join(".agents/.skill-lock.json"), r#"{"skills":{}}"#).unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(messages.contains("on-disk skill not declared"));
+        assert!(messages.contains("beta"));
+        assert!(messages.contains("declares missing skill folder"));
+        assert!(messages.contains("missing"));
+        assert!(messages.contains("exists beside dotagents config"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_uses_skill_name_for_non_path_sources() {
+        let temp = temp_dir("doctor-remote-source");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "github:org/repo"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains("declares missing skill folder: repo"));
+        assert!(!messages.contains("declares missing skill folder"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_accepts_toml_literal_string_skill_declarations() {
+        let temp = temp_dir("doctor-literal-strings");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[skills]]
+name = 'alpha'
+source = 'path:.agents/skills/alpha'
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains("declares no skills"));
+        assert!(!messages.contains("declares missing skill folder"));
+        assert!(!messages.contains("on-disk skill not declared"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_accepts_whitespace_in_toml_skill_table_header() {
+        let temp = temp_dir("doctor-spaced-table");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[ skills ]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains("declares no skills"));
+        assert!(!messages.contains("declares missing skill folder"));
+        assert!(!messages.contains("on-disk skill not declared"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_checks_config_only_projects_for_missing_skill_folders() {
+        let temp = temp_dir("doctor-config-only");
+        let project = temp.join("repo");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains("no projects with .agents/skills found"));
+        assert!(messages.contains("has no valid skills"));
+        assert!(messages.contains("declares missing skill folder: alpha"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_does_not_treat_dotagents_directory_as_project_root() {
+        let temp = temp_dir("doctor-dotagents-root");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join(".agents/agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+"#,
+        )
+        .unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains(".agents/.agents/skills"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_maps_direct_dotagents_root_to_parent_project() {
+        let temp = temp_dir("doctor-direct-dotagents-root");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents")).unwrap();
+        fs::write(
+            project.join(".agents/agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+"#,
+        )
+        .unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![project.join(".agents")],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!messages.contains("no projects with .agents/skills found"));
+        assert!(messages.contains(".agents/agents.toml exists"));
+        assert!(messages.contains("declares missing skill folder: alpha"));
+        assert!(!messages.contains(".agents/.agents/skills"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn doctor_flags_mismatched_name_and_path_source() {
+        let temp = temp_dir("doctor-mismatched-source");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::create_dir_all(project.join(".agents/skills/beta")).unwrap();
+        fs::write(project.join(".agents/skills/beta/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "path:.agents/skills/beta"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(messages.contains("mismatched path source basename beta"));
+        assert!(messages.contains("on-disk skill not declared"));
+        assert!(messages.contains("beta"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn dotagents_lock_path_follows_selected_nested_agents_toml() {
+        let temp = temp_dir("nested-lock");
+        let project = ProjectSkills {
+            root: temp.clone(),
+            skills_dir: temp.join(".agents/skills"),
+            valid_skills: Vec::new(),
+            skill_inventory: Vec::new(),
+            invalid_skill_dirs: Vec::new(),
+            hidden_skill_dirs: Vec::new(),
+        };
+
+        assert_eq!(
+            dotagents_lock_path(&project, Some(&temp.join(".agents/agents.toml"))),
+            temp.join(".agents/agents.lock")
+        );
+        assert_eq!(
+            dotagents_lock_path(&project, Some(&temp.join("agents.toml"))),
+            temp.join("agents.lock")
+        );
+    }
+
+    #[test]
+    fn doctor_flags_backup_and_repoprompt_command_candidates() {
+        let temp = temp_dir("doctor-candidates");
+        let project = temp.join("repo");
+        fs::create_dir_all(project.join(".agents/skills/alpha")).unwrap();
+        fs::write(project.join(".agents/skills/alpha/SKILL.md"), "---\n").unwrap();
+        fs::write(
+            project.join("agents.toml"),
+            r#"[[skills]]
+name = "alpha"
+source = "path:.agents/skills/alpha"
+"#,
+        )
+        .unwrap();
+        fs::write(project.join("agents.lock"), "").unwrap();
+        fs::create_dir_all(project.join(".system-skills.bak-before-dotagents")).unwrap();
+        fs::create_dir_all(project.join("commands")).unwrap();
+        fs::write(project.join("commands/rp-build.md"), "RepoPrompt\n").unwrap();
+
+        let report = skills_doctor(&SkillsDoctorOptions {
+            roots: vec![temp.clone()],
+            ignore_projects: Vec::new(),
+            max_depth: 4,
+        })
+        .unwrap();
+        let messages = report
+            .items
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(messages.contains("backup cleanup candidate"));
+        assert!(messages.contains("RepoPrompt command prompt"));
         fs::remove_dir_all(temp).unwrap();
     }
 
