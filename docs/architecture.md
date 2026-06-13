@@ -1,44 +1,75 @@
 # Architecture
 
-`metagent` is one repo with two frontends.
+`metagent` is now a Swift-first native Mac app with shared Swift core logic.
 
-## Rust Core and CLI
+## Ownership
 
-Rust owns all behavior that needs to be deterministic, testable, and usable by agents:
+Swift owns the product core:
 
-- scanning roots for `.agents/skills`
-- validating dotagents-compatible skill names
-- generating project-root `agents.toml`
-- preserving or backing up existing `.claude/skills`
-- invoking `npx @sentry/dotagents sync`
-- generating LaunchAgent plists
-- managing recurring agent-runtime maintenance flows such as the morph-mcp janitor
-- summarizing TypeScript/TSX code churn through `git` and `scc`
-- exposing machine-readable config/status surfaces for UI wrappers
+- skill inventory scanning across `.agents/`, `.codex/`, and `.claude`
+- `.agents` provenance from `.agents/.skill-lock.json`
+- skill size, word, token, resource, icon, and logo metadata
+- SQLite inventory snapshots for fast startup
+- skill doctor checks
+- skill sync planning and apply behavior
+- LaunchAgent plist generation and status/install/uninstall
+- the native macOS app UI
+- the Swift `metagent` helper used by LaunchAgents and future MCP entry points
 
-The CLI is the automation API:
+Rust is no longer part of the active app architecture.
+
+## Swift Package Layout
+
+The active implementation lives under:
+
+```text
+apps/MetagentMenuBar/
+```
+
+Targets:
+
+- `MetagentCore`: shared Swift core for app, helper, and future MCP server
+- `MetagentMenuBar`: native SwiftUI/AppKit macOS app
+- `metagent`: small Swift command helper for headless/background use
+
+The GUI imports `MetagentCore` directly. It does not shell out to the helper for inventory, doctor, sync, or LaunchAgent status.
+
+## Persistence
+
+The app writes the latest skill inventory snapshot to SQLite:
+
+```text
+~/Library/Application Support/Metagent/inventory.sqlite
+```
+
+The cache is a startup and inspection optimization, not the source of truth. The filesystem remains authoritative, and Refresh performs a fresh scan before writing a new snapshot.
+
+## Helper Boundary
+
+The Swift `metagent` helper exists for non-GUI entry points:
 
 ```bash
 metagent config show --json
-metagent skills scan
+metagent skills scan --json
 metagent skills sync --apply
 metagent skills doctor
+metagent launch-agent status
 metagent launch-agent install
-metagent code-summary --repo /path/to/repo
-metagent morph-mcp status
-metagent morph-mcp janitor
 ```
 
-## Swift Menu Bar
+The helper is intentionally subordinate to `MetagentCore`. It should stay a thin command surface over shared Swift code.
 
-Swift owns only macOS UI:
+## MCP Direction
 
-- status display for CLI path, roots, discovered skill repos, doctor issues, and background sync
-- command buttons for doctor, dry-run sync, apply sync, background install, morph-mcp status, and code summaries
-- config/log shortcuts
-- future root picker and notifications
+MCP should be an access layer over `MetagentCore`, not a second implementation.
 
-The menu bar app shells out to the Rust CLI. It should not duplicate scanner, symlink, or dotagents logic.
+The reserved shape is:
+
+```bash
+metagent mcp --stdio
+```
+
+The MCP server should share the Swift core and SQLite cache with the app. Add Rust or Python workers only for measured hot paths or exploratory analysis that Swift plus SQLite cannot handle cleanly.
 
 ## Local State
 
@@ -54,11 +85,25 @@ Logs belong in:
 ~/Library/Logs/metagent/
 ```
 
-The morph-mcp janitor is project-owned by `metagent` and writes:
+Generated project state belongs in project-local dotagents files such as:
 
 ```text
-~/Library/Logs/metagent/morph-mcp-janitor.out.log
-~/Library/Logs/metagent/morph-mcp-janitor.err.log
+agents.toml
+agents.lock
+.agents/.gitignore
+.claude/skills
 ```
 
-Generated project state belongs in project-local dotagents files such as `agents.toml`, `agents.lock`, `.agents/.gitignore`, and `.claude/skills`.
+## Verification
+
+Use:
+
+```bash
+scripts/verify.sh
+```
+
+Swift builds may need a writable module cache in sandboxed agent environments:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/private/tmp/metagent-clang-cache swift build
+```

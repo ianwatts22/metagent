@@ -4,8 +4,8 @@ Ian's local toolbox for coding-agent operations that are too specific or too new
 
 The repo is intentionally boring:
 
-- Rust owns the core filesystem and CLI behavior.
-- Swift is reserved for the macOS menu bar wrapper.
+- Swift owns the native Mac app, shared core logic, SQLite inventory cache, and small command helper.
+- MCP should be an access layer over the Swift core, not a second implementation.
 - Local roots, secrets, account mappings, and generated state stay outside the repo.
 
 ## Agent Skill
@@ -22,6 +22,71 @@ npx skills add ianwatts22/metagent --skill metagent
 
 ## Current Tools
 
+### Swift Mac App
+
+The macOS app is the primary product surface:
+
+- scans `.agents`, `.codex`, and `.claude` skill locations directly through `MetagentCore`
+- shows whether `.agents` skills were installed by `npx skills` from `.skill-lock.json` or created natively
+- shows skill size, word, token, reference, script, asset, icon, and logo metadata
+- stores the latest inventory snapshot in SQLite at `~/Library/Application Support/Metagent/inventory.sqlite`
+- runs doctor, dry-run sync, apply sync, background sync install, and maintenance actions from Swift
+
+Launching `Metagent.app` opens a normal resizable app window and keeps the menu bar extra available for quick status/actions.
+
+Build it:
+
+```bash
+cd apps/MetagentMenuBar
+CLANG_MODULE_CACHE_PATH=/private/tmp/metagent-clang-cache swift build
+```
+
+Package a local `.app` bundle:
+
+```bash
+scripts/build-menu-bar-app.sh
+```
+
+Install it into the user Applications folder so Spotlight can find it:
+
+```bash
+scripts/install-menu-bar-app.sh --restart
+```
+
+That installs:
+
+```text
+~/Applications/Metagent.app
+```
+
+### `metagent` Swift Helper
+
+The command helper is built from the same Swift package and exists for LaunchAgents, future MCP, and headless agent access. It is not the app's backend.
+
+Install it:
+
+```bash
+scripts/install-cli.sh
+```
+
+Current helper commands:
+
+```bash
+metagent config show --json
+metagent skills scan --json
+metagent skills sync
+metagent skills sync --apply
+metagent skills doctor
+metagent launch-agent status
+metagent launch-agent install
+```
+
+The future MCP entry point is reserved as:
+
+```bash
+metagent mcp --stdio
+```
+
 ### `metagent skills`
 
 Find projects with `.agents/skills`, generate project-root `agents.toml` files for Sentry dotagents, and sync Claude Code's `.claude/skills` symlink.
@@ -29,19 +94,22 @@ Find projects with `.agents/skills`, generate project-root `agents.toml` files f
 Dry run:
 
 ```bash
-cargo run -p metagent-cli -- skills sync
+cd apps/MetagentMenuBar
+swift run metagent skills sync
 ```
 
 Apply:
 
 ```bash
-cargo run -p metagent-cli -- skills sync --apply --replace-claude-skills
+cd apps/MetagentMenuBar
+swift run metagent skills sync --apply --replace-claude-skills
 ```
 
 Scan only:
 
 ```bash
-cargo run -p metagent-cli -- skills scan --root ~/code_projects
+cd apps/MetagentMenuBar
+swift run metagent skills scan --root ~/code_projects
 ```
 
 Check current state:
@@ -50,40 +118,10 @@ Check current state:
 metagent skills doctor
 ```
 
-Measure which Codex skills are actually being loaded from historical sessions:
-
-```bash
-metagent skills usage --days 30
-metagent skills usage --all --json
-```
-
-The usage command caches parsed session files at
-`~/.local/state/metagent/skill-usage/cache.json`, keyed by file size and
-mtime. Use `--refresh-cache` after changing parser logic, `--no-cache` for a
-one-off cold scan, and `--cache PATH` for experiments.
-
-Check skill file formatting and required frontmatter:
-
-```bash
-metagent skills format
-```
-
-Apply whitespace normalization for discovered skill files:
-
-```bash
-metagent skills format --apply
-```
-
-Install the CLI:
-
-```bash
-scripts/install-cli.sh
-```
-
 Install the background sync LaunchAgent:
 
 ```bash
-metagent launch-agent install --program ~/.cargo/bin/metagent --interval 300
+metagent launch-agent install --program ~/.local/bin/metagent --interval 300
 ```
 
 Logs:
@@ -93,45 +131,15 @@ Logs:
 ~/Library/Logs/metagent/skills-sync.err.log
 ```
 
-### `metagent code-summary`
-
-Summarize TypeScript and TSX code churn for any git repo using `git log --numstat` and `scc`.
-
-Running bare `metagent code-summary` prints:
-
-- last 5 days
-- this week plus previous 2 weeks
-- this month plus previous month
-
-Examples:
-
-```bash
-metagent code-summary --repo /path/to/repo --days 14
-metagent code-summary --repo /path/to/repo --view weekly --periods 8
-metagent code-summary --repo /path/to/repo --view monthly --periods 6 --graph mermaid
-```
-
-`ccs` remains as a CLI alias through `metagent ccs`.
-
-Notes:
-
-- Requires `git` and `scc` on `PATH`.
-- Excludes `*.test.ts(x)`, `*.spec.ts(x)`, and `tests/` from churn by default.
-- Baseline counts include TS, TS tests, TSX, TSX tests, and detected coverage summaries.
-
 Use the Linear `misc` team project `metagent` for future fold-in candidates:
 https://linear.app/social-glass/project/metagent-730ac559ca5c.
 
 ### `metagent morph-mcp`
 
-Manage runaway `@morphllm/morphmcp` workers from the Rust CLI.
+Inspect local `@morphllm/morphmcp` workers from the Swift helper.
 
 ```bash
 metagent morph-mcp status
-metagent morph-mcp janitor --dry-run
-metagent morph-mcp janitor
-metagent morph-mcp install-launch-agent --program ~/.cargo/bin/metagent
-metagent morph-mcp migrate-launch-agent --program ~/.cargo/bin/metagent
 ```
 
 See [docs/morph-mcp.md](docs/morph-mcp.md).
@@ -162,48 +170,6 @@ max_depth = 6
 agents = ["claude", "codex", "cursor"]
 ignore_projects = []
 ```
-
-## Swift Mac App
-
-The macOS app should be a thin SwiftUI wrapper around the Rust CLI:
-
-- show CLI path, configured roots, repo count, skill count, doctor issues, and background sync status
-- list discovered skill locations, including `.agents`, `.codex`, and `.claude` skill paths
-- show whether `.agents` skills were installed by `npx skills` from `.skill-lock.json` or created natively
-- run per-repo code summaries
-- run doctor, dry-run sync, apply sync, background sync install, and morph-mcp status
-- open logs/config
-
-It should not duplicate the scanner or dotagents logic.
-
-Launching `Metagent.app` opens a normal resizable app window and also keeps the menu bar extra available for quick status/actions.
-
-Build it:
-
-```bash
-cd apps/MetagentMenuBar
-swift build
-```
-
-Package a local `.app` bundle:
-
-```bash
-scripts/build-menu-bar-app.sh
-```
-
-Install it into the user Applications folder so Spotlight can find it:
-
-```bash
-scripts/install-menu-bar-app.sh --restart
-```
-
-That installs:
-
-```text
-~/Applications/Metagent.app
-```
-
-Use `scripts/build-menu-bar-app.sh` for a repo-local build only. Use `scripts/install-menu-bar-app.sh --restart` when you want the copy macOS launches to be updated too.
 
 ## Verification
 

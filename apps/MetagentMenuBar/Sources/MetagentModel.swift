@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MetagentCore
 import SwiftUI
 
 @MainActor
@@ -8,7 +9,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var statusText = "Checking status..."
     @Published private(set) var lastRunText: String?
     @Published private(set) var systemImage = "wrench.and.screwdriver"
-    @Published private(set) var cliPathText = "Resolving CLI..."
+    @Published private(set) var coreStatusText = "Resolving core..."
     @Published private(set) var repoCount = 0
     @Published private(set) var skillCount = 0
     @Published private(set) var warningCount = 0
@@ -25,6 +26,15 @@ final class MetagentModel: ObservableObject {
     private let fileManager = FileManager.default
 
     init() {
+        if let snapshot = MetagentCore.loadInventorySnapshot() {
+            projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
+            repoCount = projects.count
+            skillCount = projects.reduce(0) { $0 + $1.skillCount }
+            locationSummaryText = Self.locationSummary(projects: projects)
+            rootsText = "cached SQLite snapshot"
+            statusText = "\(repoCount) cached locations, \(skillCount) skill entries"
+            systemImage = "externaldrive"
+        }
         refreshStatus()
     }
 
@@ -47,7 +57,7 @@ final class MetagentModel: ObservableObject {
     }
 
     var refreshPolicyText: String {
-        "Launch/manual refresh; in-memory snapshot, no polling"
+        "Launch/manual refresh; SQLite snapshot, no polling"
     }
 
     func refreshStatus() {
@@ -55,16 +65,21 @@ final class MetagentModel: ObservableObject {
         isRunning = true
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
-        cliPathText = Self.cliPath()
-        let homePath = homeURL().path
+        coreStatusText = "Swift core"
 
         Task {
-            async let scanResult = runMetagent(arguments: ["skills", "scan", "--json"])
-            async let homeScanResult = runMetagent(
-                arguments: ["skills", "scan", "--root", homePath, "--max-depth", "2", "--json"]
-            )
-            async let doctorResult = runMetagent(arguments: ["skills", "doctor"])
-            async let launchAgentResult = runMetagent(arguments: ["launch-agent", "status"])
+            async let scanResult = Task.detached {
+                Result { try MetagentCore.scanSkills() }
+            }.value
+            async let homeScanResult = Task.detached {
+                Result { try MetagentCore.scanHomeSkills(maxDepth: 2) }
+            }.value
+            async let doctorResult = Task.detached {
+                Result { try MetagentCore.doctor() }
+            }.value
+            async let launchAgentResult = Task.detached {
+                MetagentCore.launchAgentStatus()
+            }.value
 
             let (scan, homeScan, doctor, launchAgent) = await (
                 scanResult,
@@ -84,56 +99,78 @@ final class MetagentModel: ObservableObject {
 
     func syncNow() {
         guard !isRunning else { return }
-        runCommand(
+        runOperation(
             title: "Skills Sync",
-            arguments: ["skills", "sync", "--apply"],
             runningText: "Syncing skills..."
-        ) { [weak self] result in
-            if result.exitCode == 0 {
+        ) {
+            let report = try MetagentCore.syncSkills(options: SkillsSyncOptions(apply: true))
+            return CommandOutcome(succeeded: true, lines: Self.renderSyncReport(report), syncPreview: nil)
+        } completion: { [weak self] result in
+            if result.succeeded {
                 self?.refreshStatus()
             }
         }
     }
 
     func dryRunSkillsSync() {
-        runCommand(
+        runOperation(
             title: "Skills Sync Dry Run",
-            arguments: ["skills", "sync"],
             runningText: "Checking sync plan..."
-        ) { [weak self] result in
-            self?.syncPreview = result.exitCode == 0
-                ? Self.syncPreview(from: result.stdout)
-                : nil
+        ) {
+            let report = try MetagentCore.syncSkills()
+            return CommandOutcome(
+                succeeded: true,
+                lines: Self.renderSyncReport(report),
+                syncPreview: SyncPreview(report: report)
+            )
+        } completion: { [weak self] result in
+            self?.syncPreview = result.syncPreview
             self?.showsRawOutput = false
         }
     }
 
     func runDoctor() {
-        runCommand(
+        runOperation(
             title: "Skills Doctor",
-            arguments: ["skills", "doctor"],
             runningText: "Running doctor..."
-        )
+        ) {
+            let report = try MetagentCore.doctor()
+            return CommandOutcome(
+                succeeded: report.failureCount == 0,
+                lines: report.issues.map { "\($0.severity.rawValue): \($0.message)" },
+                syncPreview: nil
+            )
+        }
     }
 
     func installBackgroundSync() {
-        runCommand(
+        runOperation(
             title: "Install Background Sync",
-            arguments: ["launch-agent", "install"],
             runningText: "Installing background sync..."
-        ) { [weak self] result in
-            if result.exitCode == 0 {
+        ) {
+            CommandOutcome(
+                succeeded: true,
+                lines: try MetagentCore.installLaunchAgent().lines,
+                syncPreview: nil
+            )
+        } completion: { [weak self] result in
+            if result.succeeded {
                 self?.refreshStatus()
             }
         }
     }
 
     func runMorphStatus() {
-        runCommand(
+        runOperation(
             title: "Morph MCP Status",
-            arguments: ["morph-mcp", "status"],
             runningText: "Checking morph-mcp..."
-        )
+        ) {
+            CommandOutcome(
+                succeeded: true,
+                lines: try MetagentCore.morphMCPStatus().lines,
+                syncPreview: nil
+            )
+        }
     }
 
     func toggleRawOutput() {
@@ -198,33 +235,28 @@ final class MetagentModel: ObservableObject {
     }
 
     private func applyStatus(
-        scan: ProcessResult,
-        homeScan: ProcessResult,
-        doctor: ProcessResult,
-        launchAgent: ProcessResult
+        scan: Result<SkillScanReport, Error>,
+        homeScan: Result<SkillScanReport, Error>,
+        doctor: Result<DoctorReport, Error>,
+        launchAgent: LaunchAgentReport
     ) {
         isRunning = false
         lastRunText = Self.timestamp()
 
-        let configuredProjects = (try? JSONDecoder().decode(
-            ScanReport.self,
-            from: Data(scan.stdout.utf8)
-        ))?.projects.map(ProjectStatus.init(project:)) ?? []
-        let homeProjects = (try? JSONDecoder().decode(
-            ScanReport.self,
-            from: Data(homeScan.stdout.utf8)
-        ))?.projects.map(ProjectStatus.init(project:)) ?? []
+        let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
+        let homeProjects = homeScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
 
-        if scan.exitCode == 0 || homeScan.exitCode == 0 {
+        if scan.isSuccess || homeScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects)
+            MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject)))
             repoCount = projects.count
             skillCount = projects.reduce(0) { $0 + $1.skillCount }
             locationSummaryText = Self.locationSummary(projects: projects)
             rootsText = Self.rootsSummary(
                 configuredProjects: configuredProjects,
                 homeProjects: homeProjects,
-                configuredScanSucceeded: scan.exitCode == 0,
-                homeScanSucceeded: homeScan.exitCode == 0
+                configuredScanSucceeded: scan.isSuccess,
+                homeScanSucceeded: homeScan.isSuccess
             )
         } else {
             projects = []
@@ -234,13 +266,13 @@ final class MetagentModel: ObservableObject {
             rootsText = "Roots unavailable"
         }
 
-        let doctorLines = doctor.stdout.lines
-        warningCount = doctorLines.filter { $0.hasPrefix("WARN") }.count
-        failureCount = doctorLines.filter { $0.hasPrefix("FAIL") }.count
+        let doctorReport = doctor.value
+        warningCount = doctorReport?.warningCount ?? 0
+        failureCount = doctorReport?.failureCount ?? 0
 
-        backgroundStatus = Self.backgroundStatus(from: launchAgent)
+        backgroundStatus = Self.backgroundStatus(from: launchAgent.lines)
 
-        if (scan.exitCode == 0 || homeScan.exitCode == 0) && doctor.exitCode == 0 {
+        if (scan.isSuccess || homeScan.isSuccess) && doctor.isSuccess {
             statusText = "\(repoCount) locations, \(skillCount) skill entries"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
         } else {
@@ -249,11 +281,11 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    private func runCommand(
+    private func runOperation(
         title: String,
-        arguments: [String],
         runningText: String,
-        completion: ((ProcessResult) -> Void)? = nil
+        operation: @escaping () throws -> CommandOutcome,
+        completion: ((CommandOutcome) -> Void)? = nil
     ) {
         guard !isRunning else { return }
         isRunning = true
@@ -261,13 +293,19 @@ final class MetagentModel: ObservableObject {
         systemImage = "arrow.triangle.2.circlepath"
 
         Task {
-            let result = await runMetagent(arguments: arguments)
+            let result = await Task.detached {
+                do {
+                    return try operation()
+                } catch {
+                    return CommandOutcome(succeeded: false, lines: [error.localizedDescription], syncPreview: nil)
+                }
+            }.value
             isRunning = false
             lastRunText = Self.timestamp()
             lastOutputTitle = title
-            lastOutputLines = Self.outputLines(result: result)
+            lastOutputLines = result.lines
 
-            if result.exitCode == 0 {
+            if result.succeeded {
                 statusText = "\(title) finished"
                 systemImage = "checkmark.circle"
             } else {
@@ -281,64 +319,6 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    private func runMetagent(arguments: [String]) async -> ProcessResult {
-        await Task.detached {
-            let process = Process()
-            let cliPath = Self.cliPath()
-
-            if cliPath == "/usr/bin/env" {
-                process.executableURL = URL(fileURLWithPath: cliPath)
-                process.arguments = ["metagent"] + arguments
-            } else {
-                process.executableURL = URL(fileURLWithPath: cliPath)
-                process.arguments = arguments
-            }
-
-            let output = Pipe()
-            let error = Pipe()
-            process.standardOutput = output
-            process.standardError = error
-
-            do {
-                try process.run()
-                let stdout = output.fileHandleForReading.readDataToEndOfFile()
-                let stderr = error.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                return ProcessResult(
-                    exitCode: process.terminationStatus,
-                    stdout: String(data: stdout, encoding: .utf8) ?? "",
-                    stderr: String(data: stderr, encoding: .utf8) ?? ""
-                )
-            } catch {
-                return ProcessResult(
-                    exitCode: 127,
-                    stdout: "",
-                    stderr: error.localizedDescription
-                )
-            }
-        }.value
-    }
-
-    nonisolated private static func cliPath() -> String {
-        if let override = ProcessInfo.processInfo.environment["METAGENT_CLI"],
-           !override.isEmpty
-        {
-            return override
-        }
-
-        let candidates = [
-            "/opt/homebrew/bin/metagent",
-            "/usr/local/bin/metagent",
-            "\(NSHomeDirectory())/.cargo/bin/metagent"
-        ]
-
-        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
-        }
-
-        return "/usr/bin/env"
-    }
-
     nonisolated private static func timestamp() -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -346,17 +326,15 @@ final class MetagentModel: ObservableObject {
         return "Last run \(formatter.string(from: Date()))"
     }
 
-    nonisolated private static func backgroundStatus(from result: ProcessResult) -> String {
-        if result.exitCode != 0 {
-            return "Unavailable"
-        }
-        if result.stdout.contains("launchctl status: loaded") {
+    nonisolated private static func backgroundStatus(from lines: [String]) -> String {
+        let text = lines.joined(separator: "\n")
+        if text.contains("launchctl status: loaded") {
             return "Loaded"
         }
-        if result.stdout.contains("plist exists") {
+        if text.contains("plist exists") {
             return "Installed, not loaded"
         }
-        if result.stdout.contains("plist missing") {
+        if text.contains("plist missing") {
             return "Not installed"
         }
         return "Unknown"
@@ -409,53 +387,14 @@ final class MetagentModel: ObservableObject {
         return labels.isEmpty ? "No roots scanned" : labels.joined(separator: ", ")
     }
 
-    nonisolated private static func syncPreview(from output: String) -> SyncPreview {
-        var projects: [SyncProjectPreview] = []
-        var currentRoot: String?
-        var currentLines: [SyncLinePreview] = []
-
-        func flushProject() {
-            guard let currentRoot else { return }
-            projects.append(SyncProjectPreview(root: currentRoot, lines: currentLines))
-            currentLines = []
+    nonisolated private static func renderSyncReport(_ report: SkillsSyncReport) -> [String] {
+        var lines = ["metagent skills sync: \(report.mode)"]
+        for project in report.projects {
+            lines.append("")
+            lines.append("Project: \(project.root)")
+            lines.append(contentsOf: project.lines.map { "  \($0.text)" })
         }
-
-        for rawLine in output.lines {
-            if let root = rawLine.removingPrefix("Project: ") {
-                flushProject()
-                currentRoot = root
-                continue
-            }
-
-            let text = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty, currentRoot != nil else { continue }
-            currentLines.append(SyncLinePreview(kind: syncLineKind(text), text: text))
-        }
-
-        flushProject()
-
-        let summary = SyncSummaryPreview(projects: projects)
-        return SyncPreview(apply: false, mode: "DRY-RUN", summary: summary, projects: projects)
-    }
-
-    nonisolated private static func syncLineKind(_ text: String) -> SyncLineKind {
-        if text.hasPrefix("warning:") {
-            return .warning
-        }
-        if text.hasPrefix("skipped:") {
-            return .skipped
-        }
-        if text.hasPrefix("would ") || text.hasPrefix("moved ") || text.hasPrefix("wrote ") {
-            return .action
-        }
-        return .info
-    }
-
-    nonisolated private static func outputLines(result: ProcessResult) -> [String] {
-        let combined = [result.stdout, result.stderr]
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n")
-        return combined.lines
+        return lines
     }
 
     nonisolated private static func startReplacementProcess() throws {
@@ -480,10 +419,10 @@ final class MetagentModel: ObservableObject {
     }
 }
 
-struct ProcessResult {
-    let exitCode: Int32
-    let stdout: String
-    let stderr: String
+struct CommandOutcome {
+    let succeeded: Bool
+    let lines: [String]
+    let syncPreview: SyncPreview?
 }
 
 struct ProjectStatus: Identifiable {
@@ -492,26 +431,20 @@ struct ProjectStatus: Identifiable {
     let validSkills: [String]
     let skills: [SkillStatus]
 
-    fileprivate init(project: ScanProject) {
+    var coreProject: SkillProject {
+        SkillProject(
+            root: root,
+            skillsDir: URL(fileURLWithPath: root).appendingPathComponent(".agents/skills").path,
+            validSkills: validSkills,
+            skills: skills.map(\.coreSkill)
+        )
+    }
+
+    fileprivate init(project: SkillProject) {
         self.id = project.root
         self.root = project.root
         self.validSkills = project.validSkills
-        self.skills = project.skills?.map(SkillStatus.init(skill:)) ?? project.validSkills.map {
-            SkillStatus(
-                name: $0,
-                path: "\(project.skillsDir)/\($0)",
-                location: "unknown",
-                locationLabel: "scan",
-                originKind: "unknown",
-                source: nil,
-                sourceType: nil,
-                sourceURL: nil,
-                ref: nil,
-                installedAt: nil,
-                updatedAt: nil,
-                symlinkedContainer: false
-            )
-        }
+        self.skills = project.skills.map(SkillStatus.init(skill:))
     }
 
     var name: String {
@@ -616,7 +549,43 @@ struct SkillStatus: Identifiable, Comparable {
         "\(location):\(path)"
     }
 
-    fileprivate init(skill: ScanSkill) {
+    var coreSkill: SkillInventoryItem {
+        SkillInventoryItem(
+            name: name,
+            path: path,
+            location: location,
+            locationLabel: locationLabel,
+            originKind: originKind,
+            source: source,
+            sourceType: sourceType,
+            sourceURL: sourceURL,
+            ref: ref,
+            installedAt: installedAt,
+            updatedAt: updatedAt,
+            symlinkedContainer: symlinkedContainer,
+            folderKind: folderKind,
+            characterCount: characterCount,
+            wordCount: wordCount,
+            tokenEstimate: tokenEstimate,
+            skillFileCharacterCount: skillFileCharacterCount,
+            skillFileWordCount: skillFileWordCount,
+            skillFileTokenEstimate: skillFileTokenEstimate,
+            textFileCount: textFileCount,
+            referenceFileCount: referenceFileCount,
+            scriptFileCount: scriptFileCount,
+            assetFileCount: assetFileCount,
+            otherFileCount: otherFileCount,
+            otherFolderCount: otherFolderCount,
+            hasOpenAIYaml: hasOpenAIYaml,
+            hasIconSmall: hasIconSmall,
+            hasIconLarge: hasIconLarge,
+            hasIconAndLogo: hasIconAndLogo,
+            iconSmallPath: iconSmallPath,
+            iconLargePath: iconLargePath
+        )
+    }
+
+    fileprivate init(skill: SkillInventoryItem) {
         self.name = skill.name
         self.path = skill.path
         self.location = skill.location
@@ -629,101 +598,25 @@ struct SkillStatus: Identifiable, Comparable {
         self.installedAt = skill.installedAt
         self.updatedAt = skill.updatedAt
         self.symlinkedContainer = skill.symlinkedContainer
-        self.folderKind = skill.folderKind ?? Self.fallbackFolderKind(
-            location: skill.location,
-            originKind: skill.originKind,
-            symlinkedContainer: skill.symlinkedContainer,
-            path: skill.path
-        )
-        self.characterCount = skill.characterCount ?? 0
-        self.wordCount = skill.wordCount ?? 0
-        self.tokenEstimate = skill.tokenEstimate ?? 0
-        self.skillFileCharacterCount = skill.skillFileCharacterCount ?? 0
-        self.skillFileWordCount = skill.skillFileWordCount ?? 0
-        self.skillFileTokenEstimate = skill.skillFileTokenEstimate ?? 0
-        self.textFileCount = skill.textFileCount ?? 0
-        self.referenceFileCount = skill.referenceFileCount ?? 0
-        self.scriptFileCount = skill.scriptFileCount ?? 0
-        self.assetFileCount = skill.assetFileCount ?? 0
-        self.otherFileCount = skill.otherFileCount ?? 0
-        self.otherFolderCount = skill.otherFolderCount ?? 0
-        self.hasOpenAIYaml = skill.hasOpenAIYaml ?? false
-        self.hasIconSmall = skill.hasIconSmall ?? false
-        self.hasIconLarge = skill.hasIconLarge ?? false
-        self.hasIconAndLogo = skill.hasIconAndLogo ?? false
+        self.folderKind = skill.folderKind
+        self.characterCount = skill.characterCount
+        self.wordCount = skill.wordCount
+        self.tokenEstimate = skill.tokenEstimate
+        self.skillFileCharacterCount = skill.skillFileCharacterCount
+        self.skillFileWordCount = skill.skillFileWordCount
+        self.skillFileTokenEstimate = skill.skillFileTokenEstimate
+        self.textFileCount = skill.textFileCount
+        self.referenceFileCount = skill.referenceFileCount
+        self.scriptFileCount = skill.scriptFileCount
+        self.assetFileCount = skill.assetFileCount
+        self.otherFileCount = skill.otherFileCount
+        self.otherFolderCount = skill.otherFolderCount
+        self.hasOpenAIYaml = skill.hasOpenAIYaml
+        self.hasIconSmall = skill.hasIconSmall
+        self.hasIconLarge = skill.hasIconLarge
+        self.hasIconAndLogo = skill.hasIconAndLogo
         self.iconSmallPath = skill.iconSmallPath
         self.iconLargePath = skill.iconLargePath
-    }
-
-    init(
-        name: String,
-        path: String,
-        location: String,
-        locationLabel: String,
-        originKind: String,
-        source: String?,
-        sourceType: String?,
-        sourceURL: String?,
-        ref: String?,
-        installedAt: String?,
-        updatedAt: String?,
-        symlinkedContainer: Bool,
-        folderKind: String? = nil,
-        characterCount: Int = 0,
-        wordCount: Int = 0,
-        tokenEstimate: Int = 0,
-        skillFileCharacterCount: Int = 0,
-        skillFileWordCount: Int = 0,
-        skillFileTokenEstimate: Int = 0,
-        textFileCount: Int = 0,
-        referenceFileCount: Int = 0,
-        scriptFileCount: Int = 0,
-        assetFileCount: Int = 0,
-        otherFileCount: Int = 0,
-        otherFolderCount: Int = 0,
-        hasOpenAIYaml: Bool = false,
-        hasIconSmall: Bool = false,
-        hasIconLarge: Bool = false,
-        hasIconAndLogo: Bool = false,
-        iconSmallPath: String? = nil,
-        iconLargePath: String? = nil
-    ) {
-        self.name = name
-        self.path = path
-        self.location = location
-        self.locationLabel = locationLabel
-        self.originKind = originKind
-        self.source = source
-        self.sourceType = sourceType
-        self.sourceURL = sourceURL
-        self.ref = ref
-        self.installedAt = installedAt
-        self.updatedAt = updatedAt
-        self.symlinkedContainer = symlinkedContainer
-        self.folderKind = folderKind ?? Self.fallbackFolderKind(
-            location: location,
-            originKind: originKind,
-            symlinkedContainer: symlinkedContainer,
-            path: path
-        )
-        self.characterCount = characterCount
-        self.wordCount = wordCount
-        self.tokenEstimate = tokenEstimate
-        self.skillFileCharacterCount = skillFileCharacterCount
-        self.skillFileWordCount = skillFileWordCount
-        self.skillFileTokenEstimate = skillFileTokenEstimate
-        self.textFileCount = textFileCount
-        self.referenceFileCount = referenceFileCount
-        self.scriptFileCount = scriptFileCount
-        self.assetFileCount = assetFileCount
-        self.otherFileCount = otherFileCount
-        self.otherFolderCount = otherFolderCount
-        self.hasOpenAIYaml = hasOpenAIYaml
-        self.hasIconSmall = hasIconSmall
-        self.hasIconLarge = hasIconLarge
-        self.hasIconAndLogo = hasIconAndLogo
-        self.iconSmallPath = iconSmallPath
-        self.iconLargePath = iconLargePath
     }
 
     var originText: String? {
@@ -792,118 +685,6 @@ struct SkillStatus: Identifiable, Comparable {
         return left.path < right.path
     }
 
-    private static func fallbackFolderKind(
-        location: String,
-        originKind: String,
-        symlinkedContainer: Bool,
-        path: String
-    ) -> String {
-        if symlinkedContainer {
-            return "symlinked"
-        }
-        if path.split(separator: "/").contains(where: { $0 == ".system" }) {
-            return "system"
-        }
-        if location == "agents" && originKind == "npx-skills" {
-            return "npx-installed"
-        }
-        if location == "agents" && originKind == "native" {
-            return "native"
-        }
-        if location == "codex" {
-            return "codex-local"
-        }
-        if location == "claude" {
-            return "claude-local"
-        }
-        return "unknown"
-    }
-}
-
-private struct ScanReport: Decodable {
-    let projects: [ScanProject]
-}
-
-private struct ScanProject: Decodable {
-    let root: String
-    let skillsDir: String
-    let validSkills: [String]
-    let skills: [ScanSkill]?
-
-    private enum CodingKeys: String, CodingKey {
-        case root
-        case skillsDir = "skills_dir"
-        case validSkills = "valid_skills"
-        case skills
-    }
-}
-
-private struct ScanSkill: Decodable {
-    let name: String
-    let path: String
-    let location: String
-    let locationLabel: String
-    let originKind: String
-    let source: String?
-    let sourceType: String?
-    let sourceURL: String?
-    let ref: String?
-    let installedAt: String?
-    let updatedAt: String?
-    let symlinkedContainer: Bool
-    let folderKind: String?
-    let characterCount: Int?
-    let wordCount: Int?
-    let tokenEstimate: Int?
-    let skillFileCharacterCount: Int?
-    let skillFileWordCount: Int?
-    let skillFileTokenEstimate: Int?
-    let textFileCount: Int?
-    let referenceFileCount: Int?
-    let scriptFileCount: Int?
-    let assetFileCount: Int?
-    let otherFileCount: Int?
-    let otherFolderCount: Int?
-    let hasOpenAIYaml: Bool?
-    let hasIconSmall: Bool?
-    let hasIconLarge: Bool?
-    let hasIconAndLogo: Bool?
-    let iconSmallPath: String?
-    let iconLargePath: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case name
-        case path
-        case location
-        case locationLabel = "location_label"
-        case originKind = "origin_kind"
-        case source
-        case sourceType = "source_type"
-        case sourceURL = "source_url"
-        case ref
-        case installedAt = "installed_at"
-        case updatedAt = "updated_at"
-        case symlinkedContainer = "symlinked_container"
-        case folderKind = "folder_kind"
-        case characterCount = "character_count"
-        case wordCount = "word_count"
-        case tokenEstimate = "token_estimate"
-        case skillFileCharacterCount = "skill_file_character_count"
-        case skillFileWordCount = "skill_file_word_count"
-        case skillFileTokenEstimate = "skill_file_token_estimate"
-        case textFileCount = "text_file_count"
-        case referenceFileCount = "reference_file_count"
-        case scriptFileCount = "script_file_count"
-        case assetFileCount = "asset_file_count"
-        case otherFileCount = "other_file_count"
-        case otherFolderCount = "other_folder_count"
-        case hasOpenAIYaml = "has_openai_yaml"
-        case hasIconSmall = "has_icon_small"
-        case hasIconLarge = "has_icon_large"
-        case hasIconAndLogo = "has_icon_and_logo"
-        case iconSmallPath = "icon_small_path"
-        case iconLargePath = "icon_large_path"
-    }
 }
 
 struct SyncPreview: Decodable {
@@ -911,6 +692,13 @@ struct SyncPreview: Decodable {
     let mode: String
     let summary: SyncSummaryPreview
     let projects: [SyncProjectPreview]
+
+    init(report: SkillsSyncReport) {
+        self.apply = report.apply
+        self.mode = report.mode
+        self.summary = SyncSummaryPreview(summary: report.summary)
+        self.projects = report.projects.map(SyncProjectPreview.init(project:))
+    }
 
     var title: String {
         apply ? "Skills Sync" : "Skills Sync Dry Run"
@@ -935,13 +723,13 @@ struct SyncSummaryPreview: Decodable {
     let skippedCount: Int
     let dotagentsCount: Int
 
-    init(projects: [SyncProjectPreview]) {
-        self.projectCount = projects.count
-        self.validSkillCount = projects.reduce(0) { $0 + $1.validSkillCount }
-        self.warningCount = projects.reduce(0) { $0 + $1.warningCount }
-        self.actionCount = projects.reduce(0) { $0 + $1.actionCount }
-        self.skippedCount = projects.reduce(0) { $0 + $1.skippedCount }
-        self.dotagentsCount = projects.filter(\.usesDotagents).count
+    init(summary: SkillsSyncSummary) {
+        self.projectCount = summary.projectCount
+        self.validSkillCount = summary.validSkillCount
+        self.warningCount = summary.warningCount
+        self.actionCount = summary.actionCount
+        self.skippedCount = summary.skippedCount
+        self.dotagentsCount = summary.dotagentsCount
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -966,15 +754,15 @@ struct SyncProjectPreview: Decodable, Identifiable {
 
     var id: String { root }
 
-    init(root: String, lines: [SyncLinePreview]) {
-        self.root = root
-        self.name = URL(fileURLWithPath: root).lastPathComponent
-        self.lines = lines
-        self.validSkillCount = Self.validSkillCount(from: lines)
-        self.warningCount = lines.filter { $0.kind == .warning }.count
-        self.actionCount = lines.filter { $0.kind == .action }.count
-        self.skippedCount = lines.filter { $0.kind == .skipped }.count
-        self.usesDotagents = lines.contains { $0.text.contains("dotagents") || $0.text.contains("npx @sentry/dotagents") }
+    init(project: SkillsSyncProject) {
+        self.root = project.root
+        self.name = project.name
+        self.validSkillCount = project.validSkillCount
+        self.warningCount = project.warningCount
+        self.actionCount = project.actionCount
+        self.skippedCount = project.skippedCount
+        self.usesDotagents = project.usesDotagents
+        self.lines = project.lines.map(SyncLinePreview.init(line:))
     }
 
     var displayName: String {
@@ -1008,14 +796,6 @@ struct SyncProjectPreview: Decodable, Identifiable {
         case lines
     }
 
-    private static func validSkillCount(from lines: [SyncLinePreview]) -> Int {
-        for line in lines {
-            let prefix = "valid local skills: "
-            guard let value = line.text.removingPrefix(prefix) else { continue }
-            return Int(value.trimmingCharacters(in: .whitespaces)) ?? 0
-        }
-        return 0
-    }
 }
 
 struct SyncLinePreview: Decodable, Identifiable {
@@ -1023,6 +803,11 @@ struct SyncLinePreview: Decodable, Identifiable {
     let text: String
 
     var id: String { "\(kind.rawValue)-\(text)" }
+
+    init(line: SkillsSyncLine) {
+        self.kind = SyncLineKind(rawValue: line.kind.rawValue) ?? .info
+        self.text = line.text
+    }
 }
 
 enum SyncLineKind: String, Decodable {
@@ -1032,23 +817,22 @@ enum SyncLineKind: String, Decodable {
     case info
 }
 
+private extension Result {
+    var value: Success? {
+        guard case .success(let value) = self else { return nil }
+        return value
+    }
+
+    var isSuccess: Bool {
+        guard case .success = self else { return false }
+        return true
+    }
+}
+
 private enum RestartError: LocalizedError {
     case missingExecutable
 
     var errorDescription: String? {
         "Could not resolve the current app executable."
-    }
-}
-
-private extension String {
-    var lines: [String] {
-        split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
-
-    func removingPrefix(_ prefix: String) -> String? {
-        guard hasPrefix(prefix) else { return nil }
-        return String(dropFirst(prefix.count))
     }
 }

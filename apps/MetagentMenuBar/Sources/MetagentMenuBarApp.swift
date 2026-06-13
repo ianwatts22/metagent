@@ -264,7 +264,7 @@ private struct OverviewSection: View {
             statusGrid
             primaryActions
 
-            InfoRow(title: "CLI", value: model.cliPathText, symbol: "terminal")
+            InfoRow(title: "Core", value: model.coreStatusText, symbol: "shippingbox")
             InfoRow(title: "Refresh", value: model.refreshPolicyText, symbol: "arrow.clockwise")
 
             if let title = model.lastOutputTitle {
@@ -1088,7 +1088,7 @@ private struct SyncPreviewView: View {
                     }
 
                     if showsRawOutput {
-                        RawOutputBlock(title: "Raw CLI Output", lines: rawLines)
+                        RawOutputBlock(title: "Raw Output", lines: rawLines)
                     }
                 }
                 .padding(.vertical, 2)

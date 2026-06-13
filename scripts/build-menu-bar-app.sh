@@ -6,13 +6,17 @@ app_source="$repo_root/apps/MetagentMenuBar"
 app_bundle="$repo_root/dist/MetagentMenuBar.app"
 contents="$app_bundle/Contents"
 macos="$contents/MacOS"
+helpers="$contents/Helpers"
 resources="$contents/Resources"
+
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
 
 "$repo_root/scripts/generate-menu-bar-assets.sh"
 
 (
   cd "$app_source"
-  swift build -c release
+  swift build -c release --product MetagentMenuBar
+  swift build -c release --product metagent
 )
 
 previous_bundle=""
@@ -21,13 +25,15 @@ if [[ -e "$app_bundle" ]]; then
   mv "$app_bundle" "$previous_bundle"
 fi
 
-mkdir -p "$macos" "$resources"
+mkdir -p "$macos" "$helpers" "$resources"
 cp "$app_source/.build/release/MetagentMenuBar" "$macos/MetagentMenuBar"
+cp "$app_source/.build/release/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
 cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"
 
 chmod +x "$macos/MetagentMenuBar"
+chmod +x "$helpers/metagent"
 
 if [[ -n "$previous_bundle" ]]; then
   if command -v trash >/dev/null 2>&1; then

@@ -99,5 +99,5 @@ awk '
 write_if_changed "$generated_menu_bar_svg" "$menu_bar_svg"
 
 generated_menu_bar_pdf="$tmpdir/MenuBarIconTemplate.pdf"
-rsvg-convert -f pdf "$generated_menu_bar_svg" -o "$generated_menu_bar_pdf"
+SOURCE_DATE_EPOCH=0 rsvg-convert -f pdf "$generated_menu_bar_svg" -o "$generated_menu_bar_pdf"
 write_if_changed "$generated_menu_bar_pdf" "$menu_bar_pdf"

@@ -75,24 +75,8 @@ Check current state:
 metagent skills doctor
 ```
 
-Mine Codex session history for evidence that a skill was actually loaded:
-
-```bash
-metagent skills usage --days 30
-metagent skills usage --all --json
-```
-
-`activation_count` is evidence that Codex read a concrete `SKILL.md` through a
-tool call. `reference_count` is a weaker signal for other tool calls that
-mentioned a concrete `.../SKILL.md` path. The miner deliberately ignores prompt
-and instruction message bodies so the always-injected skill inventory does not
-count as usage.
-
-Session parsing is cached per JSONL file at
-`~/.local/state/metagent/skill-usage/cache.json`. A file is reused when its
-size and modified time match the cache entry. Use `--refresh-cache` after parser
-changes, `--no-cache` for cold verification, and `--cache PATH` for temporary
-experiments.
+The active cache for the Mac app inventory is SQLite at
+`~/Library/Application Support/Metagent/inventory.sqlite`.
 
 Skip a parent workspace that should provide inherited skills but should not be
 treated as a dotagents project:
@@ -104,6 +88,7 @@ ignore_projects = ["~/code_projects"]
 ## Safety
 
 - Hidden skill folders are ignored because dotagents rejects names like `.system`.
-- Existing `agents.toml` is preserved unless `--rewrite-agents-toml` is passed.
+- Existing root `agents.toml` is preserved unless `--rewrite-agents-toml` is passed; generated content is based on current `.agents/skills`.
+- Legacy nested `.agents/agents.toml` is moved to a timestamped backup during sync.
 - Existing real `.claude/skills` paths are not moved unless `--replace-claude-skills` is passed.
 - Background sync should not pass `--replace-claude-skills`; that flag is for explicit migrations.

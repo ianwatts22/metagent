@@ -6,8 +6,11 @@ This repo contains local coding-agent tooling.
 
 - Keep reusable tooling, docs, templates, and examples in the repo.
 - Keep machine-local roots, secrets, account mappings, exports, logs, generated state, and private overlays out of the repo.
-- Rust is the source of truth for CLI/core behavior.
-- Swift UI code should call the Rust CLI or a bundled helper binary rather than reimplementing filesystem logic.
+- Swift is the source of truth for app/core/helper behavior.
+- Keep shared behavior in `apps/MetagentMenuBar/Sources/MetagentCore`.
+- The macOS UI should import `MetagentCore` directly rather than shelling out for inventory, doctor, sync, or LaunchAgent status.
+- The Swift `metagent` helper is for LaunchAgents, future MCP, and headless use. It should stay a thin wrapper around `MetagentCore`.
+- Do not reintroduce a Rust core for app behavior without an explicit product reason and updated architecture docs.
 
 ## Project Management
 
@@ -19,7 +22,5 @@ This repo contains local coding-agent tooling.
 Run before considering changes done:
 
 ```bash
-cargo fmt --check
-cargo test
-cargo run -p metagent-cli -- skills scan --max-depth 3
+scripts/verify.sh
 ```
