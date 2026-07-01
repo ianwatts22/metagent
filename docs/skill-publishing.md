@@ -1,0 +1,70 @@
+# Publishing the `metagent` Skill
+
+This repo publishes the `metagent` skill for `npx skills` / skills.sh consumers.
+The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metagent/SKILL.md).
+
+## Publish Checklist
+
+1. Keep the skill portable.
+   - Remove private paths, account-specific facts, local logs, generated state, and one-off debugging residue.
+   - Keep repo-specific implementation details in this repo's docs, not in the skill.
+
+2. Validate local discovery from the repo root.
+
+   ```bash
+   npx --yes skills add . --list
+   ```
+
+   Expected result: one available skill named `metagent`.
+
+3. Make the GitHub repository public and tag it for discovery.
+
+   ```bash
+   gh repo edit ianwatts22/metagent --add-topic agent-skills
+   gh repo view ianwatts22/metagent --json name,url,isPrivate,repositoryTopics
+   ```
+
+4. Push the skill source to GitHub.
+
+   ```bash
+   git push origin main
+   ```
+
+5. Verify remote discovery.
+
+   ```bash
+   npx --yes skills add ianwatts22/metagent --list
+   ```
+
+   Expected result: the installer clones `https://github.com/ianwatts22/metagent.git`
+   and lists `metagent`.
+
+6. Install the published skill locally.
+
+   ```bash
+   npx --yes skills add ianwatts22/metagent --skill metagent
+   ```
+
+## Local State Checks
+
+`npx skills` and dotagents track different state:
+
+- `npx skills` records installed marketplace skills in `~/.agents/.skill-lock.json`.
+- dotagents records declared skill dependencies in `~/.agents/agents.toml`.
+
+After replacing an older local skill, check both surfaces:
+
+```bash
+rg -n 'agent-meta|metagent|ianwatts22/metagent' ~/.agents/agents.toml ~/.agents/.skill-lock.json
+npx @sentry/dotagents --user doctor
+```
+
+For the `agent-meta` to `metagent` migration, the intended end state is:
+
+- `~/.agents/skills/metagent/SKILL.md` exists.
+- `~/.agents/.skill-lock.json` points `metagent` at `ianwatts22/metagent`.
+- `~/.agents/skills/agent-meta` does not exist.
+- `~/.agents/agents.toml` does not declare stale `agent-meta`.
+
+If a running agent session was started before installation, its loaded skill
+inventory may stay stale until a new session starts.

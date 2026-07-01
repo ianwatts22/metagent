@@ -20,6 +20,8 @@ Once this repo is public at `ianwatts22/metagent`, it should be installable with
 npx skills add ianwatts22/metagent --skill metagent
 ```
 
+See [docs/skill-publishing.md](docs/skill-publishing.md) for the publication and local-install checklist.
+
 ## Current Tools
 
 ### Swift Mac App
