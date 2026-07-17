@@ -767,8 +767,18 @@ public enum MetagentCore {
             }
             try fileManager.moveItem(at: skillURL, to: recoveredSkill)
         } catch {
+            var rollbackFailures: [String] = []
             for moved in movedProjections.reversed() {
-                try? fileManager.moveItem(at: moved.recovery, to: moved.original)
+                do {
+                    try fileManager.moveItem(at: moved.recovery, to: moved.original)
+                } catch {
+                    rollbackFailures.append("\(moved.original.path): \(error.localizedDescription)")
+                }
+            }
+            if !rollbackFailures.isEmpty {
+                throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
+                    NSLocalizedDescriptionKey: "native uninstall failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
+                ])
             }
             throw error
         }
