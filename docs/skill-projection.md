@@ -80,9 +80,10 @@ review finding, not an automatic repair.
 The Mac app inventory can uninstall one selected canonical `.agents` skill:
 
 - Metagent creates a `Removed Skills` recovery directory before mutation.
-- For `npx skills` packages, it runs the skills CLI, preserves independent
-  same-name Claude or Codex bundles, and repairs a stale project
-  `skills-lock.json` entry if necessary.
-- Native bundles are moved to Trash.
+- For `npx skills` packages, Metagent does not duplicate package-manager
+  removal; it returns the exact `npx skills remove` command to run.
+- Native bundles and their per-skill projection links are moved into Metagent's
+  `Removed Skills` recovery directory.
 - The whole-container `.claude/skills` projection remains in place.
-- Independent `.claude` or `.codex` bundles are retained for explicit review.
+- Per-skill Claude or Codex projection links are removed with native bundles;
+  independent same-name bundles are retained for explicit review.

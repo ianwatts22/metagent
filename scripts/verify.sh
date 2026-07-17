@@ -189,8 +189,7 @@ mkdir -p \
   "$uninstall_root/.agents/skills/remove-me" \
   "$uninstall_root/.agents/skills/keep-me" \
   "$uninstall_root/.codex/skills/remove-me" \
-  "$uninstall_root/.claude" \
-  "$fixture_root/fake-bin"
+  "$uninstall_root/.claude"
 printf -- "---\nname: remove-me\ndescription: remove\n---\n" >"$uninstall_root/.agents/skills/remove-me/SKILL.md"
 printf -- "---\nname: keep-me\ndescription: keep\n---\n" >"$uninstall_root/.agents/skills/keep-me/SKILL.md"
 printf -- "---\nname: remove-me\ndescription: independent codex copy\n---\n" >"$uninstall_root/.codex/skills/remove-me/SKILL.md"
@@ -214,60 +213,56 @@ cat >"$uninstall_root/skills-lock.json" <<'EOF'
   }
 }
 EOF
-cat >"$fixture_root/fake-bin/npx" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "skills" && "${2:-}" == "remove" ]]; then
-  if [[ " $* " == *" --agent "* ]]; then
-    echo "remove does not accept a wildcard agent selector" >&2
-    exit 65
-  fi
-  rm -rf "$PWD/.agents/skills/${3:?}"
-  rm -rf "$PWD/.codex/skills/${3:?}"
-  if [[ " $* " == *" --global "* ]]; then
-    mkdir -p "${XDG_STATE_HOME:?}/skills"
-    printf '%s\n' '{"version":3,"skills":{}}' >"$XDG_STATE_HOME/skills/.skill-lock.json"
-  fi
-  exit 0
-fi
-echo "unexpected fake npx invocation: $*" >&2
-exit 64
-SH
-chmod +x "$fixture_root/fake-bin/npx"
-mkdir -p "$fixture_root/home/Library/pnpm/bin"
-cp "$fixture_root/fake-bin/npx" "$fixture_root/home/Library/pnpm/bin/npx"
 uninstall_probe="$fixture_root/uninstall-probe.swift"
 cat >"$uninstall_probe" <<'SWIFT'
+import Darwin
 import Foundation
 
 @main
 struct Probe {
-    static func main() throws {
-        let report = try MetagentCore.uninstallSkill(
-            projectRoot: CommandLine.arguments[1],
-            skillName: CommandLine.arguments[2]
-        )
-        print(report.lines.joined(separator: "\n"))
+    static func main() {
+        do {
+            let report = try MetagentCore.uninstallSkill(
+                projectRoot: CommandLine.arguments[1],
+                skillName: CommandLine.arguments[2]
+            )
+            print(report.lines.joined(separator: "\n"))
+        } catch {
+            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+            exit(1)
+        }
     }
 }
 SWIFT
 swiftc "$app_source/Sources/MetagentCore/MetagentCore.swift" "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
-PATH="/usr/bin:/bin" HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >/dev/null
-test ! -e "$uninstall_root/.agents/skills/remove-me"
+managed_uninstall_output="$fixture_root/managed-uninstall.out"
+if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >"$managed_uninstall_output" 2>&1; then
+  echo "Metagent removed an npx-managed skill directly" >&2
+  exit 1
+fi
+grep -q 'npx skills remove remove-me --yes' "$managed_uninstall_output"
+test -f "$uninstall_root/.agents/skills/remove-me/SKILL.md"
 test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
 test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
 test -L "$uninstall_root/.claude/skills"
-grep -q '"customTopLevel" : "preserve-me"' "$uninstall_root/skills-lock.json"
-grep -q '"keep-me"' "$uninstall_root/skills-lock.json"
-if grep -q '"remove-me"' "$uninstall_root/skills-lock.json"; then
-  echo "uninstall left stale project lock entry" >&2
-  exit 1
-fi
-managed_recovery_metadata="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -name REMOVAL.txt -print -quit)"
-test -n "$managed_recovery_metadata"
-managed_recovery_root="$(dirname "$managed_recovery_metadata")"
-test -f "$managed_recovery_root/remove-me/SKILL.md"
-test -f "$managed_recovery_root/state/project-skills-lock.json"
+grep -q '"remove-me"' "$uninstall_root/skills-lock.json"
+
+native_root="$fixture_root/native-uninstall-project"
+mkdir -p \
+  "$native_root/.agents/skills/native-remove" \
+  "$native_root/.claude/skills" \
+  "$native_root/.codex/skills/native-remove"
+printf -- "---\nname: native-remove\ndescription: native\n---\n" >"$native_root/.agents/skills/native-remove/SKILL.md"
+printf -- "---\nname: native-remove\ndescription: independent\n---\n" >"$native_root/.codex/skills/native-remove/SKILL.md"
+ln -s ../../.agents/skills/native-remove "$native_root/.claude/skills/native-remove"
+HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$native_root" native-remove >/dev/null
+test ! -e "$native_root/.agents/skills/native-remove"
+test ! -L "$native_root/.claude/skills/native-remove"
+test -f "$native_root/.codex/skills/native-remove/SKILL.md"
+native_recovery_metadata="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -name REMOVAL.txt -print -quit)"
+test -n "$native_recovery_metadata"
+native_recovery_root="$(dirname "$native_recovery_metadata")"
+test -f "$native_recovery_root/native-remove/SKILL.md"
 
 global_home="$fixture_root/global-home"
 global_xdg="$fixture_root/global-xdg"
@@ -290,13 +285,14 @@ EOF
 global_scan="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills scan --root "$global_home" --max-depth 0 --json)"
 grep -q '"name" : "global-managed"' <<<"$global_scan"
 grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
-PATH="$fixture_root/fake-bin:$PATH" HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >/dev/null
-test ! -e "$global_home/.agents/skills/global-managed"
-if grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"; then
-  echo "global uninstall left stale v3 lock entry" >&2
+global_uninstall_output="$fixture_root/global-uninstall.out"
+if HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >"$global_uninstall_output" 2>&1; then
+  echo "Metagent removed a global npx-managed skill directly" >&2
   exit 1
 fi
-find "$global_home/Library/Application Support/Metagent/Removed Skills" -path '*/global-managed/SKILL.md' -print -quit | grep -q .
+grep -q 'npx skills remove global-managed --yes --global' "$global_uninstall_output"
+test -f "$global_home/.agents/skills/global-managed/SKILL.md"
+grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"
 
 mkdir -p \
   "$fixture_root/prune-root/app/.agents/skills/app-skill" \

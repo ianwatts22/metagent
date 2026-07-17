@@ -719,63 +719,53 @@ public enum MetagentCore {
             ])
         }
 
+        if agentsSkill.originKind == "npx-skills" {
+            let globalFlag = root.path == canonicalProjectPath(homeURL()) ? " --global" : ""
+            throw NSError(domain: "MetagentSkillUninstall", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "\(skillName) is managed by npx skills. Run `npx skills remove \(skillName) --yes\(globalFlag)` from \(root.path), then run Metagent Repair."
+            ])
+        }
+
         let skillURL = URL(fileURLWithPath: agentsSkill.path)
         var lines: [String] = []
+        let projections = project.skills.filter {
+            guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                return false
+            }
+            let url = URL(fileURLWithPath: $0.path)
+            return isSymlink(url) && symlink(url, resolvesTo: skillURL)
+        }
         let retained = project.skills.filter {
-            $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer
+            guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                return false
+            }
+            let url = URL(fileURLWithPath: $0.path)
+            return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
         }
         let recovery = try prepareRemovalRecovery(
-            skillURL: skillURL,
             projectRoot: root,
-            skillName: skillName
-        )
-        let independentBackups = try backupIndependentSkills(
-            retained.map { URL(fileURLWithPath: $0.path) },
-            recoveryRoot: recovery,
             skillName: skillName
         )
         let backupPath: String? = recovery.path
         lines.append("saved recovery state to \(recovery.path)")
 
-        if agentsSkill.originKind == "npx-skills" {
-            var arguments = ["npx", "skills", "remove", skillName, "--yes"]
-            if root.path == canonicalProjectPath(homeURL()) {
-                arguments.append("--global")
-            }
-            let result = runProcess(
-                "/usr/bin/env",
-                arguments: arguments,
-                currentDirectory: root,
-                environment: ["PATH": augmentedPath()]
+        let recoveredSkill = recovery.appendingPathComponent(skillName)
+        try fileManager.moveItem(at: skillURL, to: recoveredSkill)
+        lines.append("moved native skill to recovery: \(recoveredSkill.path)")
+        for (index, projection) in projections.enumerated() {
+            let projectionURL = URL(fileURLWithPath: projection.path)
+            let projectionRecovery = recovery
+                .appendingPathComponent("projections")
+                .appendingPathComponent("\(index)-\(projection.location)")
+                .appendingPathComponent(skillName)
+            try fileManager.createDirectory(
+                at: projectionRecovery.deletingLastPathComponent(),
+                withIntermediateDirectories: true
             )
-            try restoreIndependentSkills(independentBackups)
-            guard result.exitCode == 0 else {
-                let details = (result.stderr + "\n" + result.stdout).nonEmptyLines.joined(separator: "\n")
-                throw NSError(domain: "MetagentSkillUninstall", code: Int(result.exitCode), userInfo: [
-                    NSLocalizedDescriptionKey: "skills CLI removal failed\(details.isEmpty ? "" : "\n\(details)")\nRecovery state: \(recovery.path)"
-                ])
-            }
-            lines.append("skills CLI removed \(skillName) from registered agent locations")
-
-            if root.path != canonicalProjectPath(homeURL()), try removeSkillLockEntry(
-                skillName: skillName,
-                at: root.appendingPathComponent("skills-lock.json")
-            ) {
-                lines.append("removed stale project skills-lock.json entry")
-            }
-            if root.path != canonicalProjectPath(homeURL()), try removeSkillLockEntry(
-                skillName: skillName,
-                at: root.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json")
-            ) {
-                lines.append("removed stale project .agents/.skill-lock.json entry")
-            }
-        } else {
-            var trashedURL: NSURL?
-            try fileManager.trashItem(at: skillURL, resultingItemURL: &trashedURL)
-            lines.append("moved native skill to Trash")
-            if let trashedPath = (trashedURL as URL?)?.path {
-                lines.append("trashed bundle: \(trashedPath)")
-            }
+            try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+        }
+        if !projections.isEmpty {
+            lines.append("removed \(projections.count) per-skill projection link(s)")
         }
 
         guard !fileManager.fileExists(atPath: skillURL.path) else {
@@ -783,16 +773,11 @@ public enum MetagentCore {
                 NSLocalizedDescriptionKey: "uninstall verification failed: \(skillURL.path) still exists"
             ])
         }
-        if agentsSkill.originKind == "npx-skills", readProjectSkillLocks(root: root)[skillName] != nil {
-            throw NSError(domain: "MetagentSkillUninstall", code: 4, userInfo: [
-                NSLocalizedDescriptionKey: "uninstall verification failed: \(skillName) remains in a managed skills lock\nRecovery state: \(recovery.path)"
-            ])
-        }
 
         if !retained.isEmpty {
             lines.append("kept \(retained.count) independent same-name legacy location(s); review them separately")
         }
-        lines.append("verified canonical skill and managed project lock entry are absent")
+        lines.append("verified canonical native skill is absent")
         return SkillUninstallReport(
             projectRoot: root.path,
             skillName: skillName,
@@ -1325,7 +1310,6 @@ private func globalSkillLockPath() -> URL {
 }
 
 private func prepareRemovalRecovery(
-    skillURL: URL,
     projectRoot: URL,
     skillName: String
 ) throws -> URL {
@@ -1336,7 +1320,6 @@ private func prepareRemovalRecovery(
         .appendingPathComponent("Removed Skills")
         .appendingPathComponent(UUID().uuidString)
     try fileManager.createDirectory(at: recoveryRoot, withIntermediateDirectories: true)
-    try fileManager.copyItem(at: skillURL, to: recoveryRoot.appendingPathComponent(skillName))
 
     let stateRoot = recoveryRoot.appendingPathComponent("state")
     try fileManager.createDirectory(at: stateRoot, withIntermediateDirectories: true)
@@ -1362,63 +1345,6 @@ private func prepareRemovalRecovery(
         encoding: .utf8
     )
     return recoveryRoot
-}
-
-private struct IndependentSkillBackup {
-    let original: URL
-    let backup: URL
-}
-
-private func backupIndependentSkills(
-    _ skillURLs: [URL],
-    recoveryRoot: URL,
-    skillName: String
-) throws -> [IndependentSkillBackup] {
-    var backups: [IndependentSkillBackup] = []
-    let backupRoot = recoveryRoot.appendingPathComponent("independent")
-
-    for (index, original) in skillURLs.enumerated() {
-        let location = original
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .lastPathComponent
-        let backup = backupRoot
-            .appendingPathComponent("\(index)-\(location)")
-            .appendingPathComponent(skillName)
-        try fileManager.createDirectory(
-            at: backup.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try fileManager.copyItem(at: original, to: backup)
-        backups.append(.init(original: original, backup: backup))
-    }
-
-    return backups
-}
-
-private func restoreIndependentSkills(_ backups: [IndependentSkillBackup]) throws {
-    for backup in backups where !fileManager.fileExists(atPath: backup.original.path) {
-        try fileManager.createDirectory(
-            at: backup.original.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try fileManager.copyItem(at: backup.backup, to: backup.original)
-    }
-}
-
-private func removeSkillLockEntry(skillName: String, at path: URL) throws -> Bool {
-    guard let data = try? Data(contentsOf: path) else { return false }
-    guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-          var skills = object["skills"] as? [String: Any],
-          skills.removeValue(forKey: skillName) != nil
-    else {
-        return false
-    }
-
-    object["skills"] = skills
-    let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-    try updated.write(to: path, options: .atomic)
-    return true
 }
 
 private func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
@@ -1556,51 +1482,6 @@ private func runProcess(
     } catch {
         return ProcessOutput(exitCode: 127, stdout: "", stderr: error.localizedDescription)
     }
-}
-
-private func augmentedPath() -> String {
-    let home = homeURL()
-    var fallbacks = [
-        home.appendingPathComponent("Library/pnpm/bin").path,
-        home.appendingPathComponent("Library/pnpm").path,
-        home.appendingPathComponent(".local/bin").path,
-        home.appendingPathComponent(".npm-global/bin").path,
-        home.appendingPathComponent(".volta/bin").path,
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin"
-    ]
-    fallbacks.append(contentsOf: nodeManagerBinDirectories(
-        root: home.appendingPathComponent(".local/share/fnm/node-versions"),
-        suffix: "installation/bin"
-    ))
-    fallbacks.append(contentsOf: nodeManagerBinDirectories(
-        root: home.appendingPathComponent(".nvm/versions/node"),
-        suffix: "bin"
-    ))
-    var parts = ProcessInfo.processInfo.environment["PATH"]?
-        .split(separator: ":", omittingEmptySubsequences: false)
-        .map(String.init) ?? []
-
-    for fallback in fallbacks where !parts.contains(fallback) {
-        parts.append(fallback)
-    }
-
-    return parts.joined(separator: ":")
-}
-
-private func nodeManagerBinDirectories(root: URL, suffix: String) -> [String] {
-    let versions = (try? fileManager.contentsOfDirectory(
-        at: root,
-        includingPropertiesForKeys: [.isDirectoryKey],
-        options: [.skipsHiddenFiles]
-    )) ?? []
-    return versions
-        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedDescending }
-        .map { $0.appendingPathComponent(suffix).path }
 }
 
 private final class SkillInventoryCache {
