@@ -5,18 +5,15 @@ import SQLite3
 public struct MetagentConfig: Codable, Equatable, Sendable {
     public var roots: [String]
     public var maxDepth: Int
-    public var agents: [String]
     public var ignoreProjects: [String]
 
     public init(
         roots: [String],
         maxDepth: Int = 6,
-        agents: [String] = ["claude", "codex", "cursor"],
         ignoreProjects: [String] = []
     ) {
         self.roots = roots
         self.maxDepth = maxDepth
-        self.agents = agents
         self.ignoreProjects = ignoreProjects
     }
 }
@@ -232,6 +229,14 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         issues.filter { $0.severity == .failure }.count
     }
 
+    public var repairableCount: Int {
+        issues.filter { $0.severity != .ok && $0.repairAction != nil }.count
+    }
+
+    public var reviewCount: Int {
+        warningCount + failureCount - repairableCount
+    }
+
     public init(issues: [DoctorIssue]) {
         self.issues = issues
     }
@@ -241,11 +246,49 @@ public struct DoctorIssue: Codable, Equatable, Identifiable, Sendable {
     public var id: String { "\(severity.rawValue):\(message)" }
     public var severity: DoctorSeverity
     public var message: String
+    public var summary: String?
+    public var projectRoot: String?
+    public var category: DoctorIssueCategory?
+    public var guidance: String?
+    public var repairAction: DoctorRepairAction?
 
-    public init(severity: DoctorSeverity, message: String) {
+    public init(
+        severity: DoctorSeverity,
+        message: String,
+        summary: String? = nil,
+        projectRoot: String? = nil,
+        category: DoctorIssueCategory? = nil,
+        guidance: String? = nil,
+        repairAction: DoctorRepairAction? = nil
+    ) {
         self.severity = severity
         self.message = message
+        self.summary = summary
+        self.projectRoot = projectRoot
+        self.category = category
+        self.guidance = guidance
+        self.repairAction = repairAction
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case severity
+        case message
+        case summary
+        case projectRoot = "project_root"
+        case category
+        case guidance
+        case repairAction = "repair_action"
+    }
+}
+
+public enum DoctorIssueCategory: String, Codable, Hashable, Sendable {
+    case project
+    case skills
+    case projection
+}
+
+public enum DoctorRepairAction: String, Codable, Hashable, Sendable {
+    case repairProjection = "repair_projection"
 }
 
 public enum DoctorSeverity: String, Codable, Sendable {
@@ -254,63 +297,46 @@ public enum DoctorSeverity: String, Codable, Sendable {
     case failure = "FAIL"
 }
 
-public struct SkillsSyncOptions: Equatable, Sendable {
+public struct SkillsRepairOptions: Equatable, Sendable {
     public var apply: Bool
-    public var replaceClaudeSkills: Bool
-    public var rewriteAgentsToml: Bool
-    public var syncOnly: Bool
-    public var runDotagents: Bool
-    public var agents: [String]
     public var scanOptions: SkillScanOptions
 
     public init(
         apply: Bool = false,
-        replaceClaudeSkills: Bool = false,
-        rewriteAgentsToml: Bool = false,
-        syncOnly: Bool = false,
-        runDotagents: Bool = true,
-        agents: [String] = [],
         scanOptions: SkillScanOptions = SkillScanOptions()
     ) {
         self.apply = apply
-        self.replaceClaudeSkills = replaceClaudeSkills
-        self.rewriteAgentsToml = rewriteAgentsToml
-        self.syncOnly = syncOnly
-        self.runDotagents = runDotagents
-        self.agents = agents
         self.scanOptions = scanOptions
     }
 }
 
-public struct SkillsSyncReport: Codable, Equatable, Sendable {
+public struct SkillsRepairReport: Codable, Equatable, Sendable {
     public var apply: Bool
     public var mode: String
-    public var summary: SkillsSyncSummary
-    public var projects: [SkillsSyncProject]
+    public var summary: SkillsRepairSummary
+    public var projects: [SkillsRepairProject]
 
-    public init(apply: Bool, projects: [SkillsSyncProject]) {
+    public init(apply: Bool, projects: [SkillsRepairProject]) {
         self.apply = apply
         self.mode = apply ? "APPLY" : "DRY-RUN"
         self.projects = projects
-        self.summary = SkillsSyncSummary(projects: projects)
+        self.summary = SkillsRepairSummary(projects: projects)
     }
 }
 
-public struct SkillsSyncSummary: Codable, Equatable, Sendable {
+public struct SkillsRepairSummary: Codable, Equatable, Sendable {
     public var projectCount: Int
     public var validSkillCount: Int
     public var warningCount: Int
     public var actionCount: Int
     public var skippedCount: Int
-    public var dotagentsCount: Int
 
-    public init(projects: [SkillsSyncProject]) {
+    public init(projects: [SkillsRepairProject]) {
         self.projectCount = projects.count
         self.validSkillCount = projects.reduce(0) { $0 + $1.validSkillCount }
         self.warningCount = projects.reduce(0) { $0 + $1.warningCount }
         self.actionCount = projects.reduce(0) { $0 + $1.actionCount }
         self.skippedCount = projects.reduce(0) { $0 + $1.skippedCount }
-        self.dotagentsCount = projects.filter(\.usesDotagents).count
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -319,11 +345,10 @@ public struct SkillsSyncSummary: Codable, Equatable, Sendable {
         case warningCount = "warning_count"
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
-        case dotagentsCount = "dotagents_count"
     }
 }
 
-public struct SkillsSyncProject: Codable, Equatable, Identifiable, Sendable {
+public struct SkillsRepairProject: Codable, Equatable, Identifiable, Sendable {
     public var id: String { root }
     public var root: String
     public var name: String
@@ -331,10 +356,9 @@ public struct SkillsSyncProject: Codable, Equatable, Identifiable, Sendable {
     public var warningCount: Int
     public var actionCount: Int
     public var skippedCount: Int
-    public var usesDotagents: Bool
-    public var lines: [SkillsSyncLine]
+    public var lines: [SkillsRepairLine]
 
-    public init(root: String, lines: [SkillsSyncLine]) {
+    public init(root: String, lines: [SkillsRepairLine]) {
         self.root = root
         self.name = URL(fileURLWithPath: root).lastPathComponent
         self.lines = lines
@@ -342,9 +366,6 @@ public struct SkillsSyncProject: Codable, Equatable, Identifiable, Sendable {
         self.warningCount = lines.filter { $0.kind == .warning }.count
         self.actionCount = lines.filter { $0.kind == .action }.count
         self.skippedCount = lines.filter { $0.kind == .skipped }.count
-        self.usesDotagents = lines.contains {
-            $0.text.hasPrefix("dotagents:") || $0.text == "would run: npx @sentry/dotagents sync"
-        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -354,11 +375,10 @@ public struct SkillsSyncProject: Codable, Equatable, Identifiable, Sendable {
         case warningCount = "warning_count"
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
-        case usesDotagents = "uses_dotagents"
         case lines
     }
 
-    private static func validSkillCount(from lines: [SkillsSyncLine]) -> Int {
+    private static func validSkillCount(from lines: [SkillsRepairLine]) -> Int {
         for line in lines {
             guard let value = line.text.removingPrefix("valid local skills: ") else { continue }
             return Int(value.trimmingCharacters(in: .whitespaces)) ?? 0
@@ -367,35 +387,25 @@ public struct SkillsSyncProject: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct SkillsSyncLine: Codable, Equatable, Identifiable, Sendable {
+public struct SkillsRepairLine: Codable, Equatable, Identifiable, Sendable {
     public var id: String { "\(kind.rawValue):\(text)" }
-    public var kind: SkillsSyncLineKind
+    public var kind: SkillsRepairLineKind
     public var text: String
 
-    public init(kind: SkillsSyncLineKind, text: String) {
+    public init(kind: SkillsRepairLineKind, text: String) {
         self.kind = kind
         self.text = text
     }
 }
 
-public enum SkillsSyncLineKind: String, Codable, Sendable {
+public enum SkillsRepairLineKind: String, Codable, Sendable {
     case action
     case warning
     case skipped
     case info
 }
 
-public struct LaunchAgentOptions: Equatable, Sendable {
-    public var program: String?
-    public var interval: Int
-
-    public init(program: String? = nil, interval: Int = 300) {
-        self.program = program
-        self.interval = interval
-    }
-}
-
-public struct LaunchAgentReport: Codable, Equatable, Sendable {
+public struct ToolStatusReport: Codable, Equatable, Sendable {
     public var lines: [String]
 
     public init(lines: [String]) {
@@ -403,9 +413,21 @@ public struct LaunchAgentReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct SkillUninstallReport: Codable, Equatable, Sendable {
+    public var projectRoot: String
+    public var skillName: String
+    public var backupPath: String?
+    public var lines: [String]
+
+    public init(projectRoot: String, skillName: String, backupPath: String?, lines: [String]) {
+        self.projectRoot = projectRoot
+        self.skillName = skillName
+        self.backupPath = backupPath
+        self.lines = lines
+    }
+}
+
 public enum MetagentCore {
-    public static let launchAgentLabel = "com.ianwatts.metagent.skills-sync"
-    fileprivate static let legacyLaunchAgentLabel = "com.ianwatts.agent-tools.skills-sync"
 
     public static func userConfigPath() -> URL {
         homeURL()
@@ -431,13 +453,11 @@ public enum MetagentCore {
 
         let configText = uncommentedConfigText(text)
         let roots = try parseStringArray(key: "roots", text: configText) ?? []
-        let agents = try parseStringArray(key: "agents", text: configText) ?? []
         let ignoreProjects = try parseStringArray(key: "ignore_projects", text: configText) ?? []
         let maxDepth = try parseInteger(key: "max_depth", text: configText) ?? 6
         return MetagentConfig(
             roots: roots.isEmpty ? defaultRootPaths() : roots,
             maxDepth: maxDepth,
-            agents: agents.isEmpty ? defaultAgents() : agents,
             ignoreProjects: ignoreProjects
         )
     }
@@ -500,160 +520,121 @@ public enum MetagentCore {
 
     public static func doctor(options: SkillScanOptions = SkillScanOptions()) throws -> DoctorReport {
         let report = try scanSkills(options: options)
-        let config = try loadUserConfig()
-        let rootPaths = options.roots.isEmpty ? config.roots : options.roots
-        let maxDepth = options.maxDepth ?? config.maxDepth
-        let ignoreProjects = Set((config.ignoreProjects + options.ignoreProjects).map { canonicalProjectPath(expandPath($0)) })
-        var projectRoots = Set(report.projects.map(\.root))
-
-        for rootPath in rootPaths {
-            discoverAgentsTomlProjectRoots(
-                root: expandPath(rootPath),
-                maxDepth: maxDepth,
-                ignoreProjects: ignoreProjects,
-                projectRoots: &projectRoots
-            )
-        }
-
-        let projectsByRoot = Dictionary(uniqueKeysWithValues: report.projects.map { ($0.root, $0) })
-        let projects = try projectRoots
-            .sorted()
-            .map { root in
-                if let project = projectsByRoot[root] {
-                    return project
-                }
-                return try readProjectSkills(root: URL(fileURLWithPath: root))
-            }
+        let projects = report.projects
         var issues: [DoctorIssue] = []
 
         if projects.isEmpty {
-            issues.append(.init(severity: .warning, message: "no projects with skills found"))
+            issues.append(.init(
+                severity: .warning,
+                message: "no projects with skills found",
+                summary: "No skill projects found",
+                category: .project,
+                guidance: "Review Metagent's configured roots."
+            ))
         }
 
         for project in projects {
             if project.validSkills.isEmpty {
-                issues.append(.init(severity: .warning, message: "\(project.root) has no valid .agents skills"))
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(project.root) has no valid .agents skills",
+                    summary: "No valid .agents skills",
+                    projectRoot: project.root,
+                    category: .skills,
+                    guidance: "Remove stale agent configuration or add a valid SKILL.md bundle."
+                ))
             } else {
-                issues.append(.init(severity: .ok, message: "\(project.root) has \(project.validSkills.count) valid skills"))
+                issues.append(.init(
+                    severity: .ok,
+                    message: "\(project.root) has \(project.validSkills.count) valid skills",
+                    projectRoot: project.root,
+                    category: .skills
+                ))
             }
 
             for path in project.invalidSkillDirs {
-                issues.append(.init(severity: .warning, message: "\(path) is not a valid dotagents skill directory"))
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(path) is not a valid skill directory",
+                    summary: "Invalid skill directory",
+                    projectRoot: project.root,
+                    category: .skills,
+                    guidance: "Rename or remove the directory so it uses a portable skill name."
+                ))
             }
 
             for path in project.hiddenSkillDirs {
-                issues.append(.init(severity: .warning, message: "\(path) is hidden and ignored by dotagents"))
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(path) is hidden and ignored by Metagent",
+                    summary: "Hidden skill directory ignored",
+                    projectRoot: project.root,
+                    category: .skills,
+                    guidance: "Rename or remove the hidden directory if it should be an active skill."
+                ))
             }
-
-            checkAgentsToml(project: project, issues: &issues)
 
             let claudeSkills = URL(fileURLWithPath: project.root)
                 .appendingPathComponent(".claude")
                 .appendingPathComponent("skills")
-            if isSymlink(claudeSkills) {
-                issues.append(.init(severity: .ok, message: "\(claudeSkills.path) is a symlink"))
+            let expectedSkills = URL(fileURLWithPath: project.root)
+                .appendingPathComponent(".agents")
+                .appendingPathComponent("skills")
+            if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: expectedSkills) {
+                issues.append(.init(
+                    severity: .ok,
+                    message: "\(claudeSkills.path) is a symlink to .agents/skills",
+                    projectRoot: project.root,
+                    category: .projection
+                ))
+            } else if isSymlink(claudeSkills) {
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(claudeSkills.path) points somewhere other than .agents/skills",
+                    summary: "Claude skills mirror points to the wrong target",
+                    projectRoot: project.root,
+                    category: .projection,
+                    guidance: "Run Repair to point Claude at the canonical .agents/skills directory.",
+                    repairAction: .repairProjection
+                ))
             } else if fileManager.fileExists(atPath: claudeSkills.path) {
-                issues.append(.init(severity: .warning, message: "\(claudeSkills.path) exists but is not a symlink"))
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(claudeSkills.path) exists but is not a symlink",
+                    summary: "Claude skills path is a real directory",
+                    projectRoot: project.root,
+                    category: .projection,
+                    guidance: "Review and explicitly migrate this directory before replacing it with a symlink."
+                ))
             } else {
-                issues.append(.init(severity: .warning, message: "\(claudeSkills.path) missing"))
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(claudeSkills.path) missing",
+                    summary: "Claude skills mirror missing",
+                    projectRoot: project.root,
+                    category: .projection,
+                    guidance: "Run Repair to point Claude at the canonical .agents/skills directory.",
+                    repairAction: .repairProjection
+                ))
             }
         }
 
         return DoctorReport(issues: issues)
     }
 
-    public static func syncSkills(options: SkillsSyncOptions = SkillsSyncOptions()) throws -> SkillsSyncReport {
-        let config = try loadUserConfig()
-        let agents = options.agents.isEmpty ? config.agents : options.agents
+    public static func repairSkills(options: SkillsRepairOptions = SkillsRepairOptions()) throws -> SkillsRepairReport {
         let scan = try scanSkills(options: options.scanOptions)
-        var projects: [SkillsSyncProject] = []
+        var projects: [SkillsRepairProject] = []
 
-        for project in scan.projects where hasAgentsSyncSurface(project) {
-            let lines = try syncProject(project, options: options, agents: agents)
-            projects.append(SkillsSyncProject(root: project.root, lines: lines))
+        for project in scan.projects where hasCanonicalSkillsSurface(project) {
+            let lines = try repairProjectProjection(project, apply: options.apply)
+            projects.append(SkillsRepairProject(root: project.root, lines: lines))
         }
 
-        return SkillsSyncReport(apply: options.apply, projects: projects)
+        return SkillsRepairReport(apply: options.apply, projects: projects)
     }
 
-    public static func launchAgentStatus(options: LaunchAgentOptions = LaunchAgentOptions()) -> LaunchAgentReport {
-        let plist = launchAgentPlistURL()
-        let legacyPlist = launchAgentPlistURL(label: legacyLaunchAgentLabel)
-        var lines: [String] = []
-
-        if fileManager.fileExists(atPath: plist.path) {
-            lines.append("plist exists: \(plist.path)")
-        } else {
-            lines.append("plist missing: \(plist.path)")
-        }
-        if fileManager.fileExists(atPath: legacyPlist.path) {
-            lines.append("legacy plist present: \(legacyPlist.path)")
-        }
-
-        let result = runProcess(launchctlExecutablePath(), arguments: ["print", launchAgentJob(launchAgentLabel)])
-        if result.exitCode == 0 {
-            lines.append("launchctl status: loaded")
-            lines.append(contentsOf: result.stdout.nonEmptyLines)
-        } else {
-            lines.append("launchctl status: not loaded")
-            lines.append(contentsOf: result.stderr.nonEmptyLines)
-        }
-
-        return LaunchAgentReport(lines: lines)
-    }
-
-    public static func installLaunchAgent(options: LaunchAgentOptions = LaunchAgentOptions()) throws -> LaunchAgentReport {
-        let plist = launchAgentPlistURL()
-        try fileManager.createDirectory(
-            at: plist.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: logsURL(),
-            withIntermediateDirectories: true
-        )
-
-        let program = try options.program ?? defaultHelperPath()
-        let text = renderLaunchAgentPlist(program: program, interval: options.interval)
-        try text.write(to: plist, atomically: true, encoding: .utf8)
-
-        var lines = ["wrote \(plist.path)"]
-        lines.append(contentsOf: retireLegacyLaunchAgent())
-        if bootoutLaunchAgent(label: Self.launchAgentLabel).exitCode == 0 {
-            lines.append("unloaded existing LaunchAgent")
-        }
-        let load = runProcess(launchctlExecutablePath(), arguments: ["bootstrap", launchAgentDomain(), plist.path])
-        if load.exitCode == 0 {
-            lines.append("loaded LaunchAgent")
-        } else {
-            lines.append("warning: launchctl load failed")
-            lines.append(contentsOf: load.stderr.nonEmptyLines)
-        }
-
-        return LaunchAgentReport(lines: lines)
-    }
-
-    public static func uninstallLaunchAgent(options: LaunchAgentOptions = LaunchAgentOptions()) -> LaunchAgentReport {
-        let plist = launchAgentPlistURL()
-        var lines: [String] = []
-        if bootoutLaunchAgent(label: Self.launchAgentLabel).exitCode == 0 {
-            lines.append("unloaded LaunchAgent")
-        }
-
-        do {
-            try fileManager.removeItem(at: plist)
-            lines.append("removed \(plist.path)")
-        } catch CocoaError.fileNoSuchFile {
-            lines.append("plist already missing: \(plist.path)")
-        } catch {
-            lines.append("warning: failed removing \(plist.path): \(error.localizedDescription)")
-        }
-        lines.append(contentsOf: retireLegacyLaunchAgent())
-
-        return LaunchAgentReport(lines: lines)
-    }
-
-    public static func morphMCPStatus() throws -> LaunchAgentReport {
+    public static func morphMCPStatus() throws -> ToolStatusReport {
         let result = runProcess(psExecutablePath(), arguments: ["-axo", "pid,ppid,etime,pcpu,command"])
         guard result.exitCode == 0 else {
             let details = result.stderr.nonEmptyLines.joined(separator: "\n")
@@ -690,7 +671,7 @@ public enum MetagentCore {
             lines.append("janitor plist missing: \(plist.path)")
         }
 
-        return LaunchAgentReport(lines: lines)
+        return ToolStatusReport(lines: lines)
     }
 
     public static func saveInventorySnapshot(_ report: SkillScanReport) {
@@ -699,6 +680,96 @@ public enum MetagentCore {
 
     public static func loadInventorySnapshot() -> SkillScanReport? {
         try? SkillInventoryCache().load()
+    }
+
+    public static func uninstallSkill(projectRoot: String, skillName: String) throws -> SkillUninstallReport {
+        guard isValidSkillName(skillName) else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "invalid skill name: \(skillName)"
+            ])
+        }
+
+        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL
+        let project = try readProjectSkills(root: root)
+        let agentsSkill = project.skills.first { $0.location == "agents" && $0.name == skillName }
+        guard let agentsSkill else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(skillName) is not installed in \(root.path)/.agents/skills"
+            ])
+        }
+
+        let skillURL = URL(fileURLWithPath: agentsSkill.path)
+        var lines: [String] = []
+        let recovery = try prepareRemovalRecovery(
+            skillURL: skillURL,
+            projectRoot: root,
+            skillName: skillName
+        )
+        let backupPath: String? = recovery.path
+        lines.append("saved recovery state to \(recovery.path)")
+
+        if agentsSkill.originKind == "npx-skills" {
+            var arguments = ["npx", "skills", "remove", skillName, "--agent", "*", "--yes"]
+            if root.path == canonicalProjectPath(homeURL()) {
+                arguments.append("--global")
+            }
+            let result = runProcess(
+                "/usr/bin/env",
+                arguments: arguments,
+                currentDirectory: root,
+                environment: ["PATH": augmentedPath()]
+            )
+            guard result.exitCode == 0 else {
+                let details = (result.stderr + "\n" + result.stdout).nonEmptyLines.joined(separator: "\n")
+                throw NSError(domain: "MetagentSkillUninstall", code: Int(result.exitCode), userInfo: [
+                    NSLocalizedDescriptionKey: "skills CLI removal failed\(details.isEmpty ? "" : "\n\(details)")\nRecovery state: \(recovery.path)"
+                ])
+            }
+            lines.append("skills CLI removed \(skillName) from registered agent locations")
+
+            if root.path != canonicalProjectPath(homeURL()), try removeSkillLockEntry(
+                skillName: skillName,
+                at: root.appendingPathComponent("skills-lock.json")
+            ) {
+                lines.append("removed stale project skills-lock.json entry")
+            }
+            if root.path != canonicalProjectPath(homeURL()), try removeSkillLockEntry(
+                skillName: skillName,
+                at: root.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json")
+            ) {
+                lines.append("removed stale project .agents/.skill-lock.json entry")
+            }
+        } else {
+            var trashedURL: NSURL?
+            try fileManager.trashItem(at: skillURL, resultingItemURL: &trashedURL)
+            lines.append("moved native skill to Trash")
+            if let trashedPath = (trashedURL as URL?)?.path {
+                lines.append("trashed bundle: \(trashedPath)")
+            }
+        }
+
+        guard !fileManager.fileExists(atPath: skillURL.path) else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "uninstall verification failed: \(skillURL.path) still exists"
+            ])
+        }
+        if agentsSkill.originKind == "npx-skills", readProjectSkillLocks(root: root)[skillName] != nil {
+            throw NSError(domain: "MetagentSkillUninstall", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "uninstall verification failed: \(skillName) remains in a managed skills lock\nRecovery state: \(recovery.path)"
+            ])
+        }
+
+        let retained = project.skills.filter { $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer }
+        if !retained.isEmpty {
+            lines.append("kept \(retained.count) independent same-name legacy location(s); review them separately")
+        }
+        lines.append("verified canonical skill and managed project lock entry are absent")
+        return SkillUninstallReport(
+            projectRoot: root.path,
+            skillName: skillName,
+            backupPath: backupPath,
+            lines: lines
+        )
     }
 }
 
@@ -711,6 +782,10 @@ private struct SkillLockEntry: Decodable {
     var sourceType: String?
     var sourceUrl: String?
     var ref: String?
+    var skillPath: String?
+    var computedHash: String?
+    var skillFolderHash: String?
+    var pluginName: String?
     var installedAt: String?
     var updatedAt: String?
 
@@ -719,14 +794,13 @@ private struct SkillLockEntry: Decodable {
         case sourceType
         case sourceUrl = "sourceUrl"
         case ref
+        case skillPath
+        case computedHash
+        case skillFolderHash
+        case pluginName
         case installedAt
         case updatedAt
     }
-}
-
-private struct AgentsTomlDeclaration {
-    var name: String?
-    var source: String?
 }
 
 private struct SkillStats {
@@ -774,10 +848,6 @@ private func defaultRootPaths() -> [String] {
         home.appendingPathComponent("Library").appendingPathComponent("CloudStorage").path,
         home.appendingPathComponent("Documents").appendingPathComponent("Codex").path
     ]
-}
-
-private func defaultAgents() -> [String] {
-    ["claude", "codex", "cursor"]
 }
 
 private func expandPath(_ path: String) -> URL {
@@ -877,59 +947,6 @@ private func projectRootForDotSkillDirectory(_ url: URL) -> String? {
     return canonicalProjectPath(url.deletingLastPathComponent())
 }
 
-private func discoverAgentsTomlProjectRoots(
-    root: URL,
-    maxDepth: Int,
-    ignoreProjects: Set<String>,
-    projectRoots: inout Set<String>
-) {
-    let standardized = root.resolvingSymlinksInPath().standardizedFileURL
-    guard fileManager.fileExists(atPath: standardized.path) else { return }
-
-    var queue: [(URL, Int)] = [(standardized, 0)]
-    var visited = Set<String>()
-
-    while let (current, depth) = queue.first {
-        queue.removeFirst()
-        let path = canonicalProjectPath(current)
-        guard visited.insert(path).inserted else { continue }
-
-        if current.lastPathComponent == ".agents" {
-            if fileManager.fileExists(atPath: current.appendingPathComponent("agents.toml").path),
-               let parent = canonicalProjectPath(current.deletingLastPathComponent()).nonEmpty,
-               !ignoreProjects.contains(parent)
-            {
-                projectRoots.insert(parent)
-            }
-            continue
-        }
-
-        if hasAgentsToml(current), !ignoreProjects.contains(path) {
-            projectRoots.insert(path)
-        }
-
-        guard depth < maxDepth else { continue }
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: current,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: [.skipsPackageDescendants]
-        ) else {
-            continue
-        }
-
-        for entry in entries {
-            let name = entry.lastPathComponent
-            if isKnownSkillContainerDirectory(entry) || shouldPrune(name: name) {
-                continue
-            }
-            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-                continue
-            }
-            queue.append((entry, depth + 1))
-        }
-    }
-}
-
 private func hasKnownSkillContainer(_ root: URL) -> Bool {
     [
         ".agents/skills",
@@ -940,14 +957,9 @@ private func hasKnownSkillContainer(_ root: URL) -> Bool {
     }
 }
 
-private func hasAgentsToml(_ root: URL) -> Bool {
-    fileManager.fileExists(atPath: root.appendingPathComponent("agents.toml").path)
-        || fileManager.fileExists(atPath: root.appendingPathComponent(".agents").appendingPathComponent("agents.toml").path)
-}
-
 private func readProjectSkills(root: URL) throws -> SkillProject {
     let agentsSkillsDir = root.appendingPathComponent(".agents").appendingPathComponent("skills")
-    let skillLock = readSkillLock(root.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json"))
+    let skillLock = readProjectSkillLocks(root: root)
     var validSkills: [String] = []
     var inventory: [SkillInventoryItem] = []
     var invalidSkillDirs: [String] = []
@@ -1262,6 +1274,82 @@ private func readSkillLock(_ path: URL) -> [String: SkillLockEntry] {
     return (try? JSONDecoder().decode(SkillLock.self, from: data).skills) ?? [:]
 }
 
+private func readProjectSkillLocks(root: URL) -> [String: SkillLockEntry] {
+    let globalStyle = readSkillLock(
+        root.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json")
+    )
+    let projectStyle = readSkillLock(root.appendingPathComponent("skills-lock.json"))
+    var merged = globalStyle.merging(projectStyle) { _, projectEntry in projectEntry }
+    if canonicalProjectPath(root) == canonicalProjectPath(homeURL()) {
+        merged.merge(readSkillLock(globalSkillLockPath())) { _, xdgEntry in xdgEntry }
+    }
+    return merged
+}
+
+private func globalSkillLockPath() -> URL {
+    if let xdgStateHome = ProcessInfo.processInfo.environment["XDG_STATE_HOME"], !xdgStateHome.isEmpty {
+        return URL(fileURLWithPath: xdgStateHome)
+            .appendingPathComponent("skills")
+            .appendingPathComponent(".skill-lock.json")
+    }
+    return homeURL().appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json")
+}
+
+private func prepareRemovalRecovery(
+    skillURL: URL,
+    projectRoot: URL,
+    skillName: String
+) throws -> URL {
+    let recoveryRoot = homeURL()
+        .appendingPathComponent("Library")
+        .appendingPathComponent("Application Support")
+        .appendingPathComponent("Metagent")
+        .appendingPathComponent("Removed Skills")
+        .appendingPathComponent(UUID().uuidString)
+    try fileManager.createDirectory(at: recoveryRoot, withIntermediateDirectories: true)
+    try fileManager.copyItem(at: skillURL, to: recoveryRoot.appendingPathComponent(skillName))
+
+    let stateRoot = recoveryRoot.appendingPathComponent("state")
+    try fileManager.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+    let stateFiles: [(URL, String)] = [
+        (projectRoot.appendingPathComponent("skills-lock.json"), "project-skills-lock.json"),
+        (
+            projectRoot.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json"),
+            "agents-skill-lock.json"
+        ),
+        (globalSkillLockPath(), "global-skill-lock.json")
+    ]
+    var copiedPaths = Set<String>()
+    for (source, backupName) in stateFiles
+        where fileManager.fileExists(atPath: source.path) && copiedPaths.insert(source.path).inserted
+    {
+        try fileManager.copyItem(at: source, to: stateRoot.appendingPathComponent(backupName))
+    }
+
+    let metadata = "project=\(projectRoot.path)\nskill=\(skillName)\nremoved_at=\(ISO8601DateFormatter().string(from: Date()))\n"
+    try metadata.write(
+        to: recoveryRoot.appendingPathComponent("REMOVAL.txt"),
+        atomically: true,
+        encoding: .utf8
+    )
+    return recoveryRoot
+}
+
+private func removeSkillLockEntry(skillName: String, at path: URL) throws -> Bool {
+    guard let data = try? Data(contentsOf: path) else { return false }
+    guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          var skills = object["skills"] as? [String: Any],
+          skills.removeValue(forKey: skillName) != nil
+    else {
+        return false
+    }
+
+    object["skills"] = skills
+    let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    try updated.write(to: path, options: .atomic)
+    return true
+}
+
 private func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
     !project.validSkills.isEmpty
         || !project.skills.isEmpty
@@ -1269,74 +1357,21 @@ private func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
         || !project.hiddenSkillDirs.isEmpty
 }
 
-private func hasAgentsSyncSurface(_ project: SkillProject) -> Bool {
+private func hasCanonicalSkillsSurface(_ project: SkillProject) -> Bool {
     !project.validSkills.isEmpty
         || !project.invalidSkillDirs.isEmpty
         || !project.hiddenSkillDirs.isEmpty
 }
 
-private func checkAgentsToml(project: SkillProject, issues: inout [DoctorIssue]) {
-    let root = URL(fileURLWithPath: project.root)
-    let primary = root.appendingPathComponent("agents.toml")
-    let nested = root.appendingPathComponent(".agents").appendingPathComponent("agents.toml")
-    let agentsToml = fileManager.fileExists(atPath: primary.path) ? primary
-        : (fileManager.fileExists(atPath: nested.path) ? nested : nil)
-
-    guard let agentsToml else {
-        issues.append(.init(severity: .warning, message: "\(primary.path) missing"))
-        return
-    }
-
-    issues.append(.init(severity: .ok, message: "\(agentsToml.path) exists"))
-
-    let lock = agentsToml.path == nested.path
-        ? root.appendingPathComponent(".agents").appendingPathComponent("agents.lock")
-        : root.appendingPathComponent("agents.lock")
-    if !fileManager.fileExists(atPath: lock.path) {
-        issues.append(.init(severity: .warning, message: "\(lock.path) missing"))
-    }
-
-    guard let text = try? String(contentsOf: agentsToml, encoding: .utf8) else {
-        issues.append(.init(severity: .warning, message: "\(agentsToml.path) could not be read"))
-        return
-    }
-
-    let declarations = parseAgentsTomlDeclarations(text)
-    if declarations.isEmpty {
-        issues.append(.init(severity: .warning, message: "\(agentsToml.path) declares no skills"))
-        return
-    }
-
-    let actual = Set(project.validSkills)
-    let declared = Set(declarations.compactMap(declaredSkillName))
-
-    for (name, sourceName) in declarationNameSourceMismatches(declarations) {
-        issues.append(.init(
-            severity: .warning,
-            message: "\(agentsToml.path) declares skill \(name) with mismatched path source basename \(sourceName)"
-        ))
-    }
-    for name in actual.subtracting(declared).sorted() {
-        issues.append(.init(
-            severity: .warning,
-            message: "\(project.root)/.agents/skills has on-disk skill not declared in \(agentsToml.path): \(name)"
-        ))
-    }
-    for name in declared.subtracting(actual).sorted() {
-        issues.append(.init(
-            severity: .warning,
-            message: "\(agentsToml.path) declares missing skill folder: \(name)"
-        ))
-    }
-}
-
-private func syncProject(
+private func repairProjectProjection(
     _ project: SkillProject,
-    options: SkillsSyncOptions,
-    agents: [String]
-) throws -> [SkillsSyncLine] {
+    apply: Bool
+) throws -> [SkillsRepairLine] {
     let root = URL(fileURLWithPath: project.root)
-    var lines: [SkillsSyncLine] = [
+    let canonicalSkills = root.appendingPathComponent(".agents").appendingPathComponent("skills")
+    let claudeDirectory = root.appendingPathComponent(".claude")
+    let claudeSkills = claudeDirectory.appendingPathComponent("skills")
+    var lines: [SkillsRepairLine] = [
         .init(kind: .info, text: "valid local skills: \(project.validSkills.count)")
     ]
 
@@ -1347,275 +1382,46 @@ private func syncProject(
         lines.append(.init(kind: .warning, text: "warning: skipped invalid skill name: \(invalid)"))
     }
     if project.validSkills.isEmpty {
-        lines.append(.init(kind: .skipped, text: "skipped: no valid SKILL.md folders"))
+        lines.append(.init(kind: .info, text: "no valid SKILL.md folders yet"))
+    }
+
+    if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) {
+        lines.append(.init(kind: .info, text: "healthy: .claude/skills -> ../.agents/skills"))
+        return lines
+    }
+    if fileManager.fileExists(atPath: claudeSkills.path), !isSymlink(claudeSkills) {
+        lines.append(.init(
+            kind: .skipped,
+            text: "manual review: .claude/skills exists and is not a symlink"
+        ))
         return lines
     }
 
-    try retireNestedAgentsToml(root: root, options: options, lines: &lines)
-    guard try ensureAgentsToml(project: project, options: options, agents: agents, lines: &lines) else {
-        return lines
-    }
-    try prepareClaudeSkills(root: root, options: options, lines: &lines)
-
-    if options.runDotagents {
-        if options.apply {
-            let result = runProcess(
-                "/usr/bin/env",
-                arguments: ["npx", "@sentry/dotagents", "sync"],
-                currentDirectory: root,
-                environment: ["PATH": augmentedPath()]
-            )
-            if result.exitCode == 0 {
-                lines.append(.init(kind: .action, text: "dotagents: synced"))
-                for line in result.stdout.nonEmptyLines {
-                    lines.append(.init(kind: .action, text: "dotagents: \(line)"))
-                }
-                for line in result.stderr.nonEmptyLines {
-                    lines.append(.init(kind: .warning, text: "warning: dotagents: \(line)"))
-                }
-            } else {
-                let details = (result.stderr + "\n" + result.stdout).nonEmptyLines.joined(separator: "\n")
-                throw NSError(domain: "MetagentDotagents", code: Int(result.exitCode), userInfo: [
-                    NSLocalizedDescriptionKey: "dotagents sync failed\(details.isEmpty ? "" : "\n\(details)")"
-                ])
-            }
-        } else {
-            lines.append(.init(kind: .action, text: "would run: npx @sentry/dotagents sync"))
+    let replacingWrongSymlink = isSymlink(claudeSkills)
+    let action = replacingWrongSymlink ? "replace wrong .claude/skills symlink" : "create .claude/skills symlink"
+    if apply {
+        try fileManager.createDirectory(at: claudeDirectory, withIntermediateDirectories: true)
+        if replacingWrongSymlink {
+            try fileManager.removeItem(at: claudeSkills)
         }
+        try fileManager.createSymbolicLink(atPath: claudeSkills.path, withDestinationPath: "../.agents/skills")
+        guard isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) else {
+            throw NSError(domain: "MetagentSkillsRepair", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "repair verification failed for \(claudeSkills.path)"
+            ])
+        }
+        lines.append(.init(kind: .action, text: "repaired: .claude/skills -> ../.agents/skills"))
     } else {
-        lines.append(.init(kind: .skipped, text: "skipped dotagents sync"))
+        lines.append(.init(kind: .action, text: "would \(action) -> ../.agents/skills"))
     }
 
     return lines
-}
-
-private func retireNestedAgentsToml(
-    root: URL,
-    options: SkillsSyncOptions,
-    lines: inout [SkillsSyncLine]
-) throws {
-    let nested = root.appendingPathComponent(".agents").appendingPathComponent("agents.toml")
-    guard fileManager.fileExists(atPath: nested.path) else { return }
-
-    let backup = timestampedBackupPath(for: nested)
-    if options.apply {
-        try fileManager.moveItem(at: nested, to: backup)
-        lines.append(.init(kind: .action, text: "moved ignored nested config to \(backup.path)"))
-    } else {
-        lines.append(.init(kind: .action, text: "would move ignored nested config to \(backup.path)"))
-    }
-}
-
-private func ensureAgentsToml(
-    project: SkillProject,
-    options: SkillsSyncOptions,
-    agents: [String],
-    lines: inout [SkillsSyncLine]
-) throws -> Bool {
-    let root = URL(fileURLWithPath: project.root)
-    let agentsToml = root.appendingPathComponent("agents.toml")
-
-    if fileManager.fileExists(atPath: agentsToml.path), !options.rewriteAgentsToml {
-        lines.append(.init(kind: .info, text: "kept existing \(agentsToml.path)"))
-        return true
-    }
-
-    if options.syncOnly, !fileManager.fileExists(atPath: agentsToml.path) {
-        lines.append(.init(kind: .skipped, text: "skipped: \(agentsToml.path) missing and --sync-only is set"))
-        return false
-    }
-
-    if options.apply {
-        if fileManager.fileExists(atPath: agentsToml.path) {
-            let backup = timestampedBackupPath(for: agentsToml)
-            try fileManager.copyItem(at: agentsToml, to: backup)
-            lines.append(.init(kind: .action, text: "backed up existing agents.toml to \(backup.path)"))
-        }
-        try renderAgentsToml(project, agents: agents).write(to: agentsToml, atomically: true, encoding: .utf8)
-        lines.append(.init(kind: .action, text: "wrote \(agentsToml.path)"))
-    } else if fileManager.fileExists(atPath: agentsToml.path) {
-        lines.append(.init(kind: .action, text: "would rewrite \(agentsToml.path)"))
-    } else {
-        lines.append(.init(kind: .action, text: "would create \(agentsToml.path)"))
-    }
-
-    return true
-}
-
-private func renderAgentsToml(_ project: SkillProject, agents: [String]) -> String {
-    var out = """
-    version = 1
-    agents = [\(agents.map(tomlEscape).map { "\"\($0)\"" }.joined(separator: ", "))]
-
-    [trust]
-    allow_all = true
-
-    """
-    for skill in project.validSkills {
-        out += """
-
-        [[skills]]
-        name = "\(tomlEscape(skill))"
-        source = "path:.agents/skills/\(tomlEscape(skill))"
-        """
-        out += "\n"
-    }
-    return out
-}
-
-private func prepareClaudeSkills(
-    root: URL,
-    options: SkillsSyncOptions,
-    lines: inout [SkillsSyncLine]
-) throws {
-    let claudeDir = root.appendingPathComponent(".claude")
-    let claudeSkills = claudeDir.appendingPathComponent("skills")
-
-    if isSymlink(claudeSkills) || !fileManager.fileExists(atPath: claudeSkills.path) {
-        return
-    }
-
-    if fileManager.fileExists(atPath: claudeSkills.path), !options.replaceClaudeSkills {
-        lines.append(.init(
-            kind: .skipped,
-            text: "skipped: \(claudeSkills.path) exists and is not a symlink; pass --replace-claude-skills"
-        ))
-        return
-    }
-
-    if options.apply {
-        try fileManager.createDirectory(at: claudeDir, withIntermediateDirectories: true)
-        let backup = timestampedBackupPath(for: claudeSkills)
-        try fileManager.moveItem(at: claudeSkills, to: backup)
-        lines.append(.init(kind: .action, text: "moved existing .claude/skills to \(backup.path)"))
-    } else {
-        lines.append(.init(kind: .action, text: "would move existing .claude/skills to a backup"))
-    }
-}
-
-private func renderLaunchAgentPlist(program: String, interval: Int) -> String {
-    let logs = logsURL().path
-    return """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-      <key>Label</key>
-      <string>\(MetagentCore.launchAgentLabel)</string>
-      <key>ProgramArguments</key>
-      <array>
-        <string>\(xmlEscape(program))</string>
-        <string>skills</string>
-        <string>sync</string>
-        <string>--apply</string>
-      </array>
-      <key>EnvironmentVariables</key>
-      <dict>
-        <key>PATH</key>
-        <string>\(xmlEscape(augmentedPath()))</string>
-      </dict>
-      <key>StartInterval</key>
-      <integer>\(interval)</integer>
-      <key>RunAtLoad</key>
-      <true/>
-      <key>StandardOutPath</key>
-      <string>\(xmlEscape(logs))/skills-sync.out.log</string>
-      <key>StandardErrorPath</key>
-      <string>\(xmlEscape(logs))/skills-sync.err.log</string>
-    </dict>
-    </plist>
-    """
-}
-
-private func launchAgentPlistURL(label: String = MetagentCore.launchAgentLabel) -> URL {
-    homeURL()
-        .appendingPathComponent("Library")
-        .appendingPathComponent("LaunchAgents")
-        .appendingPathComponent("\(label).plist")
-}
-
-private func launchctlExecutablePath() -> String {
-    ProcessInfo.processInfo.environment["METAGENT_LAUNCHCTL"] ?? "/bin/launchctl"
 }
 
 private func psExecutablePath() -> String {
     ProcessInfo.processInfo.environment["METAGENT_PS"] ?? "/bin/ps"
 }
 
-private func launchAgentDomain() -> String {
-    "gui/\(getuid())"
-}
-
-private func launchAgentJob(_ label: String) -> String {
-    "\(launchAgentDomain())/\(label)"
-}
-
-private func bootoutLaunchAgent(label: String) -> ProcessOutput {
-    runProcess(launchctlExecutablePath(), arguments: ["bootout", launchAgentJob(label)])
-}
-
-private func retireLegacyLaunchAgent() -> [String] {
-    let plist = launchAgentPlistURL(label: MetagentCore.legacyLaunchAgentLabel)
-    var lines: [String] = []
-
-    if bootoutLaunchAgent(label: MetagentCore.legacyLaunchAgentLabel).exitCode == 0 {
-        lines.append("unloaded legacy LaunchAgent \(MetagentCore.legacyLaunchAgentLabel)")
-    }
-
-    guard fileManager.fileExists(atPath: plist.path) else { return lines }
-    do {
-        var trashedURL: NSURL?
-        try fileManager.trashItem(at: plist, resultingItemURL: &trashedURL)
-        lines.append("moved legacy plist to Trash: \(plist.path)")
-    } catch {
-        do {
-            try fileManager.removeItem(at: plist)
-            lines.append("removed legacy plist: \(plist.path)")
-        } catch {
-            lines.append("warning: failed removing legacy plist \(plist.path): \(error.localizedDescription)")
-        }
-    }
-
-    return lines
-}
-
-private func logsURL() -> URL {
-    homeURL()
-        .appendingPathComponent("Library")
-        .appendingPathComponent("Logs")
-        .appendingPathComponent("metagent")
-}
-
-private func defaultHelperPath() throws -> String {
-    let bundledHelper = Bundle.main.bundleURL
-        .appendingPathComponent("Contents")
-        .appendingPathComponent("Helpers")
-        .appendingPathComponent("metagent")
-    if fileManager.isExecutableFile(atPath: bundledHelper.path) {
-        return bundledHelper.path
-    }
-
-    if let currentExecutable = Bundle.main.executableURL,
-       currentExecutable.lastPathComponent == "metagent",
-       fileManager.isExecutableFile(atPath: currentExecutable.path)
-    {
-        return currentExecutable.path
-    }
-
-    let candidates = [
-        "/opt/homebrew/bin/metagent",
-        "/usr/local/bin/metagent",
-        homeURL().appendingPathComponent(".local/bin/metagent").path
-    ]
-
-    for candidate in candidates where fileManager.isExecutableFile(atPath: candidate) {
-        return candidate
-    }
-
-    throw NSError(domain: "MetagentLaunchAgent", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: "Could not find a metagent helper. Install the CLI or use --program PATH."
-    ])
-}
 
 private func runProcess(
     _ executable: String,
@@ -1805,6 +1611,16 @@ private func isSymlink(_ url: URL) -> Bool {
     (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
 }
 
+private func symlink(_ link: URL, resolvesTo expectedTarget: URL) -> Bool {
+    guard let destination = try? fileManager.destinationOfSymbolicLink(atPath: link.path) else {
+        return false
+    }
+    let destinationURL = destination.hasPrefix("/")
+        ? URL(fileURLWithPath: destination)
+        : link.deletingLastPathComponent().appendingPathComponent(destination)
+    return canonicalProjectPath(destinationURL) == canonicalProjectPath(expectedTarget)
+}
+
 private func skillContainerEntries(at url: URL) -> [URL]? {
     guard let names = try? fileManager.contentsOfDirectory(atPath: url.path) else {
         return nil
@@ -1832,7 +1648,8 @@ private func shouldPrune(name: String) -> Bool {
         "dist",
         "build",
         "vendor",
-        "DerivedData"
+        "DerivedData",
+        "_archive"
     ].contains(name) {
         return true
     }
@@ -1884,79 +1701,6 @@ private func isSkillTextFile(_ url: URL) -> Bool {
     default:
         return false
     }
-}
-
-private func parseAgentsTomlDeclarations(_ text: String) -> [AgentsTomlDeclaration] {
-    var declarations: [AgentsTomlDeclaration] = []
-    var current: AgentsTomlDeclaration?
-
-    for rawLine in uncommentedConfigText(text).split(separator: "\n", omittingEmptySubsequences: false) {
-        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-        if line.isEmpty {
-            continue
-        }
-        if line.replacingOccurrences(of: " ", with: "") == "[[skills]]" {
-            appendDeclaration(current, to: &declarations)
-            current = AgentsTomlDeclaration()
-            continue
-        }
-        if line.hasPrefix("[") {
-            appendDeclaration(current, to: &declarations)
-            current = nil
-            continue
-        }
-        guard current != nil, let (rawKey, rawValue) = line.splitOnce("=") else {
-            continue
-        }
-        let value = quotedStrings(in: String(rawValue)).first
-        switch rawKey.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "name":
-            current?.name = value
-        case "source":
-            current?.source = value
-        default:
-            break
-        }
-    }
-
-    appendDeclaration(current, to: &declarations)
-    return declarations
-}
-
-private func appendDeclaration(_ declaration: AgentsTomlDeclaration?, to declarations: inout [AgentsTomlDeclaration]) {
-    guard let declaration, declaration.name != nil || declaration.source != nil else {
-        return
-    }
-    declarations.append(declaration)
-}
-
-private func declaredSkillName(_ declaration: AgentsTomlDeclaration) -> String? {
-    if let name = declaration.name {
-        return name
-    }
-    return skillNameFromSource(declaration.source)
-}
-
-private func declarationNameSourceMismatches(_ declarations: [AgentsTomlDeclaration]) -> [(String, String)] {
-    declarations.compactMap { declaration in
-        guard let name = declaration.name, let sourceName = skillNameFromSource(declaration.source), name != sourceName else {
-            return nil
-        }
-        return (name, sourceName)
-    }
-}
-
-private func skillNameFromSource(_ source: String?) -> String? {
-    guard let source, source.hasPrefix("path:") else {
-        return nil
-    }
-    let name = source
-        .dropFirst("path:".count)
-        .split(separator: "/")
-        .last
-        .map(String.init)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    return name?.isEmpty == false ? name : nil
 }
 
 private func parseStringArray(key: String, text: String) throws -> [String]? {
@@ -2133,37 +1877,6 @@ private func quotedStrings(in text: String) -> [String] {
     }
 
     return values
-}
-
-private func tomlEscape(_ text: String) -> String {
-    text.replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-}
-
-private func xmlEscape(_ text: String) -> String {
-    text.replacingOccurrences(of: "&", with: "&amp;")
-        .replacingOccurrences(of: "\"", with: "&quot;")
-        .replacingOccurrences(of: "'", with: "&apos;")
-        .replacingOccurrences(of: "<", with: "&lt;")
-        .replacingOccurrences(of: ">", with: "&gt;")
-}
-
-private func timestampForFilename() -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMddHHmmss"
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    return formatter.string(from: Date())
-}
-
-private func timestampedBackupPath(for path: URL) -> URL {
-    let baseName = "\(path.lastPathComponent).bak-metagent-\(timestampForFilename())"
-    var candidate = path.deletingLastPathComponent().appendingPathComponent(baseName)
-    var suffix = 2
-    while fileManager.fileExists(atPath: candidate.path) {
-        candidate = path.deletingLastPathComponent().appendingPathComponent("\(baseName)-\(suffix)")
-        suffix += 1
-    }
-    return candidate
 }
 
 private extension String {

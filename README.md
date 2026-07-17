@@ -32,7 +32,7 @@ The macOS app is the primary product surface:
 - shows whether `.agents` skills were installed by `npx skills` from `.skill-lock.json` or created natively
 - shows skill size, word, token, reference, script, asset, icon, and logo metadata
 - stores the latest inventory snapshot in SQLite at `~/Library/Application Support/Metagent/inventory.sqlite`
-- runs doctor, dry-run sync, apply sync, background sync install, and maintenance actions from Swift
+- runs Doctor, read-only repair previews, direct project skill-link repair, and maintenance actions from Swift
 
 Launching `Metagent.app` opens a normal resizable app window and keeps the menu bar extra available for quick status/actions.
 
@@ -55,6 +55,12 @@ Install it into the user Applications folder so Spotlight can find it:
 scripts/install-menu-bar-app.sh --restart
 ```
 
+During iterative app development, rebuild and restart automatically:
+
+```bash
+scripts/dev-menu-bar-app.sh
+```
+
 That installs:
 
 ```text
@@ -63,7 +69,7 @@ That installs:
 
 ### `metagent` Swift Helper
 
-The command helper is built from the same Swift package and exists for LaunchAgents, future MCP, and headless agent access. It is not the app's backend.
+The command helper is built from the same Swift package and exists for future MCP and headless agent access. It is not the app's backend.
 
 Install it:
 
@@ -76,11 +82,9 @@ Current helper commands:
 ```bash
 metagent config show --json
 metagent skills scan --json
-metagent skills sync
-metagent skills sync --apply
+metagent skills repair
+metagent skills repair --apply
 metagent skills doctor
-metagent launch-agent status
-metagent launch-agent install
 ```
 
 The future MCP entry point is reserved as:
@@ -91,20 +95,20 @@ metagent mcp --stdio
 
 ### `metagent skills`
 
-Find projects with `.agents/skills`, generate project-root `agents.toml` files for Sentry dotagents, and sync Claude Code's `.claude/skills` symlink.
+Find projects with `.agents/skills` and ensure Claude Code sees the same skills through `.claude/skills -> ../.agents/skills`.
 
 Dry run:
 
 ```bash
 cd apps/MetagentMenuBar
-swift run metagent skills sync
+swift run metagent skills repair
 ```
 
 Apply:
 
 ```bash
 cd apps/MetagentMenuBar
-swift run metagent skills sync --apply --replace-claude-skills
+swift run metagent skills repair --apply
 ```
 
 Scan only:
@@ -120,18 +124,10 @@ Check current state:
 metagent skills doctor
 ```
 
-Install the background sync LaunchAgent:
-
-```bash
-metagent launch-agent install --program ~/.local/bin/metagent --interval 300
-```
-
-Logs:
-
-```text
-~/Library/Logs/metagent/skills-sync.out.log
-~/Library/Logs/metagent/skills-sync.err.log
-```
+Repair only creates a missing project symlink or replaces a wrong symlink. It never
+replaces a real `.claude/skills` directory and never copies Claude content into
+`.agents`. Whole-directory links remain current automatically when skills are added
+or removed, so no background sync is needed.
 
 Use the Linear `misc` team project `metagent` for future fold-in candidates:
 https://linear.app/social-glass/project/metagent-730ac559ca5c.
@@ -169,7 +165,6 @@ roots = [
   "~/Documents/Codex",
 ]
 max_depth = 6
-agents = ["claude", "codex", "cursor"]
 ignore_projects = []
 ```
 

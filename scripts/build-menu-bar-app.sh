@@ -10,13 +10,16 @@ helpers="$contents/Helpers"
 resources="$contents/Resources"
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 
 "$repo_root/scripts/generate-menu-bar-assets.sh"
 
 (
   cd "$app_source"
-  swift build -c release --product MetagentMenuBar
-  swift build -c release --product metagent
+  swift build --disable-sandbox -c release --product MetagentMenuBar
+  swift build --disable-sandbox -c release --product metagent
 )
 
 previous_bundle=""
@@ -37,8 +40,9 @@ chmod +x "$helpers/metagent"
 
 if [[ -n "$previous_bundle" ]]; then
   if command -v trash >/dev/null 2>&1; then
-    trash "$previous_bundle"
-  else
+    trash "$previous_bundle" || true
+  fi
+  if [[ -e "$previous_bundle" ]]; then
     echo "Previous app moved to $previous_bundle"
     echo "Build succeeded; remove that backup later if you do not need it."
   fi

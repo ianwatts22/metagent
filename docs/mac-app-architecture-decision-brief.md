@@ -75,9 +75,9 @@ Ian reacted to the current behavior described in the conversation as:
 - no continuous UI polling
 - refresh on launch
 - refresh on manual Refresh
-- refresh after successful sync or background-sync install actions
+- refresh after successful project skill-link repair
 - last scan kept in memory until the next refresh
-- LaunchAgent used for sync/repair, not UI inventory caching
+- no periodic repair process; the project directory symlink remains current automatically
 - token counts estimated roughly as characters divided by four
 
 Ian then proposed adding a database and asked whether SQLite is the right standard choice for Swift/macOS app operations.

@@ -65,8 +65,9 @@ fi
 
 if [[ -n "$backup_app" ]]; then
   if command -v trash >/dev/null 2>&1; then
-    trash "$backup_app"
-  else
+    trash "$backup_app" || true
+  fi
+  if [[ -e "$backup_app" ]]; then
     echo "Previous app moved to $backup_app"
     echo "Install succeeded; remove that backup later if you do not need it."
   fi

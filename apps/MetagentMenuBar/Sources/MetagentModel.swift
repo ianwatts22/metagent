@@ -14,13 +14,13 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var skillCount = 0
     @Published private(set) var warningCount = 0
     @Published private(set) var failureCount = 0
+    @Published private(set) var doctorIssues: [DoctorIssue] = []
     @Published private(set) var rootsText = "Checking roots..."
     @Published private(set) var locationSummaryText = "Checking skill locations..."
-    @Published private(set) var backgroundStatus = "Checking background sync..."
     @Published private(set) var projects: [ProjectStatus] = []
     @Published private(set) var lastOutputTitle: String?
     @Published private(set) var lastOutputLines: [String] = []
-    @Published private(set) var syncPreview: SyncPreview?
+    @Published private(set) var repairPreview: RepairPreview?
     @Published private(set) var showsRawOutput = false
 
     private let fileManager = FileManager.default
@@ -29,10 +29,10 @@ final class MetagentModel: ObservableObject {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
             projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
             repoCount = projects.count
-            skillCount = projects.reduce(0) { $0 + $1.skillCount }
+            skillCount = Self.logicalSkillCount(projects: projects)
             locationSummaryText = Self.locationSummary(projects: projects)
             rootsText = "cached SQLite snapshot"
-            statusText = "\(repoCount) cached locations, \(skillCount) skill entries"
+            statusText = "\(repoCount) cached locations, \(skillCount) skills"
             systemImage = "externaldrive"
         }
         refreshStatus()
@@ -49,11 +49,33 @@ final class MetagentModel: ObservableObject {
         if failureCount > 0 {
             return "\(failureCount) fail, \(warningCount) warn"
         }
-        return "\(warningCount) warnings"
+        if doctorReviewCount > 0, doctorRepairableCount > 0 {
+            return "\(doctorRepairableCount) repairable, \(doctorReviewCount) review"
+        }
+        if doctorRepairableCount > 0 {
+            return "\(doctorRepairableCount) repairable"
+        }
+        return "\(doctorReviewCount) to review"
+    }
+
+    var doctorRepairableCount: Int {
+        doctorIssues.filter { $0.severity != .ok && $0.repairAction != nil }.count
+    }
+
+    var doctorReviewCount: Int {
+        problemCount - doctorRepairableCount
+    }
+
+    var doctorFindings: [DoctorIssue] {
+        doctorIssues.filter { $0.severity != .ok }
     }
 
     var skillInventory: [SkillStatus] {
         projects.flatMap { $0.skills }.sorted()
+    }
+
+    var logicalSkillCount: Int {
+        Self.logicalSkillCount(projects: projects)
     }
 
     var refreshPolicyText: String {
@@ -77,34 +99,28 @@ final class MetagentModel: ObservableObject {
             async let doctorResult = Task.detached {
                 Result { try MetagentCore.doctor() }
             }.value
-            async let launchAgentResult = Task.detached {
-                MetagentCore.launchAgentStatus()
-            }.value
-
-            let (scan, homeScan, doctor, launchAgent) = await (
+            let (scan, homeScan, doctor) = await (
                 scanResult,
                 homeScanResult,
-                doctorResult,
-                launchAgentResult
+                doctorResult
             )
 
             applyStatus(
                 scan: scan,
                 homeScan: homeScan,
-                doctor: doctor,
-                launchAgent: launchAgent
+                doctor: doctor
             )
         }
     }
 
-    func syncNow() {
+    func repairNow() {
         guard !isRunning else { return }
         runOperation(
-            title: "Skills Sync",
-            runningText: "Syncing skills..."
+            title: "Repair Skill Links",
+            runningText: "Repairing skill links..."
         ) {
-            let report = try MetagentCore.syncSkills(options: SkillsSyncOptions(apply: true))
-            return CommandOutcome(succeeded: true, lines: Self.renderSyncReport(report), syncPreview: nil)
+            let report = try MetagentCore.repairSkills(options: SkillsRepairOptions(apply: true))
+            return CommandOutcome(succeeded: true, lines: Self.renderRepairReport(report), repairPreview: nil)
         } completion: { [weak self] result in
             if result.succeeded {
                 self?.refreshStatus()
@@ -112,19 +128,19 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func dryRunSkillsSync() {
+    func previewRepair() {
         runOperation(
-            title: "Skills Sync Dry Run",
-            runningText: "Checking sync plan..."
+            title: "Repair Preview",
+            runningText: "Checking skill links..."
         ) {
-            let report = try MetagentCore.syncSkills()
+            let report = try MetagentCore.repairSkills()
             return CommandOutcome(
                 succeeded: true,
-                lines: Self.renderSyncReport(report),
-                syncPreview: SyncPreview(report: report)
+                lines: Self.renderRepairReport(report),
+                repairPreview: RepairPreview(report: report)
             )
         } completion: { [weak self] result in
-            self?.syncPreview = result.syncPreview
+            self?.repairPreview = result.repairPreview
             self?.showsRawOutput = false
         }
     }
@@ -138,21 +154,22 @@ final class MetagentModel: ObservableObject {
             return CommandOutcome(
                 succeeded: report.failureCount == 0,
                 lines: report.issues.map { "\($0.severity.rawValue): \($0.message)" },
-                syncPreview: nil
+                repairPreview: nil,
+                doctorReport: report
             )
+        } completion: { [weak self] result in
+            guard let report = result.doctorReport else { return }
+            self?.applyDoctorReport(report)
         }
     }
 
-    func installBackgroundSync() {
+    func uninstallSkill(projectRoot: String, skillName: String) {
         runOperation(
-            title: "Install Background Sync",
-            runningText: "Installing background sync..."
+            title: "Uninstall \(skillName)",
+            runningText: "Uninstalling \(skillName)..."
         ) {
-            CommandOutcome(
-                succeeded: true,
-                lines: try MetagentCore.installLaunchAgent().lines,
-                syncPreview: nil
-            )
+            let report = try MetagentCore.uninstallSkill(projectRoot: projectRoot, skillName: skillName)
+            return CommandOutcome(succeeded: true, lines: report.lines, repairPreview: nil)
         } completion: { [weak self] result in
             if result.succeeded {
                 self?.refreshStatus()
@@ -168,7 +185,7 @@ final class MetagentModel: ObservableObject {
             CommandOutcome(
                 succeeded: true,
                 lines: try MetagentCore.morphMCPStatus().lines,
-                syncPreview: nil
+                repairPreview: nil
             )
         }
     }
@@ -177,8 +194,8 @@ final class MetagentModel: ObservableObject {
         showsRawOutput.toggle()
     }
 
-    func clearSyncPreview() {
-        syncPreview = nil
+    func clearRepairPreview() {
+        repairPreview = nil
         showsRawOutput = false
     }
 
@@ -190,15 +207,15 @@ final class MetagentModel: ObservableObject {
         pasteboard.setString(text, forType: .string)
     }
 
-    func copySyncSummary() {
-        guard let syncPreview else { return }
-        let text = syncPreview.summaryText
+    func copyRepairSummary() {
+        guard let repairPreview else { return }
+        let text = repairPreview.summaryText
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
     }
 
-    func openProject(_ project: SyncProjectPreview) {
+    func openProject(_ project: RepairProjectPreview) {
         NSWorkspace.shared.open(URL(fileURLWithPath: project.root))
     }
 
@@ -237,8 +254,7 @@ final class MetagentModel: ObservableObject {
     private func applyStatus(
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
-        doctor: Result<DoctorReport, Error>,
-        launchAgent: LaunchAgentReport
+        doctor: Result<DoctorReport, Error>
     ) {
         isRunning = false
         lastRunText = Self.timestamp()
@@ -250,7 +266,7 @@ final class MetagentModel: ObservableObject {
             projects = Self.mergeProjects(homeProjects + configuredProjects)
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject)))
             repoCount = projects.count
-            skillCount = projects.reduce(0) { $0 + $1.skillCount }
+            skillCount = Self.logicalSkillCount(projects: projects)
             locationSummaryText = Self.locationSummary(projects: projects)
             rootsText = Self.rootsSummary(
                 configuredProjects: configuredProjects,
@@ -266,14 +282,16 @@ final class MetagentModel: ObservableObject {
             rootsText = "Roots unavailable"
         }
 
-        let doctorReport = doctor.value
-        warningCount = doctorReport?.warningCount ?? 0
-        failureCount = doctorReport?.failureCount ?? 0
-
-        backgroundStatus = Self.backgroundStatus(from: launchAgent.lines)
+        if let doctorReport = doctor.value {
+            applyDoctorReport(doctorReport)
+        } else {
+            doctorIssues = []
+            warningCount = 0
+            failureCount = 0
+        }
 
         if (scan.isSuccess || homeScan.isSuccess) && doctor.isSuccess {
-            statusText = "\(repoCount) locations, \(skillCount) skill entries"
+            statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
         } else {
             statusText = "Status check failed"
@@ -281,10 +299,16 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    private func applyDoctorReport(_ report: DoctorReport) {
+        doctorIssues = report.issues
+        warningCount = report.warningCount
+        failureCount = report.failureCount
+    }
+
     private func runOperation(
         title: String,
         runningText: String,
-        operation: @escaping () throws -> CommandOutcome,
+        operation: @escaping @Sendable () throws -> CommandOutcome,
         completion: ((CommandOutcome) -> Void)? = nil
     ) {
         guard !isRunning else { return }
@@ -297,7 +321,7 @@ final class MetagentModel: ObservableObject {
                 do {
                     return try operation()
                 } catch {
-                    return CommandOutcome(succeeded: false, lines: [error.localizedDescription], syncPreview: nil)
+                    return CommandOutcome(succeeded: false, lines: [error.localizedDescription], repairPreview: nil)
                 }
             }.value
             isRunning = false
@@ -311,7 +335,7 @@ final class MetagentModel: ObservableObject {
             } else {
                 statusText = "\(title) failed"
                 systemImage = "exclamationmark.triangle"
-                syncPreview = nil
+                repairPreview = nil
                 showsRawOutput = false
             }
 
@@ -324,20 +348,6 @@ final class MetagentModel: ObservableObject {
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return "Last run \(formatter.string(from: Date()))"
-    }
-
-    nonisolated private static func backgroundStatus(from lines: [String]) -> String {
-        let text = lines.joined(separator: "\n")
-        if text.contains("launchctl status: loaded") {
-            return "Loaded"
-        }
-        if text.contains("plist exists") {
-            return "Installed, not loaded"
-        }
-        if text.contains("plist missing") {
-            return "Not installed"
-        }
-        return "Unknown"
     }
 
     nonisolated private static func mergeProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {
@@ -371,6 +381,12 @@ final class MetagentModel: ObservableObject {
         return ".agents \(agents) (\(installed) npx, \(native) native), .codex \(codex), .claude \(claude)"
     }
 
+    nonisolated private static func logicalSkillCount(projects: [ProjectStatus]) -> Int {
+        Set(projects.flatMap { project in
+            project.skills.map { "\(project.root)\u{0}\($0.name)" }
+        }).count
+    }
+
     nonisolated private static func rootsSummary(
         configuredProjects: [ProjectStatus],
         homeProjects: [ProjectStatus],
@@ -387,8 +403,8 @@ final class MetagentModel: ObservableObject {
         return labels.isEmpty ? "No roots scanned" : labels.joined(separator: ", ")
     }
 
-    nonisolated private static func renderSyncReport(_ report: SkillsSyncReport) -> [String] {
-        var lines = ["metagent skills sync: \(report.mode)"]
+    nonisolated private static func renderRepairReport(_ report: SkillsRepairReport) -> [String] {
+        var lines = ["metagent skills repair: \(report.mode)"]
         for project in report.projects {
             lines.append("")
             lines.append("Project: \(project.root)")
@@ -419,13 +435,26 @@ final class MetagentModel: ObservableObject {
     }
 }
 
-struct CommandOutcome {
+struct CommandOutcome: Sendable {
     let succeeded: Bool
     let lines: [String]
-    let syncPreview: SyncPreview?
+    let repairPreview: RepairPreview?
+    let doctorReport: DoctorReport?
+
+    init(
+        succeeded: Bool,
+        lines: [String],
+        repairPreview: RepairPreview?,
+        doctorReport: DoctorReport? = nil
+    ) {
+        self.succeeded = succeeded
+        self.lines = lines
+        self.repairPreview = repairPreview
+        self.doctorReport = doctorReport
+    }
 }
 
-struct ProjectStatus: Identifiable {
+struct ProjectStatus: Identifiable, Sendable {
     let id: String
     let root: String
     let validSkills: [String]
@@ -512,7 +541,7 @@ struct ProjectStatus: Identifiable {
     }
 }
 
-struct SkillStatus: Identifiable, Comparable {
+struct SkillStatus: Identifiable, Comparable, Sendable {
     let name: String
     let path: String
     let location: String
@@ -687,21 +716,21 @@ struct SkillStatus: Identifiable, Comparable {
 
 }
 
-struct SyncPreview: Decodable {
+struct RepairPreview: Decodable, Sendable {
     let apply: Bool
     let mode: String
-    let summary: SyncSummaryPreview
-    let projects: [SyncProjectPreview]
+    let summary: RepairSummaryPreview
+    let projects: [RepairProjectPreview]
 
-    init(report: SkillsSyncReport) {
+    init(report: SkillsRepairReport) {
         self.apply = report.apply
         self.mode = report.mode
-        self.summary = SyncSummaryPreview(summary: report.summary)
-        self.projects = report.projects.map(SyncProjectPreview.init(project:))
+        self.summary = RepairSummaryPreview(summary: report.summary)
+        self.projects = report.projects.map(RepairProjectPreview.init(project:))
     }
 
     var title: String {
-        apply ? "Skills Sync" : "Skills Sync Dry Run"
+        apply ? "Repair Skill Links" : "Repair Preview"
     }
 
     var summaryText: String {
@@ -709,27 +738,24 @@ struct SyncPreview: Decodable {
             "\(title): \(summary.projectCount) projects",
             "\(summary.validSkillCount) valid skills",
             "\(summary.actionCount) planned actions",
-            "\(summary.warningCount) warnings",
-            "\(summary.dotagentsCount) dotagents syncs"
+            "\(summary.warningCount) warnings"
         ].joined(separator: ", ")
     }
 }
 
-struct SyncSummaryPreview: Decodable {
+struct RepairSummaryPreview: Decodable, Sendable {
     let projectCount: Int
     let validSkillCount: Int
     let warningCount: Int
     let actionCount: Int
     let skippedCount: Int
-    let dotagentsCount: Int
 
-    init(summary: SkillsSyncSummary) {
+    init(summary: SkillsRepairSummary) {
         self.projectCount = summary.projectCount
         self.validSkillCount = summary.validSkillCount
         self.warningCount = summary.warningCount
         self.actionCount = summary.actionCount
         self.skippedCount = summary.skippedCount
-        self.dotagentsCount = summary.dotagentsCount
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -738,50 +764,47 @@ struct SyncSummaryPreview: Decodable {
         case warningCount = "warning_count"
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
-        case dotagentsCount = "dotagents_count"
     }
 }
 
-struct SyncProjectPreview: Decodable, Identifiable {
+struct RepairProjectPreview: Decodable, Identifiable, Sendable {
     let root: String
     let name: String
     let validSkillCount: Int
     let warningCount: Int
     let actionCount: Int
     let skippedCount: Int
-    let usesDotagents: Bool
-    let lines: [SyncLinePreview]
+    let lines: [RepairLinePreview]
 
     var id: String { root }
 
-    init(project: SkillsSyncProject) {
+    init(project: SkillsRepairProject) {
         self.root = project.root
         self.name = project.name
         self.validSkillCount = project.validSkillCount
         self.warningCount = project.warningCount
         self.actionCount = project.actionCount
         self.skippedCount = project.skippedCount
-        self.usesDotagents = project.usesDotagents
-        self.lines = project.lines.map(SyncLinePreview.init(line:))
+        self.lines = project.lines.map(RepairLinePreview.init(line:))
     }
 
     var displayName: String {
         name.isEmpty ? URL(fileURLWithPath: root).lastPathComponent : name
     }
 
-    var actions: [SyncLinePreview] {
+    var actions: [RepairLinePreview] {
         lines.filter { $0.kind == .action }
     }
 
-    var warnings: [SyncLinePreview] {
+    var warnings: [RepairLinePreview] {
         lines.filter { $0.kind == .warning }
     }
 
-    var skipped: [SyncLinePreview] {
+    var skipped: [RepairLinePreview] {
         lines.filter { $0.kind == .skipped }
     }
 
-    var info: [SyncLinePreview] {
+    var info: [RepairLinePreview] {
         lines.filter { $0.kind == .info }
     }
 
@@ -792,25 +815,24 @@ struct SyncProjectPreview: Decodable, Identifiable {
         case warningCount = "warning_count"
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
-        case usesDotagents = "uses_dotagents"
         case lines
     }
 
 }
 
-struct SyncLinePreview: Decodable, Identifiable {
-    let kind: SyncLineKind
+struct RepairLinePreview: Decodable, Identifiable, Sendable {
+    let kind: RepairLineKind
     let text: String
 
     var id: String { "\(kind.rawValue)-\(text)" }
 
-    init(line: SkillsSyncLine) {
-        self.kind = SyncLineKind(rawValue: line.kind.rawValue) ?? .info
+    init(line: SkillsRepairLine) {
+        self.kind = RepairLineKind(rawValue: line.kind.rawValue) ?? .info
         self.text = line.text
     }
 }
 
-enum SyncLineKind: String, Decodable {
+enum RepairLineKind: String, Decodable, Sendable {
     case action
     case warning
     case skipped

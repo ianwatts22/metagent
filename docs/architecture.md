@@ -11,10 +11,9 @@ Swift owns the product core:
 - skill size, word, token, resource, icon, and logo metadata
 - SQLite inventory snapshots for fast startup
 - skill doctor checks
-- skill sync planning and apply behavior
-- LaunchAgent plist generation and status/install/uninstall
+- project skill-link audit, repair planning, and apply behavior
 - the native macOS app UI
-- the Swift `metagent` helper used by LaunchAgents and future MCP entry points
+- the Swift `metagent` helper used by future MCP and headless entry points
 
 Rust is no longer part of the active app architecture.
 
@@ -32,7 +31,7 @@ Targets:
 - `MetagentMenuBar`: native SwiftUI/AppKit macOS app
 - `metagent`: small Swift command helper for headless/background use
 
-The GUI imports `MetagentCore` directly. It does not shell out to the helper for inventory, doctor, sync, or LaunchAgent status.
+The GUI imports `MetagentCore` directly. It does not shell out to the helper for inventory, Doctor, or repair.
 
 ## Persistence
 
@@ -51,10 +50,8 @@ The Swift `metagent` helper exists for non-GUI entry points:
 ```bash
 metagent config show --json
 metagent skills scan --json
-metagent skills sync --apply
+metagent skills repair --apply
 metagent skills doctor
-metagent launch-agent status
-metagent launch-agent install
 ```
 
 The helper is intentionally subordinate to `MetagentCore`. It should stay a thin command surface over shared Swift code.
@@ -85,14 +82,17 @@ Logs belong in:
 ~/Library/Logs/metagent/
 ```
 
-Generated project state belongs in project-local dotagents files such as:
+Project skill ownership is intentionally small:
 
 ```text
-agents.toml
-agents.lock
-.agents/.gitignore
-.claude/skills
+.agents/skills/                 # physical source of truth
+.claude/skills -> ../.agents/skills
+skills-lock.json                # optional npx skills provenance
 ```
+
+Metagent does not generate manifests or lockfiles. `npx skills` may maintain
+`skills-lock.json` for packages it installed; native local skills need no manager
+state. Global `~/.claude/skills` remains outside this project projection rule.
 
 ## Verification
 

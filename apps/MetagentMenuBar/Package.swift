@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "MetagentMenuBar",
     platforms: [
-        .macOS("14.4")
+        .macOS("26.0")
     ],
     products: [
         .library(name: "MetagentCore", targets: ["MetagentCore"]),

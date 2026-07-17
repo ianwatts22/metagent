@@ -23,8 +23,6 @@ struct MetagentCLI {
             try runConfig(Array(args.dropFirst()))
         case "skills":
             try runSkills(Array(args.dropFirst()))
-        case "launch-agent":
-            try runLaunchAgent(Array(args.dropFirst()))
         case "morph-mcp":
             try runMorphMCP(Array(args.dropFirst()))
         case "mcp":
@@ -104,51 +102,29 @@ struct MetagentCLI {
         case "doctor":
             let parsed = try parseScan(Array(args.dropFirst()))
             let report = try MetagentCore.doctor(options: parsed.options)
-            for issue in report.issues {
-                print("\(issue.severity.rawValue): \(issue.message)")
+            if parsed.json {
+                try printJSON(report)
+            } else {
+                for issue in report.issues {
+                    print("\(issue.severity.rawValue): \(issue.message)")
+                }
             }
             if report.failureCount > 0 {
                 throw CLIError.message("doctor found errors")
             }
-        case "sync":
-            let parsed = try parseSync(Array(args.dropFirst()))
-            let report = try MetagentCore.syncSkills(options: parsed.options)
+        case "repair":
+            let parsed = try parseRepair(Array(args.dropFirst()))
+            let report = try MetagentCore.repairSkills(options: parsed.options)
             if parsed.json {
                 try printJSON(report)
             } else {
-                printSyncReport(report)
+                printRepairReport(report)
             }
         case "help", "--help", "-h":
             printSkillsHelp()
         default:
             throw CLIError.message("unknown skills command: \(command)")
         }
-    }
-
-    private static func runLaunchAgent(_ args: [String]) throws {
-        guard let command = args.first else {
-            printLaunchAgentHelp()
-            return
-        }
-
-        if ["help", "--help", "-h"].contains(command) {
-            printLaunchAgentHelp()
-            return
-        }
-
-        let options = try parseLaunchAgent(Array(args.dropFirst()))
-        let report: LaunchAgentReport
-        switch command {
-        case "status":
-            report = MetagentCore.launchAgentStatus(options: options)
-        case "install":
-            report = try MetagentCore.installLaunchAgent(options: options)
-        case "uninstall":
-            report = MetagentCore.uninstallLaunchAgent(options: options)
-        default:
-            throw CLIError.message("unknown launch-agent command: \(command)")
-        }
-        print(report.lines.joined(separator: "\n"))
     }
 
     private static func runMorphMCP(_ args: [String]) throws {
@@ -215,14 +191,9 @@ struct MetagentCLI {
         )
     }
 
-    private static func parseSync(_ args: [String]) throws -> (options: SkillsSyncOptions, json: Bool) {
+    private static func parseRepair(_ args: [String]) throws -> (options: SkillsRepairOptions, json: Bool) {
         var scanArgs: [String] = []
         var apply = false
-        var replaceClaudeSkills = false
-        var rewriteAgentsToml = false
-        var syncOnly = false
-        var runDotagents = true
-        var agents: [String] = []
         var json = false
         var index = 0
 
@@ -231,39 +202,21 @@ struct MetagentCLI {
             switch arg {
             case "--apply":
                 apply = true
-            case "--replace-claude-skills":
-                replaceClaudeSkills = true
-            case "--rewrite-agents-toml":
-                rewriteAgentsToml = true
-            case "--sync-only":
-                syncOnly = true
-            case "--no-dotagents":
-                runDotagents = false
-            case "--agents":
-                agents = try readFlagValue("--agents", args: args, index: &index)
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
             case "--json":
                 json = true
             case "--root", "--ignore-project", "--max-depth":
                 scanArgs.append(arg)
                 scanArgs.append(try readFlagValue(arg, args: args, index: &index))
             default:
-                throw CLIError.message("unknown sync flag: \(arg)")
+                throw CLIError.message("unknown repair flag: \(arg)")
             }
             index += 1
         }
 
         let scan = try parseScan(scanArgs).options
         return (
-            SkillsSyncOptions(
+            SkillsRepairOptions(
                 apply: apply,
-                replaceClaudeSkills: replaceClaudeSkills,
-                rewriteAgentsToml: rewriteAgentsToml,
-                syncOnly: syncOnly,
-                runDotagents: runDotagents,
-                agents: agents,
                 scanOptions: scan
             ),
             json
@@ -278,36 +231,8 @@ struct MetagentCLI {
         return args[index]
     }
 
-    private static func parseLaunchAgent(_ args: [String]) throws -> LaunchAgentOptions {
-        var program: String?
-        var interval = 300
-        var index = 0
-
-        while index < args.count {
-            let arg = args[index]
-            switch arg {
-            case "--program":
-                program = try readFlagValue("--program", args: args, index: &index)
-            case "--interval":
-                let value = try readFlagValue("--interval", args: args, index: &index)
-                guard let parsed = Int(value) else {
-                    throw CLIError.message("--interval must be an integer")
-                }
-                guard parsed > 0 else {
-                    throw CLIError.message("--interval must be a positive integer")
-                }
-                interval = parsed
-            default:
-                throw CLIError.message("unknown launch-agent flag: \(arg)")
-            }
-            index += 1
-        }
-
-        return LaunchAgentOptions(program: program, interval: interval)
-    }
-
-    private static func printSyncReport(_ report: SkillsSyncReport) {
-        print("metagent skills sync: \(report.mode)")
+    private static func printRepairReport(_ report: SkillsRepairReport) {
+        print("metagent skills repair: \(report.mode)")
         for project in report.projects {
             print("")
             print("Project: \(project.root)")
@@ -341,8 +266,7 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <scan|sync|doctor> [flags]
-          metagent launch-agent <install|uninstall|status> [flags]
+          metagent skills <scan|repair|doctor> [flags]
           metagent morph-mcp status
           metagent mcp --stdio
         """)
@@ -362,21 +286,11 @@ struct MetagentCLI {
 
         Usage:
           metagent skills scan [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
-          metagent skills sync [--apply] [--replace-claude-skills] [--rewrite-agents-toml] [--sync-only] [--agents a,b] [--no-dotagents] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
-          metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N]
+          metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
+          metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
         """)
     }
 
-    private static func printLaunchAgentHelp() {
-        print("""
-        metagent launch-agent
-
-        Usage:
-          metagent launch-agent install [--program PATH] [--interval SECONDS]
-          metagent launch-agent status
-          metagent launch-agent uninstall
-        """)
-    }
 }
 
 private enum CLIError: LocalizedError {

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MetagentCore
 import SwiftUI
 
 @main
@@ -12,6 +13,7 @@ struct MetagentMenuBarApp: App {
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
         }
         .windowResizability(.contentMinSize)
+        .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra {
             MetagentPanel(model: model, showsOpenWindowButton: true)
@@ -61,30 +63,28 @@ private struct MetagentPanel: View {
     @State private var selectedSection = PanelSection.overview
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
+        ZStack {
+            PanelBackdrop()
 
-            Picker("Section", selection: $selectedSection) {
-                ForEach(PanelSection.allCases) { section in
-                    Label(section.title, systemImage: section.symbol)
-                        .tag(section)
+            VStack(alignment: .leading, spacing: showsOpenWindowButton ? 14 : 18) {
+                header
+                navigation
+                panelContent
+                    .animation(.snappy(duration: 0.25), value: selectedSection)
+
+                if showsOpenWindowButton {
+                    compactFooter
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            panelContent
-
-            footer
+            .padding(showsOpenWindowButton ? 16 : 22)
         }
-        .padding(16)
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Metagent")
-                    .font(.title3.weight(.semibold))
+                    .font(.title.weight(.semibold))
                 Text(model.statusText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -92,12 +92,35 @@ private struct MetagentPanel: View {
 
             Spacer()
 
-            if let lastRun = model.lastRunText {
-                Text(lastRun)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 3) {
+                Label(healthLabel, systemImage: healthSymbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(healthTint)
+
+                if let lastRun = model.lastRunText {
+                    Text(lastRun)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
+    }
+
+    private var navigation: some View {
+        HStack(spacing: 4) {
+            ForEach(PanelSection.allCases) { section in
+                SectionNavigationButton(
+                    section: section,
+                    isSelected: selectedSection == section
+                ) {
+                    withAnimation(.snappy(duration: 0.25)) {
+                        selectedSection = section
+                    }
+                }
+            }
+        }
+        .padding(4)
+        .glassEffect(.clear, in: Capsule())
     }
 
     @ViewBuilder
@@ -116,113 +139,113 @@ private struct MetagentPanel: View {
             } else {
                 InventorySection(model: model)
             }
-        case .sync:
-            SyncSection(model: model)
+        case .repair:
+            RepairSection(model: model)
         case .tools:
             ToolsSection(model: model)
         }
     }
 
-    private var statusGrid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-            GridRow {
-                MetricView(title: "Locations", value: "\(model.repoCount)", symbol: "folder")
-                MetricView(title: "Skills", value: "\(model.skillCount)", symbol: "sparkles")
-                MetricView(
-                    title: "Doctor",
-                    value: model.problemText,
-                    symbol: model.problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle",
-                    tint: model.problemCount == 0 ? .green : .orange
-                )
-            }
-            GridRow {
-                MetricView(title: "Background", value: model.backgroundStatus, symbol: "timer")
-                StatusPathView(title: "Locations", value: model.locationSummaryText, symbol: "folder.badge.gearshape")
-                StatusPathView(title: "Roots", value: model.rootsText, symbol: "point.3.connected.trianglepath.dotted")
-            }
-        }
-    }
-
-    private var primaryActions: some View {
-        HStack(spacing: 8) {
-            ActionButton(
-                title: "Refresh",
-                symbol: "arrow.clockwise",
-                action: model.refreshStatus
-            )
-            .disabled(model.isRunning)
-
-            ActionButton(
-                title: "Doctor",
-                symbol: "stethoscope",
-                action: model.runDoctor
-            )
-            .disabled(model.isRunning)
-
-            ActionButton(
-                title: "Dry Run",
-                symbol: "doc.text.magnifyingglass",
-                action: model.dryRunSkillsSync
-            )
-            .disabled(model.isRunning)
-
-            ActionButton(
-                title: "Sync",
-                symbol: "arrow.triangle.2.circlepath",
-                action: model.syncNow
-            )
-            .disabled(model.isRunning)
-        }
-    }
-
-    private var footer: some View {
+    private var compactFooter: some View {
         HStack(spacing: 10) {
-            if showsOpenWindowButton {
-                Button {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                } label: {
-                    Label("Window", systemImage: "macwindow")
-                }
+            if model.isRunning {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Working…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-
-            Button {
-                model.openConfig()
-            } label: {
-                Label("Config", systemImage: "gearshape")
-            }
-
-            Button {
-                model.openLogs()
-            } label: {
-                Label("Logs", systemImage: "doc.text")
-            }
-
-            Button {
-                model.installBackgroundSync()
-            } label: {
-                Label("Install Sync", systemImage: "timer")
-            }
-            .disabled(model.isRunning)
 
             Spacer()
 
             Button {
-                model.restartMenuBar()
+                openWindow(id: "main")
+                NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
-                Image(systemName: "arrow.clockwise.circle")
+                Label("Open Window", systemImage: "macwindow")
             }
-            .help("Restart App")
+            .buttonStyle(.glassProminent)
+
+            Button {
+                model.refreshStatus()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.glass)
+            .help("Refresh")
             .disabled(model.isRunning)
 
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
-                Image(systemName: "xmark.circle")
+                Image(systemName: "xmark")
             }
-            .help("Quit")
+            .buttonStyle(.glass)
+            .help("Quit Metagent")
         }
-        .font(.callout)
+    }
+
+    private var healthLabel: String {
+        if model.problemCount == 0 {
+            return "Healthy"
+        }
+        return "\(model.problemCount) to review"
+    }
+
+    private var healthSymbol: String {
+        model.problemCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var healthTint: Color {
+        model.problemCount == 0 ? .green : .orange
+    }
+}
+
+private struct PanelBackdrop: View {
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            RadialGradient(
+                colors: [Color.accentColor.opacity(0.13), .clear],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 520
+            )
+            RadialGradient(
+                colors: [Color.purple.opacity(0.07), .clear],
+                center: .bottomTrailing,
+                startRadius: 0,
+                endRadius: 620
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
+
+private struct SectionNavigationButton: View {
+    let section: PanelSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        button
+            .buttonStyle(.plain)
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Label(section.title, systemImage: section.symbol)
+                .font(.callout.weight(isSelected ? .semibold : .medium))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(
+                    isSelected ? Color.accentColor : Color.clear,
+                    in: Capsule()
+                )
+                .contentShape(Capsule())
+        }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -230,7 +253,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case repos
     case inventory
-    case sync
+    case repair
     case tools
 
     var id: String { rawValue }
@@ -240,7 +263,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         case .overview: "Overview"
         case .repos: "Skills"
         case .inventory: "Inventory"
-        case .sync: "Sync"
+        case .repair: "Repair"
         case .tools: "Tools"
         }
     }
@@ -250,7 +273,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         case .overview: "gauge"
         case .repos: "folder"
         case .inventory: "tablecells"
-        case .sync: "arrow.triangle.2.circlepath"
+        case .repair: "link.badge.plus"
         case .tools: "wrench.and.screwdriver"
         }
     }
@@ -258,14 +281,12 @@ private enum PanelSection: String, CaseIterable, Identifiable {
 
 private struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
+    @State private var showsDoctorFindings = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            statusGrid
-            primaryActions
-
-            InfoRow(title: "Core", value: model.coreStatusText, symbol: "shippingbox")
-            InfoRow(title: "Refresh", value: model.refreshPolicyText, symbol: "arrow.clockwise")
+        VStack(alignment: .leading, spacing: 18) {
+            healthHero
+            summary
 
             if let title = model.lastOutputTitle {
                 LastOutputView(
@@ -274,65 +295,369 @@ private struct OverviewSection: View {
                     onCopy: model.copyLastOutput
                 )
             } else {
-                EmptyStateView(
-                    title: "Ready",
-                    message: "Run a command or open another section.",
-                    symbol: "checkmark.circle"
-                )
+                Spacer(minLength: 0)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private var statusGrid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-            GridRow {
-                MetricView(title: "Locations", value: "\(model.repoCount)", symbol: "folder")
-                MetricView(title: "Skills", value: "\(model.skillCount)", symbol: "sparkles")
-                MetricView(
-                    title: "Doctor",
-                    value: model.problemText,
-                    symbol: model.problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle",
-                    tint: model.problemCount == 0 ? .green : .orange
-                )
-            }
-            GridRow {
-                MetricView(title: "Background", value: model.backgroundStatus, symbol: "timer")
-                StatusPathView(title: "Locations", value: model.locationSummaryText, symbol: "folder.badge.gearshape")
-                StatusPathView(title: "Roots", value: model.rootsText, symbol: "point.3.connected.trianglepath.dotted")
-            }
+        .sheet(isPresented: $showsDoctorFindings) {
+            DoctorFindingsView(model: model)
         }
     }
 
-    private var primaryActions: some View {
-        HStack(spacing: 8) {
-            ActionButton(
-                title: "Refresh",
-                symbol: "arrow.clockwise",
-                action: model.refreshStatus
-            )
-            .disabled(model.isRunning)
+    private var healthHero: some View {
+        HStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(healthTint.opacity(0.14))
+                Image(systemName: healthSymbol)
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(healthTint)
+            }
+            .frame(width: 54, height: 54)
 
-            ActionButton(
+            VStack(alignment: .leading, spacing: 4) {
+                Text(healthTitle)
+                    .font(.title2.weight(.semibold))
+                Text(healthMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 16)
+
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button {
+                        showsDoctorFindings = true
+                        if model.problemCount == 0 {
+                            model.runDoctor()
+                        }
+                    } label: {
+                        Label(model.problemCount == 0 ? "Run Doctor" : "Review", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(model.isRunning)
+
+                    Button {
+                        model.previewRepair()
+                    } label: {
+                        Label("Preview Repair", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.glass)
+                    .disabled(model.isRunning)
+
+                    Button {
+                        model.refreshStatus()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.glass)
+                    .help("Refresh")
+                    .disabled(model.isRunning)
+                }
+                .controlSize(.large)
+            }
+        }
+        .padding(20)
+        .glassEffect(
+            .regular.tint(healthTint.opacity(0.08)),
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
+    }
+
+    private var summary: some View {
+        HStack(spacing: 0) {
+            SummaryMetric(
+                title: "Skills",
+                value: "\(model.skillCount)",
+                detail: "across \(model.repoCount) locations",
+                symbol: "sparkles"
+            )
+            Divider()
+                .padding(.vertical, 4)
+            SummaryMetric(
                 title: "Doctor",
-                symbol: "stethoscope",
-                action: model.runDoctor
+                value: model.problemText,
+                detail: model.coreStatusText,
+                symbol: "stethoscope"
             )
-            .disabled(model.isRunning)
+            Divider()
+                .padding(.vertical, 4)
+            SummaryMetric(
+                title: "Configured roots",
+                value: model.rootsText,
+                detail: model.locationSummaryText,
+                symbol: "point.3.connected.trianglepath.dotted"
+            )
+        }
+        .frame(height: 76, alignment: .top)
+        .padding(.vertical, 4)
+    }
 
-            ActionButton(
-                title: "Dry Run",
-                symbol: "doc.text.magnifyingglass",
-                action: model.dryRunSkillsSync
-            )
-            .disabled(model.isRunning)
+    private var healthTitle: String {
+        if model.problemCount == 0 {
+            return "Everything looks healthy"
+        }
+        return "\(model.problemCount) \(model.problemCount == 1 ? "item needs" : "items need") attention"
+    }
 
-            ActionButton(
-                title: "Sync",
-                symbol: "arrow.triangle.2.circlepath",
-                action: model.syncNow
-            )
-            .disabled(model.isRunning)
+    private var healthMessage: String {
+        if model.problemCount == 0 {
+            return "No action is needed. Metagent is ready when you are."
+        }
+        if model.doctorReviewCount == 0 {
+            return "\(model.doctorRepairableCount) can be fixed by repairing the Claude skill links."
+        }
+        return "\(model.doctorRepairableCount) repairable · \(model.doctorReviewCount) need review"
+    }
+
+    private var healthSymbol: String {
+        model.problemCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var healthTint: Color {
+        model.problemCount == 0 ? .green : .orange
+    }
+}
+
+private struct SummaryMetric: View {
+    let title: String
+    let value: String
+    let detail: String
+    let symbol: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 26, height: 26)
+                .background(Color.accentColor.opacity(0.1), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+    }
+}
+
+private struct DoctorFindingsView: View {
+    @ObservedObject var model: MetagentModel
+    @Environment(\.dismiss) private var dismiss
+
+    private var groups: [DoctorProjectGroup] {
+        DoctorProjectGroup.groups(from: model.doctorFindings)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Doctor Findings")
+                        .font(.title2.weight(.semibold))
+                    Text(summaryText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.glass)
+                .keyboardShortcut(.cancelAction)
+            }
+
+            if groups.isEmpty {
+                EmptyStateView(
+                    title: "Everything looks healthy",
+                    message: "Doctor did not find any warnings or failures.",
+                    symbol: "checkmark.circle"
+                )
+            } else {
+                List {
+                    ForEach(groups) { project in
+                        Section {
+                            ForEach(project.categories) { category in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label(category.title, systemImage: category.symbol)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+
+                                    ForEach(category.issues) { issue in
+                                        DoctorFindingRow(issue: issue)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        } header: {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(project.name)
+                                if let root = project.root {
+                                    Text(root)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .textCase(nil)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.inset)
+            }
+
+            HStack(spacing: 10) {
+                if model.doctorRepairableCount > 0 {
+                    Label(
+                        "\(model.doctorRepairableCount) repairable",
+                        systemImage: "link.badge.plus"
+                    )
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.blue)
+                }
+
+                Spacer()
+
+                Button {
+                    model.runDoctor()
+                } label: {
+                    Label("Run Again", systemImage: "stethoscope")
+                }
+                .buttonStyle(.glass)
+                .disabled(model.isRunning)
+
+                if model.doctorRepairableCount > 0 {
+                    Button {
+                        model.previewRepair()
+                        dismiss()
+                    } label: {
+                        Label("Preview Repair", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(model.isRunning)
+                }
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 720, minHeight: 520)
+    }
+
+    private var summaryText: String {
+        if model.problemCount == 0 {
+            return "No action needed."
+        }
+        if model.doctorReviewCount == 0 {
+            return "\(model.doctorRepairableCount) finding(s) can be fixed by repairing the Claude skill links."
+        }
+        return "\(model.doctorRepairableCount) repairable, \(model.doctorReviewCount) to review."
+    }
+}
+
+private struct DoctorFindingRow: View {
+    let issue: DoctorIssue
+    @State private var showsTechnicalDetail = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: issue.severity == .failure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(issue.severity == .failure ? .red : .orange)
+
+                Text(issue.summary ?? issue.message)
+                    .font(.callout.weight(.medium))
+
+                Spacer()
+
+                if issue.repairAction == .repairProjection {
+                    Text("Repairable")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.blue.opacity(0.1), in: Capsule())
+                }
+            }
+
+            if let guidance = issue.guidance {
+                Text(guidance)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 24)
+            }
+
+            DisclosureGroup("Technical detail", isExpanded: $showsTechnicalDetail) {
+                Text(issue.message)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.top, 3)
+            }
+            .font(.caption2)
+            .padding(.leading, 24)
+        }
+    }
+}
+
+private struct DoctorProjectGroup: Identifiable {
+    let root: String?
+    let categories: [DoctorCategoryGroup]
+
+    var id: String { root ?? "__general__" }
+    var name: String { root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "General" }
+
+    static func groups(from issues: [DoctorIssue]) -> [DoctorProjectGroup] {
+        Dictionary(grouping: issues, by: { $0.projectRoot }).map { root, projectIssues in
+            let categories = Dictionary(grouping: projectIssues, by: { $0.category }).map { category, issues in
+                DoctorCategoryGroup(category: category, issues: issues)
+            }
+            .sorted { $0.title < $1.title }
+            return DoctorProjectGroup(root: root, categories: categories)
+        }
+        .sorted { left, right in
+            switch (left.root, right.root) {
+            case (nil, nil): return false
+            case (nil, _): return true
+            case (_, nil): return false
+            case let (left?, right?): return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+            }
+        }
+    }
+}
+
+private struct DoctorCategoryGroup: Identifiable {
+    let category: DoctorIssueCategory?
+    let issues: [DoctorIssue]
+
+    var id: String { category?.rawValue ?? "general" }
+    var title: String {
+        switch category {
+        case .project: "Project"
+        case .skills: "Skills"
+        case .projection: "Claude Projection"
+        case nil: "General"
+        }
+    }
+    var symbol: String {
+        switch category {
+        case .project: "folder"
+        case .skills: "sparkles"
+        case .projection: "link"
+        case nil: "exclamationmark.circle"
         }
     }
 }
@@ -341,16 +666,23 @@ private struct ReposSection: View {
     @ObservedObject var model: MetagentModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Skill Locations")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Skill locations")
+                        .font(.title3.weight(.semibold))
+                    Text("\(model.repoCount) discovered locations")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button {
                     model.refreshStatus()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.glass)
+                .help("Refresh")
                 .disabled(model.isRunning)
             }
 
@@ -362,7 +694,7 @@ private struct ReposSection: View {
                 )
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(model.projects) { project in
                             ProjectRow(project: project)
                         }
@@ -379,15 +711,26 @@ private struct InventorySection: View {
     @ObservedObject var model: MetagentModel
     @State private var selection = Set<InventorySkillRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\InventorySkillRow.skillName)]
+    @State private var selectedProjectRoot: String?
+    @State private var pendingRemoval: InventorySkillRow?
     @SceneStorage("metagent.inventory.columns")
     private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
 
     private var rows: [InventorySkillRow] {
-        InventorySkillRow.rows(from: model.projects)
+        InventorySkillRow.rows(
+            from: model.projects.filter { project in
+                selectedProjectRoot == nil || project.root == selectedProjectRoot
+            }
+        )
     }
 
     private var sortedRows: [InventorySkillRow] {
         rows.sorted(using: sortOrder)
+    }
+
+    private var selectedRow: InventorySkillRow? {
+        guard selection.count == 1, let selectedID = selection.first else { return nil }
+        return rows.first { $0.id == selectedID }
     }
 
     var body: some View {
@@ -405,11 +748,31 @@ private struct InventorySection: View {
 
                 Spacer()
 
+                Picker("Project", selection: $selectedProjectRoot) {
+                    Text("All Projects").tag(String?.none)
+                    ForEach(model.projects) { project in
+                        Text(projectFilterLabel(project, projects: model.projects))
+                            .help(project.root)
+                            .tag(Optional(project.root))
+                    }
+                }
+                .frame(minWidth: 150, idealWidth: 190)
+
+                Button(role: .destructive) {
+                    pendingRemoval = selectedRow
+                } label: {
+                    Label("Uninstall", systemImage: "trash")
+                }
+                .buttonStyle(.glass)
+                .disabled(selectedRow?.canUninstall != true || model.isRunning)
+
                 Button {
                     model.refreshStatus()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.glass)
+                .help("Refresh")
                 .disabled(model.isRunning)
             }
 
@@ -442,6 +805,17 @@ private struct InventorySection: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .alert(item: $pendingRemoval) { row in
+            Alert(
+                title: Text("Uninstall \(row.skillName)?"),
+                message: Text(row.removalMessage),
+                primaryButton: .destructive(Text("Uninstall")) {
+                    selection.removeAll()
+                    model.uninstallSkill(projectRoot: row.projectRoot, skillName: row.skillName)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 }
 
@@ -461,7 +835,7 @@ private struct InventoryMenuSection: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                MetricView(title: "Entries", value: "\(model.skillInventory.count)", symbol: "tablecells")
+                MetricView(title: "Skills", value: "\(model.logicalSkillCount)", symbol: "tablecells")
                 StatusPathView(title: "Locations", value: model.locationSummaryText, symbol: "folder.badge.gearshape")
             }
 
@@ -482,42 +856,73 @@ private struct InventoryMenuSection: View {
 private struct InventorySkillRow: Identifiable {
     let project: ProjectStatus
     let skill: SkillStatus
+    let variants: [SkillStatus]
 
     static func rows(from projects: [ProjectStatus]) -> [InventorySkillRow] {
         projects.flatMap { project in
-            project.skills.map { skill in
-                InventorySkillRow(project: project, skill: skill)
+            Dictionary(grouping: project.skills, by: \.name).values.map { variants in
+                let sortedVariants = variants.sorted(by: canonicalSkillOrder)
+                return InventorySkillRow(
+                    project: project,
+                    skill: sortedVariants[0],
+                    variants: sortedVariants
+                )
             }
         }
     }
 
+    private static func canonicalSkillOrder(_ left: SkillStatus, _ right: SkillStatus) -> Bool {
+        let priority = ["agents": 0, "claude": 1, "codex": 2]
+        let leftPriority = priority[left.location, default: 3]
+        let rightPriority = priority[right.location, default: 3]
+        if leftPriority != rightPriority {
+            return leftPriority < rightPriority
+        }
+        return left.path < right.path
+    }
+
     var id: String {
-        "\(project.root):\(skill.id)"
+        "\(project.root):\(skill.name)"
     }
 
     var skillName: String { skill.name }
     var projectName: String { project.name }
     var projectRoot: String { project.root }
     var skillPath: String { skill.path }
-    var locationLabel: String { skill.locationLabel }
+    var locationLabel: String {
+        variants
+            .map(\.locationLabel)
+            .uniqued()
+            .joined(separator: " + ")
+    }
+    var locationHelp: String {
+        variants.map { "\($0.locationLabel): \($0.path)" }.joined(separator: "\n")
+    }
     var originText: String { skill.tableOriginText }
     var originHelp: String { skill.sourceURL ?? skill.tableOriginText }
-    var folderKind: String { skill.folderKindLabel }
-    var characterCount: Int { skill.characterCount }
-    var wordCount: Int { skill.wordCount }
     var tokenEstimate: Int { skill.tokenEstimate }
-    var skillFileTokenEstimate: Int { skill.skillFileTokenEstimate }
-    var textFileCount: Int { skill.textFileCount }
-    var referenceFileCount: Int { skill.referenceFileCount }
     var scriptFileCount: Int { skill.scriptFileCount }
     var assetFileCount: Int { skill.assetFileCount }
     var otherFileCount: Int { skill.otherFileCount }
     var otherFolderCount: Int { skill.otherFolderCount }
-    var iconLogoText: String { skill.iconLogoText }
+    var metadataText: String { skill.hasOpenAIYaml ? "yes" : "no" }
+    var iconText: String { skill.hasIconSmall || skill.hasIconLarge ? "yes" : "no" }
     var iconHelp: String {
         [skill.iconSmallPath, skill.iconLargePath]
             .compactMap { $0 }
             .joined(separator: "\n")
+    }
+    var canUninstall: Bool {
+        variants.contains { $0.location == "agents" }
+    }
+    var removalMessage: String {
+        let ownership = skill.originKind == "npx-skills"
+            ? "Metagent will back up the bundle, run the skills CLI, and repair its project skills-lock.json entry."
+            : "Metagent will move the canonical .agents bundle to Trash."
+        let retained = variants.contains { $0.location != "agents" && !$0.symlinkedContainer }
+            ? " Independent same-name legacy locations will be retained for separate review."
+            : ""
+        return "Project: \(project.root)\n\n\(ownership)\(retained)"
     }
 }
 
@@ -565,7 +970,7 @@ private struct InventoryColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         value: \.locationLabel,
-        help: \.locationLabel
+        help: \.locationHelp
     ),
     InventoryColumnSpec(
         id: "origin",
@@ -579,39 +984,6 @@ private struct InventoryColumnSpec: Identifiable {
         help: \.originHelp
     ),
     InventoryColumnSpec(
-        id: "folder",
-        title: "Folder",
-        comparator: KeyPathComparator(\InventorySkillRow.folderKind),
-        minWidth: 110,
-        idealWidth: 130,
-        isNumeric: false,
-        isMonospaced: false,
-        value: \.folderKind,
-        help: \.folderKind
-    ),
-    InventoryColumnSpec(
-        id: "chars",
-        title: "Chars",
-        comparator: KeyPathComparator(\InventorySkillRow.characterCount),
-        minWidth: 72,
-        idealWidth: 86,
-        isNumeric: true,
-        isMonospaced: false,
-        value: { formatNumber($0.characterCount) },
-        help: { formatNumber($0.characterCount) }
-    ),
-    InventoryColumnSpec(
-        id: "words",
-        title: "Words",
-        comparator: KeyPathComparator(\InventorySkillRow.wordCount),
-        minWidth: 72,
-        idealWidth: 86,
-        isNumeric: true,
-        isMonospaced: false,
-        value: { formatNumber($0.wordCount) },
-        help: { formatNumber($0.wordCount) }
-    ),
-    InventoryColumnSpec(
         id: "tokens",
         title: "Tokens",
         comparator: KeyPathComparator(\InventorySkillRow.tokenEstimate),
@@ -621,39 +993,6 @@ private struct InventoryColumnSpec: Identifiable {
         isMonospaced: false,
         value: { formatNumber($0.tokenEstimate) },
         help: { formatNumber($0.tokenEstimate) }
-    ),
-    InventoryColumnSpec(
-        id: "skill-md",
-        title: "SKILL.md",
-        comparator: KeyPathComparator(\InventorySkillRow.skillFileTokenEstimate),
-        minWidth: 78,
-        idealWidth: 94,
-        isNumeric: true,
-        isMonospaced: false,
-        value: { formatNumber($0.skillFileTokenEstimate) },
-        help: { formatNumber($0.skillFileTokenEstimate) }
-    ),
-    InventoryColumnSpec(
-        id: "text-files",
-        title: "Text",
-        comparator: KeyPathComparator(\InventorySkillRow.textFileCount),
-        minWidth: 54,
-        idealWidth: 66,
-        isNumeric: true,
-        isMonospaced: false,
-        value: { formatNumber($0.textFileCount) },
-        help: { formatNumber($0.textFileCount) }
-    ),
-    InventoryColumnSpec(
-        id: "references",
-        title: "Refs",
-        comparator: KeyPathComparator(\InventorySkillRow.referenceFileCount),
-        minWidth: 54,
-        idealWidth: 66,
-        isNumeric: true,
-        isMonospaced: false,
-        value: { formatNumber($0.referenceFileCount) },
-        help: { formatNumber($0.referenceFileCount) }
     ),
     InventoryColumnSpec(
         id: "scripts",
@@ -700,14 +1039,25 @@ private struct InventoryColumnSpec: Identifiable {
         help: { formatNumber($0.otherFolderCount) }
     ),
     InventoryColumnSpec(
-        id: "icon-logo",
-        title: "Icon/logo",
-        comparator: KeyPathComparator(\InventorySkillRow.iconLogoText),
-        minWidth: 92,
-        idealWidth: 120,
+        id: "metadata",
+        title: "Metadata",
+        comparator: KeyPathComparator(\InventorySkillRow.metadataText),
+        minWidth: 72,
+        idealWidth: 82,
         isNumeric: false,
         isMonospaced: false,
-        value: \.iconLogoText,
+        value: \.metadataText,
+        help: { $0.skill.hasOpenAIYaml ? "agents/openai.yaml configured" : "No agents/openai.yaml" }
+    ),
+    InventoryColumnSpec(
+        id: "icon",
+        title: "Icon",
+        comparator: KeyPathComparator(\InventorySkillRow.iconText),
+        minWidth: 52,
+        idealWidth: 62,
+        isNumeric: false,
+        isMonospaced: false,
+        value: \.iconText,
         help: \.iconHelp
     ),
     InventoryColumnSpec(
@@ -744,34 +1094,72 @@ private func formatNumber(_ value: Int) -> String {
     value.formatted()
 }
 
-private struct SyncSection: View {
+private func projectFilterLabel(_ project: ProjectStatus, projects: [ProjectStatus]) -> String {
+    guard projects.filter({ $0.name == project.name }).count > 1 else {
+        return project.name
+    }
+    let parent = URL(fileURLWithPath: project.root).deletingLastPathComponent().lastPathComponent
+    return "\(project.name) — \(parent)"
+}
+
+private extension Sequence where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
+private struct RepairSection: View {
     @ObservedObject var model: MetagentModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                ActionButton(
-                    title: "Dry Run",
-                    symbol: "doc.text.magnifyingglass",
-                    action: model.dryRunSkillsSync
-                )
-                .disabled(model.isRunning)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Repair skill links")
+                        .font(.title3.weight(.semibold))
+                    Text("Keep .agents/skills canonical and point each project's .claude/skills at it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
-                ActionButton(
-                    title: "Apply",
-                    symbol: "checkmark.circle",
-                    action: model.syncNow
-                )
-                .disabled(model.isRunning)
+                Spacer()
+
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            model.previewRepair()
+                        } label: {
+                            Label("Preview", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.glass)
+
+                        Button {
+                            model.repairNow()
+                        } label: {
+                            Label("Apply Repair", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.glassProminent)
+                    }
+                    .controlSize(.large)
+                    .disabled(model.isRunning)
+                }
             }
 
-            if let syncPreview = model.syncPreview {
-                SyncPreviewView(
-                    preview: syncPreview,
+            Label(
+                "Preview is read-only. Apply only creates or replaces project .claude/skills symlinks; real directories are left for review.",
+                systemImage: "info.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let repairPreview = model.repairPreview {
+                RepairPreviewView(
+                    preview: repairPreview,
                     showsRawOutput: model.showsRawOutput,
                     rawLines: model.lastOutputLines,
-                    onApply: model.syncNow,
-                    onCopySummary: model.copySyncSummary,
+                    onApply: model.repairNow,
+                    onCopySummary: model.copyRepairSummary,
                     onCopyRawOutput: model.copyLastOutput,
                     onToggleRawOutput: model.toggleRawOutput,
                     onOpenProject: model.openProject
@@ -783,9 +1171,9 @@ private struct SyncSection: View {
                     onCopy: model.copyLastOutput
                 )
             } else {
-                EmptyStateView(
-                    title: "No sync preview",
-                    message: "Run a dry run to inspect planned changes before applying.",
+                QuietPrompt(
+                    title: "Start with Preview",
+                    message: "You’ll see every planned project change here before anything is written.",
                     symbol: "doc.text.magnifyingglass"
                 )
             }
@@ -798,17 +1186,45 @@ private struct ToolsSection: View {
     @ObservedObject var model: MetagentModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Maintenance")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Tools")
+                    .font(.title3.weight(.semibold))
+                Text("Diagnostics and lower-frequency maintenance live here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
                 ToolButton(title: "Doctor", symbol: "stethoscope", action: model.runDoctor)
                 ToolButton(title: "Morph Status", symbol: "waveform.path.ecg", action: model.runMorphStatus)
-                ToolButton(title: "Install Sync", symbol: "timer", action: model.installBackgroundSync)
                 ToolButton(title: "Refresh", symbol: "arrow.clockwise", action: model.refreshStatus)
             }
             .disabled(model.isRunning)
+
+            HStack(spacing: 8) {
+                Button {
+                    model.openConfig()
+                } label: {
+                    Label("Config", systemImage: "gearshape")
+                }
+                .buttonStyle(.glass)
+
+                Button {
+                    model.openLogs()
+                } label: {
+                    Label("Logs", systemImage: "doc.text")
+                }
+                .buttonStyle(.glass)
+
+                Button {
+                    model.restartMenuBar()
+                } label: {
+                    Label("Restart App", systemImage: "arrow.clockwise.circle")
+                }
+                .buttonStyle(.glass)
+                .disabled(model.isRunning)
+            }
 
             if let title = model.lastOutputTitle {
                 LastOutputView(
@@ -817,11 +1233,7 @@ private struct ToolsSection: View {
                     onCopy: model.copyLastOutput
                 )
             } else {
-                EmptyStateView(
-                    title: "No command output",
-                    message: "Run a maintenance command to inspect results here.",
-                    symbol: "terminal"
-                )
+                Spacer(minLength: 0)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -865,12 +1277,6 @@ private struct ProjectRow: View {
                 if project.claudeSkillCount > 0 {
                     Badge(text: ".claude \(project.claudeSkillCount)", symbol: "link", tint: .orange)
                 }
-                if project.npxInstalledAgentsSkillCount > 0 {
-                    Badge(text: "\(project.npxInstalledAgentsSkillCount) npx", symbol: "arrow.down.circle", tint: .green)
-                }
-                if project.nativeAgentsSkillCount > 0 {
-                    Badge(text: "\(project.nativeAgentsSkillCount) native", symbol: "hammer", tint: .secondary)
-                }
             }
 
             if !project.skills.isEmpty {
@@ -888,8 +1294,12 @@ private struct ProjectRow: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(14)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        }
     }
 }
 
@@ -923,8 +1333,8 @@ private struct SkillRow: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
         }
-        .padding(8)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .padding(10)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var locationTint: Color {
@@ -952,15 +1362,47 @@ private struct ToolButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: symbol)
-                    .frame(width: 18)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 30, height: 30)
+                    .background(Color.accentColor.opacity(0.1), in: Circle())
                 Text(title)
+                    .font(.callout.weight(.medium))
                 Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .padding(.vertical, 5)
         }
+        .buttonStyle(.glass)
+    }
+}
+
+private struct QuietPrompt: View {
+    let title: String
+    let message: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 4)
     }
 }
 
@@ -984,8 +1426,8 @@ private struct InfoRow: View {
                 .textSelection(.enabled)
             Spacer()
         }
-        .padding(8)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -1011,15 +1453,15 @@ private struct EmptyStateView: View {
     }
 }
 
-private struct SyncPreviewView: View {
-    let preview: SyncPreview
+private struct RepairPreviewView: View {
+    let preview: RepairPreview
     let showsRawOutput: Bool
     let rawLines: [String]
     let onApply: () -> Void
     let onCopySummary: () -> Void
     let onCopyRawOutput: () -> Void
     let onToggleRawOutput: () -> Void
-    let onOpenProject: (SyncProjectPreview) -> Void
+    let onOpenProject: (RepairProjectPreview) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1045,27 +1487,30 @@ private struct SyncPreviewView: View {
             HStack(spacing: 8) {
                 MetricView(title: "Projects", value: "\(preview.summary.projectCount)", symbol: "folder")
                 MetricView(title: "Actions", value: "\(preview.summary.actionCount)", symbol: "list.bullet.rectangle")
-                MetricView(title: "Dotagents", value: "\(preview.summary.dotagentsCount)", symbol: "arrow.triangle.2.circlepath")
+                MetricView(title: "Skills", value: "\(preview.summary.validSkillCount)", symbol: "sparkles")
             }
 
             HStack(spacing: 8) {
                 Button {
                     onApply()
                 } label: {
-                    Label("Apply Sync", systemImage: "checkmark.circle")
+                    Label("Apply Repair", systemImage: "checkmark.circle")
                 }
+                .buttonStyle(.glassProminent)
 
                 Button {
                     onCopySummary()
                 } label: {
                     Label("Copy Summary", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.glass)
 
                 Button {
                     onToggleRawOutput()
                 } label: {
                     Label(showsRawOutput ? "Hide Raw" : "Show Raw", systemImage: "terminal")
                 }
+                .buttonStyle(.glass)
 
                 if showsRawOutput {
                     Button {
@@ -1073,6 +1518,7 @@ private struct SyncPreviewView: View {
                     } label: {
                         Label("Copy Raw", systemImage: "doc.on.clipboard")
                     }
+                    .buttonStyle(.glass)
                 }
             }
             .font(.callout)
@@ -1082,7 +1528,7 @@ private struct SyncPreviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(preview.projects) { project in
-                        SyncProjectView(project: project) {
+                        RepairProjectView(project: project) {
                             onOpenProject(project)
                         }
                     }
@@ -1098,8 +1544,8 @@ private struct SyncPreviewView: View {
     }
 }
 
-private struct SyncProjectView: View {
-    let project: SyncProjectPreview
+private struct RepairProjectView: View {
+    let project: RepairProjectPreview
     let onOpen: () -> Void
 
     var body: some View {
@@ -1122,7 +1568,7 @@ private struct SyncProjectView: View {
                 } label: {
                     Image(systemName: "arrow.up.right.square")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.glass)
                 .help("Open Project")
             }
 
@@ -1144,13 +1590,17 @@ private struct SyncProjectView: View {
             LineGroup(lines: project.skipped, tint: .secondary)
             LineGroup(lines: project.info, tint: .secondary)
         }
-        .padding(10)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        }
     }
 }
 
 private struct LineGroup: View {
-    let lines: [SyncLinePreview]
+    let lines: [RepairLinePreview]
     let tint: Color
 
     var body: some View {
@@ -1188,6 +1638,7 @@ private struct LastOutputView: View {
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.glass)
             }
 
             RawOutputBlock(title: nil, lines: Array(lines.prefix(18)))
@@ -1219,7 +1670,7 @@ private struct RawOutputBlock: View {
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 }
@@ -1246,8 +1697,8 @@ private struct MetricView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -1272,22 +1723,8 @@ private struct StatusPathView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct ActionButton: View {
-    let title: String
-    let symbol: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .frame(maxWidth: .infinity)
-        }
-        .controlSize(.regular)
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

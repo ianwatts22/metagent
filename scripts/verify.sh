@@ -6,17 +6,21 @@ app_source="$repo_root/apps/MetagentMenuBar"
 swift_helper="$app_source/.build/debug/metagent"
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 
 cd "$repo_root"
 sg scan --config "$repo_root/sgconfig.yml" --filter no-direct-hard-delete --report-style short
 bash -n "$repo_root/scripts/generate-menu-bar-assets.sh"
 bash -n "$repo_root/scripts/install-menu-bar-app.sh"
+bash -n "$repo_root/scripts/dev-menu-bar-app.sh"
 bash -n "$repo_root/scripts/install-cli.sh"
 bash -n "$repo_root/scripts/build-menu-bar-app.sh"
 
 (
   cd "$app_source"
-  swift build
+  swift build --disable-sandbox
 )
 
 "$repo_root/scripts/build-menu-bar-app.sh" >/dev/null
@@ -27,8 +31,6 @@ test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
 "$swift_helper" skills --help >/dev/null
 "$swift_helper" config show --json >/dev/null
-"$swift_helper" launch-agent --help >/dev/null
-"$swift_helper" launch-agent status >/dev/null
 
 fixture_root="$(mktemp -d /private/tmp/metagent-verify.XXXXXX)"
 normalized_fixture_root="${fixture_root/#\/private\/tmp/\/tmp}"
@@ -45,13 +47,28 @@ mkdir -p \
   "$fixture_root/home/.config/metagent" \
   "$fixture_root/old/.agents/skills/old-skill" \
   "$fixture_root/workspace/.agents/skills/workspace-skill" \
+  "$fixture_root/workspace/_archive/stale/.agents/skills/archive-skill" \
   "$fixture_root/workspace/child/.agents/skills/child-skill" \
   "$fixture_root/workspace/child/.agents/skills/directory-skill/SKILL.md" \
   "$fixture_root/workspace/child/.agents/skills/child-skill/references/example/.agents/skills/nested-skill" \
   "$fixture_root/default/.agents/skills/default-skill"
 printf -- "---\nname: old-skill\ndescription: old\n---\n" >"$fixture_root/old/.agents/skills/old-skill/SKILL.md"
 printf -- "---\nname: workspace-skill\ndescription: workspace\n---\n" >"$fixture_root/workspace/.agents/skills/workspace-skill/SKILL.md"
+printf -- "---\nname: archive-skill\ndescription: archived\n---\n" >"$fixture_root/workspace/_archive/stale/.agents/skills/archive-skill/SKILL.md"
 printf -- "---\nname: child-skill\ndescription: child\n---\n" >"$fixture_root/workspace/child/.agents/skills/child-skill/SKILL.md"
+cat >"$fixture_root/workspace/child/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "child-skill": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "skillPath": "skills/child-skill",
+      "computedHash": "fixture-hash"
+    }
+  }
+}
+EOF
 printf -- "---\nname: nested-skill\ndescription: nested\n---\n" >"$fixture_root/workspace/child/.agents/skills/child-skill/references/example/.agents/skills/nested-skill/SKILL.md"
 printf -- "---\nname: default-skill\ndescription: default\n---\n" >"$fixture_root/default/.agents/skills/default-skill/SKILL.md"
 mkdir -p "$fixture_root/workspace/child/.claude"
@@ -76,6 +93,10 @@ if grep -q "workspace-skill" <<<"$fixture_scan"; then
   echo "ignored parent workspace was included as a project" >&2
   exit 1
 fi
+if grep -q "archive-skill" <<<"$fixture_scan"; then
+  echo "_archive project was included in skill discovery" >&2
+  exit 1
+fi
 if grep -q "nested-skill" <<<"$fixture_scan"; then
   echo "nested skill fixture was treated as a project" >&2
   exit 1
@@ -85,6 +106,15 @@ if grep -q "directory-skill" <<<"$fixture_scan"; then
   exit 1
 fi
 grep -q '"location" : "claude"' <<<"$fixture_scan"
+grep -q '"origin_kind" : "npx-skills"' <<<"$fixture_scan"
+grep -q '"source" : "example' <<<"$fixture_scan"
+
+fixture_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$fixture_root/workspace" --max-depth 4 --json)"
+if grep -q "archive-skill" <<<"$fixture_doctor"; then
+  echo "_archive project was included in Doctor findings" >&2
+  exit 1
+fi
+grep -q '"repair_action" : "repair_projection"' <<<"$fixture_doctor"
 
 symlink_ignore_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/workspace" --ignore-project "$fixture_root/workspace-link" --max-depth 0 --json)"
 if grep -q "workspace-skill" <<<"$symlink_ignore_scan"; then
@@ -154,6 +184,109 @@ if grep -q "cache-scoped" <<<"$cache_json"; then
   exit 1
 fi
 
+uninstall_root="$fixture_root/uninstall-project"
+mkdir -p \
+  "$uninstall_root/.agents/skills/remove-me" \
+  "$uninstall_root/.agents/skills/keep-me" \
+  "$uninstall_root/.claude" \
+  "$fixture_root/fake-bin"
+printf -- "---\nname: remove-me\ndescription: remove\n---\n" >"$uninstall_root/.agents/skills/remove-me/SKILL.md"
+printf -- "---\nname: keep-me\ndescription: keep\n---\n" >"$uninstall_root/.agents/skills/keep-me/SKILL.md"
+ln -s ../.agents/skills "$uninstall_root/.claude/skills"
+cat >"$uninstall_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "customTopLevel": "preserve-me",
+  "skills": {
+    "remove-me": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "computedHash": "remove-hash",
+      "customEntryField": "preserve-if-present"
+    },
+    "keep-me": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "computedHash": "keep-hash"
+    }
+  }
+}
+EOF
+cat >"$fixture_root/fake-bin/npx" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "skills" && "${2:-}" == "remove" ]]; then
+  rm -rf "$PWD/.agents/skills/${3:?}"
+  if [[ " $* " == *" --global "* ]]; then
+    mkdir -p "${XDG_STATE_HOME:?}/skills"
+    printf '%s\n' '{"version":3,"skills":{}}' >"$XDG_STATE_HOME/skills/.skill-lock.json"
+  fi
+  exit 0
+fi
+echo "unexpected fake npx invocation: $*" >&2
+exit 64
+SH
+chmod +x "$fixture_root/fake-bin/npx"
+uninstall_probe="$fixture_root/uninstall-probe.swift"
+cat >"$uninstall_probe" <<'SWIFT'
+import Foundation
+
+@main
+struct Probe {
+    static func main() throws {
+        let report = try MetagentCore.uninstallSkill(
+            projectRoot: CommandLine.arguments[1],
+            skillName: CommandLine.arguments[2]
+        )
+        print(report.lines.joined(separator: "\n"))
+    }
+}
+SWIFT
+swiftc "$app_source/Sources/MetagentCore/MetagentCore.swift" "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
+PATH="$fixture_root/fake-bin:$PATH" HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >/dev/null
+test ! -e "$uninstall_root/.agents/skills/remove-me"
+test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
+test -L "$uninstall_root/.claude/skills"
+grep -q '"customTopLevel" : "preserve-me"' "$uninstall_root/skills-lock.json"
+grep -q '"keep-me"' "$uninstall_root/skills-lock.json"
+if grep -q '"remove-me"' "$uninstall_root/skills-lock.json"; then
+  echo "uninstall left stale project lock entry" >&2
+  exit 1
+fi
+managed_recovery="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -path '*/remove-me/SKILL.md' -print -quit)"
+test -n "$managed_recovery"
+managed_recovery_root="$(dirname "$(dirname "$managed_recovery")")"
+test -f "$managed_recovery_root/state/project-skills-lock.json"
+
+global_home="$fixture_root/global-home"
+global_xdg="$fixture_root/global-xdg"
+mkdir -p "$global_home/.agents/skills/global-managed" "$global_xdg/skills"
+printf -- "---\nname: global-managed\ndescription: global\n---\n" >"$global_home/.agents/skills/global-managed/SKILL.md"
+cat >"$global_xdg/skills/.skill-lock.json" <<'EOF'
+{
+  "version": 3,
+  "skills": {
+    "global-managed": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/example/skills.git",
+      "skillFolderHash": "global-hash",
+      "pluginName": "example"
+    }
+  }
+}
+EOF
+global_scan="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills scan --root "$global_home" --max-depth 0 --json)"
+grep -q '"name" : "global-managed"' <<<"$global_scan"
+grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
+PATH="$fixture_root/fake-bin:$PATH" HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >/dev/null
+test ! -e "$global_home/.agents/skills/global-managed"
+if grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"; then
+  echo "global uninstall left stale v3 lock entry" >&2
+  exit 1
+fi
+find "$global_home/Library/Application Support/Metagent/Removed Skills" -path '*/global-managed/SKILL.md' -print -quit | grep -q .
+
 mkdir -p \
   "$fixture_root/prune-root/app/.agents/skills/app-skill" \
   "$fixture_root/prune-root/build/generated/.agents/skills/built" \
@@ -179,7 +312,7 @@ ignore_projects = ["$fixture_root/workspace"]
 EOF
 
 missing_root_output="$fixture_root/missing-root.out"
-if "$swift_helper" skills sync --apply --root >"$missing_root_output" 2>&1; then
+if "$swift_helper" skills repair --apply --root >"$missing_root_output" 2>&1; then
   echo "missing --root value was accepted" >&2
   exit 1
 fi
@@ -241,53 +374,6 @@ if HOME="$bad_max_depth_home" "$swift_helper" config show --json >"$bad_max_dept
 fi
 grep -q -- "max_depth must be an integer" "$bad_max_depth_output"
 
-bad_launch_output="$fixture_root/bad-launch.out"
-if "$swift_helper" launch-agent status --bogus >"$bad_launch_output" 2>&1; then
-  echo "unknown launch-agent flag was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown launch-agent flag: --bogus" "$bad_launch_output"
-
-missing_launch_output="$fixture_root/missing-launch.out"
-if "$swift_helper" launch-agent install --program >"$missing_launch_output" 2>&1; then
-  echo "missing launch-agent flag value was accepted" >&2
-  exit 1
-fi
-grep -q -- "--program requires a value" "$missing_launch_output"
-
-negative_launch_output="$fixture_root/negative-launch.out"
-if HOME="$fixture_root/negative-launch-home" "$swift_helper" launch-agent install --interval -300 >"$negative_launch_output" 2>&1; then
-  echo "negative launch-agent interval was accepted" >&2
-  exit 1
-fi
-grep -q -- "--interval must be a positive integer" "$negative_launch_output"
-
-launch_home="$fixture_root/launch-home"
-legacy_plist="$launch_home/Library/LaunchAgents/com.ianwatts.agent-tools.skills-sync.plist"
-new_plist="$launch_home/Library/LaunchAgents/com.ianwatts.metagent.skills-sync.plist"
-mkdir -p "$(dirname "$legacy_plist")"
-printf -- "<plist/>\n" >"$legacy_plist"
-fake_launchctl="$fixture_root/fake-launchctl"
-cat >"$fake_launchctl" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"${METAGENT_FAKE_LAUNCHCTL_LOG:?}"
-exit 0
-SH
-chmod +x "$fake_launchctl"
-fake_launchctl_log="$fixture_root/fake-launchctl.log"
-METAGENT_FAKE_LAUNCHCTL_LOG="$fake_launchctl_log" METAGENT_LAUNCHCTL="$fake_launchctl" HOME="$launch_home" "$swift_helper" launch-agent install --interval 999 >/dev/null
-grep -q -- "<integer>999</integer>" "$new_plist"
-grep -q -- "<string>$swift_helper</string>" "$new_plist"
-test ! -e "$legacy_plist"
-launch_domain="gui/$(id -u)"
-grep -Fxq -- "bootout $launch_domain/com.ianwatts.agent-tools.skills-sync" "$fake_launchctl_log"
-grep -Fxq -- "bootout $launch_domain/com.ianwatts.metagent.skills-sync" "$fake_launchctl_log"
-grep -Fxq -- "bootstrap $launch_domain $new_plist" "$fake_launchctl_log"
-: >"$fake_launchctl_log"
-METAGENT_FAKE_LAUNCHCTL_LOG="$fake_launchctl_log" METAGENT_LAUNCHCTL="$fake_launchctl" HOME="$launch_home" "$swift_helper" launch-agent uninstall >/dev/null
-test ! -e "$new_plist"
-grep -Fxq -- "bootout $launch_domain/com.ianwatts.metagent.skills-sync" "$fake_launchctl_log"
-
 install_home="$fixture_root/install-home"
 mkdir -p "$install_home/.cargo/bin"
 printf -- "#!/usr/bin/env bash\nexit 42\n" >"$install_home/.cargo/bin/metagent"
@@ -305,114 +391,66 @@ if HOME="$unreadable_config_home" "$swift_helper" config show --json >"$unreadab
 fi
 grep -q -- "failed reading" "$unreadable_config_output"
 
-unknown_sync_output="$fixture_root/unknown-sync.out"
-if HOME="$fixture_root/home" "$swift_helper" skills sync --apply --no-dotagents --rot "$fixture_root/workspace/child" >"$unknown_sync_output" 2>&1; then
-  echo "unknown sync flag was accepted" >&2
+unknown_repair_output="$fixture_root/unknown-repair.out"
+if HOME="$fixture_root/home" "$swift_helper" skills repair --apply --rot "$fixture_root/workspace/child" >"$unknown_repair_output" 2>&1; then
+  echo "unknown repair flag was accepted" >&2
   exit 1
 fi
-grep -q -- "unknown sync flag: --rot" "$unknown_sync_output"
-test ! -f "$fixture_root/workspace/child/agents.toml"
+grep -q -- "unknown repair flag: --rot" "$unknown_repair_output"
 
-cat >"$fixture_root/workspace/child/agents.toml" <<EOF
-version = 1
+repair_project="$fixture_root/repair-project"
+mkdir -p "$repair_project/.agents/skills/native-skill"
+printf -- "---\nname: native-skill\ndescription: native\n---\n" >"$repair_project/.agents/skills/native-skill/SKILL.md"
+repair_preview="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0)"
+grep -q "would create .claude/skills symlink" <<<"$repair_preview"
+test ! -e "$repair_project/.claude/skills"
+repair_apply="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0 --apply)"
+grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$repair_apply"
+test -L "$repair_project/.claude/skills"
+test "$(readlink "$repair_project/.claude/skills")" = "../.agents/skills"
+test -f "$repair_project/.claude/skills/native-skill/SKILL.md"
+test ! -e "$repair_project/agents.toml"
+test ! -e "$repair_project/agents.lock"
 
-[[skills]]
-name = "missing-skill"
-source = "path:.agents/skills/missing-skill"
-EOF
-doctor_output="$("$swift_helper" skills doctor --root "$fixture_root/workspace/child" --max-depth 1)"
-grep -q "on-disk skill not declared" <<<"$doctor_output"
-grep -q "declares missing skill folder: missing-skill" <<<"$doctor_output"
+wrong_link_project="$fixture_root/wrong-link-project"
+mkdir -p "$wrong_link_project/.agents/skills/wrong-link-skill" "$wrong_link_project/.claude"
+printf -- "---\nname: wrong-link-skill\ndescription: wrong link\n---\n" >"$wrong_link_project/.agents/skills/wrong-link-skill/SKILL.md"
+ln -s ../somewhere-else "$wrong_link_project/.claude/skills"
+wrong_link_preview="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0)"
+grep -q "would replace wrong .claude/skills symlink" <<<"$wrong_link_preview"
+wrong_link_apply="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply)"
+grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$wrong_link_apply"
+test "$(readlink "$wrong_link_project/.claude/skills")" = "../.agents/skills"
 
-mkdir -p "$fixture_root/config-only"
-cat >"$fixture_root/config-only/agents.toml" <<EOF
-version = 1
-
-[[skills]]
-name = "config-only-skill"
-source = "path:.agents/skills/config-only-skill"
-EOF
-config_only_doctor="$("$swift_helper" skills doctor --root "$fixture_root/config-only" --max-depth 0)"
-grep -q "has no valid .agents skills" <<<"$config_only_doctor"
-grep -q "declares missing skill folder: config-only-skill" <<<"$config_only_doctor"
-
-mkdir -p "$fixture_root/nested-config/.agents"
-cat >"$fixture_root/nested-config/.agents/agents.toml" <<EOF
-version = 1
-
-[[skills]]
-name = "nested-config-skill"
-source = "path:.agents/skills/nested-config-skill"
-EOF
-nested_config_doctor="$("$swift_helper" skills doctor --root "$fixture_root/nested-config/.agents" --max-depth 1)"
-grep -q ".agents/agents.toml exists" <<<"$nested_config_doctor"
-grep -q "declares missing skill folder: nested-config-skill" <<<"$nested_config_doctor"
-
-nested_retire_project="$fixture_root/nested-retire"
-mkdir -p "$nested_retire_project/.agents/skills/nested-retire-skill"
-printf -- "---\nname: nested-retire-skill\ndescription: nested retire\n---\n" >"$nested_retire_project/.agents/skills/nested-retire-skill/SKILL.md"
-cat >"$nested_retire_project/.agents/agents.toml" <<EOF
-version = 1
-
-[[skills]]
-name = "legacy-nested-skill"
-source = "path:.agents/skills/legacy-nested-skill"
-EOF
-nested_retire_dry_run="$("$swift_helper" skills sync --root "$nested_retire_project" --max-depth 0 --no-dotagents)"
-grep -q "would move ignored nested config to" <<<"$nested_retire_dry_run"
-test -f "$nested_retire_project/.agents/agents.toml"
-nested_retire_apply="$("$swift_helper" skills sync --root "$nested_retire_project" --max-depth 0 --apply --no-dotagents)"
-grep -q "moved ignored nested config to" <<<"$nested_retire_apply"
-test ! -f "$nested_retire_project/.agents/agents.toml"
-nested_retire_backup="$(find "$nested_retire_project/.agents" -maxdepth 1 -name 'agents.toml.bak-metagent-*' -print -quit)"
-test -n "$nested_retire_backup"
-grep -q "legacy-nested-skill" "$nested_retire_backup"
-grep -q 'name = "nested-retire-skill"' "$nested_retire_project/agents.toml"
-
-mkdir -p "$fixture_root/rewrite-project/.agents/skills/rewrite-skill"
-printf -- "---\nname: rewrite-skill\ndescription: rewrite\n---\n" >"$fixture_root/rewrite-project/.agents/skills/rewrite-skill/SKILL.md"
-printf -- "custom config\n" >"$fixture_root/rewrite-project/agents.toml"
-rewrite_output="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills sync --root "$fixture_root/rewrite-project" --max-depth 0 --apply --rewrite-agents-toml --no-dotagents)"
-grep -q "backed up existing agents.toml" <<<"$rewrite_output"
-backup_file="$(find "$fixture_root/rewrite-project" -maxdepth 1 -name 'agents.toml.bak-metagent-*' -print -quit)"
-test -n "$backup_file"
-grep -q "custom config" "$backup_file"
-grep -q 'name = "rewrite-skill"' "$fixture_root/rewrite-project/agents.toml"
-
-mkdir -p "$fixture_root/dotagents-project/.agents/skills/dotagents-skill" "$fixture_root/fake-bin"
-printf -- "---\nname: dotagents-skill\ndescription: dotagents\n---\n" >"$fixture_root/dotagents-project/.agents/skills/dotagents-skill/SKILL.md"
-cat >"$fixture_root/fake-bin/npx" <<'SH'
-#!/usr/bin/env bash
-printf 'dotagents stdout\n'
-printf 'dotagents stderr\n' >&2
-exit 0
-SH
-chmod +x "$fixture_root/fake-bin/npx"
-dotagents_output="$(PATH="$fixture_root/fake-bin:$PATH" HOME="$fixture_root/no-config-home" "$swift_helper" skills sync --root "$fixture_root/dotagents-project" --max-depth 0 --apply)"
-grep -q "dotagents: synced" <<<"$dotagents_output"
-grep -q "dotagents: dotagents stdout" <<<"$dotagents_output"
-grep -q "warning: dotagents: dotagents stderr" <<<"$dotagents_output"
+conflict_project="$fixture_root/conflict-project"
+mkdir -p "$conflict_project/.agents/skills/canonical-skill" "$conflict_project/.claude/skills/claude-only"
+printf -- "---\nname: canonical-skill\ndescription: canonical\n---\n" >"$conflict_project/.agents/skills/canonical-skill/SKILL.md"
+printf -- "keep me\n" >"$conflict_project/.claude/skills/claude-only/SKILL.md"
+conflict_output="$("$swift_helper" skills repair --root "$conflict_project" --max-depth 0 --apply)"
+grep -q "manual review: .claude/skills exists and is not a symlink" <<<"$conflict_output"
+test ! -L "$conflict_project/.claude/skills"
+test -f "$conflict_project/.claude/skills/claude-only/SKILL.md"
 
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
 roots = ["$fixture_root/default"
 EOF
 bad_config_output="$fixture_root/bad-config.out"
-if HOME="$fixture_root/home" "$swift_helper" skills sync --apply --no-dotagents >"$bad_config_output" 2>&1; then
+if HOME="$fixture_root/home" "$swift_helper" skills repair --apply >"$bad_config_output" 2>&1; then
   echo "malformed config was accepted" >&2
   exit 1
 fi
 grep -q -- "roots must be a TOML string array" "$bad_config_output"
-test ! -f "$fixture_root/default/agents.toml"
+test ! -e "$fixture_root/default/.claude/skills"
 
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
 roots = [$fixture_root/default]
 EOF
 bare_array_output="$fixture_root/bare-array.out"
-if HOME="$fixture_root/home" "$swift_helper" skills sync --apply --no-dotagents >"$bare_array_output" 2>&1; then
+if HOME="$fixture_root/home" "$swift_helper" skills repair --apply >"$bare_array_output" 2>&1; then
   echo "bare config array value was accepted" >&2
   exit 1
 fi
 grep -q -- "roots must be a TOML string array" "$bare_array_output"
-test ! -f "$fixture_root/default/agents.toml"
+test ! -e "$fixture_root/default/.claude/skills"
 
 echo "metagent verification passed"
