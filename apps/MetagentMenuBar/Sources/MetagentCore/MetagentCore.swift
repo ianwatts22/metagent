@@ -534,6 +534,9 @@ public enum MetagentCore {
         }
 
         for project in projects {
+            let projectRoot = URL(fileURLWithPath: project.root)
+            let isHomeProject = canonicalProjectPath(projectRoot) == canonicalProjectPath(homeURL())
+
             if project.validSkills.isEmpty {
                 issues.append(.init(
                     severity: .warning,
@@ -574,13 +577,28 @@ public enum MetagentCore {
                 ))
             }
 
-            let claudeSkills = URL(fileURLWithPath: project.root)
-                .appendingPathComponent(".claude")
-                .appendingPathComponent("skills")
-            let expectedSkills = URL(fileURLWithPath: project.root)
+            // Global agent skill locations are inventory-only. Claude may keep
+            // independent global skills there, so project projection rules do
+            // not apply to the home directory.
+            if isHomeProject {
+                continue
+            }
+
+            let claudeDirectory = projectRoot.appendingPathComponent(".claude")
+            let claudeSkills = claudeDirectory.appendingPathComponent("skills")
+            let expectedSkills = projectRoot
                 .appendingPathComponent(".agents")
                 .appendingPathComponent("skills")
-            if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: expectedSkills) {
+            if isSymlink(claudeDirectory) {
+                issues.append(.init(
+                    severity: .warning,
+                    message: "\(claudeDirectory.path) is a symlink; projection repair is disabled",
+                    summary: "Claude project directory is shared",
+                    projectRoot: project.root,
+                    category: .projection,
+                    guidance: "Review the shared .claude directory manually; Metagent will not write through it."
+                ))
+            } else if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: expectedSkills) {
                 issues.append(.init(
                     severity: .ok,
                     message: "\(claudeSkills.path) is a symlink to .agents/skills",
@@ -624,9 +642,12 @@ public enum MetagentCore {
 
     public static func repairSkills(options: SkillsRepairOptions = SkillsRepairOptions()) throws -> SkillsRepairReport {
         let scan = try scanSkills(options: options.scanOptions)
+        let canonicalHome = canonicalProjectPath(homeURL())
         var projects: [SkillsRepairProject] = []
 
-        for project in scan.projects where hasCanonicalSkillsSurface(project) {
+        for project in scan.projects where hasCanonicalSkillsSurface(project)
+            && canonicalProjectPath(URL(fileURLWithPath: project.root)) != canonicalHome
+        {
             let lines = try repairProjectProjection(project, apply: options.apply)
             projects.append(SkillsRepairProject(root: project.root, lines: lines))
         }
@@ -700,16 +721,24 @@ public enum MetagentCore {
 
         let skillURL = URL(fileURLWithPath: agentsSkill.path)
         var lines: [String] = []
+        let retained = project.skills.filter {
+            $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer
+        }
         let recovery = try prepareRemovalRecovery(
             skillURL: skillURL,
             projectRoot: root,
+            skillName: skillName
+        )
+        let independentBackups = try backupIndependentSkills(
+            retained.map { URL(fileURLWithPath: $0.path) },
+            recoveryRoot: recovery,
             skillName: skillName
         )
         let backupPath: String? = recovery.path
         lines.append("saved recovery state to \(recovery.path)")
 
         if agentsSkill.originKind == "npx-skills" {
-            var arguments = ["npx", "skills", "remove", skillName, "--agent", "*", "--yes"]
+            var arguments = ["npx", "skills", "remove", skillName, "--yes"]
             if root.path == canonicalProjectPath(homeURL()) {
                 arguments.append("--global")
             }
@@ -719,6 +748,7 @@ public enum MetagentCore {
                 currentDirectory: root,
                 environment: ["PATH": augmentedPath()]
             )
+            try restoreIndependentSkills(independentBackups)
             guard result.exitCode == 0 else {
                 let details = (result.stderr + "\n" + result.stdout).nonEmptyLines.joined(separator: "\n")
                 throw NSError(domain: "MetagentSkillUninstall", code: Int(result.exitCode), userInfo: [
@@ -759,7 +789,6 @@ public enum MetagentCore {
             ])
         }
 
-        let retained = project.skills.filter { $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer }
         if !retained.isEmpty {
             lines.append("kept \(retained.count) independent same-name legacy location(s); review them separately")
         }
@@ -1335,6 +1364,48 @@ private func prepareRemovalRecovery(
     return recoveryRoot
 }
 
+private struct IndependentSkillBackup {
+    let original: URL
+    let backup: URL
+}
+
+private func backupIndependentSkills(
+    _ skillURLs: [URL],
+    recoveryRoot: URL,
+    skillName: String
+) throws -> [IndependentSkillBackup] {
+    var backups: [IndependentSkillBackup] = []
+    let backupRoot = recoveryRoot.appendingPathComponent("independent")
+
+    for (index, original) in skillURLs.enumerated() {
+        let location = original
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .lastPathComponent
+        let backup = backupRoot
+            .appendingPathComponent("\(index)-\(location)")
+            .appendingPathComponent(skillName)
+        try fileManager.createDirectory(
+            at: backup.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.copyItem(at: original, to: backup)
+        backups.append(.init(original: original, backup: backup))
+    }
+
+    return backups
+}
+
+private func restoreIndependentSkills(_ backups: [IndependentSkillBackup]) throws {
+    for backup in backups where !fileManager.fileExists(atPath: backup.original.path) {
+        try fileManager.createDirectory(
+            at: backup.original.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.copyItem(at: backup.backup, to: backup.original)
+    }
+}
+
 private func removeSkillLockEntry(skillName: String, at path: URL) throws -> Bool {
     guard let data = try? Data(contentsOf: path) else { return false }
     guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1383,6 +1454,14 @@ private func repairProjectProjection(
     }
     if project.validSkills.isEmpty {
         lines.append(.init(kind: .info, text: "no valid SKILL.md folders yet"))
+    }
+
+    if isSymlink(claudeDirectory) {
+        lines.append(.init(
+            kind: .skipped,
+            text: "manual review: .claude is a symlink; refusing to modify its shared target"
+        ))
+        return lines
     }
 
     if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) {
@@ -1480,7 +1559,13 @@ private func runProcess(
 }
 
 private func augmentedPath() -> String {
-    let fallbacks = [
+    let home = homeURL()
+    var fallbacks = [
+        home.appendingPathComponent("Library/pnpm/bin").path,
+        home.appendingPathComponent("Library/pnpm").path,
+        home.appendingPathComponent(".local/bin").path,
+        home.appendingPathComponent(".npm-global/bin").path,
+        home.appendingPathComponent(".volta/bin").path,
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",
@@ -1488,6 +1573,14 @@ private func augmentedPath() -> String {
         "/usr/sbin",
         "/sbin"
     ]
+    fallbacks.append(contentsOf: nodeManagerBinDirectories(
+        root: home.appendingPathComponent(".local/share/fnm/node-versions"),
+        suffix: "installation/bin"
+    ))
+    fallbacks.append(contentsOf: nodeManagerBinDirectories(
+        root: home.appendingPathComponent(".nvm/versions/node"),
+        suffix: "bin"
+    ))
     var parts = ProcessInfo.processInfo.environment["PATH"]?
         .split(separator: ":", omittingEmptySubsequences: false)
         .map(String.init) ?? []
@@ -1497,6 +1590,17 @@ private func augmentedPath() -> String {
     }
 
     return parts.joined(separator: ":")
+}
+
+private func nodeManagerBinDirectories(root: URL, suffix: String) -> [String] {
+    let versions = (try? fileManager.contentsOfDirectory(
+        at: root,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )) ?? []
+    return versions
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedDescending }
+        .map { $0.appendingPathComponent(suffix).path }
 }
 
 private final class SkillInventoryCache {

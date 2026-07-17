@@ -188,10 +188,12 @@ uninstall_root="$fixture_root/uninstall-project"
 mkdir -p \
   "$uninstall_root/.agents/skills/remove-me" \
   "$uninstall_root/.agents/skills/keep-me" \
+  "$uninstall_root/.codex/skills/remove-me" \
   "$uninstall_root/.claude" \
   "$fixture_root/fake-bin"
 printf -- "---\nname: remove-me\ndescription: remove\n---\n" >"$uninstall_root/.agents/skills/remove-me/SKILL.md"
 printf -- "---\nname: keep-me\ndescription: keep\n---\n" >"$uninstall_root/.agents/skills/keep-me/SKILL.md"
+printf -- "---\nname: remove-me\ndescription: independent codex copy\n---\n" >"$uninstall_root/.codex/skills/remove-me/SKILL.md"
 ln -s ../.agents/skills "$uninstall_root/.claude/skills"
 cat >"$uninstall_root/skills-lock.json" <<'EOF'
 {
@@ -216,7 +218,12 @@ cat >"$fixture_root/fake-bin/npx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "skills" && "${2:-}" == "remove" ]]; then
+  if [[ " $* " == *" --agent "* ]]; then
+    echo "remove does not accept a wildcard agent selector" >&2
+    exit 65
+  fi
   rm -rf "$PWD/.agents/skills/${3:?}"
+  rm -rf "$PWD/.codex/skills/${3:?}"
   if [[ " $* " == *" --global "* ]]; then
     mkdir -p "${XDG_STATE_HOME:?}/skills"
     printf '%s\n' '{"version":3,"skills":{}}' >"$XDG_STATE_HOME/skills/.skill-lock.json"
@@ -227,6 +234,8 @@ echo "unexpected fake npx invocation: $*" >&2
 exit 64
 SH
 chmod +x "$fixture_root/fake-bin/npx"
+mkdir -p "$fixture_root/home/Library/pnpm/bin"
+cp "$fixture_root/fake-bin/npx" "$fixture_root/home/Library/pnpm/bin/npx"
 uninstall_probe="$fixture_root/uninstall-probe.swift"
 cat >"$uninstall_probe" <<'SWIFT'
 import Foundation
@@ -243,9 +252,10 @@ struct Probe {
 }
 SWIFT
 swiftc "$app_source/Sources/MetagentCore/MetagentCore.swift" "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
-PATH="$fixture_root/fake-bin:$PATH" HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >/dev/null
+PATH="/usr/bin:/bin" HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >/dev/null
 test ! -e "$uninstall_root/.agents/skills/remove-me"
 test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
+test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
 test -L "$uninstall_root/.claude/skills"
 grep -q '"customTopLevel" : "preserve-me"' "$uninstall_root/skills-lock.json"
 grep -q '"keep-me"' "$uninstall_root/skills-lock.json"
@@ -253,9 +263,10 @@ if grep -q '"remove-me"' "$uninstall_root/skills-lock.json"; then
   echo "uninstall left stale project lock entry" >&2
   exit 1
 fi
-managed_recovery="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -path '*/remove-me/SKILL.md' -print -quit)"
-test -n "$managed_recovery"
-managed_recovery_root="$(dirname "$(dirname "$managed_recovery")")"
+managed_recovery_metadata="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -name REMOVAL.txt -print -quit)"
+test -n "$managed_recovery_metadata"
+managed_recovery_root="$(dirname "$managed_recovery_metadata")"
+test -f "$managed_recovery_root/remove-me/SKILL.md"
 test -f "$managed_recovery_root/state/project-skills-lock.json"
 
 global_home="$fixture_root/global-home"
@@ -411,6 +422,21 @@ test "$(readlink "$repair_project/.claude/skills")" = "../.agents/skills"
 test -f "$repair_project/.claude/skills/native-skill/SKILL.md"
 test ! -e "$repair_project/agents.toml"
 test ! -e "$repair_project/agents.lock"
+
+repair_home="$fixture_root/repair-home"
+mkdir -p "$repair_home/.agents/skills/global-only"
+printf -- "---\nname: global-only\ndescription: global\n---\n" >"$repair_home/.agents/skills/global-only/SKILL.md"
+HOME="$repair_home" "$swift_helper" skills repair --root "$repair_home" --max-depth 0 --apply >/dev/null
+test ! -e "$repair_home/.claude/skills"
+
+shared_claude_project="$fixture_root/shared-claude-project"
+shared_claude_target="$fixture_root/shared-claude-target"
+mkdir -p "$shared_claude_project/.agents/skills/shared-test" "$shared_claude_target"
+printf -- "---\nname: shared-test\ndescription: shared\n---\n" >"$shared_claude_project/.agents/skills/shared-test/SKILL.md"
+ln -s "$shared_claude_target" "$shared_claude_project/.claude"
+shared_claude_output="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$shared_claude_project" --max-depth 0 --apply)"
+grep -q "refusing to modify its shared target" <<<"$shared_claude_output"
+test ! -e "$shared_claude_target/skills"
 
 wrong_link_project="$fixture_root/wrong-link-project"
 mkdir -p "$wrong_link_project/.agents/skills/wrong-link-skill" "$wrong_link_project/.claude"

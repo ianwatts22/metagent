@@ -67,6 +67,8 @@ review finding, not an automatic repair.
 - Repair replaces an existing wrong symlink.
 - Repair never replaces, moves, merges, or imports a real `.claude/skills`
   directory.
+- Repair does not project the home directory and refuses to write through a
+  symlinked project `.claude` directory.
 - Repair never copies Claude content into `.agents`.
 - `_archive` trees are pruned during discovery.
 - Hidden or invalid `.agents/skills` folders remain Doctor review findings.
@@ -78,7 +80,8 @@ review finding, not an automatic repair.
 The Mac app inventory can uninstall one selected canonical `.agents` skill:
 
 - Metagent creates a `Removed Skills` recovery directory before mutation.
-- For `npx skills` packages, it runs the skills CLI and repairs a stale project
+- For `npx skills` packages, it runs the skills CLI, preserves independent
+  same-name Claude or Codex bundles, and repairs a stale project
   `skills-lock.json` entry if necessary.
 - Native bundles are moved to Trash.
 - The whole-container `.claude/skills` projection remains in place.
