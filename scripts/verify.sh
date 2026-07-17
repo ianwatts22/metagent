@@ -264,6 +264,20 @@ test -n "$native_recovery_metadata"
 native_recovery_root="$(dirname "$native_recovery_metadata")"
 test -f "$native_recovery_root/native-remove/SKILL.md"
 
+rollback_root="$fixture_root/native-uninstall-rollback"
+mkdir -p "$rollback_root/.agents/skills/native-rollback" "$rollback_root/.claude/skills"
+printf -- "---\nname: native-rollback\ndescription: rollback\n---\n" >"$rollback_root/.agents/skills/native-rollback/SKILL.md"
+ln -s ../../.agents/skills/native-rollback "$rollback_root/.claude/skills/native-rollback"
+chmod 555 "$rollback_root/.claude/skills"
+rollback_output="$fixture_root/native-rollback.out"
+if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$rollback_root" native-rollback >"$rollback_output" 2>&1; then
+  echo "native uninstall unexpectedly wrote through a read-only projection directory" >&2
+  exit 1
+fi
+test -f "$rollback_root/.agents/skills/native-rollback/SKILL.md"
+test -L "$rollback_root/.claude/skills/native-rollback"
+chmod 755 "$rollback_root/.claude/skills"
+
 global_home="$fixture_root/global-home"
 global_xdg="$fixture_root/global-xdg"
 mkdir -p "$global_home/.agents/skills/global-managed" "$global_xdg/skills"

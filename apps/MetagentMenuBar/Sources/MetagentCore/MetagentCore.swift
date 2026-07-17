@@ -750,20 +750,29 @@ public enum MetagentCore {
         lines.append("saved recovery state to \(recovery.path)")
 
         let recoveredSkill = recovery.appendingPathComponent(skillName)
-        try fileManager.moveItem(at: skillURL, to: recoveredSkill)
-        lines.append("moved native skill to recovery: \(recoveredSkill.path)")
-        for (index, projection) in projections.enumerated() {
-            let projectionURL = URL(fileURLWithPath: projection.path)
-            let projectionRecovery = recovery
-                .appendingPathComponent("projections")
-                .appendingPathComponent("\(index)-\(projection.location)")
-                .appendingPathComponent(skillName)
-            try fileManager.createDirectory(
-                at: projectionRecovery.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+        var movedProjections: [(original: URL, recovery: URL)] = []
+        do {
+            for (index, projection) in projections.enumerated() {
+                let projectionURL = URL(fileURLWithPath: projection.path)
+                let projectionRecovery = recovery
+                    .appendingPathComponent("projections")
+                    .appendingPathComponent("\(index)-\(projection.location)")
+                    .appendingPathComponent(skillName)
+                try fileManager.createDirectory(
+                    at: projectionRecovery.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+                movedProjections.append((projectionURL, projectionRecovery))
+            }
+            try fileManager.moveItem(at: skillURL, to: recoveredSkill)
+        } catch {
+            for moved in movedProjections.reversed() {
+                try? fileManager.moveItem(at: moved.recovery, to: moved.original)
+            }
+            throw error
         }
+        lines.append("moved native skill to recovery: \(recoveredSkill.path)")
         if !projections.isEmpty {
             lines.append("removed \(projections.count) per-skill projection link(s)")
         }

@@ -733,6 +733,17 @@ private struct InventorySection: View {
         return rows.first { $0.id == selectedID }
     }
 
+    private func removalButton(for row: InventorySkillRow) -> Alert.Button {
+        let action = {
+            selection.removeAll()
+            model.uninstallSkill(projectRoot: row.projectRoot, skillName: row.skillName)
+        }
+        if row.isManaged {
+            return .default(Text("Show Command"), action: action)
+        }
+        return .destructive(Text("Uninstall"), action: action)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -758,10 +769,13 @@ private struct InventorySection: View {
                 }
                 .frame(minWidth: 150, idealWidth: 190)
 
-                Button(role: .destructive) {
+                Button(role: selectedRow?.isManaged == true ? nil : .destructive) {
                     pendingRemoval = selectedRow
                 } label: {
-                    Label("Uninstall", systemImage: "trash")
+                    Label(
+                        selectedRow?.isManaged == true ? "Show Command" : "Uninstall",
+                        systemImage: selectedRow?.isManaged == true ? "terminal" : "trash"
+                    )
                 }
                 .buttonStyle(.glass)
                 .disabled(selectedRow?.canUninstall != true || model.isRunning)
@@ -809,10 +823,7 @@ private struct InventorySection: View {
             Alert(
                 title: Text("Uninstall \(row.skillName)?"),
                 message: Text(row.removalMessage),
-                primaryButton: .destructive(Text("Uninstall")) {
-                    selection.removeAll()
-                    model.uninstallSkill(projectRoot: row.projectRoot, skillName: row.skillName)
-                },
+                primaryButton: removalButton(for: row),
                 secondaryButton: .cancel()
             )
         }
@@ -915,10 +926,11 @@ private struct InventorySkillRow: Identifiable {
     var canUninstall: Bool {
         variants.contains { $0.location == "agents" }
     }
+    var isManaged: Bool { skill.originKind == "npx-skills" }
     var removalMessage: String {
-        let ownership = skill.originKind == "npx-skills"
-            ? "Metagent will back up the bundle, run the skills CLI, and repair its project skills-lock.json entry."
-            : "Metagent will move the canonical .agents bundle to Trash."
+        let ownership = isManaged
+            ? "npx skills owns this package. Metagent will show the exact removal command without changing files."
+            : "Metagent will move the canonical .agents bundle and its per-skill projection links into Removed Skills recovery."
         let retained = variants.contains { $0.location != "agents" && !$0.symlinkedContainer }
             ? " Independent same-name legacy locations will be retained for separate review."
             : ""
