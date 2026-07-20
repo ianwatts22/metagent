@@ -75,7 +75,9 @@ For the `agent-meta` to `metagent` migration, the intended end state is:
 Legacy `~/.agents/agents.toml` and `~/.agents/agents.lock` files may still exist
 on an older machine. They are inert to Metagent and should be reviewed and
 trashed explicitly rather than silently merged into current provenance. Retain
-the active `~/.agents/.skill-lock.json` and installed skill directories.
+the active lock at `${XDG_STATE_HOME}/skills/.skill-lock.json` when
+`XDG_STATE_HOME` is set; otherwise retain `~/.agents/.skill-lock.json`, along
+with the installed skill directories.
 
 If a running agent session was started before installation, its loaded skill
 inventory may stay stale until a new session starts.

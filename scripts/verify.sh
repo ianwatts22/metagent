@@ -168,7 +168,10 @@ roots = ["$plugin_collision_root"]
 max_depth = 0
 EOF
 plugin_collision_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
-test "$(jq -r '[.projects[].skills[].name] | sort | join(",")' <<<"$plugin_collision_scan")" = "local-skill,plugin-skill"
+jq -e '
+  (.projects | length) == 1 and
+  ([.projects[0].skills[].name] | sort | join(",")) == "local-skill,plugin-skill"
+' <<<"$plugin_collision_scan" >/dev/null
 
 fixture_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$fixture_root/workspace" --max-depth 4 --json)"
 if grep -q "archive-skill" <<<"$fixture_doctor"; then
