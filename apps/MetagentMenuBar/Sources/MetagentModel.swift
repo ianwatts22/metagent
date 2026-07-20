@@ -154,12 +154,14 @@ final class MetagentModel: ObservableObject {
             do {
                 while true {
                     let report = try await Task.detached(priority: .background) {
-                        try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
-                            maxBytes: 32 * 1_024 * 1_024,
-                            maxFiles: 100,
-                            throttleEveryBytes: 8 * 1_024 * 1_024,
-                            throttleDelayMilliseconds: 750
-                        ))
+                        try autoreleasepool {
+                            try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                                maxBytes: 64 * 1_024 * 1_024,
+                                maxFiles: 200,
+                                throttleEveryBytes: 16 * 1_024 * 1_024,
+                                throttleDelayMilliseconds: 500
+                            ))
+                        }
                     }.value
                     usageSnapshot = report.snapshot
                     usageStatusText = Self.usageStatus(report.snapshot)
@@ -172,7 +174,7 @@ final class MetagentModel: ObservableObject {
                         }
                         break
                     }
-                    try await Task.sleep(for: .seconds(1))
+                    try await Task.sleep(for: .milliseconds(500))
                 }
             } catch is CancellationError {
                 usageStatusText = Self.usageStatus(usageSnapshot)

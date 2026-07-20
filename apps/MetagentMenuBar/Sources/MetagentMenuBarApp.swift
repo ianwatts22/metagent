@@ -732,6 +732,9 @@ private struct UsageSection: View {
     @ObservedObject var model: MetagentModel
     @State private var filter = UsageFilter.all
     @State private var query = ""
+    @State private var sortOrder = [
+        KeyPathComparator(\UsageSkillRow.totalInvocations, order: .reverse)
+    ]
 
     private var rows: [UsageSkillRow] {
         UsageSkillRow.rows(
@@ -741,12 +744,7 @@ private struct UsageSection: View {
         )
         .filter { filter.includes($0) }
         .filter { query.isEmpty || $0.skillName.localizedCaseInsensitiveContains(query) }
-        .sorted { left, right in
-            if left.totalInvocations != right.totalInvocations {
-                return left.totalInvocations > right.totalInvocations
-            }
-            return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
-        }
+        .sorted(using: sortOrder)
     }
 
     var body: some View {
@@ -821,40 +819,66 @@ private struct UsageSection: View {
                     symbol: "chart.bar.xaxis"
                 )
             } else {
-                Table(rows) {
-                    TableColumn("Skill") { row in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(row.skillName)
-                            Text(row.scope)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                Table(rows, sortOrder: $sortOrder) {
+                    TableColumn(
+                        "Skill",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.skillName)
+                    ) { row in
+                        Text(row.skillName)
                         .help(row.canonicalPath ?? row.skillName)
                     }
                     .width(min: 180, ideal: 240)
 
-                    TableColumn("7d") { row in numericCell(row.invocations7d) }
+                    TableColumn(
+                        "Scope",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.scope)
+                    ) { row in
+                        Image(systemName: row.scopeSymbol)
+                            .foregroundStyle(.secondary)
+                            .help(row.scopeLabel)
+                            .accessibilityLabel(row.scopeLabel)
+                    }
+                    .width(min: 54, ideal: 60)
+
+                    TableColumn(
+                        "7d",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.invocations7d)
+                    ) { row in numericCell(row.invocations7d) }
                         .width(min: 54, ideal: 64)
-                    TableColumn("30d") { row in numericCell(row.invocations30d) }
+                    TableColumn(
+                        "30d",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.invocations30d)
+                    ) { row in numericCell(row.invocations30d) }
                         .width(min: 54, ideal: 64)
-                    TableColumn("All") { row in numericCell(row.totalInvocations) }
+                    TableColumn(
+                        "All",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.totalInvocations)
+                    ) { row in numericCell(row.totalInvocations) }
                         .width(min: 54, ideal: 64)
-                    TableColumn("Turns") { row in numericCell(row.activeTurns) }
-                        .width(min: 58, ideal: 68)
-                    TableColumn("Threads") { row in numericCell(row.distinctThreads) }
+                    TableColumn(
+                        "Tasks",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.distinctThreads)
+                    ) { row in
+                        numericCell(row.distinctThreads)
+                            .help("Distinct Codex tasks where this skill was observed")
+                    }
+                    .width(min: 58, ideal: 68)
+                    TableColumn(
+                        "Repeats",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.repeatInvocations)
+                    ) { row in
+                        numericCell(row.repeatInvocations)
+                            .help("Additional reads after the first read in the same turn")
+                    }
                         .width(min: 66, ideal: 76)
-                    TableColumn("Repeats") { row in numericCell(row.repeatInvocations) }
-                        .width(min: 66, ideal: 76)
-                    TableColumn("Last used") { row in
-                        Text(row.lastUsedText)
+                    TableColumn(
+                        "Last used",
+                        sortUsing: KeyPathComparator(\UsageSkillRow.lastUsedSortValue)
+                    ) { row in
+                        RelativeUsageDateCell(date: row.lastUsedDate)
                             .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
                     }
                     .width(min: 100, ideal: 120)
-                    TableColumn("Evidence") { row in
-                        Text(row.evidenceText)
-                            .foregroundStyle(.secondary)
-                    }
-                    .width(min: 90, ideal: 120)
                 }
             }
         }
@@ -866,6 +890,20 @@ private struct UsageSection: View {
         Text(value.formatted())
             .monospacedDigit()
             .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+private struct RelativeUsageDateCell: View {
+    let date: Date?
+
+    var body: some View {
+        if let date {
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))
+            }
+        } else {
+            Text("Never")
+        }
     }
 }
 
@@ -964,26 +1002,30 @@ private struct UsageSkillRow: Identifiable {
     let totalInvocations: Int
     let invocations7d: Int
     let invocations30d: Int
-    let activeTurns: Int
     let distinctThreads: Int
     let repeatInvocations: Int
-    let directInvocations: Int
-    let inferredInvocations: Int
-    let lastUsedAt: String?
+    let lastUsedDate: Date?
+    let lastUsedSortValue: TimeInterval
     let status: Status
 
-    var lastUsedText: String {
-        guard let lastUsedAt,
-              let date = MetagentCore.parseSkillUsageTimestamp(lastUsedAt)
-        else { return "Never" }
-        return date.formatted(date: .abbreviated, time: .omitted)
+    var scopeLabel: String {
+        switch scope {
+        case "project": "Project"
+        case "global": "Global"
+        case "plugin": "Plugin"
+        case "system": "System"
+        default: "Unknown"
+        }
     }
 
-    var evidenceText: String {
-        if directInvocations > 0, inferredInvocations > 0 { return "runtime + session" }
-        if directInvocations > 0 { return "runtime" }
-        if inferredInvocations > 0 { return "session read" }
-        return "none"
+    var scopeSymbol: String {
+        switch scope {
+        case "project": "folder"
+        case "global": "globe"
+        case "plugin": "puzzlepiece.extension"
+        case "system": "gearshape"
+        default: "questionmark.circle"
+        }
     }
 
     static func rows(
@@ -1016,12 +1058,10 @@ private struct UsageSkillRow: Identifiable {
                 totalInvocations: 0,
                 invocations7d: 0,
                 invocations30d: 0,
-                activeTurns: 0,
                 distinctThreads: 0,
                 repeatInvocations: 0,
-                directInvocations: 0,
-                inferredInvocations: 0,
-                lastUsedAt: nil,
+                lastUsedDate: nil,
+                lastUsedSortValue: -.infinity,
                 status: isBackfillComplete ? .neverObserved : .insufficient
             ))
         }
@@ -1042,12 +1082,10 @@ private struct UsageSkillRow: Identifiable {
             totalInvocations: summary.totalInvocations,
             invocations7d: summary.invocations7d,
             invocations30d: summary.invocations30d,
-            activeTurns: summary.activeTurns,
             distinctThreads: summary.distinctThreads,
             repeatInvocations: summary.repeatInvocations,
-            directInvocations: summary.directInvocations,
-            inferredInvocations: summary.inferredInvocations,
-            lastUsedAt: summary.lastUsedAt,
+            lastUsedDate: lastDate,
+            lastUsedSortValue: lastDate?.timeIntervalSinceReferenceDate ?? -.infinity,
             status: isDormant ? .dormant : .active
         )
     }
