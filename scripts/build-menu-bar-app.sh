@@ -8,6 +8,30 @@ contents="$app_bundle/Contents"
 macos="$contents/MacOS"
 helpers="$contents/Helpers"
 resources="$contents/Resources"
+signing_identity="${METAGENT_CODE_SIGN_IDENTITY:-}"
+
+if [[ -z "$signing_identity" ]]; then
+  detected_identities="$(
+    security find-identity -v -p codesigning 2>/dev/null \
+      | awk '/"Apple Development: / { print $2 }'
+  )"
+  identity_count="$(awk 'NF { count += 1 } END { print count + 0 }' <<<"$detected_identities")"
+  if [[ "$identity_count" == "1" ]]; then
+    signing_identity="$detected_identities"
+  elif [[ "$identity_count" -gt 1 ]]; then
+    echo "Multiple Apple Development identities found." >&2
+    echo "Set METAGENT_CODE_SIGN_IDENTITY to the intended certificate hash." >&2
+    if [[ "${METAGENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+      exit 1
+    fi
+  fi
+fi
+
+if [[ -z "$signing_identity" && "${METAGENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+  echo "An Apple Development code-signing identity is required for installation." >&2
+  echo "Create one in Xcode Settings > Accounts > Manage Certificates, then retry." >&2
+  exit 1
+fi
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
@@ -37,6 +61,30 @@ cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIc
 
 chmod +x "$macos/MetagentMenuBar"
 chmod +x "$helpers/metagent"
+
+if [[ -n "$signing_identity" ]]; then
+  codesign \
+    --force \
+    --sign "$signing_identity" \
+    --timestamp=none \
+    "$helpers/metagent"
+  codesign \
+    --force \
+    --sign "$signing_identity" \
+    --timestamp=none \
+    "$app_bundle"
+  codesign --verify --deep --strict --verbose=2 "$app_bundle"
+  designated_requirement="$(codesign -dr - "$app_bundle" 2>&1)"
+  if [[ "${METAGENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]] \
+    && ! grep -q "anchor apple generic" <<<"$designated_requirement"; then
+    echo "Installation requires an Apple-anchored code-signing identity." >&2
+    echo "$designated_requirement" >&2
+    exit 1
+  fi
+  echo "Signed with $signing_identity"
+else
+  echo "Built without an Apple code-signing identity; this build is not suitable for local installation." >&2
+fi
 
 if [[ -n "$previous_bundle" ]]; then
   if command -v trash >/dev/null 2>&1; then

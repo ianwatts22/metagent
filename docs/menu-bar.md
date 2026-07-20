@@ -63,6 +63,17 @@ Install the app where macOS and Spotlight can find it:
 scripts/install-menu-bar-app.sh --restart
 ```
 
+Local installation requires an Apple Development code-signing identity. The
+build automatically uses it when exactly one valid identity exists in the login
+keychain, or uses `METAGENT_CODE_SIGN_IDENTITY` when explicitly set. If multiple
+valid development identities exist, set the variable to the intended
+certificate hash. Create an identity in Xcode under Settings > Accounts >
+Manage Certificates if none exists.
+
+The Apple-anchored designated requirement lets macOS recognize rebuilt versions
+as the same app and preserve privacy grants. The first launch after switching
+from an ad-hoc or self-signed build may request folder access once.
+
 The installed app is written to:
 
 ```text
@@ -90,4 +101,6 @@ assets. Each change rebuilds the app, installs it to `~/Applications`, and
 restarts the real menu-bar process. This is reliable live reload rather than
 in-process hot reload, so transient UI state resets after each change.
 
-The next packaging step is signing/notarization and wiring the future MCP server entry point through the Swift helper.
+The local app uses a persistent development signature. Distribution signing
+and notarization remain separate future packaging work, along with wiring the
+future MCP server entry point through the Swift helper.

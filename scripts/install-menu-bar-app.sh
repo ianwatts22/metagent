@@ -44,7 +44,7 @@ while (($# > 0)); do
   esac
 done
 
-built_output="$("$repo_root/scripts/build-menu-bar-app.sh")"
+built_output="$(METAGENT_REQUIRE_STABLE_SIGNING=1 "$repo_root/scripts/build-menu-bar-app.sh")"
 printf '%s\n' "$built_output"
 built_app="$(printf '%s\n' "$built_output" | awk 'NF { line=$0 } END { print line }')"
 
@@ -62,6 +62,13 @@ if [[ -e "$installed_app" ]]; then
 fi
 
 /usr/bin/ditto "$built_app" "$installed_app"
+codesign --verify --deep --strict --verbose=2 "$installed_app"
+installed_requirement="$(codesign -dr - "$installed_app" 2>&1)"
+if ! grep -q "anchor apple generic" <<<"$installed_requirement"; then
+  echo "Installed app does not have an Apple-anchored designated requirement." >&2
+  echo "$installed_requirement" >&2
+  exit 1
+fi
 
 if [[ -n "$backup_app" ]]; then
   if command -v trash >/dev/null 2>&1; then
