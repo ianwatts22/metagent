@@ -55,9 +55,13 @@ The usage database is an incremental local analytics index. Retained Codex JSONL
 sessions provide historical `session_backfill` evidence; future runtime/OTel
 evidence can use the same normalized event schema without rewriting history as
 if Codex originally emitted it. File byte offsets and parser versions make the
-backfill resumable and prevent full rescans. The app runs the backfill at
-background priority, throttles after each 8 MiB of input, and stops when current.
-Only usage metadata is retained—never prompt text or tool output.
+backfill resumable and prevent full rescans. When parser semantics change, the
+last usable parser generation remains visible while replacement tables rebuild;
+the app swaps generations atomically only after the replacement is complete.
+Repeated parser changes discard only the unfinished replacement. The app runs
+the backfill at background priority, throttles after each 16 MiB of input, and
+stops when current. Only usage metadata is retained—never prompt text or tool
+output.
 
 Skill evaluation results are stored separately:
 

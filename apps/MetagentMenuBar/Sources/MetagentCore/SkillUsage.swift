@@ -52,6 +52,9 @@ public struct SkillUsageSnapshot: Codable, Sendable, Equatable {
     public let totalBytes: Int64
     public let processedBytes: Int64
     public let isBackfillComplete: Bool
+    public let isParserUpgradeBackfill: Bool
+    public let displayParserVersion: Int?
+    public let targetParserVersion: Int
     public let coverageStartedAt: String?
     public let lastUpdatedAt: String?
 
@@ -63,6 +66,9 @@ public struct SkillUsageSnapshot: Codable, Sendable, Equatable {
         totalBytes: 0,
         processedBytes: 0,
         isBackfillComplete: false,
+        isParserUpgradeBackfill: false,
+        displayParserVersion: nil,
+        targetParserVersion: 0,
         coverageStartedAt: nil,
         lastUpdatedAt: nil
     )
@@ -101,6 +107,12 @@ public extension MetagentCore {
 
 private let skillUsageParserVersion = 14
 private let skillUsageSQLiteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+private let skillUsageEventsTable = "skill_usage_events"
+private let skillUsageSourcesTable = "skill_usage_sources"
+private let skillUsageMetadataTable = "skill_usage_metadata"
+private let previousSkillUsageEventsTable = "skill_usage_events_previous"
+private let previousSkillUsageSourcesTable = "skill_usage_sources_previous"
+private let previousSkillUsageMetadataTable = "skill_usage_metadata_previous"
 
 private func skillUsageHomeURL() -> URL {
     if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty {
@@ -297,10 +309,20 @@ private final class SkillUsageStore {
         try open(&db)
         defer { sqlite3_close(db) }
         try createSchema(db)
-        let metadata = try loadMetadata(db)
-        guard metadata["parser_version"] == String(skillUsageParserVersion) else {
-            return .empty
-        }
+        let metadata = try loadMetadata(db, table: skillUsageMetadataTable)
+        let hasPreviousGeneration = try previousGenerationExists(db)
+        let storedParserVersion = Int(metadata["parser_version"] ?? "")
+        let isParserUpgradeBackfill = hasPreviousGeneration
+            || (storedParserVersion != nil && storedParserVersion != skillUsageParserVersion)
+        let summariesTable = hasPreviousGeneration
+            ? previousSkillUsageEventsTable
+            : skillUsageEventsTable
+        let coverageTable = hasPreviousGeneration
+            ? previousSkillUsageSourcesTable
+            : skillUsageSourcesTable
+        let displayMetadata = hasPreviousGeneration
+            ? try loadMetadata(db, table: previousSkillUsageMetadataTable)
+            : metadata
 
         let sql = """
         WITH normalized AS (
@@ -312,7 +334,7 @@ private final class SkillUsageStore {
               WHEN canonical_path != '' THEN 'path:' || canonical_path
               ELSE 'id:' || skill_id
             END AS aggregate_id
-          FROM skill_usage_events
+          FROM \(summariesTable)
         ), ranked AS (
           SELECT
             *,
@@ -380,10 +402,13 @@ private final class SkillUsageStore {
             completedFiles: Int(metadata["completed_files"] ?? "0") ?? 0,
             totalBytes: Int64(metadata["total_bytes"] ?? "0") ?? 0,
             processedBytes: Int64(metadata["processed_bytes"] ?? "0") ?? 0,
-            isBackfillComplete: metadata["is_complete"] == "1",
+            isBackfillComplete: metadata["is_complete"] == "1" && !isParserUpgradeBackfill,
+            isParserUpgradeBackfill: isParserUpgradeBackfill,
+            displayParserVersion: Int(displayMetadata["parser_version"] ?? ""),
+            targetParserVersion: skillUsageParserVersion,
             coverageStartedAt: try scalarText(
                 db,
-                "SELECT MIN(NULLIF(coverage_started_at, '')) FROM skill_usage_sources;"
+                "SELECT MIN(NULLIF(coverage_started_at, '')) FROM \(coverageTable);"
             ),
             lastUpdatedAt: metadata["last_updated_at"]
         )
@@ -1494,6 +1519,9 @@ private final class SkillUsageStore {
                     throw databaseError(db, "save usage metadata")
                 }
             }
+            if progress.isComplete {
+                try dropPreviousGeneration(db)
+            }
             try exec(db, "COMMIT;")
         } catch {
             try? exec(db, "ROLLBACK;")
@@ -1513,9 +1541,14 @@ private final class SkillUsageStore {
         guard current != String(skillUsageParserVersion) else { return }
         try exec(db, "BEGIN IMMEDIATE;")
         do {
-            try exec(db, "DELETE FROM skill_usage_events;")
-            try exec(db, "DELETE FROM skill_usage_sources;")
-            try exec(db, "DELETE FROM skill_usage_metadata;")
+            if try previousGenerationExists(db) {
+                try dropCurrentGeneration(db)
+            } else if try currentGenerationHasHistory(db) {
+                try preserveCurrentGeneration(db)
+            } else {
+                try dropCurrentGeneration(db)
+            }
+            try createSchema(db)
             var statement: OpaquePointer?
             try prepare(db, """
             INSERT INTO skill_usage_metadata (key, value) VALUES ('parser_version', ?);
@@ -1530,6 +1563,44 @@ private final class SkillUsageStore {
             try? exec(db, "ROLLBACK;")
             throw error
         }
+    }
+
+    private func currentGenerationHasHistory(_ db: OpaquePointer?) throws -> Bool {
+        let events = try scalarInt(db, "SELECT COUNT(*) FROM \(skillUsageEventsTable);")
+        let sources = try scalarInt(db, "SELECT COUNT(*) FROM \(skillUsageSourcesTable);")
+        return events > 0 || sources > 0
+    }
+
+    private func previousGenerationExists(_ db: OpaquePointer?) throws -> Bool {
+        try tableExists(db, previousSkillUsageEventsTable)
+            && tableExists(db, previousSkillUsageSourcesTable)
+            && tableExists(db, previousSkillUsageMetadataTable)
+    }
+
+    private func preserveCurrentGeneration(_ db: OpaquePointer?) throws {
+        try exec(db, "DROP INDEX IF EXISTS skill_usage_by_skill_time;")
+        try exec(db, "DROP INDEX IF EXISTS skill_usage_by_session_turn;")
+        try exec(db, "ALTER TABLE \(skillUsageEventsTable) RENAME TO \(previousSkillUsageEventsTable);")
+        try exec(db, "ALTER TABLE \(skillUsageSourcesTable) RENAME TO \(previousSkillUsageSourcesTable);")
+        try exec(db, "ALTER TABLE \(skillUsageMetadataTable) RENAME TO \(previousSkillUsageMetadataTable);")
+        try exec(db, """
+        CREATE INDEX IF NOT EXISTS skill_usage_previous_by_skill_time
+          ON \(previousSkillUsageEventsTable)(skill_id, occurred_at);
+        CREATE INDEX IF NOT EXISTS skill_usage_previous_by_session_turn
+          ON \(previousSkillUsageEventsTable)(session_id, turn_id);
+        """)
+    }
+
+    private func dropCurrentGeneration(_ db: OpaquePointer?) throws {
+        try exec(db, "DROP TABLE IF EXISTS \(skillUsageEventsTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(skillUsageSourcesTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(skillUsageMetadataTable);")
+    }
+
+    private func dropPreviousGeneration(_ db: OpaquePointer?) throws {
+        try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageEventsTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageSourcesTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageMetadataTable);")
     }
 
     private func open(_ db: inout OpaquePointer?) throws {
@@ -1589,9 +1660,12 @@ private final class SkillUsageStore {
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN coverage_started_at TEXT NOT NULL DEFAULT '';" )
     }
 
-    private func loadMetadata(_ db: OpaquePointer?) throws -> [String: String] {
+    private func loadMetadata(
+        _ db: OpaquePointer?,
+        table: String
+    ) throws -> [String: String] {
         var statement: OpaquePointer?
-        try prepare(db, "SELECT key, value FROM skill_usage_metadata;", &statement)
+        try prepare(db, "SELECT key, value FROM \(table);", &statement)
         defer { sqlite3_finalize(statement) }
         var values: [String: String] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -1606,6 +1680,26 @@ private final class SkillUsageStore {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return optionalText(statement, 0)
+    }
+
+    private func scalarInt(_ db: OpaquePointer?, _ sql: String) throws -> Int64 {
+        var statement: OpaquePointer?
+        try prepare(db, sql, &statement)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func tableExists(_ db: OpaquePointer?, _ table: String) throws -> Bool {
+        var statement: OpaquePointer?
+        try prepare(
+            db,
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1;",
+            &statement
+        )
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, table)
+        return sqlite3_step(statement) == SQLITE_ROW
     }
 
     private func prepare(_ db: OpaquePointer?, _ sql: String, _ statement: inout OpaquePointer?) throws {

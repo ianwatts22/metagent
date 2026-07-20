@@ -399,6 +399,10 @@ struct MetagentCLI {
             ? Double(snapshot.processedBytes) / Double(snapshot.totalBytes)
             : 0
         print("usage: \(snapshot.totalInvocations) invocations across \(snapshot.summaries.count) observed skills")
+        if snapshot.isParserUpgradeBackfill {
+            let displayVersion = snapshot.displayParserVersion.map(String.init) ?? "unknown"
+            print("parser: showing v\(displayVersion) while v\(snapshot.targetParserVersion) backfills")
+        }
         print("backfill: \(progress.formatted(.percent.precision(.fractionLength(1)))) (\(snapshot.completedFiles)/\(snapshot.totalFiles) files)")
         for skill in snapshot.summaries.prefix(20) {
             print("  \(skill.skillName): \(skill.totalInvocations) invocations, \(skill.activeTurns) turns, \(skill.distinctThreads) threads")

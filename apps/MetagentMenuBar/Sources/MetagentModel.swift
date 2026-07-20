@@ -122,6 +122,9 @@ final class MetagentModel: ObservableObject {
     }
 
     var usageCoverageText: String {
+        if usageSnapshot.isParserUpgradeBackfill {
+            return "Showing saved history while parser v\(usageSnapshot.targetParserVersion) updates"
+        }
         guard let startedAt = usageSnapshot.coverageStartedAt,
               let date = MetagentCore.parseSkillUsageTimestamp(startedAt)
         else {
@@ -568,6 +571,9 @@ final class MetagentModel: ObservableObject {
         let progress = snapshot.totalBytes > 0
             ? Double(snapshot.processedBytes) / Double(snapshot.totalBytes)
             : 0
+        if snapshot.isParserUpgradeBackfill {
+            return "Updating Usage parser · \(progress.formatted(.percent.precision(.fractionLength(1))))"
+        }
         return "Backfilling usage · \(progress.formatted(.percent.precision(.fractionLength(1))))"
     }
 

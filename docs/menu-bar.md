@@ -33,7 +33,8 @@ Refresh behavior:
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
 - Plugin Eval and Codex review results are persisted to `~/Library/Application Support/Metagent/skill-evaluations-v1.json`.
 - Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.
-- A low-priority, resumable session backfill runs after launch. It sleeps after each 8 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
+- A low-priority, resumable session backfill runs after launch. It sleeps after each 16 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
+- Parser upgrades keep the previous Usage results visible until the replacement index completes and swaps atomically.
 - Once current, there is no continuous polling; launch or manual refresh processes newly appended session bytes.
 - Whole-directory project symlinks stay current automatically, so there is no periodic repair agent.
 

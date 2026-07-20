@@ -842,7 +842,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertFalse(report.hasMore)
     }
 
-    func testSnapshotHidesResultsFromAnOlderParserVersion() throws {
+    func testSnapshotKeepsResultsFromAnOlderParserVersionVisible() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let skill = try fixture.makeSkill(
@@ -862,12 +862,79 @@ final class SkillUsageTests: XCTestCase {
         )
 
         try fixture.executeSQL(
-            "UPDATE skill_usage_metadata SET value = 'old' WHERE key = 'parser_version';"
+            "UPDATE skill_usage_metadata SET value = '13' WHERE key = 'parser_version';"
         )
-        XCTAssertEqual(
-            MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path),
-            .empty
+        let snapshot = try XCTUnwrap(
+            MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path)
         )
+        XCTAssertEqual(snapshot.totalInvocations, 1)
+        XCTAssertFalse(snapshot.isBackfillComplete)
+        XCTAssertTrue(snapshot.isParserUpgradeBackfill)
+        XCTAssertEqual(snapshot.displayParserVersion, 13)
+        XCTAssertEqual(snapshot.targetParserVersion, 14)
+    }
+
+    func testParserUpgradeServesPreviousGenerationUntilAtomicCutover() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/generation-skill",
+            name: "generation-skill"
+        )
+        for index in 1...2 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: [
+                    "id": "generation-session-\(index)",
+                    "cwd": fixture.root.path
+                ]),
+                fixture.toolCall(
+                    callID: "generation-read-\(index)",
+                    command: "cat \(skill.path)"
+                )
+            ], to: fixture.sessions.appendingPathComponent("rollout-generation-\(index).jsonl"))
+        }
+
+        let original = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot
+        XCTAssertEqual(original.totalInvocations, 2)
+        XCTAssertTrue(original.isBackfillComplete)
+
+        try fixture.executeSQL(
+            "UPDATE skill_usage_metadata SET value = '13' WHERE key = 'parser_version';"
+        )
+        let rebuilding = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 1
+        ))
+        XCTAssertTrue(rebuilding.hasMore)
+        XCTAssertEqual(rebuilding.snapshot.totalInvocations, 2)
+        XCTAssertEqual(rebuilding.snapshot.completedFiles, 1)
+        XCTAssertTrue(rebuilding.snapshot.isParserUpgradeBackfill)
+        XCTAssertEqual(rebuilding.snapshot.displayParserVersion, 13)
+
+        try fixture.executeSQL(
+            "UPDATE skill_usage_metadata SET value = '12' WHERE key = 'parser_version';"
+        )
+        let restartedUpgrade = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 1
+        ))
+        XCTAssertTrue(restartedUpgrade.hasMore)
+        XCTAssertEqual(restartedUpgrade.invocationsAdded, 1)
+        XCTAssertEqual(restartedUpgrade.snapshot.totalInvocations, 2)
+        XCTAssertEqual(restartedUpgrade.snapshot.completedFiles, 1)
+        XCTAssertTrue(restartedUpgrade.snapshot.isParserUpgradeBackfill)
+        XCTAssertEqual(restartedUpgrade.snapshot.displayParserVersion, 13)
+
+        let cutover = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertFalse(cutover.hasMore)
+        XCTAssertEqual(cutover.snapshot.totalInvocations, 2)
+        XCTAssertTrue(cutover.snapshot.isBackfillComplete)
+        XCTAssertFalse(cutover.snapshot.isParserUpgradeBackfill)
+        XCTAssertEqual(cutover.snapshot.displayParserVersion, 14)
     }
 }
 
