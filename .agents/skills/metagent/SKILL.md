@@ -28,14 +28,7 @@ For MCP availability, tool inventory, namespace instructions, dynamic guide/help
 
 ## Skill Analysis
 
-For skill inventory, pruning, trigger quality, or marketplace readiness:
-
-1. Separate `available`, `configured`, `loaded/read`, and `actually used`.
-2. Check `SKILL.md` metadata first; trigger behavior depends on `name` and `description`.
-3. Check `agents.toml`, lockfiles, scanner output, package-manager metadata, and recent real usage before recommending deletion.
-4. Prefer pruning, merging, renaming, or moving repo-specific detail into project skills/docs over adding new global guidance.
-5. When preparing a skill for sharing, keep it portable: remove local paths, private account facts, project-only decisions, generated logs, and one-off debugging residue.
-6. Validate that an external installer can discover the skill from its repo layout before calling it publishable.
+For a single skill, one project's collection, or the combined global/project/plugin portfolio, read [references/skill-analysis.md](references/skill-analysis.md). Use it to normalize canonical identity and ownership, assess overlap and usage evidence, shortlist individual evaluations, and make lifecycle recommendations without treating missing telemetry as proof of non-use.
 
 ## Routing
 
@@ -56,13 +49,5 @@ For agent/MCP investigations, report:
 - `verified`: the read-only call that actually worked, or the exact blocker.
 - `instructions`: exact namespace/server metadata when asked, plus per-tool, dynamic guide/help, and bundle guidance sources checked.
 - `next`: the smallest action to make the tool usable or the durable place to store the decision.
-
-For skill audits, report:
-
-- `source`: local path, repo source, package source, and lockfile evidence when available.
-- `trigger`: whether the name/description matches real user phrasing and task boundaries.
-- `usage`: what evidence exists for loaded/read/actual use, and what remains unknown.
-- `shape`: whether the skill is portable, concise, and free of private or repo-specific clutter.
-- `next`: prune, merge, rename, move, publish, or leave unchanged.
 
 If all availability layers are healthy, do not print the full status matrix unless the user asked for setup details. Give a concise working-state note, then focus on the requested inventory, instructions, or decision.
