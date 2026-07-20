@@ -20,7 +20,7 @@ Metagent reads exactly one skills CLI lock per scope:
 
 The locks are not merged. A root-level global `skills-lock.json` or nested project `.agents/.skill-lock.json` is legacy state; Doctor reports it for review instead of silently treating it as ownership evidence.
 
-An `.agents/skills` bundle found in the applicable lock is `skills-cli` managed and read-only. An unlocked physical bundle is `local` managed and editable, but its authority remains `unknown`. That distinction protects imported or formerly managed skills without falsely claiming that Ian authored them.
+An `.agents/skills` bundle found in the applicable lock is `skills-cli` managed and read-only. An unlocked physical bundle is `local` managed and editable, but its authority remains `unknown`. That distinction protects imported or formerly managed skills without falsely claiming that the user authored them.
 
 Physical `.codex/skills/.system` bundles are Codex system skills. Other physical `.codex/skills` bundles are Codex-installed. Symlinks into `.agents/skills` inherit the canonical bundle's manager and authority and are represented as projections.
 

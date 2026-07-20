@@ -86,5 +86,5 @@ The Mac app inventory can uninstall one selected canonical `.agents` skill:
 - Unmanaged bundles and their per-skill projection links are moved into Metagent's
   `Removed Skills` recovery directory.
 - The whole-container `.claude/skills` projection remains in place.
-- Per-skill Claude or Codex projection links are removed with native bundles;
+- Per-skill Claude or Codex projection links are removed with local bundles;
   independent same-name bundles are retained for explicit review.

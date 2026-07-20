@@ -142,6 +142,7 @@ codex_stub="$fixture_root/codex-stub"
 cat >"$codex_stub" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+dd if=/dev/zero bs=131072 count=1 2>/dev/null | tr '\0' x >&2
 cat <<'JSON'
 {"installed":[{"pluginId":"demo@test-market","name":"demo","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_root"}}]}
 JSON
@@ -149,6 +150,25 @@ EOF
 chmod +x "$codex_stub"
 plugin_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
 test "$(jq -r '.projects[].skills[] | select(.name=="demo-skill") | [.manager,.mutability,.representation] | @tsv' <<<"$plugin_scan")" = $'codex-plugin\tmanaged-read-only\tversioned-cache'
+
+plugin_collision_root="$fixture_root/plugin-collision"
+mkdir -p "$plugin_collision_root/.agents/skills/local-skill" "$plugin_collision_root/skills/plugin-skill"
+printf -- "---\nname: local-skill\ndescription: local\n---\n" >"$plugin_collision_root/.agents/skills/local-skill/SKILL.md"
+printf -- "---\nname: plugin-skill\ndescription: plugin\n---\n" >"$plugin_collision_root/skills/plugin-skill/SKILL.md"
+cat >"$codex_stub" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'JSON'
+{"installed":[{"pluginId":"collision@test-market","name":"collision","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_collision_root"}}]}
+JSON
+EOF
+mkdir -p "$plugin_home/.config/metagent"
+cat >"$plugin_home/.config/metagent/config.toml" <<EOF
+roots = ["$plugin_collision_root"]
+max_depth = 0
+EOF
+plugin_collision_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
+test "$(jq -r '[.projects[].skills[].name] | sort | join(",")' <<<"$plugin_collision_scan")" = "local-skill,plugin-skill"
 
 fixture_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$fixture_root/workspace" --max-depth 4 --json)"
 if grep -q "archive-skill" <<<"$fixture_doctor"; then
@@ -369,6 +389,8 @@ EOF
 global_scan="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills scan --root "$global_home" --max-depth 0 --json)"
 grep -q '"name" : "global-managed"' <<<"$global_scan"
 grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
+global_doctor="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills doctor --json)"
+grep -q 'Managed skill modified locally' <<<"$global_doctor"
 global_uninstall_output="$fixture_root/global-uninstall.out"
 if HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >"$global_uninstall_output" 2>&1; then
   echo "Metagent removed a global npx-managed skill directly" >&2

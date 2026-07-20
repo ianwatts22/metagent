@@ -72,9 +72,10 @@ For the `agent-meta` to `metagent` migration, the intended end state is:
 - `~/.agents/.skill-lock.json` points `metagent` at `ianwatts22/metagent`.
 - `~/.agents/skills/agent-meta` does not exist.
 
-Legacy dotagents files may still exist on an older machine. They are inert to
-Metagent and should be reviewed and trashed explicitly rather than silently
-merged into current provenance.
+Legacy `~/.agents/agents.toml` and `~/.agents/agents.lock` files may still exist
+on an older machine. They are inert to Metagent and should be reviewed and
+trashed explicitly rather than silently merged into current provenance. Retain
+the active `~/.agents/.skill-lock.json` and installed skill directories.
 
 If a running agent session was started before installation, its loaded skill
 inventory may stay stale until a new session starts.

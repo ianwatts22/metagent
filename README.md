@@ -29,7 +29,7 @@ See [docs/skill-publishing.md](docs/skill-publishing.md) for the publication and
 The macOS app is the primary product surface:
 
 - scans `.agents`, `.codex`, and `.claude` skill locations directly through `MetagentCore`
-- shows whether `.agents` skills were installed by `npx skills` from `.skill-lock.json` or created natively
+- distinguishes lock-managed `.agents` skills from unmanaged bundles whose original authority may be unknown
 - shows skill size, word, token, reference, script, asset, icon, and logo metadata
 - stores the latest inventory snapshot in SQLite at `~/Library/Application Support/Metagent/inventory.sqlite`
 - incrementally indexes retained Codex session evidence into `~/Library/Application Support/Metagent/usage.sqlite`

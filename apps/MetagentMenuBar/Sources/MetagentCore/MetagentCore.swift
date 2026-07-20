@@ -594,12 +594,12 @@ public enum MetagentCore {
         let home = try scanHomeSkills(maxDepth: homeDepth)
         var projects = Dictionary(uniqueKeysWithValues: configured.projects.map { ($0.root, $0) })
         for project in home.projects {
-            projects[project.root] = project
+            projects[project.root] = projects[project.root].map { mergeSkillProjects($0, project) } ?? project
         }
         var warnings = configured.warnings + home.warnings
         do {
             for project in try scanCodexPlugins().projects {
-                projects[project.root] = project
+                projects[project.root] = projects[project.root].map { mergeSkillProjects($0, project) } ?? project
             }
         } catch {
             warnings.append("Codex plugin inventory unavailable: \(error.localizedDescription)")
@@ -706,7 +706,8 @@ public enum MetagentCore {
 
             let lock = readProjectSkillLocks(root: projectRoot)
             for skill in project.skills where skill.location == "agents" && skill.manager == "skills-cli" {
-                guard let expectedHash = lock[skill.name]?.computedHash,
+                guard let lockEntry = lock[skill.name],
+                      let expectedHash = lockEntry.computedHash ?? lockEntry.skillFolderHash,
                       !expectedHash.isEmpty,
                       let actualHash = try? computeSkillFolderHash(URL(fileURLWithPath: skill.path)),
                       actualHash != expectedHash
@@ -992,12 +993,12 @@ public enum MetagentCore {
             }
             if !rollbackFailures.isEmpty {
                 throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
-                    NSLocalizedDescriptionKey: "native uninstall failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
+                    NSLocalizedDescriptionKey: "local uninstall failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
                 ])
             }
             throw error
         }
-        lines.append("moved native skill to recovery: \(recoveredSkill.path)")
+        lines.append("moved local skill to recovery: \(recoveredSkill.path)")
         if !projections.isEmpty {
             lines.append("removed \(projections.count) per-skill projection link(s)")
         }
@@ -1011,7 +1012,7 @@ public enum MetagentCore {
         if !retained.isEmpty {
             lines.append("kept \(retained.count) independent same-name legacy location(s); review them separately")
         }
-        lines.append("verified canonical native skill is absent")
+        lines.append("verified canonical local skill is absent")
         return SkillUninstallReport(
             projectRoot: root.path,
             skillName: skillName,
@@ -1201,24 +1202,17 @@ private func hasKnownSkillContainer(_ root: URL) -> Bool {
 
 private func installedCodexPlugins() throws -> [CodexPlugin] {
     let executable = try codexExecutable()
-    let process = Process()
-    let standardOutput = Pipe()
-    let standardError = Pipe()
-    process.executableURL = executable
-    process.arguments = ["plugin", "list", "--json"]
-    process.standardOutput = standardOutput
-    process.standardError = standardError
-    try process.run()
-    let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    let errorOutput = standardError.fileHandleForReading.readDataToEndOfFile()
-    guard process.terminationStatus == 0 else {
-        let detail = String(data: errorOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw NSError(domain: "MetagentCodexPlugins", code: Int(process.terminationStatus), userInfo: [
+    let result = try runSubprocess(
+        executable: executable,
+        arguments: ["plugin", "list", "--json"]
+    )
+    guard result.status == 0 else {
+        let detail = String(data: result.standardError, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        throw NSError(domain: "MetagentCodexPlugins", code: Int(result.status), userInfo: [
             NSLocalizedDescriptionKey: detail?.isEmpty == false ? detail! : "codex plugin list failed"
         ])
     }
-    return try JSONDecoder().decode(CodexPluginList.self, from: output).installed
+    return try JSONDecoder().decode(CodexPluginList.self, from: result.standardOutput).installed
         .filter { $0.installed && $0.enabled }
 }
 
@@ -1759,27 +1753,69 @@ private func skillsCLIRemovalCommand(root: URL, skillName: String) -> String {
 }
 
 private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
-    let process = Process()
-    let standardOutput = Pipe()
-    let standardError = Pipe()
-    process.executableURL = try npxExecutable()
-    process.currentDirectoryURL = root
-    process.arguments = ["--yes", "skills", "remove", skillName, "--yes"]
+    let arguments = ["--yes", "skills", "remove", skillName, "--yes"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--global"] : [])
-    process.standardOutput = standardOutput
-    process.standardError = standardError
-    try process.run()
-    let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    let errorOutput = standardError.fileHandleForReading.readDataToEndOfFile()
-    let combined = String(data: output + errorOutput, encoding: .utf8)?
+    let result = try runSubprocess(
+        executable: try npxExecutable(),
+        arguments: arguments,
+        currentDirectory: root
+    )
+    let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard process.terminationStatus == 0 else {
-        throw NSError(domain: "MetagentSkillsCLI", code: Int(process.terminationStatus), userInfo: [
+    guard result.status == 0 else {
+        throw NSError(domain: "MetagentSkillsCLI", code: Int(result.status), userInfo: [
             NSLocalizedDescriptionKey: combined.isEmpty ? "npx skills remove failed" : combined
         ])
     }
     return combined
+}
+
+private struct SubprocessResult {
+    var status: Int32
+    var standardOutput: Data
+    var standardError: Data
+}
+
+private final class PipeReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private(set) var data = Data()
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func readToEnd() {
+        data = handle.readDataToEndOfFile()
+    }
+}
+
+private func runSubprocess(
+    executable: URL,
+    arguments: [String],
+    currentDirectory: URL? = nil
+) throws -> SubprocessResult {
+    let process = Process()
+    let standardOutput = Pipe()
+    let standardError = Pipe()
+    process.executableURL = executable
+    process.arguments = arguments
+    process.currentDirectoryURL = currentDirectory
+    process.standardOutput = standardOutput
+    process.standardError = standardError
+    try process.run()
+
+    let outputReader = PipeReader(handle: standardOutput.fileHandleForReading)
+    let errorReader = PipeReader(handle: standardError.fileHandleForReading)
+    let readers = [outputReader, errorReader]
+    DispatchQueue.concurrentPerform(iterations: readers.count) { index in
+        readers[index].readToEnd()
+    }
+    process.waitUntilExit()
+    return SubprocessResult(
+        status: process.terminationStatus,
+        standardOutput: outputReader.data,
+        standardError: errorReader.data
+    )
 }
 
 private func npxExecutable() throws -> URL {
@@ -1849,6 +1885,21 @@ private func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
         || !project.skills.isEmpty
         || !project.invalidSkillDirs.isEmpty
         || !project.hiddenSkillDirs.isEmpty
+}
+
+private func mergeSkillProjects(_ existing: SkillProject, _ additional: SkillProject) -> SkillProject {
+    var skillsByID = Dictionary(uniqueKeysWithValues: existing.skills.map { ($0.id, $0) })
+    for skill in additional.skills {
+        skillsByID[skill.id] = skill
+    }
+    return SkillProject(
+        root: existing.root,
+        skillsDir: existing.skillsDir,
+        validSkills: Array(Set(existing.validSkills + additional.validSkills)).sorted(),
+        skills: skillsByID.values.sorted(),
+        invalidSkillDirs: Array(Set(existing.invalidSkillDirs + additional.invalidSkillDirs)).sorted(),
+        hiddenSkillDirs: Array(Set(existing.hiddenSkillDirs + additional.hiddenSkillDirs)).sorted()
+    )
 }
 
 private func hasCanonicalSkillsSurface(_ project: SkillProject) -> Bool {
