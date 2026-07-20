@@ -1,6 +1,6 @@
 ---
 name: metagent
-description: Analyze and improve AI-agent workflows, MCP servers, plugin/tool surfaces, skill usage, and durable instruction boundaries. Use when debugging MCP or connector availability, enumerating available tools, extracting namespace/server/tool instructions, distinguishing configured/authenticated/loaded/verified states, auditing skill dead weight, or deciding where agent-specific guidance should live.
+description: Analyze tooling, MCP/plugin availability, skill portfolios, and instruction ownership. Use when diagnosing tool or namespace availability; auditing skill provenance, overlap, use, or lifecycle; or deciding where guidance belongs.
 ---
 
 # Metagent
@@ -32,22 +32,11 @@ For a single skill, one project's collection, or the combined global/project/plu
 
 ## Routing
 
-- Use app-stack guidance for application framework choices, OpenAI Agents SDK usage, MCP templates in a starter app, repo scaffolding, and application observability.
-- Use local tool-choice guidance for desktop apps, CLIs, editors, viewers, and non-code workflow tools when the work is not specifically about agent behavior or MCP/tool-surface analysis.
-- Use dotagents guidance for `agents.toml`, global/project skill dependency management, dotagents MCP declarations, and sync/doctor workflows.
-- Use local-maintenance guidance for persistent helper scripts, LaunchAgents, process cleanup, and machine-level agent runtime maintenance.
-- Use current official product docs for Codex, OpenAI API, Apps SDK, Agents SDK, or product-surface behavior.
-- Use current skill-authoring guidance when creating or changing skills; validate metadata and keep edits scoped.
+- Use `$tech-stack` for application frameworks, SDKs, app scaffolding, dependencies, and observability.
+- Use `$tool-stack` for desktop apps, CLIs, editors, viewers, and non-code workflow tools.
+- Use `$dotagents` for `agents.toml`, `agents.lock`, dotagents-managed skills or MCPs, and dotagents sync/doctor workflows.
+- Use `$local-machine` for persistent helpers, LaunchAgents, process cleanup, power commands, and machine-level runtime operations.
+- Use `$openai-docs` for current Codex, OpenAI API, Apps SDK, Agents SDK, or product-surface behavior.
+- Use `$skill-creator` or applicable authoring guidance for approved skill edits and validation.
 
-## Output Shape
-
-For agent/MCP investigations, report:
-
-- `configured`: what config or bundle proves it exists.
-- `authenticated`: what login, token, OAuth, or permission check proves access.
-- `loaded`: whether the active chat exposes the namespace/tools or skill metadata.
-- `verified`: the read-only call that actually worked, or the exact blocker.
-- `instructions`: exact namespace/server metadata when asked, plus per-tool, dynamic guide/help, and bundle guidance sources checked.
-- `next`: the smallest action to make the tool usable or the durable place to store the decision.
-
-If all availability layers are healthy, do not print the full status matrix unless the user asked for setup details. Give a concise working-state note, then focus on the requested inventory, instructions, or decision.
+Report evidence, uncertainty, and the smallest useful next action. Keep healthy state matrices terse unless the user asks for setup details or proof.

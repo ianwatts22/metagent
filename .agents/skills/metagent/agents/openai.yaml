@@ -1,7 +1,7 @@
 interface:
   display_name: "Metagent"
-  short_description: "Analyze agent tooling and MCP surfaces"
-  default_prompt: "Use $metagent to analyze this agent workflow or MCP setup and separate configured, authenticated, loaded, and verified state."
+  short_description: "Analyze agent tooling, MCPs, and skills"
+  default_prompt: "Use $metagent to analyze this agent, MCP, or skill setup and separate ownership, availability, and verified use."
 
 policy:
   allow_implicit_invocation: true

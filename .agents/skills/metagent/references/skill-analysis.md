@@ -18,7 +18,7 @@ Choose one before collecting evidence:
 - `project`: one repository and its inherited/projected skills.
 - `portfolio`: global skills plus every discovered project and plugin bundle in scope.
 
-State exclusions, inaccessible roots, and whether discovery is complete. Use the Metagent app for its current inventory and Doctor surfaces. Verify supported CLI syntax before relying on it; current read-only forms include:
+State exclusions, inaccessible roots, and whether discovery is complete. Use the Metagent app for its current inventory and Doctor surfaces. Resolve the executable path and verify its help before relying on CLI syntax. If the shell helper lacks a subcommand that the app exposes, use the app or its bundled helper and report the version skew. Current read-only forms include:
 
 ```bash
 metagent skills scan --json
