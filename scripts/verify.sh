@@ -21,6 +21,11 @@ bash -n "$repo_root/scripts/build-menu-bar-app.sh"
 (
   cd "$app_source"
   swift build --disable-sandbox
+  if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+    swift test --disable-sandbox
+  else
+    echo "Full Xcode not found; skipping XCTest while retaining build and integration verification" >&2
+  fi
 )
 
 "$repo_root/scripts/build-menu-bar-app.sh" >/dev/null
@@ -30,6 +35,7 @@ test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
 "$swift_helper" skills --help >/dev/null
+"$swift_helper" usage --help >/dev/null
 "$swift_helper" config show --json >/dev/null
 
 fixture_root="$(mktemp -d /private/tmp/metagent-verify.XXXXXX)"
@@ -152,7 +158,7 @@ struct Probe {
     }
 }
 SWIFT
-swiftc "$app_source/Sources/MetagentCore/MetagentCore.swift" "$home_probe" -lsqlite3 -o "$fixture_root/scan-home-probe"
+swiftc "$app_source"/Sources/MetagentCore/*.swift "$home_probe" -lsqlite3 -o "$fixture_root/scan-home-probe"
 home_scan="$(HOME="$fixture_root/home" "$fixture_root/scan-home-probe")"
 grep -q -- "$normalized_fixture_root/home/code_projects/home-child" <<<"$home_scan"
 if grep -qx -- "$normalized_fixture_root/home/code_projects" <<<"$home_scan"; then
@@ -234,7 +240,7 @@ struct Probe {
     }
 }
 SWIFT
-swiftc "$app_source/Sources/MetagentCore/MetagentCore.swift" "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
+swiftc "$app_source"/Sources/MetagentCore/*.swift "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
 managed_uninstall_output="$fixture_root/managed-uninstall.out"
 if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >"$managed_uninstall_output" 2>&1; then
   echo "Metagent removed an npx-managed skill directly" >&2

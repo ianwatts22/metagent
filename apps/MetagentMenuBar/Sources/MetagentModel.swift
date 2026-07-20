@@ -22,6 +22,9 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var lastOutputLines: [String] = []
     @Published private(set) var repairPreview: RepairPreview?
     @Published private(set) var showsRawOutput = false
+    @Published private(set) var usageSnapshot = SkillUsageSnapshot.empty
+    @Published private(set) var isUsageRefreshing = false
+    @Published private(set) var usageStatusText = "Usage history not scanned"
 
     private let fileManager = FileManager.default
 
@@ -35,7 +38,12 @@ final class MetagentModel: ObservableObject {
             statusText = "\(repoCount) cached locations, \(skillCount) skills"
             systemImage = "externaldrive"
         }
+        if let usage = MetagentCore.loadSkillUsageSnapshot() {
+            usageSnapshot = usage
+            usageStatusText = Self.usageStatus(usage)
+        }
         refreshStatus()
+        refreshUsage()
     }
 
     var problemCount: Int {
@@ -79,7 +87,31 @@ final class MetagentModel: ObservableObject {
     }
 
     var refreshPolicyText: String {
-        "Launch/manual refresh; SQLite snapshot, no polling"
+        "Cached immediately; low-priority usage backfill, no polling"
+    }
+
+    var usageProgress: Double {
+        guard usageSnapshot.totalBytes > 0 else { return 0 }
+        return min(1, Double(usageSnapshot.processedBytes) / Double(usageSnapshot.totalBytes))
+    }
+
+    var usageProgressText: String {
+        if usageSnapshot.totalFiles == 0 {
+            return "No retained Codex sessions found"
+        }
+        let processed = ByteCountFormatter.string(fromByteCount: usageSnapshot.processedBytes, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: usageSnapshot.totalBytes, countStyle: .file)
+        return "\(processed) of \(total) · \(usageSnapshot.completedFiles)/\(usageSnapshot.totalFiles) files"
+    }
+
+    var usageCoverageText: String {
+        guard let startedAt = usageSnapshot.coverageStartedAt,
+              let date = MetagentCore.parseSkillUsageTimestamp(startedAt)
+        else {
+            return usageSnapshot.isBackfillComplete ? "No observed skill reads" : "Coverage building"
+        }
+        let formatted = date.formatted(date: .abbreviated, time: .omitted)
+        return usageSnapshot.isBackfillComplete ? "Retained history since \(formatted)" : "Observed coverage currently reaches \(formatted)"
     }
 
     func refreshStatus() {
@@ -110,6 +142,44 @@ final class MetagentModel: ObservableObject {
                 homeScan: homeScan,
                 doctor: doctor
             )
+        }
+    }
+
+    func refreshUsage() {
+        guard !isUsageRefreshing else { return }
+        isUsageRefreshing = true
+        usageStatusText = usageSnapshot.totalFiles == 0 ? "Discovering Codex history…" : "Updating usage history…"
+
+        Task {
+            do {
+                while true {
+                    let report = try await Task.detached(priority: .background) {
+                        try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                            maxBytes: 32 * 1_024 * 1_024,
+                            maxFiles: 100,
+                            throttleEveryBytes: 8 * 1_024 * 1_024,
+                            throttleDelayMilliseconds: 750
+                        ))
+                    }.value
+                    usageSnapshot = report.snapshot
+                    usageStatusText = Self.usageStatus(report.snapshot)
+                    guard report.hasMore else { break }
+                    guard report.processedBytesAdvanced > 0 else {
+                        if let warning = report.warnings.first {
+                            usageStatusText = "Usage backfill paused: \(warning)"
+                        } else {
+                            usageStatusText = "Usage backfill paused at an incomplete session record"
+                        }
+                        break
+                    }
+                    try await Task.sleep(for: .seconds(1))
+                }
+            } catch is CancellationError {
+                usageStatusText = Self.usageStatus(usageSnapshot)
+            } catch {
+                usageStatusText = "Usage refresh failed: \(error.localizedDescription)"
+            }
+            isUsageRefreshing = false
         }
     }
 
@@ -348,6 +418,19 @@ final class MetagentModel: ObservableObject {
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return "Last run \(formatter.string(from: Date()))"
+    }
+
+    nonisolated private static func usageStatus(_ snapshot: SkillUsageSnapshot) -> String {
+        if snapshot.totalFiles == 0 {
+            return "No retained Codex sessions found"
+        }
+        if snapshot.isBackfillComplete {
+            return "Usage history current"
+        }
+        let progress = snapshot.totalBytes > 0
+            ? Double(snapshot.processedBytes) / Double(snapshot.totalBytes)
+            : 0
+        return "Backfilling usage · \(progress.formatted(.percent.precision(.fractionLength(1))))"
     }
 
     nonisolated private static func mergeProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {

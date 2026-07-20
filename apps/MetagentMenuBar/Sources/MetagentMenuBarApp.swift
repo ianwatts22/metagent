@@ -6,17 +6,26 @@ import SwiftUI
 @main
 struct MetagentMenuBarApp: App {
     @StateObject private var model = MetagentModel()
+    @State private var selectedSection = PanelSection.overview
 
     var body: some Scene {
         WindowGroup("Metagent", id: "main") {
-            MetagentPanel(model: model, showsOpenWindowButton: false)
+            MetagentPanel(
+                model: model,
+                showsOpenWindowButton: false,
+                selectedSection: $selectedSection
+            )
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
         }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra {
-            MetagentPanel(model: model, showsOpenWindowButton: true)
+            MetagentPanel(
+                model: model,
+                showsOpenWindowButton: true,
+                selectedSection: $selectedSection
+            )
                 .frame(width: 560, height: 640)
         } label: {
             MenuBarIcon()
@@ -60,7 +69,7 @@ private struct MetagentPanel: View {
     @ObservedObject var model: MetagentModel
     let showsOpenWindowButton: Bool
     @Environment(\.openWindow) private var openWindow
-    @State private var selectedSection = PanelSection.overview
+    @Binding var selectedSection: PanelSection
 
     var body: some View {
         ZStack {
@@ -130,6 +139,15 @@ private struct MetagentPanel: View {
             OverviewSection(model: model)
         case .repos:
             ReposSection(model: model)
+        case .usage:
+            if showsOpenWindowButton {
+                UsageMenuSection(model: model) {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            } else {
+                UsageSection(model: model)
+            }
         case .inventory:
             if showsOpenWindowButton {
                 InventoryMenuSection(model: model) {
@@ -252,6 +270,7 @@ private struct SectionNavigationButton: View {
 private enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case repos
+    case usage
     case inventory
     case repair
     case tools
@@ -262,6 +281,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "Overview"
         case .repos: "Skills"
+        case .usage: "Usage"
         case .inventory: "Inventory"
         case .repair: "Repair"
         case .tools: "Tools"
@@ -272,6 +292,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge"
         case .repos: "folder"
+        case .usage: "chart.bar.xaxis"
         case .inventory: "tablecells"
         case .repair: "link.badge.plus"
         case .tools: "wrench.and.screwdriver"
@@ -704,6 +725,339 @@ private struct ReposSection: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct UsageSection: View {
+    @ObservedObject var model: MetagentModel
+    @State private var filter = UsageFilter.all
+    @State private var query = ""
+
+    private var rows: [UsageSkillRow] {
+        UsageSkillRow.rows(
+            projects: model.projects,
+            summaries: model.usageSnapshot.summaries,
+            isBackfillComplete: model.usageSnapshot.isBackfillComplete
+        )
+        .filter { filter.includes($0) }
+        .filter { query.isEmpty || $0.skillName.localizedCaseInsensitiveContains(query) }
+        .sorted { left, right in
+            if left.totalInvocations != right.totalInvocations {
+                return left.totalInvocations > right.totalInvocations
+            }
+            return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Skill Usage")
+                        .font(.title3.weight(.semibold))
+                    Text(model.usageStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                TextField("Filter skills", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+
+                Picker("Status", selection: $filter) {
+                    ForEach(UsageFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .frame(width: 170)
+
+                Button {
+                    model.refreshUsage()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.glass)
+                .help("Refresh usage history")
+                .disabled(model.isUsageRefreshing)
+            }
+
+            HStack(spacing: 0) {
+                SummaryMetric(
+                    title: "Invocations",
+                    value: model.usageSnapshot.totalInvocations.formatted(),
+                    detail: "every observed SKILL.md read",
+                    symbol: "sparkles"
+                )
+                Divider().padding(.vertical, 4)
+                SummaryMetric(
+                    title: "Observed skills",
+                    value: model.usageSnapshot.summaries.count.formatted(),
+                    detail: model.usageCoverageText,
+                    symbol: "list.bullet.rectangle"
+                )
+                Divider().padding(.vertical, 4)
+                SummaryMetric(
+                    title: "Backfill",
+                    value: model.usageSnapshot.isBackfillComplete
+                        ? "Current"
+                        : model.usageProgress.formatted(.percent.precision(.fractionLength(1))),
+                    detail: model.usageProgressText,
+                    symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90"
+                )
+            }
+            .frame(height: 92)
+
+            if model.isUsageRefreshing {
+                ProgressView(value: model.usageProgress)
+                    .progressViewStyle(.linear)
+            }
+
+            if rows.isEmpty {
+                EmptyStateView(
+                    title: filter.emptyTitle,
+                    message: filter.emptyMessage(backfillComplete: model.usageSnapshot.isBackfillComplete),
+                    symbol: "chart.bar.xaxis"
+                )
+            } else {
+                Table(rows) {
+                    TableColumn("Skill") { row in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.skillName)
+                            Text(row.scope)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .help(row.canonicalPath ?? row.skillName)
+                    }
+                    .width(min: 180, ideal: 240)
+
+                    TableColumn("7d") { row in numericCell(row.invocations7d) }
+                        .width(min: 54, ideal: 64)
+                    TableColumn("30d") { row in numericCell(row.invocations30d) }
+                        .width(min: 54, ideal: 64)
+                    TableColumn("All") { row in numericCell(row.totalInvocations) }
+                        .width(min: 54, ideal: 64)
+                    TableColumn("Turns") { row in numericCell(row.activeTurns) }
+                        .width(min: 58, ideal: 68)
+                    TableColumn("Threads") { row in numericCell(row.distinctThreads) }
+                        .width(min: 66, ideal: 76)
+                    TableColumn("Repeats") { row in numericCell(row.repeatInvocations) }
+                        .width(min: 66, ideal: 76)
+                    TableColumn("Last used") { row in
+                        Text(row.lastUsedText)
+                            .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
+                    }
+                    .width(min: 100, ideal: 120)
+                    TableColumn("Evidence") { row in
+                        Text(row.evidenceText)
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(min: 90, ideal: 120)
+                }
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func numericCell(_ value: Int) -> some View {
+        Text(value.formatted())
+            .monospacedDigit()
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+private struct UsageMenuSection: View {
+    @ObservedObject var model: MetagentModel
+    let openMainWindow: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Skill Usage")
+                    .font(.headline)
+                Spacer()
+                if model.isUsageRefreshing {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                MetricView(
+                    title: "Invocations",
+                    value: model.usageSnapshot.totalInvocations.formatted(),
+                    symbol: "sparkles"
+                )
+                MetricView(
+                    title: "Observed skills",
+                    value: model.usageSnapshot.summaries.count.formatted(),
+                    symbol: "chart.bar.xaxis"
+                )
+            }
+
+            InfoRow(title: "History", value: model.usageStatusText, symbol: "clock.arrow.circlepath")
+            InfoRow(title: "Coverage", value: model.usageCoverageText, symbol: "calendar")
+
+            if model.isUsageRefreshing {
+                ProgressView(value: model.usageProgress)
+                Text(model.usageProgressText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button(action: openMainWindow) {
+                Label("Open Usage Table", systemImage: "arrow.up.right.square")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+
+            Spacer()
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private enum UsageFilter: String, CaseIterable, Identifiable {
+    case all
+    case observed
+    case neverObserved
+    case dormant
+    case insufficient
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "All skills"
+        case .observed: "Observed"
+        case .neverObserved: "Never observed"
+        case .dormant: "Dormant (90d)"
+        case .insufficient: "Insufficient data"
+        }
+    }
+    var emptyTitle: String { self == .all ? "No skill usage yet" : "No matching skills" }
+    func emptyMessage(backfillComplete: Bool) -> String {
+        if !backfillComplete {
+            return "The low-priority backfill is still building coverage."
+        }
+        return "No skills currently match this usage filter."
+    }
+    func includes(_ row: UsageSkillRow) -> Bool {
+        switch self {
+        case .all: true
+        case .observed: row.totalInvocations > 0
+        case .neverObserved: row.status == .neverObserved
+        case .dormant: row.status == .dormant
+        case .insufficient: row.status == .insufficient
+        }
+    }
+}
+
+private struct UsageSkillRow: Identifiable {
+    enum Status { case active, dormant, neverObserved, insufficient }
+
+    let id: String
+    let skillName: String
+    let canonicalPath: String?
+    let scope: String
+    let totalInvocations: Int
+    let invocations7d: Int
+    let invocations30d: Int
+    let activeTurns: Int
+    let distinctThreads: Int
+    let repeatInvocations: Int
+    let directInvocations: Int
+    let inferredInvocations: Int
+    let lastUsedAt: String?
+    let status: Status
+
+    var lastUsedText: String {
+        guard let lastUsedAt,
+              let date = MetagentCore.parseSkillUsageTimestamp(lastUsedAt)
+        else { return "Never" }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    var evidenceText: String {
+        if directInvocations > 0, inferredInvocations > 0 { return "runtime + session" }
+        if directInvocations > 0 { return "runtime" }
+        if inferredInvocations > 0 { return "session read" }
+        return "none"
+    }
+
+    static func rows(
+        projects: [ProjectStatus],
+        summaries: [SkillUsageSummary],
+        isBackfillComplete: Bool
+    ) -> [UsageSkillRow] {
+        var rows = summaries.map { summary in
+            from(summary: summary, isBackfillComplete: isBackfillComplete)
+        }
+        let summaryPaths = Set(summaries.compactMap(\.canonicalPath).map(standardizedDirectory))
+
+        var inventoryPaths = Set<String>()
+        for (project, skill) in projects.flatMap({ project in
+            project.skills.map { (project, $0) }
+        }) {
+            let directory = standardizedDirectory(
+                URL(fileURLWithPath: skill.path).deletingLastPathComponent().path
+            )
+            guard !summaryPaths.contains(directory), inventoryPaths.insert(directory).inserted else {
+                continue
+            }
+            rows.append(UsageSkillRow(
+                id: "inventory:\(project.root):\(skill.path)",
+                skillName: skill.name,
+                canonicalPath: directory,
+                scope: skill.folderKind == "system"
+                    ? "system"
+                    : (project.root == NSHomeDirectory() ? "global" : "project"),
+                totalInvocations: 0,
+                invocations7d: 0,
+                invocations30d: 0,
+                activeTurns: 0,
+                distinctThreads: 0,
+                repeatInvocations: 0,
+                directInvocations: 0,
+                inferredInvocations: 0,
+                lastUsedAt: nil,
+                status: isBackfillComplete ? .neverObserved : .insufficient
+            ))
+        }
+        return rows
+    }
+
+    private static func from(
+        summary: SkillUsageSummary,
+        isBackfillComplete: Bool
+    ) -> UsageSkillRow {
+        let lastDate = MetagentCore.parseSkillUsageTimestamp(summary.lastUsedAt)
+        let isDormant = lastDate.map { $0 < Date().addingTimeInterval(-90 * 24 * 60 * 60) } ?? false
+        return UsageSkillRow(
+            id: summary.id,
+            skillName: summary.skillName,
+            canonicalPath: summary.canonicalPath,
+            scope: summary.scope,
+            totalInvocations: summary.totalInvocations,
+            invocations7d: summary.invocations7d,
+            invocations30d: summary.invocations30d,
+            activeTurns: summary.activeTurns,
+            distinctThreads: summary.distinctThreads,
+            repeatInvocations: summary.repeatInvocations,
+            directInvocations: summary.directInvocations,
+            inferredInvocations: summary.inferredInvocations,
+            lastUsedAt: summary.lastUsedAt,
+            status: isDormant ? .dormant : .active
+        )
+    }
+
+    private static func standardizedDirectory(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            return url.resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return url.path
     }
 }
 

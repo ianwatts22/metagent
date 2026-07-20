@@ -32,6 +32,8 @@ The macOS app is the primary product surface:
 - shows whether `.agents` skills were installed by `npx skills` from `.skill-lock.json` or created natively
 - shows skill size, word, token, reference, script, asset, icon, and logo metadata
 - stores the latest inventory snapshot in SQLite at `~/Library/Application Support/Metagent/inventory.sqlite`
+- incrementally indexes retained Codex session evidence into `~/Library/Application Support/Metagent/usage.sqlite`
+- shows 7-day, 30-day, and all-time skill reads, active turns, threads, repeats, recency, and coverage
 - runs Doctor, read-only repair previews, direct project skill-link repair, and maintenance actions from Swift
 
 Launching `Metagent.app` opens a normal resizable app window and keeps the menu bar extra available for quick status/actions.
@@ -85,6 +87,8 @@ metagent skills scan --json
 metagent skills repair
 metagent skills repair --apply
 metagent skills doctor
+metagent usage status
+metagent usage refresh
 ```
 
 The future MCP entry point is reserved as:
@@ -128,6 +132,20 @@ Repair only creates a missing project symlink or replaces a wrong symlink. It ne
 replaces a real `.claude/skills` directory and never copies Claude content into
 `.agents`. Whole-directory links remain current automatically when skills are added
 or removed, so no background sync is needed.
+
+### `metagent usage`
+
+Inspect the cached skill-usage index or process a bounded incremental batch:
+
+```bash
+metagent usage status
+metagent usage refresh --max-bytes 67108864 --max-files 100
+```
+
+Historical rows use `session_backfill` provenance and are derived from observed
+`SKILL.md` reads in retained Codex JSONL sessions. They are not fabricated OTel
+events. Metagent stores normalized skill identity, time, thread, turn, and
+evidence metadata; it does not store prompt or tool-output content.
 
 Use the Linear `misc` team project `metagent` for future fold-in candidates:
 https://linear.app/social-glass/project/metagent-730ac559ca5c.

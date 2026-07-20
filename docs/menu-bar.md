@@ -14,6 +14,7 @@ Current surface:
 - `.agents` skill origin badges from `.skill-lock.json`: `npx skills` source or native
 - main-window `Inventory` table built with SwiftUI `Table`, sortable columns, native selection, and column resize/reorder/visibility customization
 - menu bar `Inventory` section that opens the main app window for the full table
+- `Usage` view with 7-day, 30-day, and all-time invocation counts, active turns, distinct threads, repeated reads, recency, evidence, and coverage filters
 - `Refresh Status`
 - `Doctor` findings grouped by project and cause, with repair guidance and technical details
 - `Preview Repair`
@@ -36,7 +37,9 @@ Refresh behavior:
 - The Doctor card opens the current findings. `Repairable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
 - The UI keeps the most recent scan in memory until the next refresh.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
-- There is no continuous polling or automatic background rescan in the app.
+- Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.
+- A low-priority, resumable session backfill runs after launch. It sleeps after each 8 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
+- Once current, there is no continuous polling; launch or manual refresh processes newly appended session bytes.
 - Whole-directory project symlinks stay current automatically, so there is no periodic repair agent.
 
 Build:

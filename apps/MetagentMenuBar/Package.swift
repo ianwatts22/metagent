@@ -33,6 +33,11 @@ let package = Package(
             name: "MetagentCLI",
             dependencies: ["MetagentCore"],
             path: "Sources/MetagentCLI"
+        ),
+        .testTarget(
+            name: "MetagentCoreTests",
+            dependencies: ["MetagentCore"],
+            path: "Tests/MetagentCoreTests"
         )
     ]
 )

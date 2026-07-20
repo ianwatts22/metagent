@@ -10,6 +10,7 @@ Swift owns the product core:
 - `.agents` provenance from `.agents/.skill-lock.json`
 - skill size, word, token, resource, icon, and logo metadata
 - SQLite inventory snapshots for fast startup
+- streaming Codex session evidence and incremental skill-usage history
 - skill doctor checks
 - project skill-link audit, repair planning, and apply behavior
 - the native macOS app UI
@@ -43,6 +44,20 @@ The app writes the latest skill inventory snapshot to SQLite:
 
 The cache is a startup and inspection optimization, not the source of truth. The filesystem remains authoritative, and Refresh performs a fresh scan before writing a new snapshot.
 
+Skill usage is stored separately:
+
+```text
+~/Library/Application Support/Metagent/usage.sqlite
+```
+
+The usage database is an incremental local analytics index. Retained Codex JSONL
+sessions provide historical `session_backfill` evidence; future runtime/OTel
+evidence can use the same normalized event schema without rewriting history as
+if Codex originally emitted it. File byte offsets and parser versions make the
+backfill resumable and prevent full rescans. The app runs the backfill at
+background priority, throttles after each 8 MiB of input, and stops when current.
+Only usage metadata is retained—never prompt text or tool output.
+
 ## Helper Boundary
 
 The Swift `metagent` helper exists for non-GUI entry points:
@@ -52,6 +67,8 @@ metagent config show --json
 metagent skills scan --json
 metagent skills repair --apply
 metagent skills doctor
+metagent usage status
+metagent usage refresh
 ```
 
 The helper is intentionally subordinate to `MetagentCore`. It should stay a thin command surface over shared Swift code.

@@ -23,6 +23,8 @@ struct MetagentCLI {
             try runConfig(Array(args.dropFirst()))
         case "skills":
             try runSkills(Array(args.dropFirst()))
+        case "usage":
+            try runUsage(Array(args.dropFirst()))
         case "morph-mcp":
             try runMorphMCP(Array(args.dropFirst()))
         case "mcp":
@@ -146,6 +148,66 @@ struct MetagentCLI {
         }
     }
 
+    private static func runUsage(_ args: [String]) throws {
+        guard let command = args.first else {
+            printUsageHelp()
+            return
+        }
+
+        switch command {
+        case "status":
+            let json = try parseJSONOnly(Array(args.dropFirst()), command: "usage status")
+            let snapshot = MetagentCore.loadSkillUsageSnapshot() ?? .empty
+            if json {
+                try printJSON(snapshot)
+            } else {
+                printUsageSnapshot(snapshot)
+            }
+        case "refresh":
+            var maxBytes: Int64 = 64 * 1_024 * 1_024
+            var maxFiles = 100
+            var json = false
+            var index = 0
+            let flags = Array(args.dropFirst())
+            while index < flags.count {
+                switch flags[index] {
+                case "--max-bytes":
+                    let value = try readFlagValue("--max-bytes", args: flags, index: &index)
+                    guard let parsed = Int64(value), parsed > 0 else {
+                        throw CLIError.message("--max-bytes must be a positive integer")
+                    }
+                    maxBytes = parsed
+                case "--max-files":
+                    let value = try readFlagValue("--max-files", args: flags, index: &index)
+                    guard let parsed = Int(value), parsed > 0 else {
+                        throw CLIError.message("--max-files must be a positive integer")
+                    }
+                    maxFiles = parsed
+                case "--json":
+                    json = true
+                default:
+                    throw CLIError.message("unknown usage refresh flag: \(flags[index])")
+                }
+                index += 1
+            }
+            let report = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                maxBytes: maxBytes,
+                maxFiles: maxFiles
+            ))
+            if json {
+                try printJSON(report)
+            } else {
+                print("read \(report.filesRead) files / \(ByteCountFormatter.string(fromByteCount: report.bytesRead, countStyle: .file))")
+                print("added \(report.invocationsAdded) invocation records")
+                printUsageSnapshot(report.snapshot)
+            }
+        case "help", "--help", "-h":
+            printUsageHelp()
+        default:
+            throw CLIError.message("unknown usage command: \(command)")
+        }
+    }
+
     private static func runMCP(_ args: [String]) throws {
         guard args.first == "--stdio" else {
             print("metagent mcp")
@@ -231,6 +293,28 @@ struct MetagentCLI {
         return args[index]
     }
 
+    private static func parseJSONOnly(_ args: [String], command: String) throws -> Bool {
+        var json = false
+        for arg in args {
+            guard arg == "--json" else {
+                throw CLIError.message("unknown \(command) flag: \(arg)")
+            }
+            json = true
+        }
+        return json
+    }
+
+    private static func printUsageSnapshot(_ snapshot: SkillUsageSnapshot) {
+        let progress = snapshot.totalBytes > 0
+            ? Double(snapshot.processedBytes) / Double(snapshot.totalBytes)
+            : 0
+        print("usage: \(snapshot.totalInvocations) invocations across \(snapshot.summaries.count) observed skills")
+        print("backfill: \(progress.formatted(.percent.precision(.fractionLength(1)))) (\(snapshot.completedFiles)/\(snapshot.totalFiles) files)")
+        for skill in snapshot.summaries.prefix(20) {
+            print("  \(skill.skillName): \(skill.totalInvocations) invocations, \(skill.activeTurns) turns, \(skill.distinctThreads) threads")
+        }
+    }
+
     private static func printRepairReport(_ report: SkillsRepairReport) {
         print("metagent skills repair: \(report.mode)")
         for project in report.projects {
@@ -267,6 +351,7 @@ struct MetagentCLI {
         Usage:
           metagent config show [--json]
           metagent skills <scan|repair|doctor> [flags]
+          metagent usage <status|refresh> [flags]
           metagent morph-mcp status
           metagent mcp --stdio
         """)
@@ -278,6 +363,16 @@ struct MetagentCLI {
 
     private static func printMorphMCPHelp() {
         print("metagent morph-mcp\n\nUsage:\n  metagent morph-mcp status")
+    }
+
+    private static func printUsageHelp() {
+        print("""
+        metagent usage
+
+        Usage:
+          metagent usage status [--json]
+          metagent usage refresh [--max-bytes N] [--max-files N] [--json]
+        """)
     }
 
     private static func printSkillsHelp() {
