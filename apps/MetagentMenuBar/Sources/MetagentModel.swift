@@ -58,10 +58,10 @@ final class MetagentModel: ObservableObject {
             return "\(failureCount) fail, \(warningCount) warn"
         }
         if doctorReviewCount > 0, doctorRepairableCount > 0 {
-            return "\(doctorRepairableCount) repairable, \(doctorReviewCount) review"
+            return "\(doctorRepairableCount) fixable, \(doctorReviewCount) review"
         }
         if doctorRepairableCount > 0 {
-            return "\(doctorRepairableCount) repairable"
+            return "\(doctorRepairableCount) fixable"
         }
         return "\(doctorReviewCount) to review"
     }
@@ -188,8 +188,8 @@ final class MetagentModel: ObservableObject {
     func repairNow() {
         guard !isRunning else { return }
         runOperation(
-            title: "Repair Skill Links",
-            runningText: "Repairing skill links..."
+            title: "Fix Skill Links",
+            runningText: "Fixing skill links..."
         ) {
             let report = try MetagentCore.repairSkills(options: SkillsRepairOptions(apply: true))
             return CommandOutcome(succeeded: true, lines: Self.renderRepairReport(report), repairPreview: nil)
@@ -202,7 +202,7 @@ final class MetagentModel: ObservableObject {
 
     func previewRepair() {
         runOperation(
-            title: "Repair Preview",
+            title: "Fix Preview",
             runningText: "Checking skill links..."
         ) {
             let report = try MetagentCore.repairSkills()
@@ -249,19 +249,6 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func runMorphStatus() {
-        runOperation(
-            title: "Morph MCP Status",
-            runningText: "Checking morph-mcp..."
-        ) {
-            CommandOutcome(
-                succeeded: true,
-                lines: try MetagentCore.morphMCPStatus().lines,
-                repairPreview: nil
-            )
-        }
-    }
-
     func toggleRawOutput() {
         showsRawOutput.toggle()
     }
@@ -305,22 +292,6 @@ final class MetagentModel: ObservableObject {
             .appending(path: "Logs")
             .appending(path: "metagent")
         NSWorkspace.shared.open(logsURL)
-    }
-
-    func restartMenuBar() {
-        guard !isRunning else { return }
-        statusText = "Restarting app..."
-        systemImage = "arrow.clockwise.circle"
-
-        do {
-            try Self.startReplacementProcess()
-            NSApplication.shared.terminate(nil)
-        } catch {
-            statusText = "Restart failed"
-            systemImage = "exclamationmark.triangle"
-            lastOutputTitle = "Restart App"
-            lastOutputLines = [error.localizedDescription]
-        }
     }
 
     private func applyStatus(
@@ -496,23 +467,6 @@ final class MetagentModel: ObservableObject {
             lines.append(contentsOf: project.lines.map { "  \($0.text)" })
         }
         return lines
-    }
-
-    nonisolated private static func startReplacementProcess() throws {
-        let process = Process()
-        let bundleURL = Bundle.main.bundleURL
-
-        if bundleURL.pathExtension == "app" {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = ["-n", bundleURL.path]
-        } else if let executableURL = Bundle.main.executableURL {
-            process.executableURL = executableURL
-            process.arguments = []
-        } else {
-            throw RestartError.missingExecutable
-        }
-
-        try process.run()
     }
 
     private func homeURL() -> URL {
@@ -815,7 +769,7 @@ struct RepairPreview: Decodable, Sendable {
     }
 
     var title: String {
-        apply ? "Repair Skill Links" : "Repair Preview"
+        apply ? "Fix Skill Links" : "Fix Preview"
     }
 
     var summaryText: String {

@@ -405,14 +405,6 @@ public enum SkillsRepairLineKind: String, Codable, Sendable {
     case info
 }
 
-public struct ToolStatusReport: Codable, Equatable, Sendable {
-    public var lines: [String]
-
-    public init(lines: [String]) {
-        self.lines = lines
-    }
-}
-
 public struct SkillUninstallReport: Codable, Equatable, Sendable {
     public var projectRoot: String
     public var skillName: String
@@ -655,46 +647,6 @@ public enum MetagentCore {
         return SkillsRepairReport(apply: options.apply, projects: projects)
     }
 
-    public static func morphMCPStatus() throws -> ToolStatusReport {
-        let result = runProcess(psExecutablePath(), arguments: ["-axo", "pid,ppid,etime,pcpu,command"])
-        guard result.exitCode == 0 else {
-            let details = result.stderr.nonEmptyLines.joined(separator: "\n")
-            throw NSError(domain: "MetagentMorphMCP", code: Int(result.exitCode), userInfo: [
-                NSLocalizedDescriptionKey: "failed to inspect processes\(details.isEmpty ? "" : "\n\(details)")"
-            ])
-        }
-
-        let matches = result.stdout
-            .components(separatedBy: .newlines)
-            .filter { line in
-                let lower = line.lowercased()
-                return lower.contains("@morphllm/morphmcp")
-                    || lower.contains("/morph-mcp")
-                    || lower.hasSuffix(" morph-mcp")
-            }
-
-        var lines = ["Morph MCP Processes"]
-        if matches.isEmpty {
-            lines.append("no morph-mcp processes found")
-        } else {
-            lines.append("matched morph-mcp processes: \(matches.count)")
-            lines.append(contentsOf: matches.map { $0.trimmingCharacters(in: .whitespaces) })
-        }
-
-        let plist = homeURL()
-            .appendingPathComponent("Library")
-            .appendingPathComponent("LaunchAgents")
-            .appendingPathComponent("com.ianwatts.metagent.morph-mcp-janitor.plist")
-        lines.append("")
-        if fileManager.fileExists(atPath: plist.path) {
-            lines.append("janitor plist exists: \(plist.path)")
-        } else {
-            lines.append("janitor plist missing: \(plist.path)")
-        }
-
-        return ToolStatusReport(lines: lines)
-    }
-
     public static func saveInventorySnapshot(_ report: SkillScanReport) {
         try? SkillInventoryCache().save(report)
     }
@@ -855,12 +807,6 @@ private struct SkillStats {
     var hasIconAndLogo = false
     var iconSmallPath: String?
     var iconLargePath: String?
-}
-
-private struct ProcessOutput {
-    var exitCode: Int32
-    var stdout: String
-    var stderr: String
 }
 
 private var fileManager: FileManager {
@@ -1440,67 +1386,6 @@ private func repairProjectProjection(
     }
 
     return lines
-}
-
-private func psExecutablePath() -> String {
-    ProcessInfo.processInfo.environment["METAGENT_PS"] ?? "/bin/ps"
-}
-
-
-private func runProcess(
-    _ executable: String,
-    arguments: [String],
-    currentDirectory: URL? = nil,
-    environment: [String: String] = [:]
-) -> ProcessOutput {
-    let tempDir = fileManager.temporaryDirectory
-        .appendingPathComponent("metagent-process-\(UUID().uuidString)")
-    let stdoutURL = tempDir.appendingPathComponent("stdout.log")
-    let stderrURL = tempDir.appendingPathComponent("stderr.log")
-
-    do {
-        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        _ = fileManager.createFile(atPath: stdoutURL.path, contents: nil)
-        _ = fileManager.createFile(atPath: stderrURL.path, contents: nil)
-    } catch {
-        return ProcessOutput(exitCode: 127, stdout: "", stderr: error.localizedDescription)
-    }
-    defer {
-        try? fileManager.removeItem(at: tempDir)
-    }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments
-    process.currentDirectoryURL = currentDirectory
-    if !environment.isEmpty {
-        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
-    }
-
-    do {
-        let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
-        let stderrHandle = try FileHandle(forWritingTo: stderrURL)
-        defer {
-            try? stdoutHandle.close()
-            try? stderrHandle.close()
-        }
-        process.standardOutput = stdoutHandle
-        process.standardError = stderrHandle
-
-        try process.run()
-        process.waitUntilExit()
-        try? stdoutHandle.close()
-        try? stderrHandle.close()
-        let stdout = (try? Data(contentsOf: stdoutURL)) ?? Data()
-        let stderr = (try? Data(contentsOf: stderrURL)) ?? Data()
-        return ProcessOutput(
-            exitCode: process.terminationStatus,
-            stdout: String(data: stdout, encoding: .utf8) ?? "",
-            stderr: String(data: stderr, encoding: .utf8) ?? ""
-        )
-    } catch {
-        return ProcessOutput(exitCode: 127, stdout: "", stderr: error.localizedDescription)
-    }
 }
 
 private final class SkillInventoryCache {

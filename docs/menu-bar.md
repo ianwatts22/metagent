@@ -7,26 +7,14 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 
 Current surface:
 
-- standalone app window that opens when launching `Metagent.app`
-- persistent menu bar window
-- Swift core status, configured roots, discovered repo count, skill count, and actionable Doctor summary
-- `Skills` menu with `.agents`, `.codex`, and `.claude` skill locations
-- `.agents` skill origin badges from `.skill-lock.json`: `npx skills` source or native
-- main-window `Inventory` table built with SwiftUI `Table`, sortable columns, native selection, and column resize/reorder/visibility customization
-- menu bar `Inventory` section that opens the main app window for the full table
-- `Usage` view with 7-day, 30-day, and all-time invocation counts, active turns, distinct threads, repeated reads, recency, evidence, and coverage filters
-- `Refresh Status`
-- `Doctor` findings grouped by project and cause, with repair guidance and technical details
-- `Preview Repair`
-- `Apply Repair`
-- `Open Config`
-- `Open Logs`
-- `Restart App`
-- structured dry-run preview with summary counts, per-project actions, warnings, and optional raw output
-- explicit Repair explanation: Preview is read-only; Apply only creates or replaces project `.claude/skills` symlinks
-- first-class skill inventory table with location, origin, folder kind, size, estimated tokens, resource counts, and icon/logo metadata
-- last action output preview for other commands
-- `Quit`
+- three destinations: `Overview`, `Skills`, and `Usage`
+- actionable health summary with Doctor findings grouped by project and cause
+- contextual repair preview shown only when a fix is available
+- sortable `Skills` table focused on name, project, location, source, and estimated tokens
+- `Usage` table with recent and all-time reads, task/repeat context, and recency
+- menu bar summaries that open the main window for the full tables
+- lower-frequency Config and Logs actions in the header menu
+- manual refresh and Quit
 
 Refresh behavior:
 
@@ -34,7 +22,7 @@ Refresh behavior:
 - The app refreshes status when it launches.
 - The `Refresh` buttons rerun Swift core scans on demand.
 - Successful link repair triggers a status refresh.
-- The Doctor card opens the current findings. `Repairable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
+- The Doctor card opens the current findings. `Fixable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
 - The UI keeps the most recent scan in memory until the next refresh.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
 - Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.

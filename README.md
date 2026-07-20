@@ -1,6 +1,6 @@
 # metagent
 
-Ian's local toolbox for coding-agent operations that are too specific or too new to rely on external tools alone.
+A native control center for inspecting and maintaining coding-agent skills.
 
 The repo is intentionally boring:
 
@@ -149,16 +149,6 @@ evidence metadata; it does not store prompt or tool-output content.
 
 Use the Linear `misc` team project `metagent` for future fold-in candidates:
 https://linear.app/social-glass/project/metagent-730ac559ca5c.
-
-### `metagent morph-mcp`
-
-Inspect local `@morphllm/morphmcp` workers from the Swift helper.
-
-```bash
-metagent morph-mcp status
-```
-
-See [docs/morph-mcp.md](docs/morph-mcp.md).
 
 ## Default Roots
 

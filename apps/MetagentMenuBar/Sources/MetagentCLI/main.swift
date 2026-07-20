@@ -25,8 +25,6 @@ struct MetagentCLI {
             try runSkills(Array(args.dropFirst()))
         case "usage":
             try runUsage(Array(args.dropFirst()))
-        case "morph-mcp":
-            try runMorphMCP(Array(args.dropFirst()))
         case "mcp":
             try runMCP(Array(args.dropFirst()))
         case "help", "--help", "-h":
@@ -128,26 +126,6 @@ struct MetagentCLI {
             throw CLIError.message("unknown skills command: \(command)")
         }
     }
-
-    private static func runMorphMCP(_ args: [String]) throws {
-        guard let command = args.first else {
-            printMorphMCPHelp()
-            return
-        }
-
-        switch command {
-        case "status":
-            if let extra = args.dropFirst().first {
-                throw CLIError.message("unknown morph-mcp status flag: \(extra)")
-            }
-            print(try MetagentCore.morphMCPStatus().lines.joined(separator: "\n"))
-        case "help", "--help", "-h":
-            printMorphMCPHelp()
-        default:
-            throw CLIError.message("unknown morph-mcp command: \(command)")
-        }
-    }
-
     private static func runUsage(_ args: [String]) throws {
         guard let command = args.first else {
             printUsageHelp()
@@ -352,17 +330,12 @@ struct MetagentCLI {
           metagent config show [--json]
           metagent skills <scan|repair|doctor> [flags]
           metagent usage <status|refresh> [flags]
-          metagent morph-mcp status
           metagent mcp --stdio
         """)
     }
 
     private static func printConfigHelp() {
         print("metagent config\n\nUsage:\n  metagent config show [--json]")
-    }
-
-    private static func printMorphMCPHelp() {
-        print("metagent morph-mcp\n\nUsage:\n  metagent morph-mcp status")
     }
 
     private static func printUsageHelp() {

@@ -359,35 +359,6 @@ if "$swift_helper" config bogus >"$bad_config_command_output" 2>&1; then
 fi
 grep -q -- "unknown config command: bogus" "$bad_config_command_output"
 
-bad_morph_command_output="$fixture_root/bad-morph-command.out"
-if "$swift_helper" morph-mcp janitor >"$bad_morph_command_output" 2>&1; then
-  echo "unknown morph-mcp command was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown morph-mcp command: janitor" "$bad_morph_command_output"
-
-bad_morph_flag_output="$fixture_root/bad-morph-flag.out"
-if "$swift_helper" morph-mcp status --bogus >"$bad_morph_flag_output" 2>&1; then
-  echo "unknown morph-mcp status flag was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown morph-mcp status flag: --bogus" "$bad_morph_flag_output"
-
-fake_ps="$fixture_root/fake-ps"
-cat >"$fake_ps" <<'SH'
-#!/usr/bin/env bash
-echo "ps blocked" >&2
-exit 42
-SH
-chmod +x "$fake_ps"
-bad_morph_ps_output="$fixture_root/bad-morph-ps.out"
-if METAGENT_PS="$fake_ps" "$swift_helper" morph-mcp status >"$bad_morph_ps_output" 2>&1; then
-  echo "failed morph-mcp process inspection exited successfully" >&2
-  exit 1
-fi
-grep -q -- "failed to inspect processes" "$bad_morph_ps_output"
-grep -q -- "ps blocked" "$bad_morph_ps_output"
-
 bad_max_depth_home="$fixture_root/bad-max-depth-home"
 mkdir -p "$bad_max_depth_home/.config/metagent"
 cat >"$bad_max_depth_home/.config/metagent/config.toml" <<EOF
