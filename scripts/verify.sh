@@ -305,7 +305,7 @@ if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" r
   echo "Metagent removed an npx-managed skill directly" >&2
   exit 1
 fi
-grep -q 'npx skills remove remove-me --yes' "$managed_uninstall_output"
+grep -q 'npx --yes skills remove remove-me --yes' "$managed_uninstall_output"
 test -f "$uninstall_root/.agents/skills/remove-me/SKILL.md"
 test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
 test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
@@ -399,7 +399,7 @@ if HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-pro
   echo "Metagent removed a global npx-managed skill directly" >&2
   exit 1
 fi
-grep -q 'npx skills remove global-managed --yes --global' "$global_uninstall_output"
+grep -q 'npx --yes skills remove global-managed --yes --global' "$global_uninstall_output"
 test -f "$global_home/.agents/skills/global-managed/SKILL.md"
 grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"
 HOME="$global_home" XDG_STATE_HOME="$global_xdg" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$global_home" global-managed apply >/dev/null

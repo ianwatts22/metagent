@@ -859,7 +859,7 @@ public enum MetagentCore {
 
         if agentsSkill.manager == "skills-cli", !allowManagedRemoval {
             throw NSError(domain: "MetagentSkillUninstall", code: 5, userInfo: [
-                NSLocalizedDescriptionKey: "\(skillName) is managed by skills CLI. Run `\(plan.command ?? "npx skills remove \(skillName) --yes")` from \(root.path), or explicitly apply the Metagent removal plan."
+                NSLocalizedDescriptionKey: "\(skillName) is managed by skills CLI. Run `\(plan.command ?? "npx --yes skills remove \(skillName) --yes")` from \(root.path), or explicitly apply the Metagent removal plan."
             ])
         }
 
@@ -1204,8 +1204,17 @@ private func installedCodexPlugins() throws -> [CodexPlugin] {
     let executable = try codexExecutable()
     let result = try runSubprocess(
         executable: executable,
-        arguments: ["plugin", "list", "--json"]
+        arguments: ["plugin", "list", "--json"],
+        timeout: 30
     )
+    if result.timedOut {
+        let detail = String(data: result.standardError, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        throw NSError(domain: "MetagentCodexPlugins", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: detail?.isEmpty == false
+                ? "codex plugin list timed out: \(detail!)"
+                : "codex plugin list timed out after 30 seconds"
+        ])
+    }
     guard result.status == 0 else {
         let detail = String(data: result.standardError, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         throw NSError(domain: "MetagentCodexPlugins", code: Int(result.status), userInfo: [
@@ -1749,7 +1758,7 @@ private func globalSkillLockPath() -> URL {
 
 private func skillsCLIRemovalCommand(root: URL, skillName: String) -> String {
     let globalFlag = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? " --global" : ""
-    return "npx skills remove \(skillName) --yes\(globalFlag)"
+    return "npx --yes skills remove \(skillName) --yes\(globalFlag)"
 }
 
 private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
@@ -1758,10 +1767,18 @@ private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String 
     let result = try runSubprocess(
         executable: try npxExecutable(),
         arguments: arguments,
-        currentDirectory: root
+        currentDirectory: root,
+        timeout: 120
     )
     let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if result.timedOut {
+        throw NSError(domain: "MetagentSkillsCLI", code: 124, userInfo: [
+            NSLocalizedDescriptionKey: combined.isEmpty
+                ? "npx skills remove timed out after 120 seconds"
+                : "npx skills remove timed out after 120 seconds:\n\(combined)"
+        ])
+    }
     guard result.status == 0 else {
         throw NSError(domain: "MetagentSkillsCLI", code: Int(result.status), userInfo: [
             NSLocalizedDescriptionKey: combined.isEmpty ? "npx skills remove failed" : combined
@@ -1774,47 +1791,58 @@ private struct SubprocessResult {
     var status: Int32
     var standardOutput: Data
     var standardError: Data
-}
-
-private final class PipeReader: @unchecked Sendable {
-    private let handle: FileHandle
-    private(set) var data = Data()
-
-    init(handle: FileHandle) {
-        self.handle = handle
-    }
-
-    func readToEnd() {
-        data = handle.readDataToEndOfFile()
-    }
+    var timedOut: Bool
 }
 
 private func runSubprocess(
     executable: URL,
     arguments: [String],
-    currentDirectory: URL? = nil
+    currentDirectory: URL? = nil,
+    timeout: TimeInterval
 ) throws -> SubprocessResult {
+    let captureDirectory = fileManager.temporaryDirectory
+        .appendingPathComponent("metagent-process-\(UUID().uuidString)")
+    try fileManager.createDirectory(at: captureDirectory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: captureDirectory) }
+    let outputURL = captureDirectory.appendingPathComponent("stdout")
+    let errorURL = captureDirectory.appendingPathComponent("stderr")
+    _ = fileManager.createFile(atPath: outputURL.path, contents: nil)
+    _ = fileManager.createFile(atPath: errorURL.path, contents: nil)
+    let outputHandle = try FileHandle(forWritingTo: outputURL)
+    let errorHandle = try FileHandle(forWritingTo: errorURL)
+
     let process = Process()
-    let standardOutput = Pipe()
-    let standardError = Pipe()
     process.executableURL = executable
     process.arguments = arguments
     process.currentDirectoryURL = currentDirectory
-    process.standardOutput = standardOutput
-    process.standardError = standardError
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = outputHandle
+    process.standardError = errorHandle
     try process.run()
 
-    let outputReader = PipeReader(handle: standardOutput.fileHandleForReading)
-    let errorReader = PipeReader(handle: standardError.fileHandleForReading)
-    let readers = [outputReader, errorReader]
-    DispatchQueue.concurrentPerform(iterations: readers.count) { index in
-        readers[index].readToEnd()
+    let deadline = Date().addingTimeInterval(timeout)
+    while process.isRunning && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+    }
+    let timedOut = process.isRunning
+    if timedOut {
+        process.terminate()
+        let terminationDeadline = Date().addingTimeInterval(2)
+        while process.isRunning && Date() < terminationDeadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
     process.waitUntilExit()
+    try outputHandle.close()
+    try errorHandle.close()
     return SubprocessResult(
         status: process.terminationStatus,
-        standardOutput: outputReader.data,
-        standardError: errorReader.data
+        standardOutput: try Data(contentsOf: outputURL),
+        standardError: try Data(contentsOf: errorURL),
+        timedOut: timedOut
     )
 }
 
