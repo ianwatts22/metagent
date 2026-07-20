@@ -17,6 +17,13 @@ This repo contains local coding-agent tooling.
 - Use Linear for project management. Put metagent ideas, backlog items, and follow-up tasks in the `misc` team project `metagent`: https://linear.app/social-glass/project/metagent-730ac559ca5c.
 - Do not create or extend repo-local ad hoc to-do/backlog markdown for project management. Keep repo docs focused on durable architecture, commands, and operating guidance.
 
+## Published Skill Updates
+
+- Treat `.agents/skills/metagent/` as the source for the public and globally installed Metagent skill.
+- After changing it, follow `docs/skill-publishing.md`: validate and commit, push the source, then run `npx --yes skills update metagent --global --yes` and verify the installed content and global lock entry.
+- Never run the global update before the source is pushed; the skills CLI installs from GitHub and may overwrite unpushed local changes.
+- If pushing is not authorized, report the repository and installed states separately rather than calling the update complete.
+
 ## Verification
 
 Run before considering changes done:

@@ -45,6 +45,15 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
    npx --yes skills add ianwatts22/metagent --skill metagent
    ```
 
+7. For subsequent published changes, push first and then update the managed global installation.
+
+   ```bash
+   npx --yes skills update metagent --global --yes
+   ```
+
+   Do not update before pushing: this command reads the GitHub source recorded in
+   the global skills lock and can overwrite unpushed local changes.
+
 ## Local State Checks
 
 `npx skills` and dotagents track different state:

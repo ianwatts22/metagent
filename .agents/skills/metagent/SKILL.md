@@ -32,11 +32,8 @@ For a single skill, one project's collection, or the combined global/project/plu
 
 ## Routing
 
-- Use `$tech-stack` for application frameworks, SDKs, app scaffolding, dependencies, and observability.
-- Use `$tool-stack` for desktop apps, CLIs, editors, viewers, and non-code workflow tools.
-- Use `$dotagents` for `agents.toml`, `agents.lock`, dotagents-managed skills or MCPs, and dotagents sync/doctor workflows.
-- Use `$local-machine` for persistent helpers, LaunchAgents, process cleanup, power commands, and machine-level runtime operations.
-- Use `$openai-docs` for current Codex, OpenAI API, Apps SDK, Agents SDK, or product-surface behavior.
-- Use `$skill-creator` or applicable authoring guidance for approved skill edits and validation.
+- Keep application engineering, local tool selection, and machine maintenance in their applicable local guidance rather than absorbing them here.
+- Treat skill installers, projection managers, plugin systems, and their manifests as external managers. Use each manager's current guidance for mutations.
+- Use current official product documentation for product behavior and available skill-authoring guidance for approved skill edits and validation.
 
 Report evidence, uncertainty, and the smallest useful next action. Keep healthy state matrices terse unless the user asks for setup details or proof.
