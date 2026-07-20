@@ -11,6 +11,7 @@ Swift owns the product core:
 - skill size, word, token, resource, icon, and logo metadata
 - SQLite inventory snapshots for fast startup
 - streaming Codex session evidence and incremental skill-usage history
+- deterministic portfolio scoring plus cached Plugin Eval and optional Codex review results
 - skill doctor checks
 - project skill-link audit, repair planning, and apply behavior
 - the native macOS app UI
@@ -58,6 +59,16 @@ backfill resumable and prevent full rescans. The app runs the backfill at
 background priority, throttles after each 8 MiB of input, and stops when current.
 Only usage metadata is retained—never prompt text or tool output.
 
+Skill evaluation results are stored separately:
+
+```text
+~/Library/Application Support/Metagent/skill-evaluations-v1.json
+```
+
+This cache contains evaluator summaries, rubric breakdowns, provider versions,
+timestamps, and canonical skill-content hashes. The scoring contract and
+provider boundaries are documented in [skill-scoring.md](skill-scoring.md).
+
 ## Helper Boundary
 
 The Swift `metagent` helper exists for non-GUI entry points:
@@ -67,6 +78,8 @@ metagent config show --json
 metagent skills scan --json
 metagent skills repair --apply
 metagent skills doctor
+metagent skills evaluate /absolute/path/to/skill --provider plugin-eval
+metagent skills evaluate /absolute/path/to/skill --provider codex
 metagent usage status
 metagent usage refresh
 ```

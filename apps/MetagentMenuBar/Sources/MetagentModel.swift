@@ -25,8 +25,12 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var usageSnapshot = SkillUsageSnapshot.empty
     @Published private(set) var isUsageRefreshing = false
     @Published private(set) var usageStatusText = "Usage history not scanned"
+    @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
+    @Published private(set) var isSkillEvaluating = false
+    @Published private(set) var skillEvaluationStatusText: String?
 
     private let fileManager = FileManager.default
+    private var skillEvaluationRefreshGeneration = 0
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -42,6 +46,7 @@ final class MetagentModel: ObservableObject {
             usageSnapshot = usage
             usageStatusText = Self.usageStatus(usage)
         }
+        refreshSkillEvaluations()
         refreshStatus()
         refreshUsage()
     }
@@ -190,6 +195,73 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    func evaluateSkillWithPluginEval(path: String) {
+        evaluateSkillsWithPluginEval(paths: [path])
+    }
+
+    func evaluateSkillsWithPluginEval(paths: [String]) {
+        guard !isSkillEvaluating else { return }
+        let uniquePaths = Array(Set(paths)).sorted()
+        guard !uniquePaths.isEmpty else { return }
+        skillEvaluationRefreshGeneration += 1
+        isSkillEvaluating = true
+        skillEvaluationStatusText = uniquePaths.count == 1
+            ? "Running Plugin Eval…"
+            : "Running Plugin Eval for \(uniquePaths.count) skills…"
+
+        Task {
+            var failedSkillNames: [String] = []
+            var firstFailureDetail: String?
+            for (index, path) in uniquePaths.enumerated() {
+                do {
+                    let record = try await Task.detached(priority: .utility) {
+                        try MetagentCore.evaluateSkillWithPluginEval(at: path)
+                    }.value
+                    var snapshot = skillEvaluations
+                    snapshot.records[record.canonicalPath] = record
+                    skillEvaluations = snapshot
+                    skillEvaluationStatusText = uniquePaths.count == 1
+                        ? "Plugin Eval complete"
+                        : "Plugin Eval \(index + 1) of \(uniquePaths.count)"
+                } catch {
+                    failedSkillNames.append(URL(fileURLWithPath: path).lastPathComponent)
+                    if firstFailureDetail == nil {
+                        firstFailureDetail = error.localizedDescription
+                    }
+                    skillEvaluationStatusText = "Plugin Eval \(index + 1) of \(uniquePaths.count) · \(failedSkillNames.count) failed"
+                }
+            }
+            if !failedSkillNames.isEmpty {
+                let preview = failedSkillNames.prefix(3).joined(separator: ", ")
+                let suffix = failedSkillNames.count > 3 ? ", …" : ""
+                let detail = firstFailureDetail.map { " · \($0)" } ?? ""
+                skillEvaluationStatusText = "Plugin Eval finished · \(failedSkillNames.count) failed: \(preview)\(suffix)\(detail)"
+            }
+            isSkillEvaluating = false
+        }
+    }
+
+    func reviewSkillWithCodex(path: String) {
+        guard !isSkillEvaluating else { return }
+        skillEvaluationRefreshGeneration += 1
+        isSkillEvaluating = true
+        skillEvaluationStatusText = "Codex is reviewing \(URL(fileURLWithPath: path).lastPathComponent)…"
+        Task {
+            do {
+                let record = try await Task.detached(priority: .utility) {
+                    try MetagentCore.reviewSkillWithCodex(at: path)
+                }.value
+                var snapshot = skillEvaluations
+                snapshot.records[record.canonicalPath] = record
+                skillEvaluations = snapshot
+                skillEvaluationStatusText = "Codex review complete"
+            } catch {
+                skillEvaluationStatusText = "Codex review failed: \(error.localizedDescription)"
+            }
+            isSkillEvaluating = false
+        }
+    }
+
     func repairNow() {
         guard !isRunning else { return }
         runOperation(
@@ -309,6 +381,7 @@ final class MetagentModel: ObservableObject {
         pluginScan: Result<SkillScanReport, Error>,
         doctor: Result<DoctorReport, Error>
     ) {
+        refreshSkillEvaluations()
         isRunning = false
         lastRunText = Self.timestamp()
 
@@ -370,6 +443,19 @@ final class MetagentModel: ObservableObject {
         doctorIssues = report.issues
         warningCount = report.warningCount
         failureCount = report.failureCount
+    }
+
+    private func refreshSkillEvaluations() {
+        guard !isSkillEvaluating else { return }
+        skillEvaluationRefreshGeneration += 1
+        let generation = skillEvaluationRefreshGeneration
+        Task {
+            let snapshot = await Task.detached(priority: .utility) {
+                MetagentCore.loadSkillEvaluationSnapshot()
+            }.value
+            guard generation == skillEvaluationRefreshGeneration else { return }
+            skillEvaluations = snapshot
+        }
     }
 
     private func runOperation(

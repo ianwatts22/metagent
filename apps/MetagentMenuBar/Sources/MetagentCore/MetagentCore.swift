@@ -1225,7 +1225,7 @@ private func installedCodexPlugins() throws -> [CodexPlugin] {
         .filter { $0.installed && $0.enabled }
 }
 
-private func codexExecutable() throws -> URL {
+func codexExecutable() throws -> URL {
     let environment = ProcessInfo.processInfo.environment
     var candidates: [String] = []
     if let override = environment["METAGENT_CODEX"], !override.isEmpty {
@@ -1787,17 +1787,18 @@ private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String 
     return combined
 }
 
-private struct SubprocessResult {
+struct SubprocessResult {
     var status: Int32
     var standardOutput: Data
     var standardError: Data
     var timedOut: Bool
 }
 
-private func runSubprocess(
+func runSubprocess(
     executable: URL,
     arguments: [String],
     currentDirectory: URL? = nil,
+    standardInput: Data? = nil,
     timeout: TimeInterval
 ) throws -> SubprocessResult {
     let captureDirectory = fileManager.temporaryDirectory
@@ -1806,9 +1807,15 @@ private func runSubprocess(
     defer { try? fileManager.removeItem(at: captureDirectory) }
     let outputURL = captureDirectory.appendingPathComponent("stdout")
     let errorURL = captureDirectory.appendingPathComponent("stderr")
+    let inputURL = captureDirectory.appendingPathComponent("stdin")
     _ = fileManager.createFile(atPath: outputURL.path, contents: nil)
     _ = fileManager.createFile(atPath: errorURL.path, contents: nil)
-    let inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+    if let standardInput {
+        try standardInput.write(to: inputURL, options: .atomic)
+    }
+    let inputHandle = try FileHandle(
+        forReadingFrom: standardInput == nil ? URL(fileURLWithPath: "/dev/null") : inputURL
+    )
     let outputHandle = try FileHandle(forWritingTo: outputURL)
     let errorHandle = try FileHandle(forWritingTo: errorURL)
 

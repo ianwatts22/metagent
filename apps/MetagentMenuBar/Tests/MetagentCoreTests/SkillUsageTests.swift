@@ -78,6 +78,136 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(third.snapshot.totalInvocations, 4)
     }
 
+    func testUsageAggregatesAcrossFrontmatterNameChangesAtOneCanonicalPath() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/renamed-skill",
+            name: "old-name"
+        )
+        let firstRollout = fixture.sessions.appendingPathComponent("rollout-before-rename.jsonl")
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:00:00.000Z",
+                type: "session_meta",
+                payload: ["id": "rename-session", "cwd": fixture.root.path]
+            ),
+            fixture.line(
+                timestamp: "2026-07-19T12:00:01.000Z",
+                type: "turn_context",
+                payload: ["turn_id": "rename-turn", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-before-rename", command: "cat \(skill.path)")
+        ], to: firstRollout)
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+
+        try "---\nname: new-name\ndescription: fixture\n---\n".write(
+            to: skill,
+            atomically: true,
+            encoding: .utf8
+        )
+        let secondRollout = fixture.sessions.appendingPathComponent("rollout-after-rename.jsonl")
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:01:00.000Z",
+                type: "session_meta",
+                payload: ["id": "rename-session", "cwd": fixture.root.path]
+            ),
+            fixture.line(
+                timestamp: "2026-07-19T12:01:01.000Z",
+                type: "turn_context",
+                payload: ["turn_id": "rename-turn", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-after-rename", command: "cat \(skill.path)")
+        ], to: secondRollout)
+
+        let summaries = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.summaries
+        let summary = try XCTUnwrap(summaries.first { $0.canonicalPath == skill.deletingLastPathComponent().path })
+        XCTAssertEqual(summaries.filter { $0.canonicalPath == summary.canonicalPath }.count, 1)
+        XCTAssertEqual(summary.skillName, "new-name")
+        XCTAssertEqual(summary.totalInvocations, 2)
+        XCTAssertEqual(summary.activeTurns, 1)
+        XCTAssertEqual(summary.distinctThreads, 1)
+        XCTAssertEqual(summary.repeatInvocations, 1)
+    }
+
+    func testPluginUsageAggregatesAcrossVersionedCachePaths() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let oldSkill = try fixture.makeSkill(
+            at: ".codex/plugins/cache/openai-curated-remote/example-plugin/1.0.0/skills/example-skill",
+            name: "old-name"
+        )
+        let newSkill = try fixture.makeSkill(
+            at: ".codex/plugins/cache/openai-curated-remote/example-plugin/2.0.0/skills/example-skill",
+            name: "new-name"
+        )
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:00:00.000Z",
+                type: "session_meta",
+                payload: ["id": "plugin-session", "cwd": fixture.root.path]
+            ),
+            fixture.line(
+                timestamp: "2026-07-19T12:00:01.000Z",
+                type: "turn_context",
+                payload: ["turn_id": "plugin-turn", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-old-plugin", command: "cat \(oldSkill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-old-plugin.jsonl"))
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:01:00.000Z",
+                type: "session_meta",
+                payload: ["id": "plugin-session", "cwd": fixture.root.path]
+            ),
+            fixture.line(
+                timestamp: "2026-07-19T12:01:01.000Z",
+                type: "turn_context",
+                payload: ["turn_id": "plugin-turn", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-new-plugin", command: "cat \(newSkill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-new-plugin.jsonl"))
+
+        let summaries = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.summaries
+        let summary = try XCTUnwrap(summaries.first { $0.id == "plugin:example-plugin:example-skill" })
+        XCTAssertEqual(summaries.filter { $0.id == summary.id }.count, 1)
+        XCTAssertEqual(summary.skillName, "example-plugin:new-name")
+        XCTAssertEqual(summary.canonicalPath, newSkill.deletingLastPathComponent().path)
+        XCTAssertEqual(summary.totalInvocations, 2)
+        XCTAssertEqual(summary.activeTurns, 1)
+        XCTAssertEqual(summary.distinctThreads, 1)
+        XCTAssertEqual(summary.repeatInvocations, 1)
+    }
+
+    func testSameSkillIdentityAtDifferentPathsProducesUniqueSummaryIDs() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let first = try fixture.makeSkill(
+            at: "workspace/.agents/skills/first-folder",
+            name: "shared-name"
+        )
+        let second = try fixture.makeSkill(
+            at: "workspace/.agents/skills/second-folder",
+            name: "shared-name"
+        )
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:00:00.000Z",
+                type: "session_meta",
+                payload: ["id": "path-collision-session", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-first-path", command: "cat \(first.path)"),
+            fixture.toolCall(callID: "call-second-path", command: "cat \(second.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-path-collision.jsonl"))
+
+        let summaries = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.summaries
+        XCTAssertEqual(summaries.count, 2)
+        XCTAssertEqual(Set(summaries.map(\.id)).count, 2)
+        XCTAssertTrue(summaries.allSatisfy { $0.id.hasPrefix("path:") })
+    }
+
     func testDefersAnIncompleteFinalRecordUntilItIsTerminated() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

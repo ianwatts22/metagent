@@ -124,6 +124,8 @@ struct MetagentCLI {
             }
         case "remove":
             try runSkillRemoval(Array(args.dropFirst()))
+        case "evaluate":
+            try runSkillEvaluation(Array(args.dropFirst()))
         case "help", "--help", "-h":
             printSkillsHelp()
         default:
@@ -186,6 +188,53 @@ struct MetagentCLI {
                 if let command = plan.command { print("package-manager action: \(command)") }
                 print("run again with --apply to remove it with recovery state")
             }
+        }
+    }
+
+    private static func runSkillEvaluation(_ args: [String]) throws {
+        guard let skillPath = args.first, !skillPath.hasPrefix("--") else {
+            throw CLIError.message("skills evaluate requires a skill directory or SKILL.md path")
+        }
+        var provider = "plugin-eval"
+        var json = false
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "--provider":
+                provider = try readFlagValue("--provider", args: args, index: &index)
+            case "--json":
+                json = true
+            default:
+                throw CLIError.message("unknown skills evaluate flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        let record: SkillEvaluationRecord
+        switch provider {
+        case "plugin-eval":
+            record = try MetagentCore.evaluateSkillWithPluginEval(at: skillPath)
+        case "codex":
+            record = try MetagentCore.reviewSkillWithCodex(at: skillPath)
+        case "all":
+            _ = try MetagentCore.evaluateSkillWithPluginEval(at: skillPath)
+            record = try MetagentCore.reviewSkillWithCodex(at: skillPath)
+        default:
+            throw CLIError.message("--provider must be plugin-eval, codex, or all")
+        }
+
+        if json {
+            try printJSON(record)
+            return
+        }
+        print("skill: \(record.canonicalPath)")
+        if let evaluation = record.pluginEval {
+            print("Plugin Eval: \(evaluation.score) \(evaluation.grade) · \(evaluation.riskLevel) risk")
+        }
+        if let review = record.codexReview {
+            print("Codex review: \(review.score) \(review.grade.rawValue)")
+            print("  \(review.summary)")
+            print("  next: \(review.recommendation)")
         }
     }
 
@@ -392,7 +441,7 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <scan|repair|doctor|remove> [flags]
+          metagent skills <scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent mcp --stdio
@@ -422,6 +471,7 @@ struct MetagentCLI {
           metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills remove NAME [--root PATH] [--apply] [--json]
+          metagent skills evaluate PATH [--provider plugin-eval|codex|all] [--json]
         """)
     }
 

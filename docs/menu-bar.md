@@ -10,9 +10,10 @@ Current surface:
 - three destinations: `Overview`, `Skills`, and `Usage`
 - actionable health summary with Doctor findings grouped by project and cause
 - contextual repair preview shown only when a fix is available
-- native inset `Skills` table with name, project, source, and estimated tokens visible by default; location remains available through column customization
+- native inset `Skills` table with name, project, source, Metagent Score, Plugin Eval, and estimated tokens visible by default; location and Codex review remain available through column customization
 - native inset `Usage` table with recent and all-time reads plus recency visible by default; task/repeat context remains available through column customization
 - combined skill-name search and project filtering in `Skills`, plus skill-name search and lifecycle filtering in `Usage`
+- selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
 - menu bar summaries that open the main window for the full tables
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
@@ -26,6 +27,7 @@ Refresh behavior:
 - The Doctor card opens the current findings. `Fixable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
 - The UI keeps the most recent scan in memory until the next refresh.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
+- Plugin Eval and Codex review results are persisted to `~/Library/Application Support/Metagent/skill-evaluations-v1.json`.
 - Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.
 - A low-priority, resumable session backfill runs after launch. It sleeps after each 8 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
 - Once current, there is no continuous polling; launch or manual refresh processes newly appended session bytes.

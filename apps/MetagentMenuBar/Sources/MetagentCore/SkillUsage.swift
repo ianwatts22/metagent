@@ -99,7 +99,7 @@ public extension MetagentCore {
     }
 }
 
-private let skillUsageParserVersion = 13
+private let skillUsageParserVersion = 14
 private let skillUsageSQLiteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 private func skillUsageHomeURL() -> URL {
@@ -303,11 +303,37 @@ private final class SkillUsageStore {
         }
 
         let sql = """
+        WITH normalized AS (
+          SELECT
+            *,
+            rowid AS event_rowid,
+            CASE
+              WHEN skill_id LIKE 'plugin:%' THEN 'id:' || skill_id
+              WHEN canonical_path != '' THEN 'path:' || canonical_path
+              ELSE 'id:' || skill_id
+            END AS aggregate_id
+          FROM skill_usage_events
+        ), ranked AS (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY aggregate_id
+              ORDER BY occurred_at DESC, event_rowid DESC
+            ) AS identity_rank
+          FROM normalized
+        ), identity_counts AS (
+          SELECT skill_id, COUNT(DISTINCT aggregate_id) AS aggregate_count
+          FROM normalized
+          GROUP BY skill_id
+        )
         SELECT
-          skill_id,
-          skill_name,
-          MAX(NULLIF(canonical_path, '')),
-          scope,
+          CASE
+            WHEN MAX(identity_counts.aggregate_count) > 1 THEN ranked.aggregate_id
+            ELSE MAX(CASE WHEN identity_rank = 1 THEN ranked.skill_id END)
+          END,
+          MAX(CASE WHEN identity_rank = 1 THEN skill_name END),
+          MAX(CASE WHEN identity_rank = 1 THEN NULLIF(canonical_path, '') END),
+          MAX(CASE WHEN identity_rank = 1 THEN scope END),
           COUNT(*),
           SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-7 days') THEN 1 ELSE 0 END),
           SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-30 days') THEN 1 ELSE 0 END),
@@ -318,9 +344,10 @@ private final class SkillUsageStore {
           SUM(CASE WHEN evidence != 'otel' THEN 1 ELSE 0 END),
           MIN(occurred_at),
           MAX(occurred_at)
-        FROM skill_usage_events
-        GROUP BY skill_id, skill_name, scope
-        ORDER BY COUNT(*) DESC, lower(skill_name), skill_id;
+        FROM ranked
+        JOIN identity_counts USING (skill_id)
+        GROUP BY aggregate_id
+        ORDER BY COUNT(*) DESC, lower(MAX(CASE WHEN identity_rank = 1 THEN skill_name END)), aggregate_id;
         """
         var statement: OpaquePointer?
         try prepare(db, sql, &statement)
@@ -1149,7 +1176,7 @@ private final class SkillUsageStore {
         {
             let pluginName = skillsIndex >= 2 ? components[skillsIndex - 2] : "plugin"
             return ParsedSkillIdentity(
-                id: "plugin:\(pluginName):\(frontmatterName)",
+                id: "plugin:\(pluginName):\(folderName)",
                 name: "\(pluginName):\(frontmatterName)",
                 confirmationName: frontmatterName,
                 canonicalPath: directory.path,

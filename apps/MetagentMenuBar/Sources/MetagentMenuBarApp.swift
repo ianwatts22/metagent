@@ -1019,6 +1019,9 @@ private struct UsageSkillRow: Identifiable {
             from(summary: summary, isBackfillComplete: isBackfillComplete)
         }
         let summaryPaths = Set(summaries.compactMap(\.canonicalPath).map(standardizedDirectory))
+        let summaryPluginKeys = Set(summaries.compactMap {
+            pluginUsageMatchKey(id: $0.id, canonicalPath: $0.canonicalPath)
+        })
 
         var inventoryPaths = Set<String>()
         for (project, skill) in projects.flatMap({ project in
@@ -1027,7 +1030,11 @@ private struct UsageSkillRow: Identifiable {
             let directory = standardizedDirectory(
                 URL(fileURLWithPath: skill.path).deletingLastPathComponent().path
             )
-            guard !summaryPaths.contains(directory), inventoryPaths.insert(directory).inserted else {
+            let pluginAlreadyRepresented = pluginUsageMatchKey(skill).map(summaryPluginKeys.contains) ?? false
+            guard !summaryPaths.contains(directory),
+                  !pluginAlreadyRepresented,
+                  inventoryPaths.insert(directory).inserted
+            else {
                 continue
             }
             rows.append(UsageSkillRow(
@@ -1088,16 +1095,18 @@ private struct InventorySection: View {
     @State private var selectedProjectRoot: String?
     @State private var query = ""
     @State private var pendingRemoval: InventorySkillRow?
-    @SceneStorage("metagent.inventory.columns.v2")
+    @State private var pendingCodexReview: InventorySkillRow?
+    @SceneStorage("metagent.inventory.columns.v3")
     private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
 
     private var rows: [InventorySkillRow] {
         let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return InventorySkillRow.rows(
-            from: model.projects.filter { project in
-                selectedProjectRoot == nil || project.root == selectedProjectRoot
-            }
+            from: model.projects,
+            usage: model.usageSnapshot,
+            evaluations: model.skillEvaluations
         )
+        .filter { selectedProjectRoot == nil || $0.projectRoot == selectedProjectRoot }
         .filter { searchQuery.isEmpty || $0.matches(searchQuery) }
     }
 
@@ -1154,6 +1163,29 @@ private struct InventorySection: View {
                 }
                 .frame(minWidth: 150, idealWidth: 190)
 
+                Menu {
+                    Button("Run Plugin Eval") {
+                        if let selectedRow {
+                            model.evaluateSkillWithPluginEval(path: selectedRow.canonicalPath)
+                        }
+                    }
+                    .disabled(selectedRow == nil)
+                    Button("Review with Codex") {
+                        if let selectedRow {
+                            pendingCodexReview = selectedRow
+                        }
+                    }
+                    .disabled(selectedRow == nil)
+                    Divider()
+                    Button("Run Plugin Eval for Visible Skills") {
+                        model.evaluateSkillsWithPluginEval(paths: rows.map(\.canonicalPath))
+                    }
+                } label: {
+                    Label("Evaluate", systemImage: "checkmark.seal")
+                }
+                .buttonStyle(.glass)
+                .disabled(rows.isEmpty || model.isSkillEvaluating)
+
                 Button(role: selectedRow?.isManaged == true ? nil : .destructive) {
                     pendingRemoval = selectedRow
                 } label: {
@@ -1173,6 +1205,19 @@ private struct InventorySection: View {
                 .buttonStyle(.glass)
                 .help("Refresh")
                 .disabled(model.isRunning)
+            }
+
+            if let evaluationStatus = model.skillEvaluationStatusText {
+                HStack(spacing: 6) {
+                    if model.isSkillEvaluating {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(evaluationStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             if rows.isEmpty {
@@ -1218,6 +1263,16 @@ private struct InventorySection: View {
                 secondaryButton: .cancel()
             )
         }
+        .alert(item: $pendingCodexReview) { row in
+            Alert(
+                title: Text("Review \(row.skillName) with Codex?"),
+                message: Text("Metagent will copy this skill into an isolated temporary directory, disable Codex tools and user configuration, and send the copied contents to OpenAI for an ephemeral review. The skill and other local files cannot be edited or read by the review."),
+                primaryButton: .default(Text("Run Review")) {
+                    model.reviewSkillWithCodex(path: row.canonicalPath)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 }
 
@@ -1257,15 +1312,55 @@ private struct InventorySkillRow: Identifiable {
     let project: ProjectStatus
     let skill: SkillStatus
     let variants: [SkillStatus]
+    let metagentScore: MetagentSkillScore
+    let pluginEval: PluginEvalSkillAssessment?
+    let codexReview: CodexSkillReview?
 
-    static func rows(from projects: [ProjectStatus]) -> [InventorySkillRow] {
-        projects.flatMap { project in
+    static func rows(
+        from projects: [ProjectStatus],
+        usage: SkillUsageSnapshot,
+        evaluations: SkillEvaluationSnapshot
+    ) -> [InventorySkillRow] {
+        let usageByPath = Dictionary(grouping: usage.summaries.compactMap { summary -> (String, SkillUsageSummary)? in
+            guard let canonicalPath = summary.canonicalPath else { return nil }
+            return (standardizedDirectory(canonicalPath), summary)
+        }, by: \.0).compactMapValues { values in
+            values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
+        }
+        let usageByIdentity = Dictionary(grouping: usage.summaries, by: {
+            "\($0.skillName):\($0.scope)"
+        }).compactMapValues { values in
+            values.max { $0.totalInvocations < $1.totalInvocations }
+        }
+        let pluginUsageByKey = Dictionary(grouping: usage.summaries.compactMap { summary in
+            pluginUsageMatchKey(id: summary.id, canonicalPath: summary.canonicalPath).map { ($0, summary) }
+        }, by: \.0).compactMapValues { values in
+            values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
+        }
+        let evaluationsByPath = Dictionary(evaluations.records.values.map {
+            (standardizedDirectory($0.canonicalPath), $0)
+        }, uniquingKeysWith: { first, _ in first })
+        let portfolioVariantsByName = Dictionary(grouping: projects.flatMap(\.skills), by: \.name)
+        return projects.flatMap { project in
             Dictionary(grouping: project.skills, by: \.name).values.map { variants in
                 let sortedVariants = variants.sorted(by: canonicalSkillOrder)
+                let skill = sortedVariants[0]
+                let canonicalPath = standardizedDirectory(skill.canonicalPath)
+                let matchedUsage = usageByPath[canonicalPath]
+                    ?? pluginUsageMatchKey(skill).flatMap { pluginUsageByKey[$0] }
+                    ?? (skill.canonicalPath.isEmpty ? usageByIdentity["\(skill.name):\(skill.scope)"] : nil)
                 return InventorySkillRow(
                     project: project,
-                    skill: sortedVariants[0],
-                    variants: sortedVariants
+                    skill: skill,
+                    variants: sortedVariants,
+                    metagentScore: MetagentCore.scoreSkill(
+                        skill.coreSkill,
+                        variants: (portfolioVariantsByName[skill.name] ?? sortedVariants).map(\.coreSkill),
+                        usage: matchedUsage,
+                        usageCoverageComplete: usage.isBackfillComplete
+                    ),
+                    pluginEval: evaluationsByPath[canonicalPath]?.pluginEval,
+                    codexReview: evaluationsByPath[canonicalPath]?.codexReview
                 )
             }
         }
@@ -1289,6 +1384,7 @@ private struct InventorySkillRow: Identifiable {
     var projectName: String { project.name }
     var projectRoot: String { project.root }
     var skillPath: String { skill.path }
+    var canonicalPath: String { skill.canonicalPath }
     var locationLabel: String {
         variants
             .map(\.locationLabel)
@@ -1312,6 +1408,31 @@ private struct InventorySkillRow: Identifiable {
             .compactMap { $0 }
             .joined(separator: "\n")
     }
+    var metagentScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
+    var metagentScoreHelp: String {
+        let breakdown = metagentScore.components.map {
+            "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
+        }.joined(separator: "\n")
+        return "Metagent Score v\(metagentScore.version) · \(metagentScore.confidence.rawValue) confidence\n\(breakdown)"
+    }
+    var pluginEvalText: String {
+        guard let pluginEval else { return "—" }
+        return "\(pluginEval.score) \(pluginEval.grade)"
+    }
+    var pluginEvalSortValue: Int { pluginEval?.score ?? -1 }
+    var pluginEvalHelp: String {
+        guard let pluginEval else { return "Not evaluated. Use Evaluate → Run Plugin Eval." }
+        return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\n\(pluginEval.riskReasons.joined(separator: "\n"))"
+    }
+    var codexReviewText: String {
+        guard let codexReview else { return "—" }
+        return "\(codexReview.score) \(codexReview.grade.rawValue)"
+    }
+    var codexReviewSortValue: Int { codexReview?.score ?? -1 }
+    var codexReviewHelp: String {
+        guard let codexReview else { return "Not reviewed. Use Evaluate → Review with Codex." }
+        return "\(codexReview.summary)\nNext: \(codexReview.recommendation)"
+    }
     var agentsVariant: SkillStatus? {
         variants.first { $0.location == "agents" }
     }
@@ -1323,7 +1444,7 @@ private struct InventorySkillRow: Identifiable {
     var isManaged: Bool { agentsVariant?.mutability == "managed-read-only" }
     var isSkillsCLIManaged: Bool { agentsVariant?.manager == "skills-cli" }
     func matches(_ query: String) -> Bool {
-        [skillName, projectName, locationLabel, originText]
+        [skillName, projectName, locationLabel, originText, metagentScoreText, pluginEvalText, codexReviewText]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
     var removalMessage: String {
@@ -1335,6 +1456,32 @@ private struct InventorySkillRow: Identifiable {
             : ""
         return "Project: \(project.root)\n\n\(ownership)\(retained)"
     }
+
+    private static func standardizedDirectory(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            return url.resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return url.path
+    }
+
+}
+
+private func pluginUsageMatchKey(id: String, canonicalPath: String?) -> String? {
+    let components = id.split(separator: ":", maxSplits: 2).map(String.init)
+    guard components.count == 3,
+          components[0] == "plugin",
+          let canonicalPath
+    else { return nil }
+    return "\(components[1]):\(URL(fileURLWithPath: canonicalPath).lastPathComponent)"
+}
+
+private func pluginUsageMatchKey(_ skill: SkillStatus) -> String? {
+    guard skill.location == "plugin" else { return nil }
+    let url = URL(fileURLWithPath: skill.canonicalPath)
+    let components = url.pathComponents
+    guard let skillsIndex = components.lastIndex(of: "skills"), skillsIndex >= 2 else { return nil }
+    return "\(components[skillsIndex - 2]):\(url.lastPathComponent)"
 }
 
 private struct InventoryColumnSpec: Identifiable {
@@ -1403,6 +1550,45 @@ private struct InventoryColumnSpec: Identifiable {
         defaultVisibility: .visible,
         value: \.originText,
         help: \.originHelp
+    ),
+    InventoryColumnSpec(
+        id: "metagent-score",
+        title: "Metagent",
+        comparator: KeyPathComparator(\InventorySkillRow.metagentScore.score),
+        minWidth: 82,
+        idealWidth: 94,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .visible,
+        value: \.metagentScoreText,
+        help: \.metagentScoreHelp
+    ),
+    InventoryColumnSpec(
+        id: "plugin-eval",
+        title: "Plugin Eval",
+        comparator: KeyPathComparator(\InventorySkillRow.pluginEvalSortValue),
+        minWidth: 90,
+        idealWidth: 104,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .visible,
+        value: \.pluginEvalText,
+        help: \.pluginEvalHelp
+    ),
+    InventoryColumnSpec(
+        id: "codex-review",
+        title: "Codex",
+        comparator: KeyPathComparator(\InventorySkillRow.codexReviewSortValue),
+        minWidth: 82,
+        idealWidth: 94,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .hidden,
+        value: \.codexReviewText,
+        help: \.codexReviewHelp
     ),
     InventoryColumnSpec(
         id: "tokens",
