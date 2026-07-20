@@ -124,11 +124,19 @@ Tie confidence to specific provenance, trigger, structure, usage, overlap, and i
 After approval:
 
 1. Edit the canonical source, not a projection or generated copy.
-2. Use Skill Creator or the applicable authoring guidance.
+2. Resolve Skill Creator or the applicable authoring guidance from the capabilities available in the active agent; do not copy a machine-specific absolute path from a managed plugin.
 3. Validate frontmatter, metadata, relative links, and bundled resources with that workflow's current validator.
 4. Rerun the relevant Plugin Eval analysis or benchmark when it informed the change.
 5. Recheck projections and manager state.
 6. Distinguish repository changes from installed global copies, plugin-cache state, app bundles, and CLI/helper versions.
+
+Treat machine-specific paths and undeclared dependencies in managed tooling as upstream defects. Do not patch managed caches or system Python. Resolve paths at runtime and, when needed, use an isolated runner:
+
+```bash
+uv run --with pyyaml <resolved-quick_validate.py> <skill-directory>
+```
+
+If the guidance or isolated runner is unavailable, report validation as incomplete.
 
 If a managed upstream skill needs local product-specific changes, prefer an explicit vendor/fork decision or upstream contribution over silently editing an immutable installation.
 
