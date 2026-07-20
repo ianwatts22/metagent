@@ -1808,42 +1808,119 @@ private func runSubprocess(
     let errorURL = captureDirectory.appendingPathComponent("stderr")
     _ = fileManager.createFile(atPath: outputURL.path, contents: nil)
     _ = fileManager.createFile(atPath: errorURL.path, contents: nil)
+    let inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
     let outputHandle = try FileHandle(forWritingTo: outputURL)
     let errorHandle = try FileHandle(forWritingTo: errorURL)
 
-    let process = Process()
-    process.executableURL = executable
-    process.arguments = arguments
-    process.currentDirectoryURL = currentDirectory
-    process.standardInput = FileHandle.nullDevice
-    process.standardOutput = outputHandle
-    process.standardError = errorHandle
-    try process.run()
+    var fileActions: posix_spawn_file_actions_t?
+    var attributes: posix_spawnattr_t?
+    try requirePosixSuccess(posix_spawn_file_actions_init(&fileActions), action: "initialize process file actions")
+    defer { posix_spawn_file_actions_destroy(&fileActions) }
+    try requirePosixSuccess(posix_spawnattr_init(&attributes), action: "initialize process attributes")
+    defer { posix_spawnattr_destroy(&attributes) }
+    try requirePosixSuccess(
+        posix_spawn_file_actions_adddup2(&fileActions, inputHandle.fileDescriptor, STDIN_FILENO),
+        action: "redirect process input"
+    )
+    try requirePosixSuccess(
+        posix_spawn_file_actions_adddup2(&fileActions, outputHandle.fileDescriptor, STDOUT_FILENO),
+        action: "redirect process output"
+    )
+    try requirePosixSuccess(
+        posix_spawn_file_actions_adddup2(&fileActions, errorHandle.fileDescriptor, STDERR_FILENO),
+        action: "redirect process errors"
+    )
+    if let currentDirectory {
+        let result = currentDirectory.path.withCString {
+            posix_spawn_file_actions_addchdir_np(&fileActions, $0)
+        }
+        try requirePosixSuccess(result, action: "set process working directory")
+    }
+    try requirePosixSuccess(
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)),
+        action: "configure process group"
+    )
+    try requirePosixSuccess(
+        posix_spawnattr_setpgroup(&attributes, 0),
+        action: "create process group"
+    )
 
-    let deadline = Date().addingTimeInterval(timeout)
-    while process.isRunning && Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.05)
-    }
-    let timedOut = process.isRunning
-    if timedOut {
-        process.terminate()
-        let terminationDeadline = Date().addingTimeInterval(2)
-        while process.isRunning && Date() < terminationDeadline {
-            Thread.sleep(forTimeInterval: 0.05)
+    var processID: pid_t = 0
+    var argumentPointers = ([executable.path] + arguments).map { strdup($0) as UnsafeMutablePointer<CChar>? }
+    argumentPointers.append(nil)
+    defer { argumentPointers.dropLast().forEach { free($0) } }
+    var environmentPointers = ProcessInfo.processInfo.environment
+        .sorted { $0.key < $1.key }
+        .map { strdup("\($0.key)=\($0.value)") as UnsafeMutablePointer<CChar>? }
+    environmentPointers.append(nil)
+    defer { environmentPointers.dropLast().forEach { free($0) } }
+    let spawnResult = executable.path.withCString { executablePath in
+        argumentPointers.withUnsafeMutableBufferPointer { argumentBuffer in
+            environmentPointers.withUnsafeMutableBufferPointer { environmentBuffer in
+                posix_spawn(
+                    &processID,
+                    executablePath,
+                    &fileActions,
+                    &attributes,
+                    argumentBuffer.baseAddress,
+                    environmentBuffer.baseAddress
+                )
+            }
         }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
     }
-    process.waitUntilExit()
+    try requirePosixSuccess(spawnResult, action: "start \(executable.path)")
+    try inputHandle.close()
     try outputHandle.close()
     try errorHandle.close()
+
+    let deadline = Date().addingTimeInterval(timeout)
+    var waitStatus: Int32 = 0
+    var exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+    while !exited && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+        exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+    }
+    let timedOut = !exited
+    if timedOut {
+        kill(-processID, SIGTERM)
+        let terminationDeadline = Date().addingTimeInterval(2)
+        while !exited && Date() < terminationDeadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+        }
+        if !exited {
+            kill(-processID, SIGKILL)
+        }
+    }
+    while !exited {
+        let result = waitpid(processID, &waitStatus, 0)
+        if result == processID {
+            exited = true
+        } else if result == -1, errno != EINTR {
+            throw NSError(domain: "MetagentSubprocess", code: Int(errno), userInfo: [
+                NSLocalizedDescriptionKey: "wait for \(executable.path) failed: \(String(cString: strerror(errno)))"
+            ])
+        }
+    }
     return SubprocessResult(
-        status: process.terminationStatus,
+        status: subprocessExitStatus(waitStatus),
         standardOutput: try Data(contentsOf: outputURL),
         standardError: try Data(contentsOf: errorURL),
         timedOut: timedOut
     )
+}
+
+private func requirePosixSuccess(_ status: Int32, action: String) throws {
+    guard status == 0 else {
+        throw NSError(domain: "MetagentSubprocess", code: Int(status), userInfo: [
+            NSLocalizedDescriptionKey: "\(action) failed: \(String(cString: strerror(status)))"
+        ])
+    }
+}
+
+private func subprocessExitStatus(_ waitStatus: Int32) -> Int32 {
+    let signal = waitStatus & 0x7f
+    return signal == 0 ? (waitStatus >> 8) & 0xff : 128 + signal
 }
 
 private func npxExecutable() throws -> URL {
