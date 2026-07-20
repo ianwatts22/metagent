@@ -10,8 +10,9 @@ Current surface:
 - three destinations: `Overview`, `Skills`, and `Usage`
 - actionable health summary with Doctor findings grouped by project and cause
 - contextual repair preview shown only when a fix is available
-- sortable `Skills` table focused on name, project, location, source, and estimated tokens
-- `Usage` table with recent and all-time reads, task/repeat context, and recency
+- native inset `Skills` table with name, project, source, and estimated tokens visible by default; location remains available through column customization
+- native inset `Usage` table with recent and all-time reads plus recency visible by default; task/repeat context remains available through column customization
+- combined skill-name search and project filtering in `Skills`, plus skill-name search and lifecycle filtering in `Usage`
 - menu bar summaries that open the main window for the full tables
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
@@ -37,7 +38,7 @@ cd apps/MetagentMenuBar
 CLANG_MODULE_CACHE_PATH=/private/tmp/metagent-clang-cache swift build
 ```
 
-The app targets macOS 26+ so its primary controls can use native SwiftUI Liquid Glass while the inventory continues to use native table column customization APIs.
+The app targets macOS 26+ so its primary controls can use native SwiftUI Liquid Glass while its data surfaces use native inset tables, sorting, resizing, accessibility, and persistent column customization.
 
 Build a local `.app` bundle:
 

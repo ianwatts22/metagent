@@ -691,6 +691,8 @@ private struct UsageSection: View {
     @State private var sortOrder = [
         KeyPathComparator(\UsageSkillRow.totalInvocations, order: .reverse)
     ]
+    @SceneStorage("metagent.usage.columns.v1")
+    private var columnCustomization = TableColumnCustomization<UsageSkillRow>()
 
     private var rows: [UsageSkillRow] {
         UsageSkillRow.rows(
@@ -775,15 +777,22 @@ private struct UsageSection: View {
                     symbol: "chart.bar.xaxis"
                 )
             } else {
-                Table(rows, sortOrder: $sortOrder) {
+                Table(
+                    rows,
+                    sortOrder: $sortOrder,
+                    columnCustomization: $columnCustomization
+                ) {
                     TableColumn(
                         "Skill",
                         sortUsing: KeyPathComparator(\UsageSkillRow.skillName)
                     ) { row in
                         Text(row.skillName)
-                        .help(row.canonicalPath ?? row.skillName)
+                            .fontWeight(.medium)
+                            .help(row.canonicalPath ?? row.skillName)
                     }
                     .width(min: 180, ideal: 240)
+                    .customizationID("skill")
+                    .defaultVisibility(.visible)
 
                     TableColumn(
                         "Scope",
@@ -795,22 +804,30 @@ private struct UsageSection: View {
                             .accessibilityLabel(row.scopeLabel)
                     }
                     .width(min: 54, ideal: 60)
+                    .customizationID("scope")
+                    .defaultVisibility(.visible)
 
                     TableColumn(
                         "7d",
                         sortUsing: KeyPathComparator(\UsageSkillRow.invocations7d)
                     ) { row in numericCell(row.invocations7d) }
                         .width(min: 54, ideal: 64)
+                        .customizationID("7d")
+                        .defaultVisibility(.visible)
                     TableColumn(
                         "30d",
                         sortUsing: KeyPathComparator(\UsageSkillRow.invocations30d)
                     ) { row in numericCell(row.invocations30d) }
                         .width(min: 54, ideal: 64)
+                        .customizationID("30d")
+                        .defaultVisibility(.visible)
                     TableColumn(
                         "All",
                         sortUsing: KeyPathComparator(\UsageSkillRow.totalInvocations)
                     ) { row in numericCell(row.totalInvocations) }
                         .width(min: 54, ideal: 64)
+                        .customizationID("all")
+                        .defaultVisibility(.visible)
                     TableColumn(
                         "Tasks",
                         sortUsing: KeyPathComparator(\UsageSkillRow.distinctThreads)
@@ -819,6 +836,8 @@ private struct UsageSection: View {
                             .help("Distinct Codex tasks where this skill was observed")
                     }
                     .width(min: 58, ideal: 68)
+                    .customizationID("tasks")
+                    .defaultVisibility(.hidden)
                     TableColumn(
                         "Repeats",
                         sortUsing: KeyPathComparator(\UsageSkillRow.repeatInvocations)
@@ -827,6 +846,8 @@ private struct UsageSection: View {
                             .help("Additional reads after the first read in the same turn")
                     }
                         .width(min: 66, ideal: 76)
+                        .customizationID("repeats")
+                        .defaultVisibility(.hidden)
                     TableColumn(
                         "Last used",
                         sortUsing: KeyPathComparator(\UsageSkillRow.lastUsedSortValue)
@@ -835,7 +856,11 @@ private struct UsageSection: View {
                             .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
                     }
                     .width(min: 100, ideal: 120)
+                    .customizationID("last-used")
+                    .defaultVisibility(.visible)
                 }
+                .tableStyle(.inset)
+                .alternatingRowBackgrounds(.enabled)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -844,6 +869,7 @@ private struct UsageSection: View {
     @ViewBuilder
     private func numericCell(_ value: Int) -> some View {
         Text(value.formatted())
+            .font(.callout)
             .monospacedDigit()
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -1060,16 +1086,19 @@ private struct InventorySection: View {
     @State private var selection = Set<InventorySkillRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\InventorySkillRow.skillName)]
     @State private var selectedProjectRoot: String?
+    @State private var query = ""
     @State private var pendingRemoval: InventorySkillRow?
-    @SceneStorage("metagent.inventory.columns")
+    @SceneStorage("metagent.inventory.columns.v2")
     private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
 
     private var rows: [InventorySkillRow] {
-        InventorySkillRow.rows(
+        let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return InventorySkillRow.rows(
             from: model.projects.filter { project in
                 selectedProjectRoot == nil || project.root == selectedProjectRoot
             }
         )
+        .filter { searchQuery.isEmpty || $0.matches(searchQuery) }
     }
 
     private var sortedRows: [InventorySkillRow] {
@@ -1079,6 +1108,10 @@ private struct InventorySection: View {
     private var selectedRow: InventorySkillRow? {
         guard selection.count == 1, let selectedID = selection.first else { return nil }
         return rows.first { $0.id == selectedID }
+    }
+
+    private var hasActiveFilter: Bool {
+        selectedProjectRoot != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func removalButton(for row: InventorySkillRow) -> Alert.Button {
@@ -1106,6 +1139,10 @@ private struct InventorySection: View {
                 }
 
                 Spacer()
+
+                TextField("Filter skills", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
 
                 Picker("Project", selection: $selectedProjectRoot) {
                     Text("All Projects").tag(String?.none)
@@ -1140,8 +1177,10 @@ private struct InventorySection: View {
 
             if rows.isEmpty {
                 EmptyStateView(
-                    title: "No skills found",
-                    message: "Refresh after configuring roots or adding skills.",
+                    title: hasActiveFilter ? "No matching skills" : "No skills found",
+                    message: hasActiveFilter
+                        ? "Clear the search or choose All Projects."
+                        : "Refresh after configuring roots or adding skills.",
                     symbol: "tablecells"
                 )
             } else {
@@ -1157,13 +1196,17 @@ private struct InventorySection: View {
                                 text: column.value(row),
                                 help: column.help(row),
                                 isNumeric: column.isNumeric,
-                                isMonospaced: column.isMonospaced
+                                isMonospaced: column.isMonospaced,
+                                isPrimary: column.isPrimary
                             )
                         }
                         .width(min: column.minWidth, ideal: column.idealWidth)
                         .customizationID(column.id)
+                        .defaultVisibility(column.defaultVisibility)
                     }
                 }
+                .tableStyle(.inset)
+                .alternatingRowBackgrounds(.enabled)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -1279,6 +1322,10 @@ private struct InventorySkillRow: Identifiable {
     }
     var isManaged: Bool { agentsVariant?.mutability == "managed-read-only" }
     var isSkillsCLIManaged: Bool { agentsVariant?.manager == "skills-cli" }
+    func matches(_ query: String) -> Bool {
+        [skillName, projectName, locationLabel, originText]
+            .contains { $0.localizedCaseInsensitiveContains(query) }
+    }
     var removalMessage: String {
         let ownership = isSkillsCLIManaged
             ? "The skills CLI owns this package. Metagent will save the bundle and lock files to Removed Skills, ask the skills CLI to remove it, and verify the lock entry is gone."
@@ -1298,6 +1345,8 @@ private struct InventoryColumnSpec: Identifiable {
     let idealWidth: CGFloat
     let isNumeric: Bool
     let isMonospaced: Bool
+    let isPrimary: Bool
+    let defaultVisibility: Visibility
     let value: (InventorySkillRow) -> String
     let help: (InventorySkillRow) -> String
 }
@@ -1311,6 +1360,8 @@ private struct InventoryColumnSpec: Identifiable {
         idealWidth: 220,
         isNumeric: false,
         isMonospaced: false,
+        isPrimary: true,
+        defaultVisibility: .visible,
         value: \.skillName,
         help: \.skillPath
     ),
@@ -1322,6 +1373,8 @@ private struct InventoryColumnSpec: Identifiable {
         idealWidth: 160,
         isNumeric: false,
         isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .visible,
         value: \.projectName,
         help: \.projectRoot
     ),
@@ -1333,6 +1386,8 @@ private struct InventoryColumnSpec: Identifiable {
         idealWidth: 160,
         isNumeric: false,
         isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .hidden,
         value: \.locationLabel,
         help: \.locationHelp
     ),
@@ -1344,6 +1399,8 @@ private struct InventoryColumnSpec: Identifiable {
         idealWidth: 170,
         isNumeric: false,
         isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .visible,
         value: \.originText,
         help: \.originHelp
     ),
@@ -1355,6 +1412,8 @@ private struct InventoryColumnSpec: Identifiable {
         idealWidth: 92,
         isNumeric: true,
         isMonospaced: false,
+        isPrimary: false,
+        defaultVisibility: .visible,
         value: { formatNumber($0.tokenEstimate) },
         help: { formatNumber($0.tokenEstimate) }
     )
@@ -1365,15 +1424,23 @@ private struct InventoryTableCell: View {
     let help: String
     let isNumeric: Bool
     let isMonospaced: Bool
+    let isPrimary: Bool
 
     var body: some View {
         Text(text)
-            .font(isMonospaced ? .caption.monospaced() : .body)
+            .font(cellFont)
             .lineLimit(1)
             .truncationMode(.middle)
             .monospacedDigit()
             .frame(maxWidth: .infinity, alignment: isNumeric ? .trailing : .leading)
             .help(help.isEmpty ? text : help)
+    }
+
+    private var cellFont: Font {
+        if isPrimary {
+            return .body.weight(.medium)
+        }
+        return isMonospaced ? .caption.monospaced() : .callout
     }
 }
 
