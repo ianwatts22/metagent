@@ -1884,11 +1884,15 @@ private func runSubprocess(
     if timedOut {
         kill(-processID, SIGTERM)
         let terminationDeadline = Date().addingTimeInterval(2)
-        while !exited && Date() < terminationDeadline {
+        var processGroupAlive = isProcessGroupAlive(processID)
+        while processGroupAlive && Date() < terminationDeadline {
             Thread.sleep(forTimeInterval: 0.05)
-            exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+            if !exited {
+                exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+            }
+            processGroupAlive = isProcessGroupAlive(processID)
         }
-        if !exited {
+        if processGroupAlive {
             kill(-processID, SIGKILL)
         }
     }
@@ -1908,6 +1912,13 @@ private func runSubprocess(
         standardError: try Data(contentsOf: errorURL),
         timedOut: timedOut
     )
+}
+
+private func isProcessGroupAlive(_ processID: pid_t) -> Bool {
+    if kill(-processID, 0) == 0 {
+        return true
+    }
+    return errno == EPERM
 }
 
 private func requirePosixSuccess(_ status: Int32, action: String) throws {
