@@ -8,5 +8,5 @@ max_depth = 6
 agents = ["claude", "codex", "cursor"]
 
 # Optional: skip parent workspaces that provide inherited skills but should not
-# be treated as dotagents projects.
+# be treated as inventory projects.
 ignore_projects = []

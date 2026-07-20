@@ -113,7 +113,42 @@ if grep -q "directory-skill" <<<"$fixture_scan"; then
 fi
 grep -q '"location" : "claude"' <<<"$fixture_scan"
 grep -q '"origin_kind" : "npx-skills"' <<<"$fixture_scan"
+grep -q '"manager" : "skills-cli"' <<<"$fixture_scan"
+grep -q '"mutability" : "managed-read-only"' <<<"$fixture_scan"
+grep -q '"representation" : "projection"' <<<"$fixture_scan"
 grep -q '"source" : "example' <<<"$fixture_scan"
+
+legacy_lock_root="$fixture_root/legacy-lock-project"
+mkdir -p "$legacy_lock_root/.agents/skills/root-managed" "$legacy_lock_root/.agents/skills/nested-only"
+printf -- "---\nname: root-managed\ndescription: root lock\n---\n" >"$legacy_lock_root/.agents/skills/root-managed/SKILL.md"
+printf -- "---\nname: nested-only\ndescription: nested legacy lock\n---\n" >"$legacy_lock_root/.agents/skills/nested-only/SKILL.md"
+cat >"$legacy_lock_root/skills-lock.json" <<'EOF'
+{"version":1,"skills":{"root-managed":{"source":"root/source","sourceType":"github","computedHash":"fixture"}}}
+EOF
+cat >"$legacy_lock_root/.agents/.skill-lock.json" <<'EOF'
+{"version":3,"skills":{"nested-only":{"source":"legacy/source","sourceType":"github","skillFolderHash":"fixture"}}}
+EOF
+legacy_lock_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$legacy_lock_root" --max-depth 0 --json)"
+test "$(jq -r '.projects[].skills[] | select(.name=="root-managed" and .location=="agents") | .manager' <<<"$legacy_lock_scan")" = "skills-cli"
+test "$(jq -r '.projects[].skills[] | select(.name=="nested-only" and .location=="agents") | .manager' <<<"$legacy_lock_scan")" = "local"
+legacy_lock_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$legacy_lock_root" --max-depth 0 --json)"
+grep -q 'Legacy skills lock ignored' <<<"$legacy_lock_doctor"
+
+plugin_home="$fixture_root/plugin-home"
+plugin_root="$plugin_home/.codex/plugins/cache/test-market/demo/1.2.3"
+mkdir -p "$plugin_root/skills/demo-skill"
+printf -- "---\nname: demo-skill\ndescription: plugin fixture\n---\n" >"$plugin_root/skills/demo-skill/SKILL.md"
+codex_stub="$fixture_root/codex-stub"
+cat >"$codex_stub" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'JSON'
+{"installed":[{"pluginId":"demo@test-market","name":"demo","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_root"}}]}
+JSON
+EOF
+chmod +x "$codex_stub"
+plugin_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
+test "$(jq -r '.projects[].skills[] | select(.name=="demo-skill") | [.manager,.mutability,.representation] | @tsv' <<<"$plugin_scan")" = $'codex-plugin\tmanaged-read-only\tversioned-cache'
 
 fixture_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$fixture_root/workspace" --max-depth 4 --json)"
 if grep -q "archive-skill" <<<"$fixture_doctor"; then
@@ -230,7 +265,8 @@ struct Probe {
         do {
             let report = try MetagentCore.uninstallSkill(
                 projectRoot: CommandLine.arguments[1],
-                skillName: CommandLine.arguments[2]
+                skillName: CommandLine.arguments[2],
+                allowManagedRemoval: CommandLine.arguments.dropFirst(3).first == "apply"
             )
             print(report.lines.joined(separator: "\n"))
         } catch {
@@ -253,6 +289,34 @@ test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
 test -L "$uninstall_root/.claude/skills"
 grep -q '"remove-me"' "$uninstall_root/skills-lock.json"
 
+npx_stub="$fixture_root/npx-stub"
+cat >"$npx_stub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+skill_name="$4"
+target_root="$PWD"
+lock_path="$target_root/skills-lock.json"
+if [[ " ${*} " == *" --global "* ]]; then
+  target_root="$HOME"
+  lock_path="${XDG_STATE_HOME:-$HOME/.agents}/skills/.skill-lock.json"
+fi
+mv "$target_root/.agents/skills/$skill_name" "$target_root/.agents/skills/.removed-$skill_name"
+if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
+  mv "$target_root/.codex/skills/$skill_name" "$target_root/.codex/skills/.removed-$skill_name"
+fi
+jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
+mv "$lock_path.next" "$lock_path"
+SH
+chmod +x "$npx_stub"
+HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me apply >/dev/null
+test ! -e "$uninstall_root/.agents/skills/remove-me"
+test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
+test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
+if grep -q '"remove-me"' "$uninstall_root/skills-lock.json"; then
+  echo "managed removal left its project lock entry" >&2
+  exit 1
+fi
+
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \
   "$native_root/.agents/skills/native-remove" \
@@ -265,7 +329,7 @@ HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$native_root" native-
 test ! -e "$native_root/.agents/skills/native-remove"
 test ! -L "$native_root/.claude/skills/native-remove"
 test -f "$native_root/.codex/skills/native-remove/SKILL.md"
-native_recovery_metadata="$(find "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -name REMOVAL.txt -print -quit)"
+native_recovery_metadata="$(rg -l '^skill=native-remove$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
 test -n "$native_recovery_metadata"
 native_recovery_root="$(dirname "$native_recovery_metadata")"
 test -f "$native_recovery_root/native-remove/SKILL.md"
@@ -313,6 +377,12 @@ fi
 grep -q 'npx skills remove global-managed --yes --global' "$global_uninstall_output"
 test -f "$global_home/.agents/skills/global-managed/SKILL.md"
 grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"
+HOME="$global_home" XDG_STATE_HOME="$global_xdg" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$global_home" global-managed apply >/dev/null
+test ! -e "$global_home/.agents/skills/global-managed"
+if grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"; then
+  echo "managed removal left its global lock entry" >&2
+  exit 1
+fi
 
 mkdir -p \
   "$fixture_root/prune-root/app/.agents/skills/app-skill" \

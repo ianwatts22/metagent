@@ -23,6 +23,8 @@ struct MetagentCLI {
             try runConfig(Array(args.dropFirst()))
         case "skills":
             try runSkills(Array(args.dropFirst()))
+        case "inventory":
+            try runInventory(Array(args.dropFirst()))
         case "usage":
             try runUsage(Array(args.dropFirst()))
         case "mcp":
@@ -120,12 +122,73 @@ struct MetagentCLI {
             } else {
                 printRepairReport(report)
             }
+        case "remove":
+            try runSkillRemoval(Array(args.dropFirst()))
         case "help", "--help", "-h":
             printSkillsHelp()
         default:
             throw CLIError.message("unknown skills command: \(command)")
         }
     }
+
+    private static func runInventory(_ args: [String]) throws {
+        let json = try parseJSONOnly(args, command: "inventory")
+        let report = try MetagentCore.scanPortfolio()
+        MetagentCore.saveInventorySnapshot(report)
+        if json {
+            try printJSON(report)
+            return
+        }
+        print("\(report.projects.count) locations, \(report.projects.flatMap(\.skills).count) skill entries")
+        for project in report.projects {
+            print("\(project.root)\t\(project.skills.count) skill entries\t\(locationSummary(project))")
+        }
+        for warning in report.warnings {
+            print("warning: \(warning)")
+        }
+    }
+
+    private static func runSkillRemoval(_ args: [String]) throws {
+        guard let skillName = args.first, !skillName.hasPrefix("--") else {
+            throw CLIError.message("skills remove requires a skill name")
+        }
+        var root: String?
+        var apply = false
+        var json = false
+        var index = 1
+        while index < args.count {
+            switch args[index] {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--apply":
+                apply = true
+            case "--json":
+                json = true
+            default:
+                throw CLIError.message("unknown skills remove flag: \(args[index])")
+            }
+            index += 1
+        }
+        let projectRoot = root ?? FileManager.default.currentDirectoryPath
+        if apply {
+            let report = try MetagentCore.uninstallSkill(
+                projectRoot: projectRoot,
+                skillName: skillName,
+                allowManagedRemoval: true
+            )
+            if json { try printJSON(report) } else { report.lines.forEach { print($0) } }
+        } else {
+            let plan = try MetagentCore.planSkillRemoval(projectRoot: projectRoot, skillName: skillName)
+            if json {
+                try printJSON(plan)
+            } else {
+                print("dry run: \(plan.skillName) is managed by \(plan.manager) (\(plan.mutability))")
+                if let command = plan.command { print("package-manager action: \(command)") }
+                print("run again with --apply to remove it with recovery state")
+            }
+        }
+    }
+
     private static func runUsage(_ args: [String]) throws {
         guard let command = args.first else {
             printUsageHelp()
@@ -308,9 +371,10 @@ struct MetagentCLI {
         let agents = project.skills.filter { $0.location == "agents" }.count
         let codex = project.skills.filter { $0.location == "codex" }.count
         let claude = project.skills.filter { $0.location == "claude" }.count
+        let plugin = project.skills.filter { $0.location == "plugin" }.count
         let npx = project.skills.filter { $0.location == "agents" && $0.originKind == "npx-skills" }.count
-        let native = project.skills.filter { $0.location == "agents" && $0.originKind == "native" }.count
-        return ".agents=\(agents) npx=\(npx) native=\(native) .codex=\(codex) .claude=\(claude)"
+        let unmanaged = project.skills.filter { $0.location == "agents" && $0.manager == "local" }.count
+        return ".agents=\(agents) managed=\(npx) unmanaged=\(unmanaged) plugins=\(plugin) .codex=\(codex) .claude=\(claude)"
     }
 
     private static func printJSON<T: Encodable>(_ value: T) throws {
@@ -328,7 +392,8 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <scan|repair|doctor> [flags]
+          metagent skills <scan|repair|doctor|remove> [flags]
+          metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent mcp --stdio
         """)
@@ -356,6 +421,7 @@ struct MetagentCLI {
           metagent skills scan [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
+          metagent skills remove NAME [--root PATH] [--apply] [--json]
         """)
     }
 

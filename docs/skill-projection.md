@@ -16,7 +16,8 @@ This rule applies to projects only. Metagent does not change global
 
 ## Tools And Ownership
 
-- Native/local skills can be created directly under `.agents/skills`.
+- Unmanaged local skills can be created directly under `.agents/skills`; this
+  says nothing about who originally authored or copied them.
 - `npx skills add <source>` is optional and useful for public skill packages.
 - `npx skills` owns `skills-lock.json` provenance for packages it installs.
 - Metagent owns only discovery, Doctor findings, inventory, and the project
@@ -80,9 +81,9 @@ review finding, not an automatic repair.
 The Mac app inventory can uninstall one selected canonical `.agents` skill:
 
 - Metagent creates a `Removed Skills` recovery directory before mutation.
-- For `npx skills` packages, Metagent does not duplicate package-manager
-  removal; it returns the exact `npx skills remove` command to run.
-- Native bundles and their per-skill projection links are moved into Metagent's
+- For skills CLI packages, Metagent saves recovery state, delegates removal to
+  `npx skills remove`, and verifies that the package and lock entry are absent.
+- Unmanaged bundles and their per-skill projection links are moved into Metagent's
   `Removed Skills` recovery directory.
 - The whole-container `.claude/skills` projection remains in place.
 - Per-skill Claude or Codex projection links are removed with native bundles;

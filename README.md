@@ -71,7 +71,7 @@ That installs:
 
 ### `metagent` Swift Helper
 
-The command helper is built from the same Swift package and exists for future MCP and headless agent access. It is not the app's backend.
+The command helper is built from the same Swift package and provides headless agent access. It is not the app's backend.
 
 Install it:
 
@@ -83,15 +83,24 @@ Current helper commands:
 
 ```bash
 metagent config show --json
+metagent inventory --json
 metagent skills scan --json
 metagent skills repair
 metagent skills repair --apply
 metagent skills doctor
+metagent skills remove SKILL --root PROJECT
+metagent skills remove SKILL --root PROJECT --apply
 metagent usage status
 metagent usage refresh
 ```
 
-The future MCP entry point is reserved as:
+`metagent inventory --json` is the preferred machine-readable view. It combines configured projects, home skills, Codex system/install locations, and currently installed Codex plugin skills. Plugin and package-manager-owned entries are read-only in Metagent.
+
+See [docs/skill-provenance.md](docs/skill-provenance.md) for the ownership fields, lock precedence, projection rules, and removal safety model.
+
+Skill removal is a dry run unless `--apply` is present. Local skills move into Metagent recovery; skills CLI packages are backed up and then removed through their owning package manager.
+
+The MCP entry point is reserved but not implemented:
 
 ```bash
 metagent mcp --stdio

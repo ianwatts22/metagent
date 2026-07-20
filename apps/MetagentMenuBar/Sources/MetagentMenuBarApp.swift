@@ -87,6 +87,7 @@ private struct MetagentPanel: View {
             }
             .padding(showsOpenWindowButton ? 16 : 22)
         }
+        .buttonBorderShape(.capsule)
     }
 
     private var header: some View {
@@ -230,22 +231,8 @@ private struct MetagentPanel: View {
 
 private struct PanelBackdrop: View {
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            RadialGradient(
-                colors: [Color.accentColor.opacity(0.13), .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 520
-            )
-            RadialGradient(
-                colors: [Color.purple.opacity(0.07), .clear],
-                center: .bottomTrailing,
-                startRadius: 0,
-                endRadius: 620
-            )
-        }
-        .ignoresSafeArea()
+        Color(nsColor: .windowBackgroundColor)
+            .ignoresSafeArea()
     }
 }
 
@@ -1099,8 +1086,8 @@ private struct InventorySection: View {
             selection.removeAll()
             model.uninstallSkill(projectRoot: row.projectRoot, skillName: row.skillName)
         }
-        if row.isManaged {
-            return .default(Text("Show Command"), action: action)
+        if row.isSkillsCLIManaged {
+            return .destructive(Text("Remove with skills CLI"), action: action)
         }
         return .destructive(Text("Uninstall"), action: action)
     }
@@ -1134,8 +1121,8 @@ private struct InventorySection: View {
                     pendingRemoval = selectedRow
                 } label: {
                     Label(
-                        selectedRow?.isManaged == true ? "Show Command" : "Uninstall",
-                        systemImage: selectedRow?.isManaged == true ? "terminal" : "trash"
+                        selectedRow?.isSkillsCLIManaged == true ? "Remove with skills CLI" : "Uninstall",
+                        systemImage: selectedRow?.isSkillsCLIManaged == true ? "shippingbox.and.arrow.backward" : "trash"
                     )
                 }
                 .buttonStyle(.glass)
@@ -1282,13 +1269,19 @@ private struct InventorySkillRow: Identifiable {
             .compactMap { $0 }
             .joined(separator: "\n")
     }
-    var canUninstall: Bool {
-        variants.contains { $0.location == "agents" }
+    var agentsVariant: SkillStatus? {
+        variants.first { $0.location == "agents" }
     }
-    var isManaged: Bool { skill.originKind == "npx-skills" }
+    var canUninstall: Bool {
+        guard let agentsVariant else { return false }
+        return agentsVariant.representation == "canonical"
+            && (agentsVariant.manager == "local" || agentsVariant.manager == "skills-cli")
+    }
+    var isManaged: Bool { agentsVariant?.mutability == "managed-read-only" }
+    var isSkillsCLIManaged: Bool { agentsVariant?.manager == "skills-cli" }
     var removalMessage: String {
-        let ownership = isManaged
-            ? "npx skills owns this package. Metagent will show the exact removal command without changing files."
+        let ownership = isSkillsCLIManaged
+            ? "The skills CLI owns this package. Metagent will save the bundle and lock files to Removed Skills, ask the skills CLI to remove it, and verify the lock entry is gone."
             : "Metagent will move the canonical .agents bundle and its per-skill projection links into Removed Skills recovery."
         let retained = variants.contains { $0.location != "agents" && !$0.symlinkedContainer }
             ? " Independent same-name legacy locations will be retained for separate review."

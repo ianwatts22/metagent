@@ -56,16 +56,14 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 
 ## Local State Checks
 
-`npx skills` and dotagents track different state:
+`npx skills` records installed marketplace skills in
+`~/.agents/.skill-lock.json`. Metagent no longer invokes dotagents or treats
+`agents.toml` / `agents.lock` as active ownership state.
 
-- `npx skills` records installed marketplace skills in `~/.agents/.skill-lock.json`.
-- dotagents records declared skill dependencies in `~/.agents/agents.toml`.
-
-After replacing an older local skill, check both surfaces:
+After replacing an older local skill, check the skills CLI lock:
 
 ```bash
-rg -n 'agent-meta|metagent|ianwatts22/metagent' ~/.agents/agents.toml ~/.agents/.skill-lock.json
-npx @sentry/dotagents --user doctor
+rg -n 'agent-meta|metagent|ianwatts22/metagent' ~/.agents/.skill-lock.json
 ```
 
 For the `agent-meta` to `metagent` migration, the intended end state is:
@@ -73,7 +71,10 @@ For the `agent-meta` to `metagent` migration, the intended end state is:
 - `~/.agents/skills/metagent/SKILL.md` exists.
 - `~/.agents/.skill-lock.json` points `metagent` at `ianwatts22/metagent`.
 - `~/.agents/skills/agent-meta` does not exist.
-- `~/.agents/agents.toml` does not declare stale `agent-meta`.
+
+Legacy dotagents files may still exist on an older machine. They are inert to
+Metagent and should be reviewed and trashed explicitly rather than silently
+merged into current provenance.
 
 If a running agent session was started before installation, its loaded skill
 inventory may stay stale until a new session starts.

@@ -128,18 +128,23 @@ final class MetagentModel: ObservableObject {
             async let homeScanResult = Task.detached {
                 Result { try MetagentCore.scanHomeSkills(maxDepth: 2) }
             }.value
+            async let pluginScanResult = Task.detached {
+                Result { try MetagentCore.scanCodexPlugins() }
+            }.value
             async let doctorResult = Task.detached {
                 Result { try MetagentCore.doctor() }
             }.value
-            let (scan, homeScan, doctor) = await (
+            let (scan, homeScan, pluginScan, doctor) = await (
                 scanResult,
                 homeScanResult,
+                pluginScanResult,
                 doctorResult
             )
 
             applyStatus(
                 scan: scan,
                 homeScan: homeScan,
+                pluginScan: pluginScan,
                 doctor: doctor
             )
         }
@@ -240,7 +245,11 @@ final class MetagentModel: ObservableObject {
             title: "Uninstall \(skillName)",
             runningText: "Uninstalling \(skillName)..."
         ) {
-            let report = try MetagentCore.uninstallSkill(projectRoot: projectRoot, skillName: skillName)
+            let report = try MetagentCore.uninstallSkill(
+                projectRoot: projectRoot,
+                skillName: skillName,
+                allowManagedRemoval: true
+            )
             return CommandOutcome(succeeded: true, lines: report.lines, repairPreview: nil)
         } completion: { [weak self] result in
             if result.succeeded {
@@ -297,6 +306,7 @@ final class MetagentModel: ObservableObject {
     private func applyStatus(
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
+        pluginScan: Result<SkillScanReport, Error>,
         doctor: Result<DoctorReport, Error>
     ) {
         isRunning = false
@@ -304,18 +314,22 @@ final class MetagentModel: ObservableObject {
 
         let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
         let homeProjects = homeScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
+        let pluginProjects = pluginScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
 
-        if scan.isSuccess || homeScan.isSuccess {
-            projects = Self.mergeProjects(homeProjects + configuredProjects)
-            MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject)))
+        if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
+            projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
+            let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
+            MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))
             repoCount = projects.count
             skillCount = Self.logicalSkillCount(projects: projects)
             locationSummaryText = Self.locationSummary(projects: projects)
             rootsText = Self.rootsSummary(
                 configuredProjects: configuredProjects,
                 homeProjects: homeProjects,
+                pluginProjects: pluginProjects,
                 configuredScanSucceeded: scan.isSuccess,
-                homeScanSucceeded: homeScan.isSuccess
+                homeScanSucceeded: homeScan.isSuccess,
+                pluginScanSucceeded: pluginScan.isSuccess
             )
         } else {
             projects = []
@@ -326,14 +340,24 @@ final class MetagentModel: ObservableObject {
         }
 
         if let doctorReport = doctor.value {
-            applyDoctorReport(doctorReport)
+            var issues = doctorReport.issues
+            if let pluginError = pluginScan.error {
+                issues.append(DoctorIssue(
+                    severity: .warning,
+                    message: "Codex plugin inventory unavailable: \(pluginError.localizedDescription)",
+                    summary: "Codex plugin inventory unavailable",
+                    category: .skills,
+                    guidance: "Confirm the Codex CLI is installed and `codex plugin list --json` succeeds."
+                ))
+            }
+            applyDoctorReport(DoctorReport(issues: issues))
         } else {
             doctorIssues = []
             warningCount = 0
             failureCount = 0
         }
 
-        if (scan.isSuccess || homeScan.isSuccess) && doctor.isSuccess {
+        if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
             statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
         } else {
@@ -431,10 +455,11 @@ final class MetagentModel: ObservableObject {
         let agents = projects.reduce(0) { $0 + $1.agentsSkillCount }
         let codex = projects.reduce(0) { $0 + $1.codexSkillCount }
         let claude = projects.reduce(0) { $0 + $1.claudeSkillCount }
+        let plugin = projects.reduce(0) { $0 + $1.pluginSkillCount }
         let installed = projects.reduce(0) { $0 + $1.npxInstalledAgentsSkillCount }
-        let native = projects.reduce(0) { $0 + $1.nativeAgentsSkillCount }
+        let unmanaged = projects.reduce(0) { $0 + $1.unmanagedAgentsSkillCount }
 
-        return ".agents \(agents) (\(installed) npx, \(native) native), .codex \(codex), .claude \(claude)"
+        return ".agents \(agents) (\(installed) managed, \(unmanaged) unmanaged), plugins \(plugin), .codex \(codex), .claude \(claude)"
     }
 
     nonisolated private static func logicalSkillCount(projects: [ProjectStatus]) -> Int {
@@ -446,8 +471,10 @@ final class MetagentModel: ObservableObject {
     nonisolated private static func rootsSummary(
         configuredProjects: [ProjectStatus],
         homeProjects: [ProjectStatus],
+        pluginProjects: [ProjectStatus],
         configuredScanSucceeded: Bool,
-        homeScanSucceeded: Bool
+        homeScanSucceeded: Bool,
+        pluginScanSucceeded: Bool
     ) -> String {
         var labels: [String] = []
         if configuredScanSucceeded {
@@ -455,6 +482,9 @@ final class MetagentModel: ObservableObject {
         }
         if homeScanSucceeded {
             labels.append("home scan: \(homeProjects.count)")
+        }
+        if pluginScanSucceeded {
+            labels.append("plugins: \(pluginProjects.count)")
         }
         return labels.isEmpty ? "No roots scanned" : labels.joined(separator: ", ")
     }
@@ -502,7 +532,9 @@ struct ProjectStatus: Identifiable, Sendable {
     var coreProject: SkillProject {
         SkillProject(
             root: root,
-            skillsDir: URL(fileURLWithPath: root).appendingPathComponent(".agents/skills").path,
+            skillsDir: skills.first?.location == "plugin"
+                ? URL(fileURLWithPath: root).appendingPathComponent("skills").path
+                : URL(fileURLWithPath: root).appendingPathComponent(".agents/skills").path,
             validSkills: validSkills,
             skills: skills.map(\.coreSkill)
         )
@@ -516,7 +548,10 @@ struct ProjectStatus: Identifiable, Sendable {
     }
 
     var name: String {
-        URL(fileURLWithPath: root).lastPathComponent
+        if skills.first?.location == "plugin", let authority = skills.first?.authority {
+            return authority
+        }
+        return URL(fileURLWithPath: root).lastPathComponent
     }
 
     var skillCount: Int {
@@ -535,19 +570,24 @@ struct ProjectStatus: Identifiable, Sendable {
         skills.filter { $0.location == "claude" }.count
     }
 
+    var pluginSkillCount: Int {
+        skills.filter { $0.location == "plugin" }.count
+    }
+
     var npxInstalledAgentsSkillCount: Int {
         skills.filter { $0.location == "agents" && $0.originKind == "npx-skills" }.count
     }
 
-    var nativeAgentsSkillCount: Int {
-        skills.filter { $0.location == "agents" && $0.originKind == "native" }.count
+    var unmanagedAgentsSkillCount: Int {
+        skills.filter { $0.location == "agents" && $0.manager == "local" }.count
     }
 
     var locationSummary: String {
         [
             agentsSkillCount > 0 ? ".agents \(agentsSkillCount)" : nil,
             codexSkillCount > 0 ? ".codex \(codexSkillCount)" : nil,
-            claudeSkillCount > 0 ? ".claude \(claudeSkillCount)" : nil
+            claudeSkillCount > 0 ? ".claude \(claudeSkillCount)" : nil,
+            pluginSkillCount > 0 ? "plugins \(pluginSkillCount)" : nil
         ]
         .compactMap { $0 }
         .joined(separator: "  ")
@@ -586,6 +626,12 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     let location: String
     let locationLabel: String
     let originKind: String
+    let scope: String
+    let manager: String
+    let authority: String
+    let mutability: String
+    let representation: String
+    let canonicalPath: String
     let source: String?
     let sourceType: String?
     let sourceURL: String?
@@ -624,6 +670,12 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
             location: location,
             locationLabel: locationLabel,
             originKind: originKind,
+            scope: scope,
+            manager: manager,
+            authority: authority,
+            mutability: mutability,
+            representation: representation,
+            canonicalPath: canonicalPath,
             source: source,
             sourceType: sourceType,
             sourceURL: sourceURL,
@@ -659,6 +711,12 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
         self.location = skill.location
         self.locationLabel = skill.locationLabel
         self.originKind = skill.originKind
+        self.scope = skill.scope
+        self.manager = skill.manager
+        self.authority = skill.authority
+        self.mutability = skill.mutability
+        self.representation = skill.representation
+        self.canonicalPath = skill.canonicalPath
         self.source = skill.source
         self.sourceType = skill.sourceType
         self.sourceURL = skill.sourceURL
@@ -688,16 +746,20 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     }
 
     var originText: String? {
-        switch originKind {
-        case "npx-skills":
+        switch manager {
+        case "skills-cli":
             if let source, !source.isEmpty {
-                return "npx: \(source)"
+                return "skills CLI · \(source)"
             }
-            return "npx skills"
-        case "native":
-            return "native"
+            return "skills CLI managed"
+        case "local":
+            return authority == "unknown" ? "unmanaged · origin unknown" : "local · \(authority)"
+        case "codex-plugin":
+            return "Codex plugin · \(authority)"
+        case "codex":
+            return authority == "codex-system" ? "Codex system" : "Codex installed"
         default:
-            return nil
+            return "\(manager) · \(authority)"
         }
     }
 
@@ -708,12 +770,12 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     var folderKindLabel: String {
         switch folderKind {
         case "npx-installed": "npx installed"
-        case "agents-local": "agents local"
+        case "agents-local", "native", "unmanaged": "unmanaged"
         case "codex-local": "codex local"
         case "claude-local": "claude local"
         case "symlinked": "symlinked"
         case "system": "system"
-        case "native": "native"
+        case "versioned-cache": "versioned cache"
         default: folderKind
         }
     }
@@ -888,12 +950,9 @@ private extension Result {
         guard case .success = self else { return false }
         return true
     }
-}
 
-private enum RestartError: LocalizedError {
-    case missingExecutable
-
-    var errorDescription: String? {
-        "Could not resolve the current app executable."
+    var error: Failure? {
+        guard case .failure(let error) = self else { return nil }
+        return error
     }
 }
