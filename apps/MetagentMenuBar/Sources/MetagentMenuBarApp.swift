@@ -1098,7 +1098,7 @@ private struct InventorySection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Skills")
                         .font(.headline)
-                    Text("\(rows.count) skills across \(model.repoCount) projects")
+                    Text("\(rows.count) visible skills")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
