@@ -309,6 +309,18 @@ private final class SkillUsageStore {
         try open(&db)
         defer { sqlite3_close(db) }
         try createSchema(db)
+        try exec(db, "BEGIN;")
+        do {
+            let snapshot = try snapshot(db)
+            try exec(db, "COMMIT;")
+            return snapshot
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func snapshot(_ db: OpaquePointer?) throws -> SkillUsageSnapshot {
         let metadata = try loadMetadata(db, table: skillUsageMetadataTable)
         let hasPreviousGeneration = try previousGenerationExists(db)
         let storedParserVersion = Int(metadata["parser_version"] ?? "")
