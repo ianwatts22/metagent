@@ -894,6 +894,12 @@ public enum MetagentCore {
 
         let recoveredSkill = recovery.appendingPathComponent(skillName)
         if ["skills-cli", "dotagents"].contains(agentsSkill.manager) {
+            let isPathBackedDotagentsSkill = agentsSkill.manager == "dotagents"
+                && dotagentsPathSource(
+                    agentsSkill.source,
+                    projectRoot: root,
+                    resolvesTo: skillURL
+                )
             try fileManager.copyItem(at: skillURL, to: recoveredSkill)
             lines.append("copied managed skill into recovery: \(recoveredSkill.path)")
             var retainedBackups: [(original: URL, backup: URL)] = []
@@ -925,6 +931,20 @@ public enum MetagentCore {
             let managerEntryRemains = agentsSkill.manager == "skills-cli"
                 ? readProjectSkillLocks(root: root)[skillName] != nil
                 : readDotagentsSkills(root: root)[skillName] != nil
+            if isPathBackedDotagentsSkill,
+               !managerEntryRemains,
+               fileManager.fileExists(atPath: skillURL.path)
+            {
+                let retiredSource = recovery
+                    .appendingPathComponent("path-backed-source")
+                    .appendingPathComponent(skillName)
+                try fileManager.createDirectory(
+                    at: retiredSource.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.moveItem(at: skillURL, to: retiredSource)
+                lines.append("moved path-backed dotagents source into recovery: \(retiredSource.path)")
+            }
             guard !fileManager.fileExists(atPath: skillURL.path), !managerEntryRemains else {
                 throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
                     NSLocalizedDescriptionKey: "\(agentsSkill.manager) reported success but the bundle or manager entry remains. Recovery state: \(recovery.path)"
@@ -1048,20 +1068,62 @@ public enum MetagentCore {
         }
         let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
         let recoveredSkill = recovery.appendingPathComponent(skillName)
-        try fileManager.moveItem(at: skill, to: recoveredSkill)
+        let project = try readProjectSkills(root: root)
+        let projections = project.skills.filter { candidate in
+            guard candidate.name == skillName,
+                  candidate.path != skill.path,
+                  !candidate.symlinkedContainer
+            else { return false }
+            let candidateURL = URL(fileURLWithPath: candidate.path)
+            return isSymlink(candidateURL) && symlink(candidateURL, resolvesTo: skill)
+        }
+        var movedProjections: [(original: URL, recovery: URL)] = []
+        do {
+            for (index, projection) in projections.enumerated() {
+                let projectionURL = URL(fileURLWithPath: projection.path)
+                let projectionRecovery = recovery
+                    .appendingPathComponent("projections")
+                    .appendingPathComponent("\(index)-\(projection.location)")
+                    .appendingPathComponent(skillName)
+                try fileManager.createDirectory(
+                    at: projectionRecovery.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+                movedProjections.append((projectionURL, projectionRecovery))
+            }
+            try fileManager.moveItem(at: skill, to: recoveredSkill)
+        } catch {
+            var rollbackFailures: [String] = []
+            for moved in movedProjections.reversed() {
+                do {
+                    try fileManager.moveItem(at: moved.recovery, to: moved.original)
+                } catch {
+                    rollbackFailures.append("\(moved.original.path): \(error.localizedDescription)")
+                }
+            }
+            if !rollbackFailures.isEmpty {
+                throw NSError(domain: "MetagentSkillUninstall", code: 10, userInfo: [
+                    NSLocalizedDescriptionKey: "standalone removal failed and projection rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
+                ])
+            }
+            throw error
+        }
         guard !fileManager.fileExists(atPath: skill.path) else {
             throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
                 NSLocalizedDescriptionKey: "standalone removal verification failed: \(skill.path) still exists"
             ])
         }
+        var lines = ["moved standalone skill to recovery: \(recoveredSkill.path)"]
+        if !projections.isEmpty {
+            lines.append("removed \(projections.count) per-skill projection link(s)")
+        }
+        lines.append("verified canonical standalone skill is absent")
         return SkillUninstallReport(
             projectRoot: root.path,
             skillName: skillName,
             backupPath: recovery.path,
-            lines: [
-                "moved standalone skill to recovery: \(recoveredSkill.path)",
-                "verified canonical standalone skill is absent"
-            ]
+            lines: lines
         )
     }
 
@@ -1958,10 +2020,47 @@ private func parseDotagentsLock(_ path: URL) -> [String: DotagentsSkillEntry] {
 
 private func tomlStringValue(_ line: String) -> String? {
     guard let equals = line.firstIndex(of: "=") else { return nil }
-    let value = line[line.index(after: equals)...]
+    let rawValue = line[line.index(after: equals)...]
         .trimmingCharacters(in: .whitespaces)
-        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    guard let quote = rawValue.first, quote == "\"" || quote == "'" else {
+        let value = String(rawValue.prefix { $0 != "#" })
+            .trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+    var escaped = false
+    var closingQuote: String.Index?
+    for index in rawValue.indices.dropFirst() {
+        let character = rawValue[index]
+        if quote == "\"", character == "\\", !escaped {
+            escaped = true
+            continue
+        }
+        if character == quote, !escaped {
+            closingQuote = index
+            break
+        }
+        escaped = false
+    }
+    guard let closingQuote else { return nil }
+    let value = String(rawValue[rawValue.index(after: rawValue.startIndex)..<closingQuote])
     return value.isEmpty ? nil : value
+}
+
+private func dotagentsPathSource(
+    _ source: String?,
+    projectRoot: URL,
+    resolvesTo expectedSkill: URL
+) -> Bool {
+    guard let source, source.hasPrefix("path:") else { return false }
+    let rawPath = String(source.dropFirst("path:".count))
+    guard !rawPath.isEmpty else { return false }
+    let base = canonicalProjectPath(projectRoot) == canonicalProjectPath(homeURL())
+        ? projectRoot.appendingPathComponent(".agents")
+        : projectRoot
+    let sourceURL = rawPath.hasPrefix("/")
+        ? URL(fileURLWithPath: rawPath)
+        : base.appendingPathComponent(rawPath)
+    return canonicalProjectPath(sourceURL) == canonicalProjectPath(expectedSkill)
 }
 
 private func repositoryEvidence(for projectRoot: URL) -> RepositoryEvidence? {

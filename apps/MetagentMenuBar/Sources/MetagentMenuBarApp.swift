@@ -1589,18 +1589,24 @@ private struct InventorySkillRow: Identifiable {
                 kind: .plugin(pluginID: skill.authority)
             )
         }
-        if ["codex", "claude"].contains(skill.manager),
-           skill.representation == "canonical",
-           MetagentCore.canUninstallStandaloneSkill(
-               projectRoot: project.root,
-               skillPath: skill.path,
-               skillName: skill.name
-           )
+        if let standaloneVariant = variants.first(where: { variant in
+            ["codex", "claude"].contains(variant.manager)
+                && variant.representation == "canonical"
+                && MetagentCore.canUninstallStandaloneSkill(
+                    projectRoot: project.root,
+                    skillPath: variant.path,
+                    skillName: variant.name
+                )
+        })
         {
             return SkillRemovalRequest(
-                id: "standalone:\(skill.path)",
-                displayName: skill.name,
-                kind: .standalone(projectRoot: project.root, skillPath: skill.path, skillName: skill.name)
+                id: "standalone:\(standaloneVariant.path)",
+                displayName: standaloneVariant.name,
+                kind: .standalone(
+                    projectRoot: project.root,
+                    skillPath: standaloneVariant.path,
+                    skillName: standaloneVariant.name
+                )
             )
         }
         return nil

@@ -16,8 +16,8 @@ final class SkillProvenanceTests: XCTestCase {
         version = 1
 
         [[skills]]
-        name = "demo"
-        source = "path:.agents/skills/demo"
+        name = "demo" # local display name
+        source = "path:.agents/skills/demo" # canonical source
         """.write(to: root.appendingPathComponent("agents.toml"), atomically: true, encoding: .utf8)
         try """
         version = 1
@@ -102,6 +102,42 @@ final class SkillProvenanceTests: XCTestCase {
             )
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: externalSkills.appendingPathComponent("demo/SKILL.md").path))
+    }
+
+    func testStandaloneRemovalRecoversPerSkillProjection() throws {
+        let root = try fixtureRoot("standalone-projection")
+        let recoveryHome = try fixtureRoot("standalone-recovery-home")
+        let originalHome = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", recoveryHome.path, 1)
+        defer {
+            if let originalHome {
+                setenv("HOME", originalHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: recoveryHome)
+        }
+        let codexSkills = root.appendingPathComponent(".codex/skills")
+        let claudeSkills = root.appendingPathComponent(".claude/skills")
+        try writeSkill(named: "demo", under: codexSkills)
+        try FileManager.default.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
+        let canonical = codexSkills.appendingPathComponent("demo")
+        let projection = claudeSkills.appendingPathComponent("demo")
+        try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: canonical)
+
+        let report = try MetagentCore.uninstallStandaloneSkill(
+            projectRoot: root.path,
+            skillPath: canonical.path,
+            skillName: "demo"
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canonical.path))
+        XCTAssertThrowsError(try FileManager.default.destinationOfSymbolicLink(atPath: projection.path))
+        XCTAssertTrue(report.lines.contains("removed 1 per-skill projection link(s)"))
+        let recovery = URL(fileURLWithPath: try XCTUnwrap(report.backupPath))
+            .appendingPathComponent("demo")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("SKILL.md").path))
     }
 
     private func fixtureRoot(_ label: String) throws -> URL {
