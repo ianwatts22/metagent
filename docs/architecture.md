@@ -118,11 +118,14 @@ Project skill ownership is intentionally small:
 .agents/skills/                 # physical source of truth
 .claude/skills -> ../.agents/skills
 skills-lock.json                # optional npx skills provenance
+agents.toml / agents.lock       # optional dotagents declaration and lock evidence
 ```
 
 Metagent does not generate manifests or lockfiles. `npx skills` may maintain
-`skills-lock.json` for packages it installed; native local skills need no manager
-state. Global `~/.claude/skills` remains outside this project projection rule.
+`skills-lock.json` for packages it installed, and dotagents may maintain
+`agents.toml` plus `agents.lock`. Metagent reads both manager formats and falls
+back to Git-root or explicit project/user-local ownership for canonical skills.
+Global `~/.claude/skills` remains outside this project projection rule.
 
 ## Verification
 

@@ -686,6 +686,8 @@ private struct DoctorCategoryGroup: Identifiable {
 
 private struct UsageSection: View {
     @ObservedObject var model: MetagentModel
+    @State private var selection = Set<UsageSkillRow.ID>()
+    @State private var pendingRemoval: InventoryRemovalConfirmation?
     @State private var filter = UsageFilter.all
     @State private var query = ""
     @State private var sortOrder = [
@@ -703,6 +705,30 @@ private struct UsageSection: View {
         .filter { filter.includes($0) }
         .filter { query.isEmpty || $0.skillName.localizedCaseInsensitiveContains(query) }
         .sorted(using: sortOrder)
+    }
+
+    private var inventoryRows: [InventorySkillRow] {
+        InventorySkillRow.rows(
+            from: model.projects,
+            usage: model.usageSnapshot,
+            evaluations: model.skillEvaluations
+        )
+    }
+
+    private func rows(for contextSelection: Set<UsageSkillRow.ID>) -> [UsageSkillRow] {
+        let ids = contextSelection.isEmpty ? selection : contextSelection
+        return rows.filter { ids.contains($0.id) }
+    }
+
+    private func inventoryRows(for usageRows: [UsageSkillRow]) -> [InventorySkillRow] {
+        let paths = Set(usageRows.compactMap(\.canonicalPath).map(standardizedDirectoryPath))
+        let pluginKeys = Set(usageRows.compactMap {
+            pluginUsageMatchKey(id: $0.id, canonicalPath: $0.canonicalPath)
+        })
+        return inventoryRows.filter { row in
+            paths.contains(standardizedDirectoryPath(row.canonicalPath))
+                || pluginUsageMatchKey(row.skill).map(pluginKeys.contains) == true
+        }
     }
 
     var body: some View {
@@ -779,6 +805,7 @@ private struct UsageSection: View {
             } else {
                 Table(
                     rows,
+                    selection: $selection,
                     sortOrder: $sortOrder,
                     columnCustomization: $columnCustomization
                 ) {
@@ -861,9 +888,45 @@ private struct UsageSection: View {
                 }
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
+                .contextMenu(forSelectionType: UsageSkillRow.ID.self) { contextSelection in
+                    let usageRows = rows(for: contextSelection)
+                    let paths = usageRows.compactMap(\.canonicalPath)
+                    let removableRows = inventoryRows(for: usageRows).filter { $0.removalRequest != nil }
+                    Button("Copy Path", systemImage: "doc.on.doc") {
+                        copyToPasteboard(paths.uniqued().joined(separator: "\n"))
+                    }
+                    .disabled(paths.isEmpty)
+                    Button("Copy to Improve", systemImage: "wand.and.sparkles") {
+                        copyToPasteboard(improvementPrompt(paths: paths))
+                    }
+                    .disabled(paths.isEmpty)
+                    Divider()
+                    Button(
+                        removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
+                        systemImage: "trash",
+                        role: .destructive
+                    ) {
+                        pendingRemoval = InventoryRemovalConfirmation(rows: removableRows)
+                    }
+                    .disabled(removableRows.isEmpty || model.isRunning)
+                }
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .alert(item: $pendingRemoval) { confirmation in
+            let requests = confirmation.rows.compactMap(\.removalRequest)
+            let names = confirmation.rows.prefix(6).map(\.skillName).joined(separator: ", ")
+            let suffix = confirmation.rows.count > 6 ? ", …" : ""
+            return Alert(
+                title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
+                message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: confirmation.rows))"),
+                primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
+                    selection.removeAll()
+                    model.uninstallSkills(requests)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     @ViewBuilder
@@ -1027,9 +1090,7 @@ private struct UsageSkillRow: Identifiable {
         for (project, skill) in projects.flatMap({ project in
             project.skills.map { (project, $0) }
         }) {
-            let directory = standardizedDirectory(
-                URL(fileURLWithPath: skill.path).deletingLastPathComponent().path
-            )
+            let directory = standardizedDirectory(skill.path)
             let pluginAlreadyRepresented = pluginUsageMatchKey(skill).map(summaryPluginKeys.contains) ?? false
             guard !summaryPaths.contains(directory),
                   !pluginAlreadyRepresented,
@@ -1088,13 +1149,18 @@ private struct UsageSkillRow: Identifiable {
     }
 }
 
+private struct InventoryRemovalConfirmation: Identifiable {
+    let id = UUID()
+    let rows: [InventorySkillRow]
+}
+
 private struct InventorySection: View {
     @ObservedObject var model: MetagentModel
     @State private var selection = Set<InventorySkillRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\InventorySkillRow.skillName)]
     @State private var selectedProjectRoot: String?
     @State private var query = ""
-    @State private var pendingRemoval: InventorySkillRow?
+    @State private var pendingRemoval: InventoryRemovalConfirmation?
     @State private var pendingCodexReview: InventorySkillRow?
     @SceneStorage("metagent.inventory.columns.v3")
     private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
@@ -1119,19 +1185,29 @@ private struct InventorySection: View {
         return rows.first { $0.id == selectedID }
     }
 
+    private var selectedRows: [InventorySkillRow] {
+        rows.filter { selection.contains($0.id) }
+    }
+
+    private var selectedRemovalRows: [InventorySkillRow] {
+        selectedRows.filter { $0.removalRequest != nil }
+    }
+
     private var hasActiveFilter: Bool {
         selectedProjectRoot != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func removalButton(for row: InventorySkillRow) -> Alert.Button {
-        let action = {
-            selection.removeAll()
-            model.uninstallSkill(projectRoot: row.projectRoot, skillName: row.skillName)
-        }
-        if row.isSkillsCLIManaged {
-            return .destructive(Text("Remove with skills CLI"), action: action)
-        }
-        return .destructive(Text("Uninstall"), action: action)
+    private func rows(for contextSelection: Set<InventorySkillRow.ID>) -> [InventorySkillRow] {
+        let ids = contextSelection.isEmpty ? selection : contextSelection
+        return rows.filter { ids.contains($0.id) }
+    }
+
+    private func copyPaths(_ rows: [InventorySkillRow]) {
+        copyToPasteboard(rows.map(\.canonicalPath).uniqued().joined(separator: "\n"))
+    }
+
+    private func copyToImprove(_ rows: [InventorySkillRow]) {
+        copyToPasteboard(improvementPrompt(paths: rows.map(\.canonicalPath)))
     }
 
     var body: some View {
@@ -1140,7 +1216,9 @@ private struct InventorySection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Skills")
                         .font(.headline)
-                    Text("\(rows.count) visible skills")
+                    Text(selectedRows.isEmpty
+                        ? "\(rows.count) visible skills"
+                        : "\(selectedRows.count) selected · \(rows.count) visible")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1186,16 +1264,16 @@ private struct InventorySection: View {
                 .buttonStyle(.glass)
                 .disabled(rows.isEmpty || model.isSkillEvaluating)
 
-                Button(role: selectedRow?.isManaged == true ? nil : .destructive) {
-                    pendingRemoval = selectedRow
+                Button(role: .destructive) {
+                    pendingRemoval = InventoryRemovalConfirmation(rows: selectedRemovalRows)
                 } label: {
                     Label(
-                        selectedRow?.isSkillsCLIManaged == true ? "Remove with skills CLI" : "Uninstall",
-                        systemImage: selectedRow?.isSkillsCLIManaged == true ? "shippingbox.and.arrow.backward" : "trash"
+                        selectedRemovalRows.count > 1 ? "Remove \(selectedRemovalRows.count)" : "Remove",
+                        systemImage: "trash"
                     )
                 }
                 .buttonStyle(.glass)
-                .disabled(selectedRow?.canUninstall != true || model.isRunning)
+                .disabled(selectedRemovalRows.isEmpty || model.isRunning)
 
                 Button {
                     model.refreshStatus()
@@ -1242,7 +1320,10 @@ private struct InventorySection: View {
                                 help: column.help(row),
                                 isNumeric: column.isNumeric,
                                 isMonospaced: column.isMonospaced,
-                                isPrimary: column.isPrimary
+                                isPrimary: column.isPrimary,
+                                showsBadge: column.showsBadge,
+                                symbol: column.symbol?(row),
+                                tint: column.tint?(row)
                             )
                         }
                         .width(min: column.minWidth, ideal: column.idealWidth)
@@ -1252,14 +1333,41 @@ private struct InventorySection: View {
                 }
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
+                .contextMenu(forSelectionType: InventorySkillRow.ID.self) { contextSelection in
+                    let contextRows = rows(for: contextSelection)
+                    let removableRows = contextRows.filter { $0.removalRequest != nil }
+                    Button("Copy Path", systemImage: "doc.on.doc") {
+                        copyPaths(contextRows)
+                    }
+                    .disabled(contextRows.isEmpty)
+                    Button("Copy to Improve", systemImage: "wand.and.sparkles") {
+                        copyToImprove(contextRows)
+                    }
+                    .disabled(contextRows.isEmpty)
+                    Divider()
+                    Button(
+                        removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
+                        systemImage: "trash",
+                        role: .destructive
+                    ) {
+                        pendingRemoval = InventoryRemovalConfirmation(rows: removableRows)
+                    }
+                    .disabled(removableRows.isEmpty || model.isRunning)
+                }
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .alert(item: $pendingRemoval) { row in
-            Alert(
-                title: Text("Uninstall \(row.skillName)?"),
-                message: Text(row.removalMessage),
-                primaryButton: removalButton(for: row),
+        .alert(item: $pendingRemoval) { confirmation in
+            let requests = confirmation.rows.compactMap(\.removalRequest)
+            let names = confirmation.rows.prefix(6).map(\.skillName).joined(separator: ", ")
+            let suffix = confirmation.rows.count > 6 ? ", …" : ""
+            return Alert(
+                title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
+                message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: confirmation.rows))"),
+                primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
+                    selection.removeAll()
+                    model.uninstallSkills(requests)
+                },
                 secondaryButton: .cancel()
             )
         }
@@ -1395,7 +1503,29 @@ private struct InventorySkillRow: Identifiable {
         variants.map { "\($0.locationLabel): \($0.path)" }.joined(separator: "\n")
     }
     var originText: String { skill.tableOriginText }
-    var originHelp: String { skill.sourceURL ?? skill.tableOriginText }
+    var originHelp: String {
+        [
+            skill.tableOriginText,
+            "Manager: \(skill.manager)",
+            "Authority: \(skill.authority)",
+            skill.source.map { "Source: \($0)" },
+            skill.sourceType.map { "Evidence: \($0)" },
+            skill.sourceURL
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+    }
+    var sourceSymbol: String {
+        switch skill.manager {
+        case "codex-plugin": "powerplug.fill"
+        case "skills-cli": "globe"
+        case "codex": "sparkles"
+        case "claude": "link"
+        case "dotagents": "arrow.triangle.branch"
+        case "git": "shippingbox"
+        default: "person.crop.circle"
+        }
+    }
     var tokenEstimate: Int { skill.tokenEstimate }
     var scriptFileCount: Int { skill.scriptFileCount }
     var assetFileCount: Int { skill.assetFileCount }
@@ -1409,54 +1539,76 @@ private struct InventorySkillRow: Identifiable {
             .joined(separator: "\n")
     }
     var metagentScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
+    var metagentScoreTint: Color { scoreTint(metagentScore.grade) }
     var metagentScoreHelp: String {
         let breakdown = metagentScore.components.map {
             "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
         }.joined(separator: "\n")
-        return "Metagent Score v\(metagentScore.version) · \(metagentScore.confidence.rawValue) confidence\n\(breakdown)"
+        return "Metagent Score v\(metagentScore.version) · \(metagentScore.confidence.rawValue) confidence\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }
         return "\(pluginEval.score) \(pluginEval.grade)"
     }
     var pluginEvalSortValue: Int { pluginEval?.score ?? -1 }
+    var pluginEvalTint: Color? {
+        pluginEval.flatMap { SkillGrade(rawValue: $0.grade.uppercased()) }.map(scoreTint)
+    }
     var pluginEvalHelp: String {
         guard let pluginEval else { return "Not evaluated. Use Evaluate → Run Plugin Eval." }
-        return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\n\(pluginEval.riskReasons.joined(separator: "\n"))"
+        return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\nThe letter is emitted by Plugin Eval using its stricter absolute bands: A 93+, B 85+, C 70+, D 55+. It is not relative.\n\(pluginEval.riskReasons.joined(separator: "\n"))"
     }
     var codexReviewText: String {
         guard let codexReview else { return "—" }
         return "\(codexReview.score) \(codexReview.grade.rawValue)"
     }
     var codexReviewSortValue: Int { codexReview?.score ?? -1 }
+    var codexReviewTint: Color? { codexReview.map { scoreTint($0.grade) } }
     var codexReviewHelp: String {
         guard let codexReview else { return "Not reviewed. Use Evaluate → Review with Codex." }
-        return "\(codexReview.summary)\nNext: \(codexReview.recommendation)"
+        return "Absolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(codexReview.summary)\nNext: \(codexReview.recommendation)"
     }
     var agentsVariant: SkillStatus? {
         variants.first { $0.location == "agents" }
     }
-    var canUninstall: Bool {
-        guard let agentsVariant else { return false }
-        return agentsVariant.representation == "canonical"
-            && (agentsVariant.manager == "local" || agentsVariant.manager == "skills-cli")
+    var removalRequest: SkillRemovalRequest? {
+        if let agentsVariant,
+           agentsVariant.representation == "canonical",
+           ["local", "git", "dotagents", "skills-cli"].contains(agentsVariant.manager)
+        {
+            return SkillRemovalRequest(
+                id: "canonical:\(project.root):\(agentsVariant.name)",
+                displayName: agentsVariant.name,
+                kind: .canonical(projectRoot: project.root, skillName: agentsVariant.name)
+            )
+        }
+        if skill.manager == "codex-plugin", skill.authority.contains("@") {
+            return SkillRemovalRequest(
+                id: "plugin:\(skill.authority)",
+                displayName: "\(skill.authority) plugin",
+                kind: .plugin(pluginID: skill.authority)
+            )
+        }
+        if ["codex", "claude"].contains(skill.manager),
+           skill.representation == "canonical",
+           MetagentCore.canUninstallStandaloneSkill(
+               projectRoot: project.root,
+               skillPath: skill.path,
+               skillName: skill.name
+           )
+        {
+            return SkillRemovalRequest(
+                id: "standalone:\(skill.path)",
+                displayName: skill.name,
+                kind: .standalone(projectRoot: project.root, skillPath: skill.path, skillName: skill.name)
+            )
+        }
+        return nil
     }
-    var isManaged: Bool { agentsVariant?.mutability == "managed-read-only" }
-    var isSkillsCLIManaged: Bool { agentsVariant?.manager == "skills-cli" }
     func matches(_ query: String) -> Bool {
         [skillName, projectName, locationLabel, originText, metagentScoreText, pluginEvalText, codexReviewText]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
-    var removalMessage: String {
-        let ownership = isSkillsCLIManaged
-            ? "The skills CLI owns this package. Metagent will save the bundle and lock files to Removed Skills, ask the skills CLI to remove it, and verify the lock entry is gone."
-            : "Metagent will move the canonical .agents bundle and its per-skill projection links into Removed Skills recovery."
-        let retained = variants.contains { $0.location != "agents" && !$0.symlinkedContainer }
-            ? " Independent same-name legacy locations will be retained for separate review."
-            : ""
-        return "Project: \(project.root)\n\n\(ownership)\(retained)"
-    }
-
     private static func standardizedDirectory(_ path: String) -> String {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         if FileManager.default.fileExists(atPath: url.path) {
@@ -1471,17 +1623,51 @@ private func pluginUsageMatchKey(id: String, canonicalPath: String?) -> String? 
     let components = id.split(separator: ":", maxSplits: 2).map(String.init)
     guard components.count == 3,
           components[0] == "plugin",
-          let canonicalPath
+          let canonicalPath,
+          let identity = pluginCacheIdentity(canonicalPath),
+          identity.plugin == components[1]
     else { return nil }
-    return "\(components[1]):\(URL(fileURLWithPath: canonicalPath).lastPathComponent)"
+    return identity.key
 }
 
 private func pluginUsageMatchKey(_ skill: SkillStatus) -> String? {
-    guard skill.location == "plugin" else { return nil }
-    let url = URL(fileURLWithPath: skill.canonicalPath)
+    guard skill.location == "plugin",
+          let identity = pluginCacheIdentity(skill.canonicalPath)
+    else { return nil }
+    return identity.key
+}
+
+private func pluginCacheIdentity(_ canonicalPath: String) -> (marketplace: String, plugin: String, skill: String, key: String)? {
+    let url = URL(fileURLWithPath: canonicalPath)
     let components = url.pathComponents
-    guard let skillsIndex = components.lastIndex(of: "skills"), skillsIndex >= 2 else { return nil }
-    return "\(components[skillsIndex - 2]):\(url.lastPathComponent)"
+    guard let skillsIndex = components.lastIndex(of: "skills"),
+          skillsIndex >= 4,
+          components[skillsIndex - 4] == "cache"
+    else { return nil }
+    let marketplace = components[skillsIndex - 3]
+    let plugin = components[skillsIndex - 2]
+    let skill = url.lastPathComponent
+    return (marketplace, plugin, skill, "\(marketplace):\(plugin):\(skill)")
+}
+
+private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
+    let requests = rows.compactMap(\.removalRequest)
+    let pluginCount = requests.filter { request in
+        if case .plugin = request.kind { return true }
+        return false
+    }.count
+    let managedCount = rows.filter { ["skills-cli", "dotagents"].contains($0.skill.manager) }.count
+    var parts = ["This action is manager-aware and will verify every removal before refreshing inventory."]
+    if pluginCount > 0 {
+        parts.append("Removing a plugin skill uninstalls its entire Codex plugin, including its other skills; duplicate selections from one plugin are collapsed into one action.")
+    }
+    if managedCount > 0 {
+        parts.append("Managed skills are removed through their owning CLI after recovery state is saved.")
+    }
+    if requests.count > 1 {
+        parts.append("Items are removed sequentially; processing stops and reports details if one fails.")
+    }
+    return parts.joined(separator: " ")
 }
 
 private struct InventoryColumnSpec: Identifiable {
@@ -1494,8 +1680,43 @@ private struct InventoryColumnSpec: Identifiable {
     let isMonospaced: Bool
     let isPrimary: Bool
     let defaultVisibility: Visibility
+    let showsBadge: Bool
+    let symbol: ((InventorySkillRow) -> String?)?
+    let tint: ((InventorySkillRow) -> Color?)?
     let value: (InventorySkillRow) -> String
     let help: (InventorySkillRow) -> String
+
+    init(
+        id: String,
+        title: String,
+        comparator: KeyPathComparator<InventorySkillRow>,
+        minWidth: CGFloat,
+        idealWidth: CGFloat,
+        isNumeric: Bool,
+        isMonospaced: Bool,
+        isPrimary: Bool,
+        defaultVisibility: Visibility,
+        showsBadge: Bool = false,
+        symbol: ((InventorySkillRow) -> String?)? = nil,
+        tint: ((InventorySkillRow) -> Color?)? = nil,
+        value: @escaping (InventorySkillRow) -> String,
+        help: @escaping (InventorySkillRow) -> String
+    ) {
+        self.id = id
+        self.title = title
+        self.comparator = comparator
+        self.minWidth = minWidth
+        self.idealWidth = idealWidth
+        self.isNumeric = isNumeric
+        self.isMonospaced = isMonospaced
+        self.isPrimary = isPrimary
+        self.defaultVisibility = defaultVisibility
+        self.showsBadge = showsBadge
+        self.symbol = symbol
+        self.tint = tint
+        self.value = value
+        self.help = help
+    }
 }
 
 @MainActor private let inventoryColumnSpecs: [InventoryColumnSpec] = [
@@ -1548,6 +1769,7 @@ private struct InventoryColumnSpec: Identifiable {
         isMonospaced: false,
         isPrimary: false,
         defaultVisibility: .visible,
+        symbol: { $0.sourceSymbol },
         value: \.originText,
         help: \.originHelp
     ),
@@ -1561,6 +1783,8 @@ private struct InventoryColumnSpec: Identifiable {
         isMonospaced: false,
         isPrimary: false,
         defaultVisibility: .visible,
+        showsBadge: true,
+        tint: { $0.metagentScoreTint },
         value: \.metagentScoreText,
         help: \.metagentScoreHelp
     ),
@@ -1574,6 +1798,8 @@ private struct InventoryColumnSpec: Identifiable {
         isMonospaced: false,
         isPrimary: false,
         defaultVisibility: .visible,
+        showsBadge: true,
+        tint: \.pluginEvalTint,
         value: \.pluginEvalText,
         help: \.pluginEvalHelp
     ),
@@ -1587,6 +1813,8 @@ private struct InventoryColumnSpec: Identifiable {
         isMonospaced: false,
         isPrimary: false,
         defaultVisibility: .hidden,
+        showsBadge: true,
+        tint: \.codexReviewTint,
         value: \.codexReviewText,
         help: \.codexReviewHelp
     ),
@@ -1611,15 +1839,34 @@ private struct InventoryTableCell: View {
     let isNumeric: Bool
     let isMonospaced: Bool
     let isPrimary: Bool
+    let showsBadge: Bool
+    let symbol: String?
+    let tint: Color?
 
     var body: some View {
-        Text(text)
-            .font(cellFont)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .monospacedDigit()
-            .frame(maxWidth: .infinity, alignment: isNumeric ? .trailing : .leading)
-            .help(help.isEmpty ? text : help)
+        HStack(spacing: 6) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+            }
+            Text(text)
+                .font(cellFont)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .monospacedDigit()
+                .foregroundStyle(tint ?? .primary)
+                .padding(.horizontal, showsBadge && text != "—" ? 7 : 0)
+                .padding(.vertical, showsBadge && text != "—" ? 2 : 0)
+                .background {
+                    if showsBadge, text != "—", let tint {
+                        Capsule().fill(tint.opacity(0.12))
+                    }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: isNumeric ? .trailing : .leading)
+        .help(help.isEmpty ? text : help)
     }
 
     private var cellFont: Font {
@@ -1632,6 +1879,41 @@ private struct InventoryTableCell: View {
 
 private func formatNumber(_ value: Int) -> String {
     value.formatted()
+}
+
+private func copyToPasteboard(_ text: String) {
+    guard !text.isEmpty else { return }
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+}
+
+private func standardizedDirectoryPath(_ path: String) -> String {
+    let url = URL(fileURLWithPath: path).standardizedFileURL
+    if FileManager.default.fileExists(atPath: url.path) {
+        return url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+    return url.path
+}
+
+private func improvementPrompt(paths: [String]) -> String {
+    let pathList = paths.uniqued().map { "- \($0)" }.joined(separator: "\n")
+    return """
+    Please review and improve the following skill(s):
+    \(pathList)
+
+    Use the applicable skill-authoring guidance. Improve trigger precision, clarity, progressive disclosure, and safety while preserving each skill's intended scope and manager ownership. Validate the edited canonical source.
+    """
+}
+
+private func scoreTint(_ grade: SkillGrade) -> Color {
+    switch grade {
+    case .a: .green
+    case .b: .blue
+    case .c: .orange
+    case .d: .pink
+    case .f: .red
+    }
 }
 
 private func projectFilterLabel(_ project: ProjectStatus, projects: [ProjectStatus]) -> String {

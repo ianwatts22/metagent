@@ -3,6 +3,18 @@ import Foundation
 import MetagentCore
 import SwiftUI
 
+struct SkillRemovalRequest: Sendable {
+    enum Kind: Sendable {
+        case canonical(projectRoot: String, skillName: String)
+        case standalone(projectRoot: String, skillPath: String, skillName: String)
+        case plugin(pluginID: String)
+    }
+
+    let id: String
+    let displayName: String
+    let kind: Kind
+}
+
 @MainActor
 final class MetagentModel: ObservableObject {
     @Published private(set) var isRunning = false
@@ -330,6 +342,49 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    func uninstallSkills(_ requests: [SkillRemovalRequest]) {
+        let uniqueRequests = Dictionary(requests.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            .values
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        guard !uniqueRequests.isEmpty else { return }
+        let title = uniqueRequests.count == 1
+            ? "Remove \(uniqueRequests[0].displayName)"
+            : "Remove \(uniqueRequests.count) items"
+        runOperation(title: title, runningText: "Removing selected skills...") {
+            var lines: [String] = []
+            for request in uniqueRequests {
+                do {
+                    let report: SkillUninstallReport
+                    switch request.kind {
+                    case let .canonical(projectRoot, skillName):
+                        report = try MetagentCore.uninstallSkill(
+                            projectRoot: projectRoot,
+                            skillName: skillName,
+                            allowManagedRemoval: true
+                        )
+                    case let .standalone(projectRoot, skillPath, skillName):
+                        report = try MetagentCore.uninstallStandaloneSkill(
+                            projectRoot: projectRoot,
+                            skillPath: skillPath,
+                            skillName: skillName
+                        )
+                    case let .plugin(pluginID):
+                        report = try MetagentCore.uninstallCodexPlugin(pluginID: pluginID)
+                    }
+                    lines.append("\(request.displayName):")
+                    lines.append(contentsOf: report.lines.map { "  \($0)" })
+                } catch {
+                    lines.append("\(request.displayName): failed")
+                    lines.append("  \(error.localizedDescription)")
+                    return CommandOutcome(succeeded: false, lines: lines, repairPreview: nil)
+                }
+            }
+            return CommandOutcome(succeeded: true, lines: lines, repairPreview: nil)
+        } completion: { [weak self] result in
+            self?.refreshStatus()
+        }
+    }
+
     func toggleRawOutput() {
         showsRawOutput.toggle()
     }
@@ -542,10 +597,18 @@ final class MetagentModel: ObservableObject {
         let codex = projects.reduce(0) { $0 + $1.codexSkillCount }
         let claude = projects.reduce(0) { $0 + $1.claudeSkillCount }
         let plugin = projects.reduce(0) { $0 + $1.pluginSkillCount }
-        let installed = projects.reduce(0) { $0 + $1.npxInstalledAgentsSkillCount }
-        let unmanaged = projects.reduce(0) { $0 + $1.unmanagedAgentsSkillCount }
+        let skillsCLI = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "skills-cli") }
+        let dotagents = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "dotagents") }
+        let repository = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "git") }
+        let local = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "local") }
+        let ownership = [
+            skillsCLI > 0 ? "\(skillsCLI) skills CLI" : nil,
+            dotagents > 0 ? "\(dotagents) dotagents" : nil,
+            repository > 0 ? "\(repository) repository" : nil,
+            local > 0 ? "\(local) local" : nil
+        ].compactMap { $0 }.joined(separator: ", ")
 
-        return ".agents \(agents) (\(installed) managed, \(unmanaged) unmanaged), plugins \(plugin), .codex \(codex), .claude \(claude)"
+        return ".agents \(agents) (\(ownership)), plugins \(plugin), .codex \(codex), .claude \(claude)"
     }
 
     nonisolated private static func logicalSkillCount(projects: [ProjectStatus]) -> Int {
@@ -660,12 +723,8 @@ struct ProjectStatus: Identifiable, Sendable {
         skills.filter { $0.location == "plugin" }.count
     }
 
-    var npxInstalledAgentsSkillCount: Int {
-        skills.filter { $0.location == "agents" && $0.originKind == "npx-skills" }.count
-    }
-
-    var unmanagedAgentsSkillCount: Int {
-        skills.filter { $0.location == "agents" && $0.manager == "local" }.count
+    func agentsSkillCount(manager: String) -> Int {
+        skills.filter { $0.location == "agents" && $0.manager == manager }.count
     }
 
     var locationSummary: String {
@@ -834,16 +893,19 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     var originText: String? {
         switch manager {
         case "skills-cli":
-            if let source, !source.isEmpty {
-                return "skills CLI · \(source)"
-            }
-            return "skills CLI managed"
+            return "Skills CLI"
+        case "dotagents":
+            return "dotagents"
+        case "git":
+            return "Repository"
         case "local":
-            return authority == "unknown" ? "unmanaged · origin unknown" : "local · \(authority)"
+            return authority == "user-owned" ? "User local" : "Project local"
         case "codex-plugin":
-            return "Codex plugin · \(authority)"
+            return "Plugin"
         case "codex":
             return authority == "codex-system" ? "Codex system" : "Codex installed"
+        case "claude":
+            return "Claude installed"
         default:
             return "\(manager) · \(authority)"
         }
@@ -856,6 +918,11 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     var folderKindLabel: String {
         switch folderKind {
         case "npx-installed": "npx installed"
+        case "dotagents-local": "dotagents local"
+        case "dotagents-managed": "dotagents managed"
+        case "repository": "repository"
+        case "user-local": "user local"
+        case "project-local": "project local"
         case "agents-local", "native", "unmanaged": "unmanaged"
         case "codex-local": "codex local"
         case "claude-local": "claude local"

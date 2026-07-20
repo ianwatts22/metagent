@@ -57,8 +57,10 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 ## Local State Checks
 
 `npx skills` records installed marketplace skills in
-`~/.agents/.skill-lock.json`. Metagent no longer invokes dotagents or treats
-`agents.toml` / `agents.lock` as active ownership state.
+`~/.agents/.skill-lock.json`. When dotagents manifests remain present, Metagent
+reads `agents.toml` / `agents.lock` as ownership evidence and can delegate an
+explicitly approved removal to dotagents. They do not replace the skills CLI
+lock as the publishing source of truth.
 
 After replacing an older local skill, check the skills CLI lock:
 
@@ -73,8 +75,9 @@ For the `agent-meta` to `metagent` migration, the intended end state is:
 - `~/.agents/skills/agent-meta` does not exist.
 
 Legacy `~/.agents/agents.toml` and `~/.agents/agents.lock` files may still exist
-on an older machine. They are inert to Metagent and should be reviewed and
-trashed explicitly rather than silently merged into current provenance. Retain
+on an older machine. Metagent treats their declarations as provenance while
+they remain present; review and trash them explicitly if dotagents no longer
+owns those entries rather than silently merging formats. Retain
 the active lock at `${XDG_STATE_HOME}/skills/.skill-lock.json` when
 `XDG_STATE_HOME` is set; otherwise retain `~/.agents/.skill-lock.json`, along
 with the installed skill directories.

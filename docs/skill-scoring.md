@@ -2,13 +2,13 @@
 
 Metagent keeps three evaluations separate because they answer different questions:
 
-- **Metagent Score v1** measures operational trust, observed adoption, and identity clarity in the current portfolio.
+- **Metagent Score v2** measures operational trust, observed adoption, and identity clarity in the current portfolio.
 - **Plugin Eval** is the score and grade emitted by the installed `plugin-eval` CLI. Metagent does not reproduce or reinterpret its formula.
 - **Codex review** is an optional model judgment against a fixed rubric. It only runs after confirmation. Metagent copies up to 1 MiB of the selected skill into an isolated temporary directory, embeds its text in the review request, disables Codex tools and user configuration, confines local file access with the macOS sandbox, and sends the copied skill contents to OpenAI. It uses ChatGPT.app's native Codex binary by default; `METAGENT_CODEX` may point to another native executable.
 
 None of these scores authorizes automatic removal or modification.
 
-## Metagent Score v1
+## Metagent Score v2
 
 The score is 0–100.
 
@@ -35,9 +35,11 @@ When retained-history coverage is incomplete and no usage is linked, adoption re
 - unresolved canonical identity: 8
 - multiple independent same-name sources: 6
 
-Grades use the Plugin Eval bands for easy comparison: A ≥93, B ≥85, C ≥70, D ≥55, otherwise F.
+Metagent and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
 
-Confidence is currently low or medium. V1 deliberately cannot claim high confidence because semantic overlap and task outcomes are not yet measured.
+Plugin Eval remains evaluator-owned and may return a different letter for the same numeric score. Its current fixed bands are A ≥93, B ≥85, C ≥70, D ≥55, otherwise F; Metagent preserves that returned grade rather than silently reinterpreting it.
+
+Confidence is currently low or medium. V2 deliberately cannot claim high confidence because semantic overlap and task outcomes are not yet measured.
 
 ## Plugin Eval provider
 

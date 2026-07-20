@@ -11,10 +11,10 @@ public enum SkillGrade: String, Codable, CaseIterable, Sendable {
 
     public static func forScore(_ score: Int) -> SkillGrade {
         switch score {
-        case 93...: .a
-        case 85...: .b
+        case 90...: .a
+        case 80...: .b
         case 70...: .c
-        case 55...: .d
+        case 60...: .d
         default: .f
         }
     }
@@ -43,7 +43,7 @@ public struct SkillScoreComponent: Codable, Equatable, Sendable {
 }
 
 public struct MetagentSkillScore: Codable, Equatable, Sendable {
-    public static let version = 1
+    public static let version = 2
 
     public let version: Int
     public let score: Int
@@ -99,7 +99,6 @@ public struct CodexReviewDimensions: Codable, Equatable, Sendable {
 
 public struct CodexSkillReview: Codable, Equatable, Sendable {
     public let score: Int
-    public let grade: SkillGrade
     public let dimensions: CodexReviewDimensions
     public let summary: String
     public let strengths: [String]
@@ -107,6 +106,57 @@ public struct CodexSkillReview: Codable, Equatable, Sendable {
     public let recommendation: String
     public let evaluatedAt: String
     public let contentHash: String
+
+    public var grade: SkillGrade { .forScore(score) }
+
+    public init(
+        score: Int,
+        dimensions: CodexReviewDimensions,
+        summary: String,
+        strengths: [String],
+        risks: [String],
+        recommendation: String,
+        evaluatedAt: String,
+        contentHash: String
+    ) {
+        self.score = score
+        self.dimensions = dimensions
+        self.summary = summary
+        self.strengths = strengths
+        self.risks = risks
+        self.recommendation = recommendation
+        self.evaluatedAt = evaluatedAt
+        self.contentHash = contentHash
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case score, grade, dimensions, summary, strengths, risks, recommendation, evaluatedAt, contentHash
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        score = try container.decode(Int.self, forKey: .score)
+        dimensions = try container.decode(CodexReviewDimensions.self, forKey: .dimensions)
+        summary = try container.decode(String.self, forKey: .summary)
+        strengths = try container.decode([String].self, forKey: .strengths)
+        risks = try container.decode([String].self, forKey: .risks)
+        recommendation = try container.decode(String.self, forKey: .recommendation)
+        evaluatedAt = try container.decode(String.self, forKey: .evaluatedAt)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(score, forKey: .score)
+        try container.encode(grade, forKey: .grade)
+        try container.encode(dimensions, forKey: .dimensions)
+        try container.encode(summary, forKey: .summary)
+        try container.encode(strengths, forKey: .strengths)
+        try container.encode(risks, forKey: .risks)
+        try container.encode(recommendation, forKey: .recommendation)
+        try container.encode(evaluatedAt, forKey: .evaluatedAt)
+        try container.encode(contentHash, forKey: .contentHash)
+    }
 }
 
 public struct SkillEvaluationRecord: Codable, Equatable, Identifiable, Sendable {
@@ -284,7 +334,6 @@ public extension MetagentCore {
         let score = min(100, max(0, dimensions.total))
         let review = CodexSkillReview(
             score: score,
-            grade: .forScore(score),
             dimensions: dimensions,
             summary: response.summary,
             strengths: response.strengths,

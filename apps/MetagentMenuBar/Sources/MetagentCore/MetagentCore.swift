@@ -824,9 +824,15 @@ public enum MetagentCore {
             ])
         }
 
-        let command = agentsSkill.manager == "skills-cli"
-            ? skillsCLIRemovalCommand(root: root, skillName: skillName)
-            : nil
+        let command: String?
+        switch agentsSkill.manager {
+        case "skills-cli":
+            command = skillsCLIRemovalCommand(root: root, skillName: skillName)
+        case "dotagents":
+            command = dotagentsRemovalCommand(root: root, skillName: skillName)
+        default:
+            command = nil
+        }
         return SkillRemovalPlan(
             projectRoot: root.path,
             skillName: skillName,
@@ -834,7 +840,7 @@ public enum MetagentCore {
             mutability: agentsSkill.mutability,
             command: command,
             applySupported: agentsSkill.representation == "canonical"
-                && (agentsSkill.manager == "local" || agentsSkill.manager == "skills-cli")
+                && ["local", "git", "dotagents", "skills-cli"].contains(agentsSkill.manager)
         )
     }
 
@@ -857,9 +863,9 @@ public enum MetagentCore {
             ])
         }
 
-        if agentsSkill.manager == "skills-cli", !allowManagedRemoval {
+        if ["skills-cli", "dotagents"].contains(agentsSkill.manager), !allowManagedRemoval {
             throw NSError(domain: "MetagentSkillUninstall", code: 5, userInfo: [
-                NSLocalizedDescriptionKey: "\(skillName) is managed by skills CLI. Run `\(plan.command ?? "npx --yes skills remove \(skillName) --yes")` from \(root.path), or explicitly apply the Metagent removal plan."
+                NSLocalizedDescriptionKey: "\(skillName) is managed by \(agentsSkill.manager). Run `\(plan.command ?? "the owning manager")` from \(root.path), or explicitly apply the Metagent removal plan."
             ])
         }
 
@@ -887,7 +893,7 @@ public enum MetagentCore {
         lines.append("saved recovery state to \(recovery.path)")
 
         let recoveredSkill = recovery.appendingPathComponent(skillName)
-        if agentsSkill.manager == "skills-cli" {
+        if ["skills-cli", "dotagents"].contains(agentsSkill.manager) {
             try fileManager.copyItem(at: skillURL, to: recoveredSkill)
             lines.append("copied managed skill into recovery: \(recoveredSkill.path)")
             var retainedBackups: [(original: URL, backup: URL)] = []
@@ -905,18 +911,23 @@ public enum MetagentCore {
                 lines.append("snapshotted \(retainedBackups.count) independent same-name location(s)")
             }
             do {
-                let output = try runSkillsCLIRemoval(root: root, skillName: skillName)
+                let output = agentsSkill.manager == "skills-cli"
+                    ? try runSkillsCLIRemoval(root: root, skillName: skillName)
+                    : try runDotagentsRemoval(root: root, skillName: skillName)
                 if !output.isEmpty {
                     lines.append(output)
                 }
             } catch {
                 throw NSError(domain: "MetagentSkillUninstall", code: 7, userInfo: [
-                    NSLocalizedDescriptionKey: "skills CLI removal failed: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
+                    NSLocalizedDescriptionKey: "\(agentsSkill.manager) removal failed: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
                 ])
             }
-            guard !fileManager.fileExists(atPath: skillURL.path), readProjectSkillLocks(root: root)[skillName] == nil else {
+            let managerEntryRemains = agentsSkill.manager == "skills-cli"
+                ? readProjectSkillLocks(root: root)[skillName] != nil
+                : readDotagentsSkills(root: root)[skillName] != nil
+            guard !fileManager.fileExists(atPath: skillURL.path), !managerEntryRemains else {
                 throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
-                    NSLocalizedDescriptionKey: "skills CLI reported success but the bundle or lock entry remains. Recovery state: \(recovery.path)"
+                    NSLocalizedDescriptionKey: "\(agentsSkill.manager) reported success but the bundle or manager entry remains. Recovery state: \(recovery.path)"
                 ])
             }
             var restoredRetainedCount = 0
@@ -954,7 +965,7 @@ public enum MetagentCore {
                     lines.append("warning: managed skill was removed, but projection cleanup failed at \(projectionURL.path): \(error.localizedDescription)")
                 }
             }
-            lines.append("removed managed skill through skills CLI and verified its lock entry is absent")
+            lines.append("removed managed skill through \(agentsSkill.manager) and verified its manager entry is absent")
             if removedProjectionCount > 0 {
                 lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
             }
@@ -1020,6 +1031,87 @@ public enum MetagentCore {
             lines: lines
         )
     }
+
+    public static func uninstallStandaloneSkill(
+        projectRoot: String,
+        skillPath: String,
+        skillName: String
+    ) throws -> SkillUninstallReport {
+        guard let (root, skill) = standaloneSkillRemovalTarget(
+            projectRoot: projectRoot,
+            skillPath: skillPath,
+            skillName: skillName
+        ) else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: "Metagent will only remove a canonical standalone skill bundle."
+            ])
+        }
+        let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
+        let recoveredSkill = recovery.appendingPathComponent(skillName)
+        try fileManager.moveItem(at: skill, to: recoveredSkill)
+        guard !fileManager.fileExists(atPath: skill.path) else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "standalone removal verification failed: \(skill.path) still exists"
+            ])
+        }
+        return SkillUninstallReport(
+            projectRoot: root.path,
+            skillName: skillName,
+            backupPath: recovery.path,
+            lines: [
+                "moved standalone skill to recovery: \(recoveredSkill.path)",
+                "verified canonical standalone skill is absent"
+            ]
+        )
+    }
+
+    public static func canUninstallStandaloneSkill(
+        projectRoot: String,
+        skillPath: String,
+        skillName: String
+    ) -> Bool {
+        standaloneSkillRemovalTarget(
+            projectRoot: projectRoot,
+            skillPath: skillPath,
+            skillName: skillName
+        ) != nil
+    }
+
+    public static func uninstallCodexPlugin(pluginID: String) throws -> SkillUninstallReport {
+        guard pluginID.contains("@") else {
+            throw NSError(domain: "MetagentCodexPlugins", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "invalid Codex plugin identifier: \(pluginID)"
+            ])
+        }
+        let result = try runSubprocess(
+            executable: try codexExecutable(),
+            arguments: ["plugin", "remove", pluginID, "--json"],
+            timeout: 120
+        )
+        let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if result.timedOut {
+            throw NSError(domain: "MetagentCodexPlugins", code: 124, userInfo: [
+                NSLocalizedDescriptionKey: "Codex plugin removal timed out after 120 seconds"
+            ])
+        }
+        guard result.status == 0 else {
+            throw NSError(domain: "MetagentCodexPlugins", code: Int(result.status), userInfo: [
+                NSLocalizedDescriptionKey: combined.isEmpty ? "Codex plugin removal failed" : combined
+            ])
+        }
+        guard !(try installedCodexPlugins()).contains(where: { $0.pluginId == pluginID }) else {
+            throw NSError(domain: "MetagentCodexPlugins", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "Codex reported success but \(pluginID) remains installed"
+            ])
+        }
+        return SkillUninstallReport(
+            projectRoot: "codex-plugin",
+            skillName: pluginID,
+            backupPath: nil,
+            lines: [combined.isEmpty ? "removed Codex plugin \(pluginID)" : combined]
+        )
+    }
 }
 
 private struct SkillLock: Decodable {
@@ -1050,6 +1142,87 @@ private struct SkillLockEntry: Decodable {
         case installedAt
         case updatedAt
     }
+}
+
+private struct DotagentsSkillEntry {
+    var source: String
+    var isLocked: Bool
+}
+
+private struct RepositoryEvidence {
+    var root: String
+    var name: String
+    var remoteURL: String?
+
+    var authority: String { "repository:\(name)" }
+}
+
+private struct SkillOriginEvidence {
+    var originKind: String
+    var manager: String
+    var authority: String
+    var mutability: String
+    var source: String?
+    var sourceType: String?
+    var sourceURL: String?
+    var ref: String?
+}
+
+private func canonicalSkillOwnership(
+    scope: String,
+    skillLock: SkillLockEntry?,
+    dotagents: DotagentsSkillEntry?,
+    repository: RepositoryEvidence?
+) -> SkillOriginEvidence {
+    if let skillLock {
+        return SkillOriginEvidence(
+            originKind: "npx-skills",
+            manager: "skills-cli",
+            authority: skillLock.source ?? "upstream-package",
+            mutability: "managed-read-only",
+            source: nil,
+            sourceType: nil,
+            sourceURL: nil,
+            ref: nil
+        )
+    }
+    if let dotagents {
+        let isLocalPath = dotagents.source.hasPrefix("path:")
+        return SkillOriginEvidence(
+            originKind: isLocalPath ? "dotagents-local" : "dotagents-managed",
+            manager: "dotagents",
+            authority: isLocalPath
+                ? (repository?.authority ?? (scope == "global" ? "user-owned" : "project-owned"))
+                : dotagents.source,
+            mutability: isLocalPath ? "editable" : "managed-read-only",
+            source: dotagents.source,
+            sourceType: dotagents.isLocked ? "dotagents-lock" : "dotagents-config",
+            sourceURL: dotagents.source.contains("://") ? dotagents.source : nil,
+            ref: nil
+        )
+    }
+    if let repository {
+        return SkillOriginEvidence(
+            originKind: "git-repository",
+            manager: "git",
+            authority: repository.authority,
+            mutability: "editable",
+            source: repository.root,
+            sourceType: "git-repository",
+            sourceURL: repository.remoteURL,
+            ref: nil
+        )
+    }
+    return SkillOriginEvidence(
+        originKind: scope == "global" ? "user-local" : "project-local",
+        manager: "local",
+        authority: scope == "global" ? "user-owned" : "project-owned",
+        mutability: "editable",
+        source: nil,
+        sourceType: "local",
+        sourceURL: nil,
+        ref: nil
+    )
 }
 
 private struct SkillStats {
@@ -1309,6 +1482,8 @@ private func readCodexPluginSkills(_ plugin: CodexPlugin) -> SkillProject? {
 private func readProjectSkills(root: URL) throws -> SkillProject {
     let agentsSkillsDir = root.appendingPathComponent(".agents").appendingPathComponent("skills")
     let skillLock = readProjectSkillLocks(root: root)
+    let dotagentsSkills = readDotagentsSkills(root: root)
+    let repository = repositoryEvidence(for: root)
     let scope = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? "global" : "project"
     var validSkills: [String] = []
     var inventory: [SkillInventoryItem] = []
@@ -1318,6 +1493,8 @@ private func readProjectSkills(root: URL) throws -> SkillProject {
     readAgentsSkills(
         skillsDir: agentsSkillsDir,
         skillLock: skillLock,
+        dotagentsSkills: dotagentsSkills,
+        repository: repository,
         scope: scope,
         validSkills: &validSkills,
         inventory: &inventory,
@@ -1360,6 +1537,8 @@ private func readProjectSkills(root: URL) throws -> SkillProject {
 private func readAgentsSkills(
     skillsDir: URL,
     skillLock: [String: SkillLockEntry],
+    dotagentsSkills: [String: DotagentsSkillEntry],
+    repository: RepositoryEvidence?,
     scope: String,
     validSkills: inout [String],
     inventory: inout [SkillInventoryItem],
@@ -1386,20 +1565,27 @@ private func readAgentsSkills(
 
         validSkills.append(name)
         let lockEntry = skillLock[name]
+        let dotagentsEntry = dotagentsSkills[name]
         let projection = symlinkedContainer || isSymlink(entry)
-        let managed = lockEntry != nil
+        let ownership = canonicalSkillOwnership(
+            scope: scope,
+            skillLock: lockEntry,
+            dotagents: dotagentsEntry,
+            repository: repository
+        )
         inventory.append(makeSkillItem(
             name: name,
             path: entry,
             location: "agents",
-            originKind: lockEntry == nil ? "unmanaged" : "npx-skills",
+            originKind: ownership.originKind,
             scope: scope,
-            manager: managed ? "skills-cli" : "local",
-            authority: managed ? (lockEntry?.source ?? "upstream-package") : "unknown",
-            mutability: projection || managed ? "managed-read-only" : "editable",
+            manager: ownership.manager,
+            authority: ownership.authority,
+            mutability: projection ? "managed-read-only" : ownership.mutability,
             representation: projection ? "projection" : "canonical",
             canonicalPath: canonicalProjectPath(entry),
             origin: lockEntry,
+            evidence: ownership,
             symlinkedContainer: symlinkedContainer
         ))
     }
@@ -1449,10 +1635,9 @@ private func collectInventorySkills(
             let projection = symlinkedContainer || isSymlink(entry)
             let inherited = projection ? canonicalAgents[canonicalPath] : nil
             let isSystem = entry.pathComponents.contains(".system")
-            let manager = inherited?.manager
-                ?? (location == "codex" ? "codex" : "external-manager")
+            let manager = inherited?.manager ?? location
             let authority = inherited?.authority
-                ?? (isSystem ? "codex-system" : (location == "codex" ? "codex-installed" : "unknown"))
+                ?? (isSystem ? "codex-system" : "\(location)-installed")
             let originKind = inherited?.originKind
                 ?? (isSystem ? "codex-system" : "\(location)-installed")
             inventory.append(makeSkillItem(
@@ -1501,6 +1686,7 @@ private func makeSkillItem(
     representation: String,
     canonicalPath: String,
     origin: SkillLockEntry?,
+    evidence: SkillOriginEvidence? = nil,
     symlinkedContainer: Bool,
     inherited: SkillInventoryItem? = nil
 ) -> SkillInventoryItem {
@@ -1517,10 +1703,10 @@ private func makeSkillItem(
         mutability: mutability,
         representation: representation,
         canonicalPath: canonicalPath,
-        source: origin?.source ?? inherited?.source,
-        sourceType: origin?.sourceType ?? inherited?.sourceType,
-        sourceURL: origin?.sourceUrl ?? inherited?.sourceURL,
-        ref: origin?.ref ?? inherited?.ref,
+        source: evidence?.source ?? origin?.source ?? inherited?.source,
+        sourceType: evidence?.sourceType ?? origin?.sourceType ?? inherited?.sourceType,
+        sourceURL: evidence?.sourceURL ?? origin?.sourceUrl ?? inherited?.sourceURL,
+        ref: evidence?.ref ?? origin?.ref ?? inherited?.ref,
         installedAt: origin?.installedAt ?? inherited?.installedAt,
         updatedAt: origin?.updatedAt ?? inherited?.updatedAt,
         symlinkedContainer: symlinkedContainer,
@@ -1678,6 +1864,15 @@ private func folderKind(
     if location == "agents", originKind == "npx-skills" {
         return "npx-installed"
     }
+    if location == "agents", originKind.hasPrefix("dotagents") {
+        return originKind
+    }
+    if location == "agents", originKind == "git-repository" {
+        return "repository"
+    }
+    if location == "agents", originKind.hasSuffix("-local") {
+        return originKind
+    }
     if location == "agents" {
         return "unmanaged"
     }
@@ -1696,6 +1891,113 @@ private func folderKind(
 private func readSkillLock(_ path: URL) -> [String: SkillLockEntry] {
     guard let data = try? Data(contentsOf: path) else { return [:] }
     return (try? JSONDecoder().decode(SkillLock.self, from: data).skills) ?? [:]
+}
+
+private func readDotagentsSkills(root: URL) -> [String: DotagentsSkillEntry] {
+    let base = canonicalProjectPath(root) == canonicalProjectPath(homeURL())
+        ? root.appendingPathComponent(".agents")
+        : root
+    var entries = parseDotagentsConfig(base.appendingPathComponent("agents.toml"))
+    for (name, locked) in parseDotagentsLock(base.appendingPathComponent("agents.lock")) {
+        entries[name] = locked
+    }
+    return entries
+}
+
+private func parseDotagentsConfig(_ path: URL) -> [String: DotagentsSkillEntry] {
+    guard let text = try? String(contentsOf: path, encoding: .utf8) else { return [:] }
+    var entries: [String: DotagentsSkillEntry] = [:]
+    var name: String?
+    var source: String?
+    var inSkill = false
+
+    func flush() {
+        guard let name, let source else { return }
+        entries[name] = DotagentsSkillEntry(source: source, isLocked: false)
+    }
+
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line == "[[skills]]" {
+            flush()
+            name = nil
+            source = nil
+            inSkill = true
+        } else if line.hasPrefix("[") {
+            flush()
+            name = nil
+            source = nil
+            inSkill = false
+        } else if inSkill, line.hasPrefix("name"), let value = tomlStringValue(line) {
+            name = value
+        } else if inSkill, line.hasPrefix("source"), let value = tomlStringValue(line) {
+            source = value
+        }
+    }
+    flush()
+    return entries
+}
+
+private func parseDotagentsLock(_ path: URL) -> [String: DotagentsSkillEntry] {
+    guard let text = try? String(contentsOf: path, encoding: .utf8) else { return [:] }
+    var entries: [String: DotagentsSkillEntry] = [:]
+    var name: String?
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("[skills."), line.hasSuffix("]") {
+            name = String(line.dropFirst(8).dropLast())
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        } else if line.hasPrefix("[") {
+            name = nil
+        } else if line.hasPrefix("source"), let name, let source = tomlStringValue(line) {
+            entries[name] = DotagentsSkillEntry(source: source, isLocked: true)
+        }
+    }
+    return entries
+}
+
+private func tomlStringValue(_ line: String) -> String? {
+    guard let equals = line.firstIndex(of: "=") else { return nil }
+    let value = line[line.index(after: equals)...]
+        .trimmingCharacters(in: .whitespaces)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    return value.isEmpty ? nil : value
+}
+
+private func repositoryEvidence(for projectRoot: URL) -> RepositoryEvidence? {
+    let isHome = canonicalProjectPath(projectRoot) == canonicalProjectPath(homeURL())
+    var candidate = (isHome ? projectRoot.appendingPathComponent(".agents") : projectRoot)
+        .standardizedFileURL
+    while candidate.path != "/" {
+        let gitPath = candidate.appendingPathComponent(".git")
+        if fileManager.fileExists(atPath: gitPath.path) {
+            return RepositoryEvidence(
+                root: candidate.path,
+                name: candidate.lastPathComponent,
+                remoteURL: gitOriginURL(gitPath: gitPath)
+            )
+        }
+        candidate.deleteLastPathComponent()
+    }
+    return nil
+}
+
+private func gitOriginURL(gitPath: URL) -> String? {
+    let config = gitPath.appendingPathComponent("config")
+    guard let text = try? String(contentsOf: config, encoding: .utf8) else { return nil }
+    var inOrigin = false
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("[") {
+            inOrigin = line == "[remote \"origin\"]"
+            continue
+        }
+        if inOrigin, line.hasPrefix("url"), let equals = line.firstIndex(of: "=") {
+            let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+    }
+    return nil
 }
 
 private func computeSkillFolderHash(_ skillDir: URL) throws -> String {
@@ -1761,6 +2063,11 @@ private func skillsCLIRemovalCommand(root: URL, skillName: String) -> String {
     return "npx --yes skills remove \(skillName) --yes\(globalFlag)"
 }
 
+private func dotagentsRemovalCommand(root: URL, skillName: String) -> String {
+    let userFlag = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? " --user" : ""
+    return "npx --yes @sentry/dotagents\(userFlag) remove \(skillName) --yes"
+}
+
 private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
     let arguments = ["--yes", "skills", "remove", skillName, "--yes"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--global"] : [])
@@ -1785,6 +2092,58 @@ private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String 
         ])
     }
     return combined
+}
+
+private func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
+    let arguments = ["--yes", "@sentry/dotagents"]
+        + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--user"] : [])
+        + ["remove", skillName, "--yes"]
+    let result = try runSubprocess(
+        executable: try npxExecutable(),
+        arguments: arguments,
+        currentDirectory: root,
+        timeout: 120
+    )
+    let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if result.timedOut {
+        throw NSError(domain: "MetagentDotagents", code: 124, userInfo: [
+            NSLocalizedDescriptionKey: combined.isEmpty
+                ? "dotagents remove timed out after 120 seconds"
+                : "dotagents remove timed out after 120 seconds:\n\(combined)"
+        ])
+    }
+    guard result.status == 0 else {
+        throw NSError(domain: "MetagentDotagents", code: Int(result.status), userInfo: [
+            NSLocalizedDescriptionKey: combined.isEmpty ? "dotagents remove failed" : combined
+        ])
+    }
+    return combined
+}
+
+private func standaloneSkillRemovalTarget(
+    projectRoot: String,
+    skillPath: String,
+    skillName: String
+) -> (root: URL, skill: URL)? {
+    let root = URL(fileURLWithPath: projectRoot).standardizedFileURL
+    let skill = URL(fileURLWithPath: skillPath).standardizedFileURL
+    guard root.resolvingSymlinksInPath().standardizedFileURL.path == root.path,
+          !isSymlink(skill),
+          !skill.pathComponents.contains(".system"),
+          skill.lastPathComponent == skillName,
+          isRegularOrSymlinkedFile(skill.appendingPathComponent("SKILL.md"))
+    else { return nil }
+    let allowedParents = [".codex", ".claude"].map {
+        root.appendingPathComponent($0).appendingPathComponent("skills").standardizedFileURL
+    }
+    guard allowedParents.contains(where: { parent in
+        skill.deletingLastPathComponent().path == parent.path
+            && !isSymlink(parent)
+            && !isSymlink(parent.deletingLastPathComponent())
+            && parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path
+    }) else { return nil }
+    return (root, skill)
 }
 
 struct SubprocessResult {
@@ -1979,13 +2338,18 @@ private func prepareRemovalRecovery(
 
     let stateRoot = recoveryRoot.appendingPathComponent("state")
     try fileManager.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+    let dotagentsRoot = canonicalProjectPath(projectRoot) == canonicalProjectPath(homeURL())
+        ? projectRoot.appendingPathComponent(".agents")
+        : projectRoot
     let stateFiles: [(URL, String)] = [
         (projectRoot.appendingPathComponent("skills-lock.json"), "project-skills-lock.json"),
         (
             projectRoot.appendingPathComponent(".agents").appendingPathComponent(".skill-lock.json"),
             "agents-skill-lock.json"
         ),
-        (globalSkillLockPath(), "global-skill-lock.json")
+        (globalSkillLockPath(), "global-skill-lock.json"),
+        (dotagentsRoot.appendingPathComponent("agents.toml"), "agents.toml"),
+        (dotagentsRoot.appendingPathComponent("agents.lock"), "agents.lock")
     ]
     var copiedPaths = Set<String>()
     for (source, backupName) in stateFiles

@@ -11,9 +11,12 @@ Current surface:
 - actionable health summary with Doctor findings grouped by project and cause
 - contextual repair preview shown only when a fix is available
 - native inset `Skills` table with name, project, source, Metagent Score, Plugin Eval, and estimated tokens visible by default; location and Codex review remain available through column customization
+- color-coded score badges that retain a letter label for non-color accessibility; Metagent and Codex use conventional absolute grade bands while Plugin Eval keeps its evaluator-owned grade
+- standardized source glyphs: plug for Codex plugins, globe for skills CLI, sparkles for Codex-installed skills, branch for dotagents, package for Git repositories, link for Claude, and person for local ownership
 - native inset `Usage` table with recent and all-time reads plus recency visible by default; task/repeat context remains available through column customization
 - combined skill-name search and project filtering in `Skills`, plus skill-name search and lifecycle filtering in `Usage`
 - selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
+- native Command-click multi-selection in the Skills table, with right-click actions to copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections remove the owning plugin and duplicate plugin targets collapse into one action
 - menu bar summaries that open the main window for the full tables
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
@@ -24,6 +27,7 @@ Refresh behavior:
 - The app refreshes status when it launches.
 - The `Refresh` buttons rerun Swift core scans on demand.
 - Successful link repair triggers a status refresh.
+- Skill provenance is resolved from skills-CLI locks first, then dotagents manifests/locks, Git repository evidence, and finally explicit user/project-local placement. Agent-specific standalone and plugin sources retain their named manager instead of falling back to `origin unknown`.
 - The Doctor card opens the current findings. `Fixable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
 - The UI keeps the most recent scan in memory until the next refresh.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.

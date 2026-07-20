@@ -83,12 +83,39 @@ final class SkillEvaluationTests: XCTestCase {
     }
 
     func testSharedGradeThresholds() {
-        XCTAssertEqual(SkillGrade.forScore(93), .a)
-        XCTAssertEqual(SkillGrade.forScore(92), .b)
-        XCTAssertEqual(SkillGrade.forScore(85), .b)
+        XCTAssertEqual(SkillGrade.forScore(90), .a)
+        XCTAssertEqual(SkillGrade.forScore(89), .b)
+        XCTAssertEqual(SkillGrade.forScore(80), .b)
         XCTAssertEqual(SkillGrade.forScore(70), .c)
-        XCTAssertEqual(SkillGrade.forScore(55), .d)
-        XCTAssertEqual(SkillGrade.forScore(54), .f)
+        XCTAssertEqual(SkillGrade.forScore(60), .d)
+        XCTAssertEqual(SkillGrade.forScore(59), .f)
+    }
+
+    func testPersistedCodexGradeMigratesToCurrentBands() throws {
+        let data = Data("""
+        {
+          "score": 92,
+          "grade": "B",
+          "dimensions": {
+            "triggerAndScope": 24,
+            "workflowEffectiveness": 20,
+            "progressiveDisclosure": 18,
+            "safetyAndOperability": 15,
+            "maintainability": 15
+          },
+          "summary": "Strong",
+          "strengths": [],
+          "risks": [],
+          "recommendation": "None",
+          "evaluatedAt": "2026-07-20T00:00:00Z",
+          "contentHash": "hash"
+        }
+        """.utf8)
+
+        let review = try JSONDecoder().decode(CodexSkillReview.self, from: data)
+        XCTAssertEqual(review.grade, .a)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(review)) as? [String: Any]
+        XCTAssertEqual(encoded?["grade"] as? String, "A")
     }
 
     func testSkillHashTracksSymlinkTargetContent() throws {
@@ -407,7 +434,7 @@ final class SkillEvaluationTests: XCTestCase {
 
         XCTAssertEqual(record.pluginEval?.score, 88)
         XCTAssertEqual(record.codexReview?.score, 92)
-        XCTAssertEqual(record.codexReview?.grade, .b)
+        XCTAssertEqual(record.codexReview?.grade, .a)
         XCTAssertEqual(record.codexReview?.dimensions.triggerAndScope, 24)
         XCTAssertEqual(record.codexReview?.recommendation, "Add one task benchmark.")
         XCTAssertEqual(MetagentCore.loadSkillEvaluationSnapshot(path: store).records.count, 1)

@@ -22,8 +22,8 @@ This rule applies to projects only. Metagent does not change global
 - `npx skills` owns `skills-lock.json` provenance for packages it installs.
 - Metagent owns only discovery, Doctor findings, inventory, and the project
   `.claude/skills` symlink repair.
-- Metagent does not create `agents.toml`, create `agents.lock`, or invoke
-  dotagents.
+- Metagent does not create `agents.toml` or `agents.lock`. It reads them as
+  provenance and invokes dotagents only after an explicitly approved removal.
 
 The `npx skills` default install model is compatible with the whole-directory
 link: the physical bundle lives under `.agents/skills`, and Claude resolves the
@@ -83,6 +83,7 @@ The Mac app inventory can uninstall one selected canonical `.agents` skill:
 - Metagent creates a `Removed Skills` recovery directory before mutation.
 - For skills CLI packages, Metagent saves recovery state, delegates removal to
   `npx skills remove`, and verifies that the package and lock entry are absent.
+- Dotagents entries are removed through dotagents after recovery state is saved.
 - Unmanaged bundles and their per-skill projection links are moved into Metagent's
   `Removed Skills` recovery directory.
 - The whole-container `.claude/skills` projection remains in place.
