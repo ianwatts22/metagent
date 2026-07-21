@@ -40,6 +40,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
     @Published private(set) var isSkillEvaluating = false
     @Published private(set) var skillEvaluationStatusText: String?
+    @Published private(set) var isPluginInventoryAvailable = false
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
@@ -446,6 +447,7 @@ final class MetagentModel: ObservableObject {
         let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
         let homeProjects = homeScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
         let pluginProjects = pluginScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
+        isPluginInventoryAvailable = pluginScan.isSuccess
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)

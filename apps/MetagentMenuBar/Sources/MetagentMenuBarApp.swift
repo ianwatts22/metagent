@@ -63,6 +63,19 @@ private enum AppBrand {
         }
         return nil
     }()
+
+    private static let applicationIcons: [String: NSImage] = {
+        ["com.openai.codex", "com.anthropic.claudefordesktop"].reduce(into: [:]) { icons, bundleIdentifier in
+            guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+                return
+            }
+            icons[bundleIdentifier] = NSWorkspace.shared.icon(forFile: applicationURL.path)
+        }
+    }()
+
+    static func applicationIcon(bundleIdentifier: String) -> NSImage? {
+        applicationIcons[bundleIdentifier]
+    }
 }
 
 private struct MetagentPanel: View {
@@ -855,14 +868,27 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         switch self {
         case .plugin: "Codex plugins"
         case .skillsCLI: "Skills CLI"
-        case .dotagentsLocal: "dotagents · local"
-        case .dotagentsManaged: "dotagents · managed"
+        case .dotagentsLocal: "dotagents · path declaration"
+        case .dotagentsManaged: "dotagents · package"
         case .git: "Git repository"
         case .codexSystem: "Codex system"
         case .codexInstalled: "Codex installed"
         case .claude: "Claude"
         case .local: "Local"
         case .notInstalled: "Not installed"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .dotagentsLocal:
+            "A local skill path is still declared in a legacy agents.toml or agents.lock file. dotagents did not download the skill."
+        case .dotagentsManaged:
+            "The skill is declared as a package managed by dotagents rather than as a local path."
+        case .notInstalled:
+            "Historical Codex usage matched this skill, but no current installed bundle matches its recorded path or identity."
+        default:
+            title
         }
     }
 
@@ -879,7 +905,11 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    static func resolve(inventory: InventorySkillRow?, usage: UsageSkillRow) -> SkillSourceCategory {
+    static func resolve(
+        inventory: InventorySkillRow?,
+        usage: UsageSkillRow,
+        pluginInventoryAvailable: Bool
+    ) -> SkillSourceCategory {
         guard let inventory else {
             return usage.scope == "plugin" ? .plugin : .notInstalled
         }
@@ -897,26 +927,102 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     }
 }
 
+private enum SkillLocationKind: String, Identifiable {
+    case agents
+    case codex
+    case claude
+    case historical
+    case other
+
+    var id: String { rawValue }
+
+    init(location: String) {
+        switch location {
+        case "agents": self = .agents
+        case "codex", "plugin": self = .codex
+        case "claude": self = .claude
+        default: self = .other
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .agents: ".agents"
+        case .codex: "Codex"
+        case .claude: "Claude"
+        case .historical: "Historical"
+        case .other: "Other"
+        }
+    }
+
+    var bundleIdentifier: String? {
+        switch self {
+        case .codex: "com.openai.codex"
+        case .claude: "com.anthropic.claudefordesktop"
+        default: nil
+        }
+    }
+
+    var fallbackSymbol: String {
+        switch self {
+        case .agents: "globe"
+        case .codex: "sparkles"
+        case .claude: "link"
+        case .historical: "clock.arrow.circlepath"
+        case .other: "folder"
+        }
+    }
+}
+
 private struct SkillTableRow: Identifiable {
     let inventory: InventorySkillRow?
     let usage: UsageSkillRow
     let historicalProjectRoot: String?
+    let pluginInventoryAvailable: Bool
 
     var id: String { inventory?.id ?? "historical:\(usage.id)" }
     var skillName: String { inventory?.skillName ?? usage.skillName }
     var projectName: String {
         inventory?.projectName
             ?? historicalProjectRoot.map { URL(fileURLWithPath: $0).lastPathComponent }
-            ?? "Not installed"
+            ?? (usage.scope == "plugin" ? "Codex plugins" : "Not installed")
     }
     var projectRoot: String? { inventory?.projectRoot ?? historicalProjectRoot }
     var skillPath: String { inventory?.skillPath ?? usage.canonicalPath ?? "" }
     var canonicalPath: String? { inventory?.canonicalPath ?? usage.canonicalPath }
     var locationLabel: String { inventory?.locationLabel ?? "Historical" }
-    var locationHelp: String { inventory?.locationHelp ?? "Previously observed; no installed bundle matched this path." }
-    var sourceCategory: SkillSourceCategory { SkillSourceCategory.resolve(inventory: inventory, usage: usage) }
+    var locationHelp: String {
+        if let inventory { return inventory.locationHelp }
+        if usage.scope == "plugin" {
+            return pluginInventoryAvailable
+                ? "Previously observed in Codex; no active plugin inventory match was found."
+                : "Previously observed in Codex; plugin inventory is unavailable, so the current location cannot be confirmed."
+        }
+        return "Previously observed; no installed bundle matched this path."
+    }
+    var locationKinds: [SkillLocationKind] {
+        guard let inventory else { return usage.scope == "plugin" ? [.codex] : [.historical] }
+        return inventory.variants.map { SkillLocationKind(location: $0.location) }.uniqued()
+    }
+    var sourceCategory: SkillSourceCategory {
+        SkillSourceCategory.resolve(
+            inventory: inventory,
+            usage: usage,
+            pluginInventoryAvailable: pluginInventoryAvailable
+        )
+    }
     var sourceText: String { sourceCategory.title }
-    var sourceHelp: String { inventory?.originHelp ?? "Historical usage record\nScope: \(usage.scopeLabel)" }
+    var sourceHelp: String {
+        let detail: String
+        if inventory == nil, usage.scope == "plugin" {
+            detail = pluginInventoryAvailable
+                ? "No active plugin inventory match was found; the plugin may be disabled or removed."
+                : "Codex plugin inventory is unavailable; current installation state is unknown."
+        } else {
+            detail = inventory?.originHelp ?? "Historical usage record\nScope: \(usage.scopeLabel)"
+        }
+        return "\(sourceCategory.explanation)\n\(detail)"
+    }
     var sourceSymbol: String { sourceCategory.symbol }
     var scope: String { usage.scope }
     var scopeLabel: String { usage.scopeLabel }
@@ -949,7 +1055,20 @@ private struct SkillTableRow: Identifiable {
     }
     var usageStatus: UsageSkillRow.Status { usage.status }
     var isInstalled: Bool { inventory != nil }
-    var installationText: String { isInstalled ? "Installed" : "Not installed" }
+    var installationText: String {
+        if isInstalled { return "Installed" }
+        if usage.scope == "plugin" { return "Unknown" }
+        return "Not installed"
+    }
+    var installationHelp: String {
+        switch installationText {
+        case "Installed": "A matching skill bundle is currently installed."
+        case "Unknown": pluginInventoryAvailable
+            ? "No active plugin inventory match was found; the plugin may be disabled or removed."
+            : "Codex plugin inventory is unavailable, so installation state cannot be confirmed."
+        default: "Historical usage with no matching installed bundle."
+        }
+    }
 
     func matches(_ query: String) -> Bool {
         [skillName, projectName, locationLabel, sourceText, scopeLabel, metagentScoreText, pluginEvalText, codexReviewText]
@@ -960,6 +1079,7 @@ private struct SkillTableRow: Identifiable {
         inventoryRows: [InventorySkillRow],
         usageRows: [UsageSkillRow],
         projectRoots: [String],
+        pluginInventoryAvailable: Bool,
         isBackfillComplete: Bool
     ) -> [SkillTableRow] {
         let usageByPath = Dictionary(grouping: usageRows.compactMap { row -> (String, UsageSkillRow)? in
@@ -991,7 +1111,12 @@ private struct SkillTableRow: Identifiable {
                 lastUsedSortValue: -.infinity,
                 status: isBackfillComplete ? .neverObserved : .insufficient
             )
-            return SkillTableRow(inventory: inventory, usage: usage, historicalProjectRoot: nil)
+            return SkillTableRow(
+                inventory: inventory,
+                usage: usage,
+                historicalProjectRoot: nil,
+                pluginInventoryAvailable: pluginInventoryAvailable
+            )
         }
 
         rows.append(contentsOf: usageRows
@@ -1000,7 +1125,8 @@ private struct SkillTableRow: Identifiable {
                 SkillTableRow(
                     inventory: nil,
                     usage: usage,
-                    historicalProjectRoot: inferredProjectRoot(for: usage.canonicalPath, roots: projectRoots)
+                    historicalProjectRoot: inferredProjectRoot(for: usage.canonicalPath, roots: projectRoots),
+                    pluginInventoryAvailable: pluginInventoryAvailable
                 )
             })
         return rows
@@ -1026,10 +1152,11 @@ private struct InventorySection: View {
     @State private var pendingRemoval: InventoryRemovalConfirmation?
     @State private var pendingCodexReview: InventorySkillRow?
     @AppStorage("metagent.skills.view.v1") private var selectedViewRaw = SkillTableView.inventory.rawValue
-    @AppStorage("metagent.skills.hidden-sources.v1") private var hiddenSourceRaw = ""
+    @AppStorage("metagent.skills.hidden-sources.v2")
+    private var hiddenSourceRaw = "__unmigrated__"
     @SceneStorage("metagent.skills.inventory.columns.v1")
     private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
-    @SceneStorage("metagent.skills.usage.columns.v1")
+    @SceneStorage("metagent.skills.usage.columns.v2")
     private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
     @SceneStorage("metagent.skills.review.columns.v1")
     private var reviewColumnCustomization = TableColumnCustomization<SkillTableRow>()
@@ -1046,7 +1173,10 @@ private struct InventorySection: View {
     }
 
     private var hiddenSources: Set<SkillSourceCategory> {
-        Set(hiddenSourceRaw.split(separator: ",").compactMap { SkillSourceCategory(rawValue: String($0)) })
+        let rawValue = hiddenSourceRaw == "__unmigrated__"
+            ? SkillSourceCategory.notInstalled.rawValue
+            : hiddenSourceRaw
+        return Set(rawValue.split(separator: ",").compactMap { SkillSourceCategory(rawValue: String($0)) })
     }
 
     private var columnCustomization: Binding<TableColumnCustomization<SkillTableRow>> {
@@ -1077,8 +1207,16 @@ private struct InventorySection: View {
                 isBackfillComplete: model.usageSnapshot.isBackfillComplete
             ),
             projectRoots: model.projects.map(\.root),
+            pluginInventoryAvailable: model.isPluginInventoryAvailable,
             isBackfillComplete: model.usageSnapshot.isBackfillComplete
         )
+    }
+
+    private var projectFilterProjects: [ProjectStatus] {
+        model.projects.filter { project in
+            let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
+            return !isPluginProject
+        }
     }
 
     private var rows: [SkillTableRow] {
@@ -1113,9 +1251,12 @@ private struct InventorySection: View {
     }
 
     private var hasActiveFilter: Bool {
-        selectedProjectRoot != nil
+        let effectiveHiddenSources = selectedView == .usage
+            ? hiddenSources
+            : hiddenSources.subtracting([.notInstalled])
+        return selectedProjectRoot != nil
             || usageFilter != .all
-            || !hiddenSources.isEmpty
+            || !effectiveHiddenSources.isEmpty
             || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -1141,6 +1282,15 @@ private struct InventorySection: View {
         }
         hiddenSourceRaw = updated.map(\.rawValue).sorted().joined(separator: ",")
         selection.removeAll()
+    }
+
+    private func migrateSourceVisibilityIfNeeded() {
+        guard hiddenSourceRaw == "__unmigrated__" else { return }
+        if let legacyValue = UserDefaults.standard.string(forKey: "metagent.skills.hidden-sources.v1") {
+            hiddenSourceRaw = legacyValue
+        } else {
+            hiddenSourceRaw = SkillSourceCategory.notInstalled.rawValue
+        }
     }
 
     var body: some View {
@@ -1221,8 +1371,8 @@ private struct InventorySection: View {
 
                 Picker("Project", selection: $selectedProjectRoot) {
                     Text("All Projects").tag(String?.none)
-                    ForEach(model.projects) { project in
-                        Text(projectFilterLabel(project, projects: model.projects))
+                    ForEach(projectFilterProjects) { project in
+                        Text(projectFilterLabel(project, projects: projectFilterProjects))
                             .help(project.root)
                             .tag(Optional(project.root))
                     }
@@ -1302,7 +1452,9 @@ private struct InventorySection: View {
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
                         TableColumn(column.title, sortUsing: column.comparator) { row in
-                            if column.id == "last-used" {
+                            if column.id == "location" {
+                                SkillLocationCell(kinds: row.locationKinds, help: row.locationHelp)
+                            } else if column.id == "last-used" {
                                 RelativeUsageDateCell(date: row.lastUsedDate)
                                     .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
                                     .help(column.help(row))
@@ -1331,6 +1483,27 @@ private struct InventorySection: View {
                     let contextRows = rows(for: contextSelection)
                     let removableRows = contextRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
                     let paths = contextRows.compactMap(\.canonicalPath)
+                    let openableURLs = skillDirectoryURLs(for: contextRows)
+                    let openWithApplications = applicationsForOpening(openableURLs)
+                    Button("Open", systemImage: "folder") {
+                        openSkillDirectories(openableURLs)
+                    }
+                    .disabled(openableURLs.isEmpty)
+                    Menu("Open With", systemImage: "square.and.arrow.up") {
+                        ForEach(openWithApplications) { application in
+                            Button {
+                                openSkillDirectories(openableURLs, with: application.url)
+                            } label: {
+                                Label {
+                                    Text(application.name)
+                                } icon: {
+                                    Image(nsImage: application.icon)
+                                }
+                            }
+                        }
+                    }
+                    .disabled(openableURLs.isEmpty || openWithApplications.isEmpty)
+                    Divider()
                     Button("Copy Path", systemImage: "doc.on.doc") {
                         copyPaths(contextRows)
                     }
@@ -1353,6 +1526,7 @@ private struct InventorySection: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear {
+            migrateSourceVisibilityIfNeeded()
             sortOrder = defaultSortOrder(for: selectedView)
         }
         .onChange(of: selectedViewRaw) { _, rawValue in
@@ -1784,8 +1958,8 @@ private struct SkillColumnSpec: Identifiable {
         id: "location",
         title: "Location",
         comparator: KeyPathComparator(\SkillTableRow.locationLabel),
-        minWidth: 130,
-        idealWidth: 160,
+        minWidth: 64,
+        idealWidth: 76,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
@@ -1869,14 +2043,14 @@ private struct SkillColumnSpec: Identifiable {
         id: "scope",
         title: "Scope",
         comparator: KeyPathComparator(\SkillTableRow.scope),
-        minWidth: 76,
-        idealWidth: 92,
+        minWidth: 48,
+        idealWidth: 56,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
         defaultViews: [.usage],
         symbol: { $0.scopeSymbol },
-        value: \.scopeLabel,
+        value: { _ in "" },
         help: \.scopeLabel
     ),
     SkillColumnSpec(
@@ -1888,9 +2062,9 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.usage],
+        defaultViews: [],
         value: \.installationText,
-        help: { $0.isInstalled ? "A matching skill bundle is currently installed." : "Historical usage with no matching installed bundle." }
+        help: \.installationHelp
     ),
     SkillColumnSpec(
         id: "7d",
@@ -2006,6 +2180,8 @@ private struct InventoryTableCell: View {
         }
         .frame(maxWidth: .infinity, alignment: isNumeric ? .trailing : .leading)
         .help(help.isEmpty ? text : help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text.isEmpty ? help : text)
     }
 
     private var cellFont: Font {
@@ -2013,6 +2189,36 @@ private struct InventoryTableCell: View {
             return .body.weight(.medium)
         }
         return isMonospaced ? .caption.monospaced() : .callout
+    }
+}
+
+private struct SkillLocationCell: View {
+    let kinds: [SkillLocationKind]
+    let help: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(kinds) { kind in
+                if let bundleIdentifier = kind.bundleIdentifier,
+                   let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier)
+                {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 17, height: 17)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                } else {
+                    Image(systemName: kind.fallbackSymbol)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 17, height: 17)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(kinds.map(\.title).joined(separator: ", "))
+        .accessibilityHint(help)
     }
 }
 
@@ -2041,6 +2247,63 @@ private func copyToPasteboard(_ text: String) {
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
     pasteboard.setString(text, forType: .string)
+}
+
+private struct SkillOpeningApplication: Identifiable {
+    let url: URL
+    let name: String
+    let icon: NSImage
+
+    var id: String { url.path }
+}
+
+private func skillDirectoryURLs(for rows: [SkillTableRow]) -> [URL] {
+    rows.filter { $0.inventory != nil }.compactMap(\.canonicalPath).compactMap { path in
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return nil
+        }
+        return url
+    }.uniqued()
+}
+
+@MainActor private func applicationsForOpening(_ urls: [URL]) -> [SkillOpeningApplication] {
+    guard let firstURL = urls.first else { return [] }
+    let candidateSets = urls.map { url in
+        Set(NSWorkspace.shared.urlsForApplications(toOpen: url).map { $0.standardizedFileURL.path })
+    }
+    let commonPaths = candidateSets.dropFirst().reduce(candidateSets[0]) { $0.intersection($1) }
+    return NSWorkspace.shared.urlsForApplications(toOpen: firstURL)
+        .filter { commonPaths.contains($0.standardizedFileURL.path) }
+        .map { applicationURL in
+            let bundle = Bundle(url: applicationURL)
+            let name = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+                ?? applicationURL.deletingPathExtension().lastPathComponent
+            return SkillOpeningApplication(
+                url: applicationURL,
+                name: name,
+                icon: NSWorkspace.shared.icon(forFile: applicationURL.path)
+            )
+        }
+        .uniqued(by: \.id)
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+}
+
+@MainActor private func openSkillDirectories(_ urls: [URL], with applicationURL: URL? = nil) {
+    guard !urls.isEmpty else { return }
+    guard let applicationURL else {
+        urls.forEach { NSWorkspace.shared.open($0) }
+        return
+    }
+    NSWorkspace.shared.open(
+        urls,
+        withApplicationAt: applicationURL,
+        configuration: NSWorkspace.OpenConfiguration()
+    ) { _, error in
+        if error != nil { NSSound.beep() }
+    }
 }
 
 private func standardizedDirectoryPath(_ path: String) -> String {
@@ -2083,6 +2346,13 @@ private extension Sequence where Element: Hashable {
     func uniqued() -> [Element] {
         var seen = Set<Element>()
         return filter { seen.insert($0).inserted }
+    }
+}
+
+private extension Sequence {
+    func uniqued<Value: Hashable>(by keyPath: KeyPath<Element, Value>) -> [Element] {
+        var seen = Set<Value>()
+        return filter { seen.insert($0[keyPath: keyPath]).inserted }
     }
 }
 

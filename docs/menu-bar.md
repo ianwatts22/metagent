@@ -11,14 +11,15 @@ Current surface:
 - actionable health summary with Doctor findings grouped by project and cause
 - contextual repair preview shown only when a fix is available
 - one native inset `Skills` table with persisted `Inventory`, `Usage`, and `Review` presets; presets change default columns and sorting while preserving one shared selection, context menu, search, and filter surface
-- `Inventory` shows name, project, source, Metagent Score, Plugin Eval, and estimated tokens by default; `Usage` shows scope, installation state, recent/all-time reads, and recency; `Review` emphasizes Metagent, Plugin Eval, Codex review, and recency
-- historical usage without a matching installed bundle remains available in `Usage` as `Not installed`; inventory, evaluation, and removal actions remain limited to installed skills
+- `Inventory` shows name, project, source, Metagent Score, Plugin Eval, and estimated tokens by default; `Usage` shows icon-only scope, recent/all-time reads, and recency; `Review` emphasizes Metagent, Plugin Eval, Codex review, and recency; State remains an optional column
+- historical non-plugin usage without a matching installed bundle remains available in `Usage` as `Not installed` but is hidden by default through source visibility; unmatched plugin history remains under `Codex plugins` with unknown state because it may be disabled or the plugin scan may be unavailable; inventory, evaluation, open-folder, and removal actions remain limited to installed skills
 - color-coded score badges that retain a letter label for non-color accessibility; Metagent and Codex use conventional absolute grade bands while Plugin Eval keeps its evaluator-owned grade
-- standardized source categories and glyphs: plug for Codex plugins, globe for Skills CLI, separate sparkles categories for Codex system and Codex-installed skills, branch for `dotagents · local` or `dotagents · managed`, package for Git repositories, link for Claude, and person for local ownership
+- standardized source categories and glyphs: plug for Codex plugins, globe for Skills CLI, separate sparkles categories for Codex system and Codex-installed skills, branch for dotagents path declarations or packages, package for Git repositories, link for Claude, and person for local ownership; a dotagents path declaration means a legacy manifest points at a local bundle, not that dotagents downloaded it
 - a persisted multi-select Source menu can hide any category across every preset, including all Codex plugin skills; project and usage-lifecycle filters compose with source visibility and search
+- plugin-cache pseudo-projects are omitted from the Project filter; the optional Location column uses installed Codex and Claude app artwork plus a globe for `.agents`, with icon-only accessible cells
 - task/repeat usage context and lower-frequency identity fields remain available through native column customization, persisted independently for each preset
 - selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
-- native Command-click multi-selection in the Skills table, with right-click actions to copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections remove the owning plugin and duplicate plugin targets collapse into one action
+- native Command-click multi-selection in the Skills table, with right-click actions to open skill folders, choose a compatible application, copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections remove the owning plugin and duplicate plugin targets collapse into one action
 - menu bar Skills summary that opens the main window for the full table
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
