@@ -7,17 +7,19 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 
 Current surface:
 
-- three destinations: `Overview`, `Skills`, and `Usage`
+- two destinations: `Overview` and `Skills`
 - actionable health summary with Doctor findings grouped by project and cause
 - contextual repair preview shown only when a fix is available
-- native inset `Skills` table with name, project, source, Metagent Score, Plugin Eval, and estimated tokens visible by default; location and Codex review remain available through column customization
+- one native inset `Skills` table with persisted `Inventory`, `Usage`, and `Review` presets; presets change default columns and sorting while preserving one shared selection, context menu, search, and filter surface
+- `Inventory` shows name, project, source, Metagent Score, Plugin Eval, and estimated tokens by default; `Usage` shows scope, installation state, recent/all-time reads, and recency; `Review` emphasizes Metagent, Plugin Eval, Codex review, and recency
+- historical usage without a matching installed bundle remains available in `Usage` as `Not installed`; inventory, evaluation, and removal actions remain limited to installed skills
 - color-coded score badges that retain a letter label for non-color accessibility; Metagent and Codex use conventional absolute grade bands while Plugin Eval keeps its evaluator-owned grade
-- standardized source glyphs: plug for Codex plugins, globe for skills CLI, sparkles for Codex-installed skills, branch for dotagents, package for Git repositories, link for Claude, and person for local ownership
-- native inset `Usage` table with recent and all-time reads plus recency visible by default; task/repeat context remains available through column customization
-- combined skill-name search and project filtering in `Skills`, plus skill-name search and lifecycle filtering in `Usage`
+- standardized source categories and glyphs: plug for Codex plugins, globe for Skills CLI, separate sparkles categories for Codex system and Codex-installed skills, branch for `dotagents · local` or `dotagents · managed`, package for Git repositories, link for Claude, and person for local ownership
+- a persisted multi-select Source menu can hide any category across every preset, including all Codex plugin skills; project and usage-lifecycle filters compose with source visibility and search
+- task/repeat usage context and lower-frequency identity fields remain available through native column customization, persisted independently for each preset
 - selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
 - native Command-click multi-selection in the Skills table, with right-click actions to copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections remove the owning plugin and duplicate plugin targets collapse into one action
-- menu bar summaries that open the main window for the full tables
+- menu bar Skills summary that opens the main window for the full table
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
 

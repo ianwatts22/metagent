@@ -162,15 +162,6 @@ private struct MetagentPanel: View {
             } else {
                 InventorySection(model: model)
             }
-        case .usage:
-            if showsOpenWindowButton {
-                UsageMenuSection(model: model) {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                }
-            } else {
-                UsageSection(model: model)
-            }
         }
     }
 
@@ -266,7 +257,6 @@ private struct SectionNavigationButton: View {
 private enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case skills
-    case usage
 
     var id: String { rawValue }
 
@@ -274,7 +264,6 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "Overview"
         case .skills: "Skills"
-        case .usage: "Usage"
         }
     }
 
@@ -282,7 +271,6 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge"
         case .skills: "sparkles"
-        case .usage: "chart.bar.xaxis"
         }
     }
 }
@@ -684,324 +672,6 @@ private struct DoctorCategoryGroup: Identifiable {
     }
 }
 
-private struct UsageSection: View {
-    @ObservedObject var model: MetagentModel
-    @State private var selection = Set<UsageSkillRow.ID>()
-    @State private var pendingRemoval: InventoryRemovalConfirmation?
-    @State private var filter = UsageFilter.all
-    @State private var query = ""
-    @State private var sortOrder = [
-        KeyPathComparator(\UsageSkillRow.totalInvocations, order: .reverse)
-    ]
-    @SceneStorage("metagent.usage.columns.v1")
-    private var columnCustomization = TableColumnCustomization<UsageSkillRow>()
-
-    private var rows: [UsageSkillRow] {
-        UsageSkillRow.rows(
-            projects: model.projects,
-            summaries: model.usageSnapshot.summaries,
-            isBackfillComplete: model.usageSnapshot.isBackfillComplete
-        )
-        .filter { filter.includes($0) }
-        .filter { query.isEmpty || $0.skillName.localizedCaseInsensitiveContains(query) }
-        .sorted(using: sortOrder)
-    }
-
-    private var inventoryRows: [InventorySkillRow] {
-        InventorySkillRow.rows(
-            from: model.projects,
-            usage: model.usageSnapshot,
-            evaluations: model.skillEvaluations
-        )
-    }
-
-    private func rows(for contextSelection: Set<UsageSkillRow.ID>) -> [UsageSkillRow] {
-        let ids = contextSelection.isEmpty ? selection : contextSelection
-        return rows.filter { ids.contains($0.id) }
-    }
-
-    private func inventoryRows(for usageRows: [UsageSkillRow]) -> [InventorySkillRow] {
-        let paths = Set(usageRows.compactMap(\.canonicalPath).map(standardizedDirectoryPath))
-        let pluginKeys = Set(usageRows.compactMap {
-            pluginUsageMatchKey(id: $0.id, canonicalPath: $0.canonicalPath)
-        })
-        return inventoryRows.filter { row in
-            paths.contains(standardizedDirectoryPath(row.canonicalPath))
-                || pluginUsageMatchKey(row.skill).map(pluginKeys.contains) == true
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Skill Usage")
-                        .font(.title3.weight(.semibold))
-                    Text(model.usageStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                TextField("Filter skills", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
-
-                Picker("Status", selection: $filter) {
-                    ForEach(UsageFilter.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .frame(width: 170)
-
-                Button {
-                    model.refreshUsage()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.glass)
-                .help("Refresh usage history")
-                .disabled(model.isUsageRefreshing)
-            }
-
-            HStack(spacing: 0) {
-                SummaryMetric(
-                    title: "Invocations",
-                    value: model.usageSnapshot.totalInvocations.formatted(),
-                    detail: "every observed SKILL.md read",
-                    symbol: "sparkles"
-                )
-                Divider().padding(.vertical, 4)
-                SummaryMetric(
-                    title: "Observed skills",
-                    value: model.usageSnapshot.summaries.count.formatted(),
-                    detail: model.usageCoverageText,
-                    symbol: "list.bullet.rectangle"
-                )
-                Divider().padding(.vertical, 4)
-                SummaryMetric(
-                    title: "Backfill",
-                    value: model.usageSnapshot.isBackfillComplete
-                        ? "Current"
-                        : model.usageProgress.formatted(.percent.precision(.fractionLength(1))),
-                    detail: model.usageProgressText,
-                    symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90"
-                )
-            }
-            .frame(height: 92)
-
-            if model.isUsageRefreshing {
-                ProgressView(value: model.usageProgress)
-                    .progressViewStyle(.linear)
-            }
-
-            if rows.isEmpty {
-                EmptyStateView(
-                    title: filter.emptyTitle,
-                    message: filter.emptyMessage(backfillComplete: model.usageSnapshot.isBackfillComplete),
-                    symbol: "chart.bar.xaxis"
-                )
-            } else {
-                Table(
-                    rows,
-                    selection: $selection,
-                    sortOrder: $sortOrder,
-                    columnCustomization: $columnCustomization
-                ) {
-                    TableColumn(
-                        "Skill",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.skillName)
-                    ) { row in
-                        Text(row.skillName)
-                            .fontWeight(.medium)
-                            .help(row.canonicalPath ?? row.skillName)
-                    }
-                    .width(min: 180, ideal: 240)
-                    .customizationID("skill")
-                    .defaultVisibility(.visible)
-
-                    TableColumn(
-                        "Scope",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.scope)
-                    ) { row in
-                        Image(systemName: row.scopeSymbol)
-                            .foregroundStyle(.secondary)
-                            .help(row.scopeLabel)
-                            .accessibilityLabel(row.scopeLabel)
-                    }
-                    .width(min: 54, ideal: 60)
-                    .customizationID("scope")
-                    .defaultVisibility(.visible)
-
-                    TableColumn(
-                        "7d",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.invocations7d)
-                    ) { row in numericCell(row.invocations7d) }
-                        .width(min: 54, ideal: 64)
-                        .customizationID("7d")
-                        .defaultVisibility(.visible)
-                    TableColumn(
-                        "30d",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.invocations30d)
-                    ) { row in numericCell(row.invocations30d) }
-                        .width(min: 54, ideal: 64)
-                        .customizationID("30d")
-                        .defaultVisibility(.visible)
-                    TableColumn(
-                        "All",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.totalInvocations)
-                    ) { row in numericCell(row.totalInvocations) }
-                        .width(min: 54, ideal: 64)
-                        .customizationID("all")
-                        .defaultVisibility(.visible)
-                    TableColumn(
-                        "Tasks",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.distinctThreads)
-                    ) { row in
-                        numericCell(row.distinctThreads)
-                            .help("Distinct Codex tasks where this skill was observed")
-                    }
-                    .width(min: 58, ideal: 68)
-                    .customizationID("tasks")
-                    .defaultVisibility(.hidden)
-                    TableColumn(
-                        "Repeats",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.repeatInvocations)
-                    ) { row in
-                        numericCell(row.repeatInvocations)
-                            .help("Additional reads after the first read in the same turn")
-                    }
-                        .width(min: 66, ideal: 76)
-                        .customizationID("repeats")
-                        .defaultVisibility(.hidden)
-                    TableColumn(
-                        "Last used",
-                        sortUsing: KeyPathComparator(\UsageSkillRow.lastUsedSortValue)
-                    ) { row in
-                        RelativeUsageDateCell(date: row.lastUsedDate)
-                            .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
-                    }
-                    .width(min: 100, ideal: 120)
-                    .customizationID("last-used")
-                    .defaultVisibility(.visible)
-                }
-                .tableStyle(.inset)
-                .alternatingRowBackgrounds(.enabled)
-                .contextMenu(forSelectionType: UsageSkillRow.ID.self) { contextSelection in
-                    let usageRows = rows(for: contextSelection)
-                    let paths = usageRows.compactMap(\.canonicalPath)
-                    let removableRows = inventoryRows(for: usageRows).filter { $0.removalRequest != nil }
-                    Button("Copy Path", systemImage: "doc.on.doc") {
-                        copyToPasteboard(paths.uniqued().joined(separator: "\n"))
-                    }
-                    .disabled(paths.isEmpty)
-                    Button("Copy to Improve", systemImage: "wand.and.sparkles") {
-                        copyToPasteboard(improvementPrompt(paths: paths))
-                    }
-                    .disabled(paths.isEmpty)
-                    Divider()
-                    Button(
-                        removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
-                        systemImage: "trash",
-                        role: .destructive
-                    ) {
-                        pendingRemoval = InventoryRemovalConfirmation(rows: removableRows)
-                    }
-                    .disabled(removableRows.isEmpty || model.isRunning)
-                }
-            }
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .alert(item: $pendingRemoval) { confirmation in
-            let requests = confirmation.rows.compactMap(\.removalRequest)
-            let names = confirmation.rows.prefix(6).map(\.skillName).joined(separator: ", ")
-            let suffix = confirmation.rows.count > 6 ? ", …" : ""
-            return Alert(
-                title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
-                message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: confirmation.rows))"),
-                primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
-                    selection.removeAll()
-                    model.uninstallSkills(requests)
-                },
-                secondaryButton: .cancel()
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func numericCell(_ value: Int) -> some View {
-        Text(value.formatted())
-            .font(.callout)
-            .monospacedDigit()
-            .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-}
-
-private struct RelativeUsageDateCell: View {
-    let date: Date?
-
-    var body: some View {
-        if let date {
-            TimelineView(.periodic(from: .now, by: 60)) { _ in
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))
-            }
-        } else {
-            Text("Never")
-        }
-    }
-}
-
-private struct UsageMenuSection: View {
-    @ObservedObject var model: MetagentModel
-    let openMainWindow: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Skill Usage")
-                    .font(.headline)
-                Spacer()
-                if model.isUsageRefreshing {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                MetricView(
-                    title: "Invocations",
-                    value: model.usageSnapshot.totalInvocations.formatted(),
-                    symbol: "sparkles"
-                )
-                MetricView(
-                    title: "Observed skills",
-                    value: model.usageSnapshot.summaries.count.formatted(),
-                    symbol: "chart.bar.xaxis"
-                )
-            }
-
-            InfoRow(title: "History", value: model.usageStatusText, symbol: "clock.arrow.circlepath")
-            InfoRow(title: "Coverage", value: model.usageCoverageText, symbol: "calendar")
-
-            if model.isUsageRefreshing {
-                ProgressView(value: model.usageProgress)
-                Text(model.usageProgressText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Button(action: openMainWindow) {
-                Label("Open Usage Table", systemImage: "arrow.up.right.square")
-                    .frame(maxWidth: .infinity)
-            }
-            .controlSize(.large)
-
-            Spacer()
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-}
-
 private enum UsageFilter: String, CaseIterable, Identifiable {
     case all
     case observed
@@ -1027,12 +697,16 @@ private enum UsageFilter: String, CaseIterable, Identifiable {
         return "No skills currently match this usage filter."
     }
     func includes(_ row: UsageSkillRow) -> Bool {
+        includes(status: row.status, totalInvocations: row.totalInvocations)
+    }
+
+    func includes(status: UsageSkillRow.Status, totalInvocations: Int) -> Bool {
         switch self {
         case .all: true
-        case .observed: row.totalInvocations > 0
-        case .neverObserved: row.status == .neverObserved
-        case .dormant: row.status == .dormant
-        case .insufficient: row.status == .insufficient
+        case .observed: totalInvocations > 0
+        case .neverObserved: status == .neverObserved
+        case .dormant: status == .dormant
+        case .insufficient: status == .insufficient
         }
     }
 }
@@ -1154,60 +828,319 @@ private struct InventoryRemovalConfirmation: Identifiable {
     let rows: [InventorySkillRow]
 }
 
+private enum SkillTableView: String, CaseIterable, Identifiable {
+    case inventory
+    case usage
+    case review
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+private enum SkillSourceCategory: String, CaseIterable, Identifiable {
+    case plugin
+    case skillsCLI
+    case dotagentsLocal
+    case dotagentsManaged
+    case git
+    case codexSystem
+    case codexInstalled
+    case claude
+    case local
+    case notInstalled
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .plugin: "Codex plugins"
+        case .skillsCLI: "Skills CLI"
+        case .dotagentsLocal: "dotagents · local"
+        case .dotagentsManaged: "dotagents · managed"
+        case .git: "Git repository"
+        case .codexSystem: "Codex system"
+        case .codexInstalled: "Codex installed"
+        case .claude: "Claude"
+        case .local: "Local"
+        case .notInstalled: "Not installed"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .plugin: "powerplug.fill"
+        case .skillsCLI: "globe"
+        case .dotagentsLocal, .dotagentsManaged: "arrow.triangle.branch"
+        case .git: "shippingbox"
+        case .codexSystem, .codexInstalled: "sparkles"
+        case .claude: "link"
+        case .local: "person.crop.circle"
+        case .notInstalled: "clock.arrow.circlepath"
+        }
+    }
+
+    static func resolve(inventory: InventorySkillRow?, usage: UsageSkillRow) -> SkillSourceCategory {
+        guard let inventory else {
+            return usage.scope == "plugin" ? .plugin : .notInstalled
+        }
+        switch inventory.skill.manager {
+        case "codex-plugin": return .plugin
+        case "skills-cli": return .skillsCLI
+        case "dotagents":
+            return inventory.skill.originKind == "dotagents-managed" ? .dotagentsManaged : .dotagentsLocal
+        case "git": return .git
+        case "codex":
+            return inventory.skill.authority == "codex-system" ? .codexSystem : .codexInstalled
+        case "claude": return .claude
+        default: return .local
+        }
+    }
+}
+
+private struct SkillTableRow: Identifiable {
+    let inventory: InventorySkillRow?
+    let usage: UsageSkillRow
+    let historicalProjectRoot: String?
+
+    var id: String { inventory?.id ?? "historical:\(usage.id)" }
+    var skillName: String { inventory?.skillName ?? usage.skillName }
+    var projectName: String {
+        inventory?.projectName
+            ?? historicalProjectRoot.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? "Not installed"
+    }
+    var projectRoot: String? { inventory?.projectRoot ?? historicalProjectRoot }
+    var skillPath: String { inventory?.skillPath ?? usage.canonicalPath ?? "" }
+    var canonicalPath: String? { inventory?.canonicalPath ?? usage.canonicalPath }
+    var locationLabel: String { inventory?.locationLabel ?? "Historical" }
+    var locationHelp: String { inventory?.locationHelp ?? "Previously observed; no installed bundle matched this path." }
+    var sourceCategory: SkillSourceCategory { SkillSourceCategory.resolve(inventory: inventory, usage: usage) }
+    var sourceText: String { sourceCategory.title }
+    var sourceHelp: String { inventory?.originHelp ?? "Historical usage record\nScope: \(usage.scopeLabel)" }
+    var sourceSymbol: String { sourceCategory.symbol }
+    var scope: String { usage.scope }
+    var scopeLabel: String { usage.scopeLabel }
+    var scopeSymbol: String { usage.scopeSymbol }
+    var metagentScoreSortValue: Int { inventory?.metagentScore.score ?? -1 }
+    var metagentScoreText: String { inventory?.metagentScoreText ?? "—" }
+    var metagentScoreTint: Color? { inventory?.metagentScoreTint }
+    var metagentScoreHelp: String { inventory?.metagentScoreHelp ?? "Not available for an uninstalled skill." }
+    var pluginEvalSortValue: Int { inventory?.pluginEvalSortValue ?? -1 }
+    var pluginEvalText: String { inventory?.pluginEvalText ?? "—" }
+    var pluginEvalTint: Color? { inventory?.pluginEvalTint }
+    var pluginEvalHelp: String { inventory?.pluginEvalHelp ?? "Not available for an uninstalled skill." }
+    var codexReviewSortValue: Int { inventory?.codexReviewSortValue ?? -1 }
+    var codexReviewText: String { inventory?.codexReviewText ?? "—" }
+    var codexReviewTint: Color? { inventory?.codexReviewTint }
+    var codexReviewHelp: String { inventory?.codexReviewHelp ?? "Not available for an uninstalled skill." }
+    var tokenEstimate: Int { inventory?.tokenEstimate ?? -1 }
+    var totalInvocations: Int { usage.totalInvocations }
+    var invocations7d: Int { usage.invocations7d }
+    var invocations30d: Int { usage.invocations30d }
+    var distinctThreads: Int { usage.distinctThreads }
+    var repeatInvocations: Int { usage.repeatInvocations }
+    var lastUsedDate: Date? { usage.lastUsedDate }
+    var lastUsedSortValue: TimeInterval { usage.lastUsedSortValue }
+    var lastUsedText: String {
+        lastUsedDate?.formatted(.relative(presentation: .named, unitsStyle: .wide)) ?? "Never"
+    }
+    var lastUsedHelp: String {
+        lastUsedDate?.formatted(date: .abbreviated, time: .shortened) ?? "No observed usage"
+    }
+    var usageStatus: UsageSkillRow.Status { usage.status }
+    var isInstalled: Bool { inventory != nil }
+    var installationText: String { isInstalled ? "Installed" : "Not installed" }
+
+    func matches(_ query: String) -> Bool {
+        [skillName, projectName, locationLabel, sourceText, scopeLabel, metagentScoreText, pluginEvalText, codexReviewText]
+            .contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    static func rows(
+        inventoryRows: [InventorySkillRow],
+        usageRows: [UsageSkillRow],
+        projectRoots: [String],
+        isBackfillComplete: Bool
+    ) -> [SkillTableRow] {
+        let usageByPath = Dictionary(grouping: usageRows.compactMap { row -> (String, UsageSkillRow)? in
+            guard let path = row.canonicalPath else { return nil }
+            return (standardizedDirectoryPath(path), row)
+        }, by: \.0).compactMapValues { $0.first?.1 }
+        let usageByPlugin = Dictionary(grouping: usageRows.compactMap { row in
+            pluginUsageMatchKey(id: row.id, canonicalPath: row.canonicalPath).map { ($0, row) }
+        }, by: \.0).compactMapValues { $0.first?.1 }
+        var matchedUsageIDs = Set<String>()
+
+        var rows = inventoryRows.map { inventory -> SkillTableRow in
+            let matched = usageByPath[standardizedDirectoryPath(inventory.canonicalPath)]
+                ?? pluginUsageMatchKey(inventory.skill).flatMap { usageByPlugin[$0] }
+            if let matched { matchedUsageIDs.insert(matched.id) }
+            let usage = matched ?? UsageSkillRow(
+                id: "inventory:\(inventory.id)",
+                skillName: inventory.skillName,
+                canonicalPath: inventory.canonicalPath,
+                scope: inventory.skill.folderKind == "system"
+                    ? "system"
+                    : (inventory.projectRoot == NSHomeDirectory() ? "global" : "project"),
+                totalInvocations: 0,
+                invocations7d: 0,
+                invocations30d: 0,
+                distinctThreads: 0,
+                repeatInvocations: 0,
+                lastUsedDate: nil,
+                lastUsedSortValue: -.infinity,
+                status: isBackfillComplete ? .neverObserved : .insufficient
+            )
+            return SkillTableRow(inventory: inventory, usage: usage, historicalProjectRoot: nil)
+        }
+
+        rows.append(contentsOf: usageRows
+            .filter { !matchedUsageIDs.contains($0.id) }
+            .map { usage in
+                SkillTableRow(
+                    inventory: nil,
+                    usage: usage,
+                    historicalProjectRoot: inferredProjectRoot(for: usage.canonicalPath, roots: projectRoots)
+                )
+            })
+        return rows
+    }
+
+    private static func inferredProjectRoot(for path: String?, roots: [String]) -> String? {
+        guard let path else { return nil }
+        let canonicalPath = standardizedDirectoryPath(path)
+        return roots
+            .map(standardizedDirectoryPath)
+            .filter { canonicalPath == $0 || canonicalPath.hasPrefix($0 + "/") }
+            .max { $0.count < $1.count }
+    }
+}
+
 private struct InventorySection: View {
     @ObservedObject var model: MetagentModel
-    @State private var selection = Set<InventorySkillRow.ID>()
-    @State private var sortOrder = [KeyPathComparator(\InventorySkillRow.skillName)]
+    @State private var selection = Set<SkillTableRow.ID>()
+    @State private var sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
     @State private var selectedProjectRoot: String?
     @State private var query = ""
+    @State private var usageFilter = UsageFilter.all
     @State private var pendingRemoval: InventoryRemovalConfirmation?
     @State private var pendingCodexReview: InventorySkillRow?
-    @SceneStorage("metagent.inventory.columns.v3")
-    private var columnCustomization = TableColumnCustomization<InventorySkillRow>()
+    @AppStorage("metagent.skills.view.v1") private var selectedViewRaw = SkillTableView.inventory.rawValue
+    @AppStorage("metagent.skills.hidden-sources.v1") private var hiddenSourceRaw = ""
+    @SceneStorage("metagent.skills.inventory.columns.v1")
+    private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
+    @SceneStorage("metagent.skills.usage.columns.v1")
+    private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
+    @SceneStorage("metagent.skills.review.columns.v1")
+    private var reviewColumnCustomization = TableColumnCustomization<SkillTableRow>()
 
-    private var rows: [InventorySkillRow] {
-        let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return InventorySkillRow.rows(
+    private var selectedView: SkillTableView {
+        SkillTableView(rawValue: selectedViewRaw) ?? .inventory
+    }
+
+    private var selectedViewBinding: Binding<SkillTableView> {
+        Binding(
+            get: { selectedView },
+            set: { selectedViewRaw = $0.rawValue }
+        )
+    }
+
+    private var hiddenSources: Set<SkillSourceCategory> {
+        Set(hiddenSourceRaw.split(separator: ",").compactMap { SkillSourceCategory(rawValue: String($0)) })
+    }
+
+    private var columnCustomization: Binding<TableColumnCustomization<SkillTableRow>> {
+        switch selectedView {
+        case .inventory:
+            Binding(get: { inventoryColumnCustomization }, set: { inventoryColumnCustomization = $0 })
+        case .usage:
+            Binding(get: { usageColumnCustomization }, set: { usageColumnCustomization = $0 })
+        case .review:
+            Binding(get: { reviewColumnCustomization }, set: { reviewColumnCustomization = $0 })
+        }
+    }
+
+    private var inventoryRows: [InventorySkillRow] {
+        InventorySkillRow.rows(
             from: model.projects,
             usage: model.usageSnapshot,
             evaluations: model.skillEvaluations
         )
+    }
+
+    private var allRows: [SkillTableRow] {
+        SkillTableRow.rows(
+            inventoryRows: inventoryRows,
+            usageRows: UsageSkillRow.rows(
+                projects: model.projects,
+                summaries: model.usageSnapshot.summaries,
+                isBackfillComplete: model.usageSnapshot.isBackfillComplete
+            ),
+            projectRoots: model.projects.map(\.root),
+            isBackfillComplete: model.usageSnapshot.isBackfillComplete
+        )
+    }
+
+    private var rows: [SkillTableRow] {
+        let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return allRows
+        .filter { selectedView == .usage || $0.isInstalled }
         .filter { selectedProjectRoot == nil || $0.projectRoot == selectedProjectRoot }
+        .filter { !hiddenSources.contains($0.sourceCategory) }
+        .filter { usageFilter.includes(status: $0.usageStatus, totalInvocations: $0.totalInvocations) }
         .filter { searchQuery.isEmpty || $0.matches(searchQuery) }
     }
 
-    private var sortedRows: [InventorySkillRow] {
+    private var sortedRows: [SkillTableRow] {
         rows.sorted(using: sortOrder)
     }
 
     private var selectedRow: InventorySkillRow? {
         guard selection.count == 1, let selectedID = selection.first else { return nil }
-        return rows.first { $0.id == selectedID }
+        return rows.first { $0.id == selectedID }?.inventory
     }
 
-    private var selectedRows: [InventorySkillRow] {
+    private var selectedRows: [SkillTableRow] {
         rows.filter { selection.contains($0.id) }
     }
 
     private var selectedRemovalRows: [InventorySkillRow] {
-        selectedRows.filter { $0.removalRequest != nil }
+        selectedRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
+    }
+
+    private var visibleInventoryRows: [InventorySkillRow] {
+        rows.compactMap(\.inventory)
     }
 
     private var hasActiveFilter: Bool {
-        selectedProjectRoot != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        selectedProjectRoot != nil
+            || usageFilter != .all
+            || !hiddenSources.isEmpty
+            || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func rows(for contextSelection: Set<InventorySkillRow.ID>) -> [InventorySkillRow] {
+    private func rows(for contextSelection: Set<SkillTableRow.ID>) -> [SkillTableRow] {
         let ids = contextSelection.isEmpty ? selection : contextSelection
         return rows.filter { ids.contains($0.id) }
     }
 
-    private func copyPaths(_ rows: [InventorySkillRow]) {
-        copyToPasteboard(rows.map(\.canonicalPath).uniqued().joined(separator: "\n"))
+    private func copyPaths(_ rows: [SkillTableRow]) {
+        copyToPasteboard(rows.compactMap(\.canonicalPath).uniqued().joined(separator: "\n"))
     }
 
-    private func copyToImprove(_ rows: [InventorySkillRow]) {
-        copyToPasteboard(improvementPrompt(paths: rows.map(\.canonicalPath)))
+    private func copyToImprove(_ rows: [SkillTableRow]) {
+        copyToPasteboard(improvementPrompt(paths: rows.compactMap(\.canonicalPath)))
+    }
+
+    private func setSource(_ source: SkillSourceCategory, visible: Bool) {
+        var updated = hiddenSources
+        if visible {
+            updated.remove(source)
+        } else {
+            updated.insert(source)
+        }
+        hiddenSourceRaw = updated.map(\.rawValue).sorted().joined(separator: ",")
+        selection.removeAll()
     }
 
     var body: some View {
@@ -1227,19 +1160,13 @@ private struct InventorySection: View {
 
                 Spacer()
 
-                TextField("Filter skills", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
-
-                Picker("Project", selection: $selectedProjectRoot) {
-                    Text("All Projects").tag(String?.none)
-                    ForEach(model.projects) { project in
-                        Text(projectFilterLabel(project, projects: model.projects))
-                            .help(project.root)
-                            .tag(Optional(project.root))
+                Picker("View", selection: selectedViewBinding) {
+                    ForEach(SkillTableView.allCases) { view in
+                        Text(view.title).tag(view)
                     }
                 }
-                .frame(minWidth: 150, idealWidth: 190)
+                .pickerStyle(.segmented)
+                .frame(width: 250)
 
                 Menu {
                     Button("Run Plugin Eval") {
@@ -1256,13 +1183,14 @@ private struct InventorySection: View {
                     .disabled(selectedRow == nil)
                     Divider()
                     Button("Run Plugin Eval for Visible Skills") {
-                        model.evaluateSkillsWithPluginEval(paths: rows.map(\.canonicalPath))
+                        model.evaluateSkillsWithPluginEval(paths: visibleInventoryRows.map(\.canonicalPath))
                     }
+                    .disabled(visibleInventoryRows.isEmpty)
                 } label: {
                     Label("Evaluate", systemImage: "checkmark.seal")
                 }
                 .buttonStyle(.glass)
-                .disabled(rows.isEmpty || model.isSkillEvaluating)
+                .disabled(visibleInventoryRows.isEmpty || model.isSkillEvaluating)
 
                 Button(role: .destructive) {
                     pendingRemoval = InventoryRemovalConfirmation(rows: selectedRemovalRows)
@@ -1277,12 +1205,71 @@ private struct InventorySection: View {
 
                 Button {
                     model.refreshStatus()
+                    model.refreshUsage()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.glass)
-                .help("Refresh")
+                .help("Refresh skills and usage")
                 .disabled(model.isRunning)
+            }
+
+            HStack(spacing: 10) {
+                TextField("Filter skills", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 190)
+
+                Picker("Project", selection: $selectedProjectRoot) {
+                    Text("All Projects").tag(String?.none)
+                    ForEach(model.projects) { project in
+                        Text(projectFilterLabel(project, projects: model.projects))
+                            .help(project.root)
+                            .tag(Optional(project.root))
+                    }
+                }
+                .frame(minWidth: 150, idealWidth: 190)
+
+                Menu {
+                    Button("Show All Sources") {
+                        hiddenSourceRaw = ""
+                        selection.removeAll()
+                    }
+                    .disabled(hiddenSources.isEmpty)
+                    Divider()
+                    ForEach(SkillSourceCategory.allCases) { source in
+                        Toggle(
+                            source.title,
+                            isOn: Binding(
+                                get: { !hiddenSources.contains(source) },
+                                set: { setSource(source, visible: $0) }
+                            )
+                        )
+                    }
+                } label: {
+                    Label(
+                        hiddenSources.isEmpty ? "Sources" : "Sources · \(hiddenSources.count) hidden",
+                        systemImage: hiddenSources.isEmpty
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill"
+                    )
+                }
+                .help("Choose which skill sources are visible")
+
+                Picker("Usage", selection: $usageFilter) {
+                    ForEach(UsageFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .frame(width: 170)
+
+                Spacer()
+
+                if selectedView == .usage {
+                    Text(model.usageStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             if let evaluationStatus = model.skillEvaluationStatusText {
@@ -1311,39 +1298,47 @@ private struct InventorySection: View {
                     sortedRows,
                     selection: $selection,
                     sortOrder: $sortOrder,
-                    columnCustomization: $columnCustomization
+                    columnCustomization: columnCustomization
                 ) {
-                    TableColumnForEach(inventoryColumnSpecs) { column in
+                    TableColumnForEach(skillColumnSpecs) { column in
                         TableColumn(column.title, sortUsing: column.comparator) { row in
-                            InventoryTableCell(
-                                text: column.value(row),
-                                help: column.help(row),
-                                isNumeric: column.isNumeric,
-                                isMonospaced: column.isMonospaced,
-                                isPrimary: column.isPrimary,
-                                showsBadge: column.showsBadge,
-                                symbol: column.symbol?(row),
-                                tint: column.tint?(row)
-                            )
+                            if column.id == "last-used" {
+                                RelativeUsageDateCell(date: row.lastUsedDate)
+                                    .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
+                                    .help(column.help(row))
+                            } else {
+                                InventoryTableCell(
+                                    text: column.value(row),
+                                    help: column.help(row),
+                                    isNumeric: column.isNumeric,
+                                    isMonospaced: column.isMonospaced,
+                                    isPrimary: column.isPrimary,
+                                    showsBadge: column.showsBadge,
+                                    symbol: column.symbol?(row),
+                                    tint: column.tint?(row)
+                                )
+                            }
                         }
                         .width(min: column.minWidth, ideal: column.idealWidth)
                         .customizationID(column.id)
-                        .defaultVisibility(column.defaultVisibility)
+                        .defaultVisibility(column.defaultVisibility(selectedView))
                     }
                 }
+                .id(selectedView)
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
-                .contextMenu(forSelectionType: InventorySkillRow.ID.self) { contextSelection in
+                .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
                     let contextRows = rows(for: contextSelection)
-                    let removableRows = contextRows.filter { $0.removalRequest != nil }
+                    let removableRows = contextRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
+                    let paths = contextRows.compactMap(\.canonicalPath)
                     Button("Copy Path", systemImage: "doc.on.doc") {
                         copyPaths(contextRows)
                     }
-                    .disabled(contextRows.isEmpty)
+                    .disabled(paths.isEmpty)
                     Button("Copy to Improve", systemImage: "wand.and.sparkles") {
                         copyToImprove(contextRows)
                     }
-                    .disabled(contextRows.isEmpty)
+                    .disabled(paths.isEmpty)
                     Divider()
                     Button(
                         removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
@@ -1357,6 +1352,14 @@ private struct InventorySection: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            sortOrder = defaultSortOrder(for: selectedView)
+        }
+        .onChange(of: selectedViewRaw) { _, rawValue in
+            let view = SkillTableView(rawValue: rawValue) ?? .inventory
+            selection.formIntersection(Set(rows.map(\.id)))
+            sortOrder = defaultSortOrder(for: view)
+        }
         .alert(item: $pendingRemoval) { confirmation in
             let requests = confirmation.rows.compactMap(\.removalRequest)
             let names = confirmation.rows.prefix(6).map(\.skillName).joined(separator: ", ")
@@ -1380,6 +1383,17 @@ private struct InventorySection: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+    }
+
+    private func defaultSortOrder(for view: SkillTableView) -> [KeyPathComparator<SkillTableRow>] {
+        switch view {
+        case .inventory:
+            [KeyPathComparator(\SkillTableRow.skillName)]
+        case .usage:
+            [KeyPathComparator(\SkillTableRow.totalInvocations, order: .reverse)]
+        case .review:
+            [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
         }
     }
 }
@@ -1450,7 +1464,7 @@ private struct InventorySkillRow: Identifiable {
         }, uniquingKeysWith: { first, _ in first })
         let portfolioVariantsByName = Dictionary(grouping: projects.flatMap(\.skills), by: \.name)
         return projects.flatMap { project in
-            Dictionary(grouping: project.skills, by: \.name).values.map { variants in
+            Dictionary(grouping: project.skills, by: canonicalSkillIdentity).values.map { variants in
                 let sortedVariants = variants.sorted(by: canonicalSkillOrder)
                 let skill = sortedVariants[0]
                 let canonicalPath = standardizedDirectory(skill.canonicalPath)
@@ -1484,8 +1498,18 @@ private struct InventorySkillRow: Identifiable {
         return left.path < right.path
     }
 
+    private static func canonicalSkillIdentity(_ skill: SkillStatus) -> String {
+        if let pluginKey = pluginUsageMatchKey(skill) {
+            return "plugin:\(pluginKey)"
+        }
+        if !skill.canonicalPath.isEmpty {
+            return "path:\(standardizedDirectory(skill.canonicalPath))"
+        }
+        return "installed:\(skill.location):\(standardizedDirectory(skill.path))"
+    }
+
     var id: String {
-        "\(project.root):\(skill.name)"
+        "\(project.root):\(Self.canonicalSkillIdentity(skill))"
     }
 
     var skillName: String { skill.name }
@@ -1676,37 +1700,37 @@ private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
     return parts.joined(separator: " ")
 }
 
-private struct InventoryColumnSpec: Identifiable {
+private struct SkillColumnSpec: Identifiable {
     let id: String
     let title: String
-    let comparator: KeyPathComparator<InventorySkillRow>
+    let comparator: KeyPathComparator<SkillTableRow>
     let minWidth: CGFloat
     let idealWidth: CGFloat
     let isNumeric: Bool
     let isMonospaced: Bool
     let isPrimary: Bool
-    let defaultVisibility: Visibility
+    let defaultViews: Set<SkillTableView>
     let showsBadge: Bool
-    let symbol: ((InventorySkillRow) -> String?)?
-    let tint: ((InventorySkillRow) -> Color?)?
-    let value: (InventorySkillRow) -> String
-    let help: (InventorySkillRow) -> String
+    let symbol: ((SkillTableRow) -> String?)?
+    let tint: ((SkillTableRow) -> Color?)?
+    let value: (SkillTableRow) -> String
+    let help: (SkillTableRow) -> String
 
     init(
         id: String,
         title: String,
-        comparator: KeyPathComparator<InventorySkillRow>,
+        comparator: KeyPathComparator<SkillTableRow>,
         minWidth: CGFloat,
         idealWidth: CGFloat,
         isNumeric: Bool,
         isMonospaced: Bool,
         isPrimary: Bool,
-        defaultVisibility: Visibility,
+        defaultViews: Set<SkillTableView>,
         showsBadge: Bool = false,
-        symbol: ((InventorySkillRow) -> String?)? = nil,
-        tint: ((InventorySkillRow) -> Color?)? = nil,
-        value: @escaping (InventorySkillRow) -> String,
-        help: @escaping (InventorySkillRow) -> String
+        symbol: ((SkillTableRow) -> String?)? = nil,
+        tint: ((SkillTableRow) -> Color?)? = nil,
+        value: @escaping (SkillTableRow) -> String,
+        help: @escaping (SkillTableRow) -> String
     ) {
         self.id = id
         self.title = title
@@ -1716,126 +1740,235 @@ private struct InventoryColumnSpec: Identifiable {
         self.isNumeric = isNumeric
         self.isMonospaced = isMonospaced
         self.isPrimary = isPrimary
-        self.defaultVisibility = defaultVisibility
+        self.defaultViews = defaultViews
         self.showsBadge = showsBadge
         self.symbol = symbol
         self.tint = tint
         self.value = value
         self.help = help
     }
+
+    func defaultVisibility(_ view: SkillTableView) -> Visibility {
+        defaultViews.contains(view) ? .visible : .hidden
+    }
 }
 
-@MainActor private let inventoryColumnSpecs: [InventoryColumnSpec] = [
-    InventoryColumnSpec(
+@MainActor private let skillColumnSpecs: [SkillColumnSpec] = [
+    SkillColumnSpec(
         id: "skill",
         title: "Skill",
-        comparator: KeyPathComparator(\InventorySkillRow.skillName),
+        comparator: KeyPathComparator(\SkillTableRow.skillName),
         minWidth: 160,
         idealWidth: 220,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: true,
-        defaultVisibility: .visible,
+        defaultViews: Set(SkillTableView.allCases),
         value: \.skillName,
         help: \.skillPath
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "project",
         title: "Project",
-        comparator: KeyPathComparator(\InventorySkillRow.projectName),
+        comparator: KeyPathComparator(\SkillTableRow.projectName),
         minWidth: 120,
         idealWidth: 160,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .visible,
+        defaultViews: [.inventory],
         value: \.projectName,
-        help: \.projectRoot
+        help: { $0.projectRoot ?? "No installed project" }
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "location",
         title: "Location",
-        comparator: KeyPathComparator(\InventorySkillRow.locationLabel),
+        comparator: KeyPathComparator(\SkillTableRow.locationLabel),
         minWidth: 130,
         idealWidth: 160,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .hidden,
+        defaultViews: [],
         value: \.locationLabel,
         help: \.locationHelp
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "origin",
         title: "Source",
-        comparator: KeyPathComparator(\InventorySkillRow.originText),
+        comparator: KeyPathComparator(\SkillTableRow.sourceText),
         minWidth: 120,
         idealWidth: 170,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .visible,
+        defaultViews: [.inventory, .review],
         symbol: { $0.sourceSymbol },
-        value: \.originText,
-        help: \.originHelp
+        value: \.sourceText,
+        help: \.sourceHelp
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "metagent-score",
         title: "Metagent",
-        comparator: KeyPathComparator(\InventorySkillRow.metagentScore.score),
+        comparator: KeyPathComparator(\SkillTableRow.metagentScoreSortValue),
         minWidth: 82,
         idealWidth: 94,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .visible,
+        defaultViews: [.inventory, .review],
         showsBadge: true,
         tint: { $0.metagentScoreTint },
         value: \.metagentScoreText,
         help: \.metagentScoreHelp
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "plugin-eval",
         title: "Plugin Eval",
-        comparator: KeyPathComparator(\InventorySkillRow.pluginEvalSortValue),
+        comparator: KeyPathComparator(\SkillTableRow.pluginEvalSortValue),
         minWidth: 90,
         idealWidth: 104,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .visible,
+        defaultViews: [.inventory, .review],
         showsBadge: true,
         tint: \.pluginEvalTint,
         value: \.pluginEvalText,
         help: \.pluginEvalHelp
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "codex-review",
         title: "Codex",
-        comparator: KeyPathComparator(\InventorySkillRow.codexReviewSortValue),
+        comparator: KeyPathComparator(\SkillTableRow.codexReviewSortValue),
         minWidth: 82,
         idealWidth: 94,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .hidden,
+        defaultViews: [.review],
         showsBadge: true,
         tint: \.codexReviewTint,
         value: \.codexReviewText,
         help: \.codexReviewHelp
     ),
-    InventoryColumnSpec(
+    SkillColumnSpec(
         id: "tokens",
         title: "Tokens",
-        comparator: KeyPathComparator(\InventorySkillRow.tokenEstimate),
+        comparator: KeyPathComparator(\SkillTableRow.tokenEstimate),
         minWidth: 76,
         idealWidth: 92,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultVisibility: .visible,
-        value: { formatNumber($0.tokenEstimate) },
-        help: { formatNumber($0.tokenEstimate) }
+        defaultViews: [.inventory],
+        value: { $0.tokenEstimate < 0 ? "—" : formatNumber($0.tokenEstimate) },
+        help: { $0.tokenEstimate < 0 ? "Not available for an uninstalled skill." : formatNumber($0.tokenEstimate) }
+    ),
+    SkillColumnSpec(
+        id: "scope",
+        title: "Scope",
+        comparator: KeyPathComparator(\SkillTableRow.scope),
+        minWidth: 76,
+        idealWidth: 92,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage],
+        symbol: { $0.scopeSymbol },
+        value: \.scopeLabel,
+        help: \.scopeLabel
+    ),
+    SkillColumnSpec(
+        id: "installation",
+        title: "State",
+        comparator: KeyPathComparator(\SkillTableRow.installationText),
+        minWidth: 88,
+        idealWidth: 104,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage],
+        value: \.installationText,
+        help: { $0.isInstalled ? "A matching skill bundle is currently installed." : "Historical usage with no matching installed bundle." }
+    ),
+    SkillColumnSpec(
+        id: "7d",
+        title: "7d",
+        comparator: KeyPathComparator(\SkillTableRow.invocations7d),
+        minWidth: 54,
+        idealWidth: 64,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage],
+        value: { $0.invocations7d.formatted() },
+        help: { "\($0.invocations7d.formatted()) reads in the last 7 days" }
+    ),
+    SkillColumnSpec(
+        id: "30d",
+        title: "30d",
+        comparator: KeyPathComparator(\SkillTableRow.invocations30d),
+        minWidth: 54,
+        idealWidth: 64,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage],
+        value: { $0.invocations30d.formatted() },
+        help: { "\($0.invocations30d.formatted()) reads in the last 30 days" }
+    ),
+    SkillColumnSpec(
+        id: "all",
+        title: "All",
+        comparator: KeyPathComparator(\SkillTableRow.totalInvocations),
+        minWidth: 54,
+        idealWidth: 64,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage],
+        value: { $0.totalInvocations.formatted() },
+        help: { "\($0.totalInvocations.formatted()) observed reads" }
+    ),
+    SkillColumnSpec(
+        id: "tasks",
+        title: "Tasks",
+        comparator: KeyPathComparator(\SkillTableRow.distinctThreads),
+        minWidth: 58,
+        idealWidth: 68,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [],
+        value: { $0.distinctThreads.formatted() },
+        help: { "\($0.distinctThreads.formatted()) distinct Codex tasks" }
+    ),
+    SkillColumnSpec(
+        id: "repeats",
+        title: "Repeats",
+        comparator: KeyPathComparator(\SkillTableRow.repeatInvocations),
+        minWidth: 66,
+        idealWidth: 76,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [],
+        value: { $0.repeatInvocations.formatted() },
+        help: { "\($0.repeatInvocations.formatted()) additional reads in the same turn" }
+    ),
+    SkillColumnSpec(
+        id: "last-used",
+        title: "Last used",
+        comparator: KeyPathComparator(\SkillTableRow.lastUsedSortValue),
+        minWidth: 100,
+        idealWidth: 120,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.usage, .review],
+        value: \.lastUsedText,
+        help: \.lastUsedHelp
     )
 ]
 
@@ -1880,6 +2013,22 @@ private struct InventoryTableCell: View {
             return .body.weight(.medium)
         }
         return isMonospaced ? .caption.monospaced() : .callout
+    }
+}
+
+private struct RelativeUsageDateCell: View {
+    let date: Date?
+
+    var body: some View {
+        if let date {
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))
+                    .font(.callout)
+            }
+        } else {
+            Text("Never")
+                .font(.callout)
+        }
     }
 }
 
