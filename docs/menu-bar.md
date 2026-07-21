@@ -19,7 +19,7 @@ Current surface:
 - plugin-cache pseudo-projects are omitted from the Project filter; the optional Location column uses installed Codex and Claude app artwork plus a globe for `.agents`, with icon-only accessible cells
 - task/repeat usage context and lower-frequency identity fields remain available through native column customization, persisted independently for each preset
 - selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
-- native Command-click multi-selection in the Skills table, with right-click actions to open skill folders, choose a compatible application, copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections remove the owning plugin and duplicate plugin targets collapse into one action
+- native Command-click multi-selection in the Skills table, with right-click actions to open skill folders, choose a compatible application, copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections delegate removal of the owning plugin to Codex's plugin manager, and duplicate plugin targets collapse into one action
 - menu bar Skills summary that opens the main window for the full table
 - lower-frequency Config and Logs actions in the header menu
 - manual refresh and Quit
@@ -105,6 +105,13 @@ The Overview includes a compact MCP Connections summary. Its default check is pa
 
 “Configured” and “no known issues” do not mean a server was connected or a tool was invoked. Metagent does not start MCP processes, contact providers, refresh OAuth, inspect secrets, or claim live verification during the Overview check. Per-server details preserve that distinction and direct sign-in or unavailable states back to the owning client.
 
+Pending Claude project servers retain their project paths. Their action opens a
+new Terminal in the relevant project and starts `claude`, where Claude presents
+its normal project trust prompt. Metagent does not approve the server, edit the
+manifest, or authenticate on the user's behalf. Pending servers are grouped into
+one actionable row per project, including when the same server name is awaiting
+approval in several projects.
+
 For iterative SwiftUI work, run:
 
 ```bash
@@ -117,5 +124,4 @@ restarts the real menu-bar process. This is reliable live reload rather than
 in-process hot reload, so transient UI state resets after each change.
 
 The local app uses a persistent development signature. Distribution signing
-and notarization remain separate future packaging work, along with wiring the
-future MCP server entry point through the Swift helper.
+and notarization remain separate future packaging work.

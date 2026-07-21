@@ -22,6 +22,19 @@ Use this skill for meta-work about agents and agent-facing tool surfaces. Keep i
 4. Use `rg`, `fd`, local plugin bundles, config files, lockfiles, and read-only tool calls before proposing a new workflow or wrapper.
 5. Keep global instructions broad and reusable. Put repo-specific facts in the project repo, project `AGENTS.md`, project docs, or project skills.
 
+## Project Analysis
+
+When the installed `metagent` command is available, start a folder audit with:
+
+```bash
+metagent analyze --root /absolute/path/to/project --json
+```
+
+Use `metagent skills scan --root ... --json` for a narrower skill inventory and
+`metagent skills doctor --root ... --json` for deterministic findings. MCP
+clients can use `metagent mcp --stdio`, which exposes the same project analysis,
+skill inventory, and Doctor surfaces without a second scanner.
+
 ## MCP Analysis
 
 For MCP availability, tool inventory, namespace instructions, dynamic guide/help tools, and active-session boundaries, read [references/mcp-analysis.md](references/mcp-analysis.md).

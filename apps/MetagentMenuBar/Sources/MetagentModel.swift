@@ -186,7 +186,20 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func openMCPClient(_ client: MCPClient) {
+    func openMCPServer(_ server: MCPServerHealth) {
+        if server.client == .claude,
+           server.state == .pendingApproval,
+           server.projectPaths.count == 1,
+           let projectPath = server.projectPaths.first
+        {
+            openClaudeCode(at: projectPath)
+            return
+        }
+
+        openMCPClient(server.client)
+    }
+
+    private func openMCPClient(_ client: MCPClient) {
         switch client {
         case .codex:
             if let applicationURL = NSWorkspace.shared.urlForApplication(
@@ -198,6 +211,43 @@ final class MetagentModel: ObservableObject {
             }
         case .claude:
             NSWorkspace.shared.open(homeURL().appendingPathComponent(".claude"))
+        }
+    }
+
+    private func openClaudeCode(at projectPath: String) {
+        let script = """
+        on run argv
+            set projectPath to item 1 of argv
+            tell application "Terminal"
+                activate
+                do script "cd -- " & quoted form of projectPath & " && exec claude"
+            end tell
+        end run
+        """
+        let process = Process()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script, "--", projectPath]
+        process.standardError = standardError
+        process.terminationHandler = { [weak self] process in
+            guard process.terminationStatus != 0 else { return }
+            let data = standardError.fileHandleForReading.readDataToEndOfFile()
+            let message = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            Task { @MainActor [weak self] in
+                self?.lastOutputTitle = "Could not open Claude"
+                self?.lastOutputLines = [message.isEmpty
+                    ? "osascript exited with status \(process.terminationStatus)"
+                    : message]
+                self?.showsRawOutput = true
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            lastOutputTitle = "Could not open Claude"
+            lastOutputLines = [error.localizedDescription]
+            showsRawOutput = true
         }
     }
 

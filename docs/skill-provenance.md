@@ -56,10 +56,24 @@ Codex system, Codex-installed, and plugin-cache skills remain read-only and cann
 
 ## Agent access
 
+Analyze one project's agent setup:
+
+```bash
+metagent analyze --root /absolute/path/to/project --json
+```
+
 The complete current inventory is available without the UI:
 
 ```bash
 metagent inventory --json
 ```
 
-The CLI is the supported agent integration today. `metagent mcp --stdio` is reserved but intentionally reports that MCP is not implemented; an MCP server should wrap the same `MetagentCore` inventory and removal-plan APIs when a concrete interactive client need justifies it.
+For MCP clients, configure the installed binary as a local stdio server:
+
+```bash
+metagent mcp --stdio
+```
+
+The server exposes `analyze_project`, `list_skills`, and `doctor_project`. These
+are read-only wrappers around the same `MetagentCore` implementation used by
+the CLI and app.

@@ -12,6 +12,12 @@ let package = Package(
         .executable(name: "MetagentMenuBar", targets: ["MetagentMenuBar"]),
         .executable(name: "metagent", targets: ["MetagentCLI"])
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/modelcontextprotocol/swift-sdk.git",
+            exact: "0.12.1"
+        )
+    ],
     targets: [
         .target(
             name: "MetagentCore",
@@ -31,7 +37,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "MetagentCLI",
-            dependencies: ["MetagentCore"],
+            dependencies: [
+                "MetagentCore",
+                .product(name: "MCP", package: "swift-sdk")
+            ],
             path: "Sources/MetagentCLI"
         ),
         .testTarget(

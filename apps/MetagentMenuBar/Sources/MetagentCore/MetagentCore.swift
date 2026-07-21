@@ -23,11 +23,18 @@ public struct SkillScanOptions: Equatable, Sendable {
     public var roots: [String]
     public var maxDepth: Int?
     public var ignoreProjects: [String]
+    public var respectConfiguredIgnores: Bool
 
-    public init(roots: [String] = [], maxDepth: Int? = nil, ignoreProjects: [String] = []) {
+    public init(
+        roots: [String] = [],
+        maxDepth: Int? = nil,
+        ignoreProjects: [String] = [],
+        respectConfiguredIgnores: Bool = true
+    ) {
         self.roots = roots
         self.maxDepth = maxDepth
         self.ignoreProjects = ignoreProjects
+        self.respectConfiguredIgnores = respectConfiguredIgnores
     }
 }
 
@@ -526,9 +533,16 @@ public enum MetagentCore {
 
     public static func scanSkills(options: SkillScanOptions = SkillScanOptions()) throws -> SkillScanReport {
         let config = try loadUserConfig()
+        return try scanSkills(options: options, config: config)
+    }
+
+    static func scanSkills(options: SkillScanOptions, config: MetagentConfig) throws -> SkillScanReport {
         let rootPaths = options.roots.isEmpty ? config.roots : options.roots
         let maxDepth = options.maxDepth ?? config.maxDepth
-        let ignoreProjects = Set((config.ignoreProjects + options.ignoreProjects).map { canonicalProjectPath(expandPath($0)) })
+        let configuredIgnores = options.respectConfiguredIgnores ? config.ignoreProjects : []
+        let ignoreProjects = Set((configuredIgnores + options.ignoreProjects).map {
+            canonicalProjectPath(expandPath($0))
+        })
         var projectRoots = Set<String>()
 
         for rootPath in rootPaths {

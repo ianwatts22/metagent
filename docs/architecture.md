@@ -86,21 +86,33 @@ metagent skills evaluate /absolute/path/to/skill --provider plugin-eval
 metagent skills evaluate /absolute/path/to/skill --provider codex
 metagent usage status
 metagent usage refresh
+metagent analyze --root /absolute/path/to/project --json
+metagent mcp --stdio
 ```
 
 The helper is intentionally subordinate to `MetagentCore`. It should stay a thin command surface over shared Swift code.
 
-## MCP Direction
+## Project Analysis and MCP
 
 MCP should be an access layer over `MetagentCore`, not a second implementation.
 
-The reserved shape is:
+`metagent analyze` emits the versioned, read-only project contract used by the
+CLI and MCP. Schema version 1 combines project instruction/configuration files,
+project skills, installed plugin skills, Doctor findings, passive relevant MCP
+state, and retained usage summaries for matching project skills. It reports
+paths and metadata but does not copy instruction contents into the report.
+
+The stdio server is:
 
 ```bash
 metagent mcp --stdio
 ```
 
-The MCP server should share the Swift core and SQLite cache with the app. Add Rust or Python workers only for measured hot paths or exploratory analysis that Swift plus SQLite cannot handle cleanly.
+It uses the pinned official MCP Swift SDK and exposes three read-only tools:
+`analyze_project`, `list_skills`, and `doctor_project`. All three call
+`MetagentCore`; the server owns no parallel scanner or cache. Add Rust or Python
+workers only for measured hot paths or exploratory analysis that Swift plus
+SQLite cannot handle cleanly.
 
 ## Local State
 

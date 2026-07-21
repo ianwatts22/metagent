@@ -57,10 +57,11 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 ## Local State Checks
 
 `npx skills` records installed marketplace skills in
-`~/.agents/.skill-lock.json`. When dotagents manifests remain present, Metagent
-reads `agents.toml` / `agents.lock` as ownership evidence and can delegate an
-explicitly approved removal to dotagents. They do not replace the skills CLI
-lock as the publishing source of truth.
+`${XDG_STATE_HOME}/skills/.skill-lock.json` when `XDG_STATE_HOME` is set,
+otherwise `~/.agents/.skill-lock.json`. When dotagents manifests remain present,
+Metagent reads `agents.toml` / `agents.lock` as ownership evidence and can
+delegate an explicitly approved removal to dotagents. They do not replace the
+skills CLI lock as the publishing source of truth.
 
 After replacing an older local skill, check the skills CLI lock:
 

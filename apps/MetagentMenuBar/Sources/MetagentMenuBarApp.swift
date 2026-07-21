@@ -403,12 +403,12 @@ private struct OverviewSection: View {
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(visibleMCPRows) { server in
-                            MCPHealthRow(server: server) {
-                                model.openMCPClient(server.client)
+                        ForEach(visibleMCPRows) { row in
+                            MCPHealthRow(row: row) {
+                                model.openMCPServer(row.server)
                             }
 
-                            if server.id != visibleMCPRows.last?.id {
+                            if row.id != visibleMCPRows.last?.id {
                                 Divider()
                                     .padding(.leading, 40)
                             }
@@ -433,22 +433,22 @@ private struct OverviewSection: View {
         }
     }
 
-    private var visibleMCPRows: [MCPServerHealth] {
+    private var visibleMCPRows: [MCPHealthDisplayRow] {
         if showsMCPDetails {
             return mcpDetailRows
         }
-        return model.mcpHealth.attention
+        return groupedMCPRows(model.mcpHealth.attention)
     }
 
-    private var mcpDetailRows: [MCPServerHealth] {
-        model.mcpHealth.servers.filter {
+    private var mcpDetailRows: [MCPHealthDisplayRow] {
+        groupedMCPRows(model.mcpHealth.servers.filter {
             $0.state.needsAttention || $0.state == .disabled
-        }
+        })
     }
 
     private var mcpSummaryText: String {
         let configured = model.mcpHealth.configuredCount
-        let attention = model.mcpHealth.attention.count
+        let attention = groupedMCPRows(model.mcpHealth.attention).count
         guard model.mcpHealth.observedAt != .distantPast else {
             return "Checking configuration…"
         }
@@ -456,6 +456,65 @@ private struct OverviewSection: View {
             return "\(configured) configured · no known issues"
         }
         return "\(configured) configured · \(attention) \(attention == 1 ? "needs" : "need") attention"
+    }
+
+    private func groupedMCPRows(_ servers: [MCPServerHealth]) -> [MCPHealthDisplayRow] {
+        let expandedServers = servers.flatMap { server in
+            guard server.client == .claude,
+                  server.state == .pendingApproval,
+                  server.projectPaths.count > 1
+            else { return [server] }
+            return server.projectPaths.map { projectPath in
+                MCPServerHealth(
+                    client: server.client,
+                    name: server.name,
+                    state: .pendingApproval,
+                    detail: "Needs approval in \(URL(fileURLWithPath: projectPath).lastPathComponent)",
+                    projectStates: [.init(path: projectPath, state: .pendingApproval)]
+                )
+            }
+        }
+        var rows: [MCPHealthDisplayRow] = []
+        var groupedIDs = Set<String>()
+        let pendingGroups = Dictionary(grouping: expandedServers.filter {
+            $0.client == .claude
+                && $0.state == .pendingApproval
+                && $0.projectPaths.count == 1
+        }) { $0.projectPaths[0] }
+
+        for server in expandedServers {
+            if server.client == .claude,
+               server.state == .pendingApproval,
+               let projectPath = server.projectPaths.first,
+               server.projectPaths.count == 1,
+               let group = pendingGroups[projectPath]
+            {
+                let groupID = "claude-project:\(projectPath)"
+                guard groupedIDs.insert(groupID).inserted else { continue }
+                let projectName = projectDisplayName(projectPath)
+                rows.append(MCPHealthDisplayRow(
+                    id: groupID,
+                    server: group[0],
+                    title: "\(projectName) · Claude",
+                    detail: "\(group.count) project \(group.count == 1 ? "server needs" : "servers need") approval"
+                ))
+            } else {
+                rows.append(MCPHealthDisplayRow(
+                    id: server.id,
+                    server: server,
+                    title: "\(server.name) · \(server.client.displayName)",
+                    detail: server.detail
+                ))
+            }
+        }
+        return rows
+    }
+
+    private func projectDisplayName(_ projectPath: String) -> String {
+        URL(fileURLWithPath: projectPath).lastPathComponent
+            .split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .map { $0.capitalized }
+            .joined(separator: " ")
     }
 
     private var healthHero: some View {
@@ -610,9 +669,18 @@ private struct MCPClientCount: View {
     }
 }
 
-private struct MCPHealthRow: View {
+private struct MCPHealthDisplayRow: Identifiable {
+    let id: String
     let server: MCPServerHealth
+    let title: String
+    let detail: String
+}
+
+private struct MCPHealthRow: View {
+    let row: MCPHealthDisplayRow
     let openClient: () -> Void
+
+    private var server: MCPServerHealth { row.server }
 
     var body: some View {
         HStack(spacing: 11) {
@@ -622,10 +690,10 @@ private struct MCPHealthRow: View {
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(server.name) · \(server.client.displayName)")
+                Text(row.title)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text(server.detail)
+                Text(row.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -646,7 +714,13 @@ private struct MCPHealthRow: View {
     }
 
     private var attentionActionLabel: String {
-        switch server.client {
+        if server.client == .claude,
+           server.state == .pendingApproval,
+           server.projectPaths.count == 1
+        {
+            return "Open in Claude…"
+        }
+        return switch server.client {
         case .codex:
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") == nil
                 ? "Show Codex config…"

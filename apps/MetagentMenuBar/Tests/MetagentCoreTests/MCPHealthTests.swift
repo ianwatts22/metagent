@@ -434,6 +434,10 @@ final class MCPHealthTests: XCTestCase {
 
         XCTAssertEqual(servers.map(\.name), ["shared"])
         XCTAssertEqual(servers.map(\.state), [.pendingApproval])
+        XCTAssertEqual(
+            servers[0].projectPaths,
+            [secondProject.path]
+        )
     }
 
     func testClaudeInventoryLetsProjectApprovalOverrideUserDefault() throws {

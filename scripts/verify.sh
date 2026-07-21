@@ -37,6 +37,9 @@ test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
 "$swift_helper" skills --help >/dev/null
 "$swift_helper" usage --help >/dev/null
 "$swift_helper" config show --json >/dev/null
+"$swift_helper" analyze --root "$repo_root" --json \
+  | jq -e '.schema_version == 1 and (.skills.projects | length) > 0' >/dev/null
+python3 "$repo_root/scripts/verify-mcp-stdio.py" "$swift_helper" "$repo_root"
 
 fixture_root="$(mktemp -d /private/tmp/metagent-verify.XXXXXX)"
 normalized_fixture_root="${fixture_root/#\/private\/tmp/\/tmp}"

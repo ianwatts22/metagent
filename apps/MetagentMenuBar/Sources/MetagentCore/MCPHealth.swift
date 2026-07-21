@@ -24,19 +24,59 @@ public enum MCPConnectionState: String, Codable, Sendable {
     }
 }
 
+public struct MCPProjectState: Codable, Equatable, Sendable {
+    public let path: String
+    public let state: MCPConnectionState
+
+    public init(path: String, state: MCPConnectionState) {
+        self.path = path
+        self.state = state
+    }
+}
+
 public struct MCPServerHealth: Codable, Equatable, Identifiable, Sendable {
     public let client: MCPClient
     public let name: String
     public let state: MCPConnectionState
     public let detail: String
+    public let globalState: MCPConnectionState?
+    public let projectStates: [MCPProjectState]
+
+    public var projectPaths: [String] {
+        projectStates.filter { $0.state == .pendingApproval }.map(\.path)
+    }
 
     public var id: String { "\(client.rawValue):\(name)" }
 
-    public init(client: MCPClient, name: String, state: MCPConnectionState, detail: String) {
+    public init(
+        client: MCPClient,
+        name: String,
+        state: MCPConnectionState,
+        detail: String,
+        globalState: MCPConnectionState? = nil,
+        projectStates: [MCPProjectState] = []
+    ) {
         self.client = client
         self.name = name
         self.state = state
         self.detail = detail
+        self.globalState = globalState ?? (projectStates.isEmpty ? state : nil)
+        self.projectStates = projectStates
+    }
+
+    func scoped(to projectPath: String) -> MCPServerHealth? {
+        let matchingProjectStates = projectStates.filter { $0.path == projectPath }
+        guard globalState != nil || !matchingProjectStates.isEmpty else { return nil }
+        let applicableStates = [globalState].compactMap { $0 } + matchingProjectStates.map(\.state)
+        let scopedState = aggregateMCPState(applicableStates)
+        return MCPServerHealth(
+            client: client,
+            name: name,
+            state: scopedState,
+            detail: mcpStateDetail(scopedState, projectStates: matchingProjectStates),
+            globalState: globalState,
+            projectStates: matchingProjectStates
+        )
     }
 }
 
@@ -89,6 +129,7 @@ public extension MetagentCore {
     static func scanMCPHealth(
         homeDirectory: URL? = nil,
         codexExecutableOverride: URL? = nil,
+        additionalProjectPaths: [String] = [],
         observedAt: Date = Date()
     ) -> MCPHealthSnapshot {
         let home = homeDirectory ?? FileManager.default.homeDirectoryForCurrentUser
@@ -114,7 +155,10 @@ public extension MetagentCore {
             ))
         }
 
-        servers += scanClaudeMCPConfiguration(homeDirectory: home)
+        servers += scanClaudeMCPConfiguration(
+            homeDirectory: home,
+            additionalProjectPaths: additionalProjectPaths
+        )
         return MCPHealthSnapshot(servers: servers.sorted(by: mcpHealthSort), observedAt: observedAt)
     }
 
@@ -145,7 +189,10 @@ public extension MetagentCore {
         }
     }
 
-    static func scanClaudeMCPConfiguration(homeDirectory: URL) -> [MCPServerHealth] {
+    static func scanClaudeMCPConfiguration(
+        homeDirectory: URL,
+        additionalProjectPaths: [String] = []
+    ) -> [MCPServerHealth] {
         let claudeRoot = homeDirectory.appendingPathComponent(".claude")
         let configURLs = [
             homeDirectory.appendingPathComponent(".claude.json"),
@@ -179,60 +226,11 @@ public extension MetagentCore {
                 if let projects = object["projects"] as? [String: Any] {
                     for (projectPath, projectValue) in projects {
                         guard let project = projectValue as? [String: Any] else { continue }
-                        var projectScope = ClaudeProjectMCPScope(
-                            directNames: dictionaryKeys(project["mcpServers"]),
-                            manifestNames: [],
-                            approvedManifestNames: stringArray(project["enabledMcpjsonServers"]),
-                            disabledServerNames: disabledServerNames(in: project),
-                            rejectedManifestNames: rejectedManifestNames(in: project),
-                            approvesAllManifestNames: project["enableAllProjectMcpServers"] as? Bool,
-                            pluginSelections: pluginSelections(
-                                booleanDictionary(project["enabledPlugins"]),
-                                scope: "local",
-                                projectPath: projectPath
-                            )
-                        )
-                        let projectURL = URL(fileURLWithPath: projectPath)
-                        for manifestURL in ancestorClaudeManifestURLs(from: projectURL) {
-                            do {
-                                let manifest = try loadJSONObject(at: manifestURL)
-                                projectScope.manifestNames.formUnion(dictionaryKeys(manifest["mcpServers"]))
-                            } catch {
-                                configurationUnavailable = true
-                            }
-                        }
-                        for settingsName in ["settings.json", "settings.local.json"] {
-                            let settingsURL = projectURL
-                                .appendingPathComponent(".claude")
-                                .appendingPathComponent(settingsName)
-                            guard FileManager.default.fileExists(atPath: settingsURL.path) else { continue }
-                            do {
-                                let settings = try loadJSONObject(at: settingsURL)
-                                projectScope.disabledServerNames.formUnion(disabledServerNames(in: settings))
-                                if settingsName == "settings.local.json" {
-                                    projectScope.approvedManifestNames.formUnion(
-                                        stringArray(settings["enabledMcpjsonServers"])
-                                    )
-                                    projectScope.rejectedManifestNames.formUnion(
-                                        rejectedManifestNames(in: settings)
-                                    )
-                                    if settings["enableAllProjectMcpServers"] as? Bool == true {
-                                        projectScope.approvesAllManifestNames = true
-                                    }
-                                }
-                                projectScope.pluginSelections.merge(
-                                    pluginSelections(
-                                        booleanDictionary(settings["enabledPlugins"]),
-                                        scope: settingsName == "settings.local.json" ? "local" : "project",
-                                        projectPath: projectPath
-                                    ),
-                                    uniquingKeysWith: { _, newer in newer }
-                                )
-                            } catch {
-                                configurationUnavailable = true
-                            }
-                        }
-                        projectScopes.append(projectScope)
+                        projectScopes.append(claudeProjectMCPScope(
+                            projectPath: projectPath,
+                            project: project,
+                            configurationUnavailable: &configurationUnavailable
+                        ))
                     }
                 }
                 if let plugins = object["enabledPlugins"] as? [String: Any] {
@@ -247,12 +245,29 @@ public extension MetagentCore {
             }
         }
 
+        let knownProjectPaths = Set(projectScopes.map(\.projectPath))
+        for projectPath in additionalProjectPaths {
+            let canonicalPath = canonicalMCPProjectPath(projectPath)
+            guard !knownProjectPaths.contains(canonicalPath) else { continue }
+            projectScopes.append(claudeProjectMCPScope(
+                projectPath: projectPath,
+                project: [:],
+                configurationUnavailable: &configurationUnavailable
+            ))
+        }
+
         var stateCounts: [String: MCPStateCounts] = [:]
-        recordMCPState(names: globalNames, disabledNames: globalDisabledNames, into: &stateCounts)
+        recordMCPState(
+            names: globalNames,
+            disabledNames: globalDisabledNames,
+            projectPath: nil,
+            into: &stateCounts
+        )
         for scope in projectScopes {
             recordMCPState(
                 names: scope.directNames,
                 disabledNames: scope.disabledServerNames,
+                projectPath: scope.projectPath,
                 into: &stateCounts
             )
             recordManifestMCPState(
@@ -293,6 +308,9 @@ public extension MetagentCore {
                 recordMCPState(
                     names: pluginNames,
                     disabledNames: pluginNames.intersection(occurrence.disabledNames),
+                    projectPath: occurrence.projectPath.map {
+                        URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path
+                    },
                     into: &stateCounts
                 )
             } catch {
@@ -302,24 +320,20 @@ public extension MetagentCore {
 
         var servers = stateCounts.keys.sorted().map { name in
             let counts = stateCounts[name, default: MCPStateCounts()]
-            let state: MCPConnectionState = if counts.pending > 0 {
-                .pendingApproval
-            } else if counts.active > 0 {
-                .configured
-            } else {
-                .disabled
-            }
-            let detail: String = switch state {
-            case .configured: "Configured; live connection not checked"
-            case .disabled: "Intentionally disabled"
-            case .pendingApproval: "Project server needs approval"
-            case .needsSignIn, .unavailable: ""
-            }
+            let globalState = counts.global.state
+            let projectStates = counts.projects.compactMap { path, projectCounts in
+                projectCounts.state.map { MCPProjectState(path: path, state: $0) }
+            }.sorted { $0.path < $1.path }
+            let state = aggregateMCPState(
+                [globalState].compactMap { $0 } + projectStates.map(\.state)
+            )
             return MCPServerHealth(
                 client: .claude,
                 name: name,
                 state: state,
-                detail: detail
+                detail: mcpStateDetail(state, projectStates: projectStates),
+                globalState: globalState,
+                projectStates: projectStates
             )
         }
         if configurationUnavailable {
@@ -355,6 +369,7 @@ private func booleanDictionary(_ value: Any?) -> [String: Bool] {
 }
 
 private struct ClaudeProjectMCPScope {
+    var projectPath: String
     var directNames: Set<String>
     var manifestNames: Set<String>
     var approvedManifestNames: Set<String>
@@ -377,6 +392,69 @@ private struct ClaudePluginOccurrence {
     let disabledNames: Set<String>
 }
 
+private func canonicalMCPProjectPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+}
+
+private func claudeProjectMCPScope(
+    projectPath: String,
+    project: [String: Any],
+    configurationUnavailable: inout Bool
+) -> ClaudeProjectMCPScope {
+    let canonicalPath = canonicalMCPProjectPath(projectPath)
+    let projectURL = URL(fileURLWithPath: canonicalPath)
+    var scope = ClaudeProjectMCPScope(
+        projectPath: canonicalPath,
+        directNames: dictionaryKeys(project["mcpServers"]),
+        manifestNames: [],
+        approvedManifestNames: stringArray(project["enabledMcpjsonServers"]),
+        disabledServerNames: disabledServerNames(in: project),
+        rejectedManifestNames: rejectedManifestNames(in: project),
+        approvesAllManifestNames: project["enableAllProjectMcpServers"] as? Bool,
+        pluginSelections: pluginSelections(
+            booleanDictionary(project["enabledPlugins"]),
+            scope: "local",
+            projectPath: projectPath
+        )
+    )
+    for manifestURL in ancestorClaudeManifestURLs(from: projectURL) {
+        do {
+            let manifest = try loadJSONObject(at: manifestURL)
+            scope.manifestNames.formUnion(dictionaryKeys(manifest["mcpServers"]))
+        } catch {
+            configurationUnavailable = true
+        }
+    }
+    for settingsName in ["settings.json", "settings.local.json"] {
+        let settingsURL = projectURL
+            .appendingPathComponent(".claude")
+            .appendingPathComponent(settingsName)
+        guard FileManager.default.fileExists(atPath: settingsURL.path) else { continue }
+        do {
+            let settings = try loadJSONObject(at: settingsURL)
+            scope.disabledServerNames.formUnion(disabledServerNames(in: settings))
+            if settingsName == "settings.local.json" {
+                scope.approvedManifestNames.formUnion(stringArray(settings["enabledMcpjsonServers"]))
+                scope.rejectedManifestNames.formUnion(rejectedManifestNames(in: settings))
+                if settings["enableAllProjectMcpServers"] as? Bool == true {
+                    scope.approvesAllManifestNames = true
+                }
+            }
+            scope.pluginSelections.merge(
+                pluginSelections(
+                    booleanDictionary(settings["enabledPlugins"]),
+                    scope: settingsName == "settings.local.json" ? "local" : "project",
+                    projectPath: projectPath
+                ),
+                uniquingKeysWith: { _, newer in newer }
+            )
+        } catch {
+            configurationUnavailable = true
+        }
+    }
+    return scope
+}
+
 private func pluginSelections(
     _ states: [String: Bool],
     scope: String,
@@ -387,10 +465,22 @@ private func pluginSelections(
     }
 }
 
-private struct MCPStateCounts {
+private struct ScopedMCPStateCounts {
     var active = 0
     var disabled = 0
     var pending = 0
+
+    var state: MCPConnectionState? {
+        guard active + disabled + pending > 0 else { return nil }
+        if pending > 0 { return .pendingApproval }
+        if active > 0 { return .configured }
+        return .disabled
+    }
+}
+
+private struct MCPStateCounts {
+    var global = ScopedMCPStateCounts()
+    var projects: [String: ScopedMCPStateCounts] = [:]
 }
 
 private func recordManifestMCPState(
@@ -402,17 +492,19 @@ private func recordManifestMCPState(
 ) {
     for name in scope.manifestNames {
         var counts = stateCounts[name, default: MCPStateCounts()]
+        var projectCounts = counts.projects[scope.projectPath, default: ScopedMCPStateCounts()]
         if userRejectedNames.contains(where: { claudeMCPSelector($0, matches: name) })
             || scope.rejectedManifestNames.contains(where: { claudeMCPSelector($0, matches: name) }) {
-            counts.disabled += 1
+            projectCounts.disabled += 1
         } else if scope.approvesAllManifestNames == true
             || userApprovesAll == true
             || userApprovedNames.contains(where: { claudeMCPSelector($0, matches: name) })
             || scope.approvedManifestNames.contains(where: { claudeMCPSelector($0, matches: name) }) {
-            counts.active += 1
+            projectCounts.active += 1
         } else {
-            counts.pending += 1
+            projectCounts.pending += 1
         }
+        counts.projects[scope.projectPath] = projectCounts
         stateCounts[name] = counts
     }
 }
@@ -458,16 +550,55 @@ private func ancestorClaudeManifestURLs(from projectURL: URL) -> [URL] {
 private func recordMCPState(
     names: Set<String>,
     disabledNames: Set<String>,
+    projectPath: String?,
     into stateCounts: inout [String: MCPStateCounts]
 ) {
     for name in names {
         var counts = stateCounts[name, default: MCPStateCounts()]
+        var scopedCounts = projectPath.map {
+            counts.projects[$0, default: ScopedMCPStateCounts()]
+        } ?? counts.global
         if disabledNames.contains(name) {
-            counts.disabled += 1
+            scopedCounts.disabled += 1
         } else {
-            counts.active += 1
+            scopedCounts.active += 1
+        }
+        if let projectPath {
+            counts.projects[projectPath] = scopedCounts
+        } else {
+            counts.global = scopedCounts
         }
         stateCounts[name] = counts
+    }
+}
+
+private func aggregateMCPState(_ states: [MCPConnectionState]) -> MCPConnectionState {
+    if states.contains(.unavailable) { return .unavailable }
+    if states.contains(.needsSignIn) { return .needsSignIn }
+    if states.contains(.pendingApproval) { return .pendingApproval }
+    if states.contains(.configured) { return .configured }
+    return .disabled
+}
+
+private func mcpStateDetail(
+    _ state: MCPConnectionState,
+    projectStates: [MCPProjectState]
+) -> String {
+    switch state {
+    case .configured:
+        return "Configured; live connection not checked"
+    case .disabled:
+        return "Intentionally disabled"
+    case .pendingApproval:
+        let paths = projectStates.filter { $0.state == .pendingApproval }.map(\.path)
+        if paths.count == 1, let path = paths.first {
+            return "Needs approval in \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+        return "Needs approval in \(paths.count) projects"
+    case .needsSignIn:
+        return "Sign-in required"
+    case .unavailable:
+        return "Static status could not be read"
     }
 }
 

@@ -27,6 +27,8 @@ struct MetagentCLI {
             try runInventory(Array(args.dropFirst()))
         case "usage":
             try runUsage(Array(args.dropFirst()))
+        case "analyze":
+            try runAnalyze(Array(args.dropFirst()))
         case "mcp":
             try runMCP(Array(args.dropFirst()))
         case "help", "--help", "-h":
@@ -298,15 +300,58 @@ struct MetagentCLI {
         }
     }
 
+    private static func runAnalyze(_ args: [String]) throws {
+        var root = FileManager.default.currentDirectoryPath
+        var json = false
+        var index = 0
+        while index < args.count {
+            switch args[index] {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--json":
+                json = true
+            case "--help", "-h":
+                print("metagent analyze\n\nUsage:\n  metagent analyze [--root PATH] [--json]")
+                return
+            default:
+                throw CLIError.message("unknown analyze flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        let report = try MetagentCore.analyzeProject(root: root)
+        if json {
+            try printJSON(report)
+            return
+        }
+        let projectSkills = report.skills.projects.flatMap(\.skills).count
+        let pluginSkills = report.pluginSkills.projects.flatMap(\.skills).count
+        print("project: \(report.root)")
+        print("instructions: \(report.instructions.count)")
+        print("skills: \(projectSkills) project, \(pluginSkills) plugin")
+        print("usage: \(report.usage.summaries.count) observed project skills")
+        print("MCP: \(report.mcp.servers.count) relevant configured entries, \(report.mcp.attention.count) need attention")
+        print("Doctor: \(report.doctor.warningCount) warnings, \(report.doctor.failureCount) failures")
+    }
+
     private static func runMCP(_ args: [String]) throws {
-        guard args.first == "--stdio" else {
+        guard args == ["--stdio"] else {
             print("metagent mcp")
             print("")
             print("Usage:")
             print("  metagent mcp --stdio")
             return
         }
-        throw CLIError.message("Swift MCP server entry point is reserved but not implemented yet")
+        Task {
+            do {
+                try await MetagentMCPServer.run()
+                Foundation.exit(0)
+            } catch {
+                FileHandle.standardError.writeLine(error.localizedDescription)
+                Foundation.exit(1)
+            }
+        }
+        dispatchMain()
     }
 
     private static func parseScan(_ args: [String]) throws -> (options: SkillScanOptions, json: Bool) {
@@ -431,10 +476,7 @@ struct MetagentCLI {
     }
 
     private static func printJSON<T: Encodable>(_ value: T) throws {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(value)
+        let data = try MetagentCore.encodeJSON(value)
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.writeLine("")
     }
@@ -448,6 +490,7 @@ struct MetagentCLI {
           metagent skills <scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
+          metagent analyze [--root PATH] [--json]
           metagent mcp --stdio
         """)
     }
