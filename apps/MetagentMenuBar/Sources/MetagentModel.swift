@@ -41,6 +41,8 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isSkillEvaluating = false
     @Published private(set) var skillEvaluationStatusText: String?
     @Published private(set) var isPluginInventoryAvailable = false
+    @Published private(set) var mcpHealth = MCPHealthSnapshot()
+    @Published private(set) var isMCPRefreshing = false
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
@@ -138,6 +140,7 @@ final class MetagentModel: ObservableObject {
     func refreshStatus() {
         guard !isRunning else { return }
         isRunning = true
+        refreshMCPHealth()
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
         coreStatusText = "Swift core"
@@ -168,6 +171,33 @@ final class MetagentModel: ObservableObject {
                 pluginScan: pluginScan,
                 doctor: doctor
             )
+        }
+    }
+
+    func refreshMCPHealth() {
+        guard !isMCPRefreshing else { return }
+        isMCPRefreshing = true
+        Task {
+            let snapshot = await Task.detached(priority: .utility) {
+                MetagentCore.scanMCPHealth()
+            }.value
+            mcpHealth = snapshot
+            isMCPRefreshing = false
+        }
+    }
+
+    func openMCPClient(_ client: MCPClient) {
+        switch client {
+        case .codex:
+            if let applicationURL = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.openai.codex"
+            ) {
+                NSWorkspace.shared.openApplication(at: applicationURL, configuration: .init())
+            } else {
+                NSWorkspace.shared.open(homeURL().appendingPathComponent(".codex"))
+            }
+        case .claude:
+            NSWorkspace.shared.open(homeURL().appendingPathComponent(".claude"))
         }
     }
 

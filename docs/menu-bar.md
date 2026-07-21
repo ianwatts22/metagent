@@ -101,6 +101,10 @@ Local deployment model:
 - `--restart` asks the existing app to quit and opens the installed copy.
 - `scripts/install-cli.sh` installs the Swift helper to `~/.local/bin/metagent` for headless/MCP use.
 
+The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row shows configured counts and only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral.
+
+“Configured” and “no known issues” do not mean a server was connected or a tool was invoked. Metagent does not start MCP processes, contact providers, refresh OAuth, inspect secrets, or claim live verification during the Overview check. Per-server details preserve that distinction and direct sign-in or unavailable states back to the owning client.
+
 For iterative SwiftUI work, run:
 
 ```bash

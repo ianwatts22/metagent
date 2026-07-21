@@ -165,7 +165,7 @@ private struct MetagentPanel: View {
     private var panelContent: some View {
         switch selectedSection {
         case .overview:
-            OverviewSection(model: model)
+            OverviewSection(model: model, isCompact: showsOpenWindowButton)
         case .skills:
             if showsOpenWindowButton {
                 SkillsMenuSection(model: model) {
@@ -290,11 +290,14 @@ private enum PanelSection: String, CaseIterable, Identifiable {
 
 private struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
+    let isCompact: Bool
     @State private var showsDoctorFindings = false
     @State private var showsRepair = false
+    @State private var showsMCPDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            mcpConnections
             healthHero
             summary
 
@@ -318,6 +321,141 @@ private struct OverviewSection: View {
         .sheet(isPresented: $showsRepair) {
             RepairSection(model: model)
         }
+    }
+
+    private var mcpConnections: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                if model.mcpHealth.observedAt == .distantPast {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 28)
+                } else {
+                    Image(systemName: model.mcpHealth.attention.isEmpty
+                        ? "checkmark.circle.fill"
+                        : "exclamationmark.triangle.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(model.mcpHealth.attention.isEmpty ? Color.green : Color.orange)
+                        .frame(width: 28)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MCP Connections")
+                        .font(.headline)
+                    Text(mcpSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                HStack(spacing: 14) {
+                    MCPClientCount(
+                        client: .codex,
+                        count: model.mcpHealth.count(for: .codex)
+                    )
+                    MCPClientCount(
+                        client: .claude,
+                        count: model.mcpHealth.count(for: .claude)
+                    )
+                }
+
+                if !isCompact, model.mcpHealth.observedAt != .distantPast {
+                    Text("Checked \(model.mcpHealth.observedAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                Button {
+                    model.refreshMCPHealth()
+                } label: {
+                    if isCompact {
+                        Image(systemName: "arrow.clockwise")
+                    } else {
+                        Label("Check", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.glass)
+                .disabled(model.isMCPRefreshing)
+                .help("Refresh passive MCP configuration and sign-in evidence")
+
+                if !mcpDetailRows.isEmpty {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            showsMCPDetails.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(showsMCPDetails ? 90 : 0))
+                    }
+                    .buttonStyle(.plain)
+                    .help(showsMCPDetails ? "Hide MCP details" : "Show MCP details")
+                    .accessibilityLabel(showsMCPDetails ? "Hide MCP details" : "Show MCP details")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            if !visibleMCPRows.isEmpty {
+                Divider()
+                    .padding(.leading, 56)
+
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(visibleMCPRows) { server in
+                            MCPHealthRow(server: server) {
+                                model.openMCPClient(server.client)
+                            }
+
+                            if server.id != visibleMCPRows.last?.id {
+                                Divider()
+                                    .padding(.leading, 40)
+                            }
+                        }
+                    }
+                }
+                .frame(height: min(
+                    CGFloat(visibleMCPRows.count) * 54,
+                    isCompact ? 108 : 216
+                ))
+            }
+        }
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+        }
+        .onChange(of: mcpDetailRows.isEmpty) { _, isEmpty in
+            if isEmpty {
+                showsMCPDetails = false
+            }
+        }
+    }
+
+    private var visibleMCPRows: [MCPServerHealth] {
+        if showsMCPDetails {
+            return mcpDetailRows
+        }
+        return model.mcpHealth.attention
+    }
+
+    private var mcpDetailRows: [MCPServerHealth] {
+        model.mcpHealth.servers.filter {
+            $0.state.needsAttention || $0.state == .disabled
+        }
+    }
+
+    private var mcpSummaryText: String {
+        let configured = model.mcpHealth.configuredCount
+        let attention = model.mcpHealth.attention.count
+        guard model.mcpHealth.observedAt != .distantPast else {
+            return "Checking configuration…"
+        }
+        if attention == 0 {
+            return "\(configured) configured · no known issues"
+        }
+        return "\(configured) configured · \(attention) \(attention == 1 ? "needs" : "need") attention"
     }
 
     private var healthHero: some View {
@@ -403,7 +541,7 @@ private struct OverviewSection: View {
             Divider()
                 .padding(.vertical, 4)
             SummaryMetric(
-                title: "Health",
+                title: "Doctor",
                 value: model.problemCount == 0 ? "No issues" : model.problemText,
                 detail: model.problemCount == 0 ? "No action needed" : "Review findings",
                 symbol: "stethoscope"
@@ -415,9 +553,9 @@ private struct OverviewSection: View {
 
     private var healthTitle: String {
         if model.problemCount == 0 {
-            return "Everything looks healthy"
+            return "Doctor found no issues"
         }
-        return "\(model.problemCount) \(model.problemCount == 1 ? "item needs" : "items need") attention"
+        return "Doctor: \(model.problemCount) \(model.problemCount == 1 ? "item needs" : "items need") attention"
     }
 
     private var recentInvocationCount: Int {
@@ -426,7 +564,7 @@ private struct OverviewSection: View {
 
     private var healthMessage: String {
         if model.problemCount == 0 {
-            return "No action is needed. Metagent is ready when you are."
+            return "No inventory or repair action is needed."
         }
         if model.doctorReviewCount == 0 {
             return "\(model.doctorRepairableCount) can be fixed automatically."
@@ -440,6 +578,111 @@ private struct OverviewSection: View {
 
     private var healthTint: Color {
         model.problemCount == 0 ? .green : .orange
+    }
+}
+
+private struct MCPClientCount: View {
+    let client: MCPClient
+    let count: Int
+
+    private var bundleIdentifier: String {
+        switch client {
+        case .codex: "com.openai.codex"
+        case .claude: "com.anthropic.claudefordesktop"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            }
+            Text("\(client.displayName) \(count)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(client.displayName), \(count) configured")
+    }
+}
+
+private struct MCPHealthRow: View {
+    let server: MCPServerHealth
+    let openClient: () -> Void
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: stateSymbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(stateTint)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(server.name) · \(server.client.displayName)")
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(server.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            if server.state.needsAttention {
+                Button(attentionActionLabel, action: openClient)
+                    .buttonStyle(.glass)
+            } else {
+                Text(stateLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var attentionActionLabel: String {
+        switch server.client {
+        case .codex:
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") == nil
+                ? "Show Codex config…"
+                : "Open Codex…"
+        case .claude: "Show Claude config…"
+        }
+    }
+
+    private var stateLabel: String {
+        switch server.state {
+        case .configured: "Configured"
+        case .disabled: "Disabled"
+        case .pendingApproval: "Pending approval"
+        case .needsSignIn: "Needs sign-in"
+        case .unavailable: "Unavailable"
+        }
+    }
+
+    private var stateSymbol: String {
+        switch server.state {
+        case .configured: "checkmark.circle"
+        case .disabled: "pause.circle"
+        case .pendingApproval: "questionmark.circle"
+        case .needsSignIn: "person.crop.circle.badge.exclamationmark"
+        case .unavailable: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var stateTint: Color {
+        switch server.state {
+        case .configured: .green
+        case .disabled: .secondary
+        case .pendingApproval: .orange
+        case .needsSignIn: .orange
+        case .unavailable: .red
+        }
     }
 }
 
