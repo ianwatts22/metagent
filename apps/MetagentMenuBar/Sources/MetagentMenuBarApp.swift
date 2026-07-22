@@ -1355,6 +1355,14 @@ private struct SkillTableRow: Identifiable, Sendable {
     var invocations7d: Int { usage.invocations7d }
     var invocations30d: Int { usage.invocations30d }
     var distinctThreads: Int { usage.distinctThreads }
+    var readsPerThread: Double {
+        guard distinctThreads > 0 else { return 0 }
+        return Double(totalInvocations) / Double(distinctThreads)
+    }
+    var readsPerThreadText: String {
+        guard distinctThreads > 0 else { return "—" }
+        return readsPerThread.formatted(.number.precision(.fractionLength(1)))
+    }
     var repeatInvocations: Int { usage.repeatInvocations }
     var lastUsedDate: Date? { usage.lastUsedDate }
     var lastUsedSortValue: TimeInterval { usage.lastUsedSortValue }
@@ -1469,7 +1477,7 @@ private struct InventorySection: View {
     private var hiddenSourceRaw = "__unmigrated__"
     @SceneStorage("metagent.skills.inventory.columns.v2")
     private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
-    @SceneStorage("metagent.skills.summary.columns.v1")
+    @SceneStorage("metagent.skills.summary.columns.v2")
     private var summaryColumnCustomization = TableColumnCustomization<SkillTableRow>()
     @SceneStorage("metagent.skills.usage.columns.v3")
     private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
@@ -2014,12 +2022,16 @@ private struct MCPInventoryRow: Identifiable {
         }
     }
     var scopeHelp: String {
-        guard !entry.projectPaths.isEmpty else {
-            return entry.globalClients.isEmpty
-                ? "Discovered in client configuration."
-                : "Available from global client configuration."
+        if !entry.globalClients.isEmpty, !entry.projectPaths.isEmpty {
+            return "Configured globally and also for:\n\(entry.projectPaths.joined(separator: "\n"))"
         }
-        return entry.projectPaths.joined(separator: "\n")
+        if !entry.globalClients.isEmpty {
+            return "Configured globally in at least one client. Check Status for availability."
+        }
+        if !entry.projectPaths.isEmpty {
+            return "Configured only for:\n\(entry.projectPaths.joined(separator: "\n"))"
+        }
+        return "Discovered in client configuration."
     }
     var displaysGlobalLocation: Bool { !entry.globalClients.isEmpty }
     var projectLocationText: String {
@@ -2223,6 +2235,11 @@ private struct MCPLocationCell: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
+            if row.displaysGlobalLocation, !row.projectLocationText.isEmpty {
+                Text("+")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
             if !row.projectLocationText.isEmpty {
                 Text(row.projectLocationText)
                     .font(.callout)
@@ -2396,7 +2413,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
         let breakdown = metagentScore.components.filter { $0.id != "adoption" }.map {
             "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
         }.joined(separator: "\n")
-        return "Stable structural score; usage is excluded. Integrity and portfolio clarity are normalized from 60 points to 100.\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
+        return "Quality is stable; usage is excluded. Integrity and portfolio clarity are normalized from 60 points to 100.\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
     }
     var portfolioScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
     var portfolioScoreTint: Color { scoreTint(metagentScore.grade) }
@@ -2404,7 +2421,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
         let breakdown = metagentScore.components.map {
             "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
         }.joined(separator: "\n")
-        return "Usage-adjusted portfolio score: 60 points structural quality + 40 points observed adoption.\n\(breakdown)"
+        return "Utility combines 60 points of structural quality with 40 points of observed adoption.\n\(breakdown)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }
@@ -2625,13 +2642,13 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.inventory, .review],
+        defaultViews: [.summary, .inventory, .review],
         value: \.sourceText,
         help: \.sourceHelp
     ),
     SkillColumnSpec(
         id: "metagent-score",
-        title: "Metagent Score",
+        title: "Quality",
         comparator: KeyPathComparator(\SkillTableRow.metagentScoreSortValue),
         minWidth: 104,
         idealWidth: 116,
@@ -2646,7 +2663,7 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "plugin-eval",
-        title: "Plugin Eval Score",
+        title: "Plugin Eval",
         comparator: KeyPathComparator(\SkillTableRow.pluginEvalSortValue),
         minWidth: 112,
         idealWidth: 126,
@@ -2661,7 +2678,7 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "portfolio-score",
-        title: "Portfolio",
+        title: "Utility",
         comparator: KeyPathComparator(\SkillTableRow.portfolioScoreSortValue),
         minWidth: 82,
         idealWidth: 94,
@@ -2730,23 +2747,23 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "30d",
-        title: "30d",
+        title: "30d Usage",
         comparator: KeyPathComparator(\SkillTableRow.invocations30d),
-        minWidth: 54,
-        idealWidth: 64,
+        minWidth: 82,
+        idealWidth: 96,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.usage],
+        defaultViews: [.summary, .usage],
         value: { $0.invocations30d.formatted() },
         help: { "\($0.invocations30d.formatted()) reads in the last 30 days" }
     ),
     SkillColumnSpec(
         id: "all",
-        title: "All",
+        title: "All-time",
         comparator: KeyPathComparator(\SkillTableRow.totalInvocations),
-        minWidth: 54,
-        idealWidth: 64,
+        minWidth: 64,
+        idealWidth: 76,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
@@ -2756,7 +2773,7 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "tasks",
-        title: "Tasks",
+        title: "Threads",
         comparator: KeyPathComparator(\SkillTableRow.distinctThreads),
         minWidth: 58,
         idealWidth: 68,
@@ -2765,7 +2782,23 @@ private struct SkillColumnSpec: Identifiable {
         isPrimary: false,
         defaultViews: [],
         value: { $0.distinctThreads.formatted() },
-        help: { "\($0.distinctThreads.formatted()) distinct Codex tasks" }
+        help: { "\($0.distinctThreads.formatted()) distinct Codex threads with an observed skill read" }
+    ),
+    SkillColumnSpec(
+        id: "reads-per-thread",
+        title: "Reads / thread",
+        comparator: KeyPathComparator(\SkillTableRow.readsPerThread),
+        minWidth: 92,
+        idealWidth: 108,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [],
+        value: \.readsPerThreadText,
+        help: {
+            guard $0.distinctThreads > 0 else { return "No observed threads." }
+            return "\($0.totalInvocations.formatted()) all-time reads across \($0.distinctThreads.formatted()) threads. A lower value suggests broader one-off use; a higher value suggests repeated reliance within fewer threads."
+        }
     ),
     SkillColumnSpec(
         id: "repeats",

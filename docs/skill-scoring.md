@@ -1,16 +1,19 @@
 # Skill scoring
 
-Metagent keeps three evaluations separate because they answer different questions:
+Metagent keeps four signals separate because they answer different questions:
 
-- **Metagent Score v2** measures operational trust, observed adoption, and identity clarity in the current portfolio.
+- **Quality** measures stable operational integrity and identity clarity without usage.
+- **Utility** combines Quality's inputs with observed adoption from retained Codex history.
 - **Plugin Eval** is the score and grade emitted by the installed `plugin-eval` CLI. Metagent does not reproduce or reinterpret its formula.
 - **Codex review** is an optional model judgment against a fixed rubric. It only runs after confirmation. Metagent copies up to 1 MiB of the selected skill into an isolated temporary directory, embeds its text in the review request, disables Codex tools and user configuration, confines local file access with the macOS sandbox, and sends the copied skill contents to OpenAI. It uses ChatGPT.app's native Codex binary by default; `METAGENT_CODEX` may point to another native executable.
 
 None of these scores authorizes automatic removal or modification.
 
-## Metagent Score v2
+## Quality
 
-The score is 0–100.
+Quality is a stable 0–100 score. It adds the 40-point operational-integrity and
+20-point portfolio-clarity components below, then normalizes the 60-point total
+to 100. Usage changes do not change Quality.
 
 ### Operational integrity — 40 points
 
@@ -20,26 +23,33 @@ The score is 0–100.
 - mutability known: 5
 - origin classified: 5
 
-### Observed adoption — 40 points
-
-- recency: 16 within 7 days, 13 within 30 days, 9 within 90 days, 5 for older observed use
-- breadth: up to 12 using `log2(distinct tasks + 1)`, saturating around eight tasks
-- repeats: 2 points per repeat invocation, up to 8
-- volume: up to 4 using `log2(total invocations + 1)`
-
-When retained-history coverage is incomplete and no usage is linked, adoption receives a neutral provisional 20/40 and confidence is low. Once coverage is complete, no observed use receives 0/40. This prevents missing telemetry from masquerading as evidence of non-use.
-
 ### Portfolio clarity — 20 points
 
 - one canonical identity, including projections that resolve to it: 20
 - unresolved canonical identity: 8
 - multiple independent same-name sources: 6
 
-Metagent and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
+## Utility
+
+Utility is the full Metagent Score v2 calculation: the 60 structural points used
+by Quality plus 40 points of observed adoption. It is intended for retention and
+prioritization decisions, where both intrinsic quality and demonstrated use
+matter.
+
+### Observed adoption — 40 points
+
+- recency: 16 within 7 days, 13 within 30 days, 9 within 90 days, 5 for older observed use
+- breadth: up to 12 using `log2(distinct threads + 1)`, saturating around eight threads
+- repeats: 2 points per repeat invocation, up to 8
+- volume: up to 4 using `log2(total invocations + 1)`
+
+When retained-history coverage is incomplete and no usage is linked, adoption receives a neutral provisional 20/40 and confidence is low. Once coverage is complete, no observed use receives 0/40. This prevents missing telemetry from masquerading as evidence of non-use.
+
+Quality, Utility, and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
 
 Plugin Eval remains evaluator-owned and may return a different letter for the same numeric score. Its current fixed bands are A ≥93, B ≥85, C ≥70, D ≥55, otherwise F; Metagent preserves that returned grade rather than silently reinterpreting it.
 
-Confidence is currently low or medium. V2 deliberately cannot claim high confidence because semantic overlap and task outcomes are not yet measured.
+Utility confidence is currently low or medium. V2 deliberately cannot claim high confidence because semantic overlap and task outcomes are not yet measured.
 
 ## Plugin Eval provider
 

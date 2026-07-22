@@ -636,7 +636,7 @@ private func adoptionComponent(
         label: "Observed adoption",
         score: score,
         maximum: 40,
-        explanation: "\(usage.totalInvocations) invocations across \(usage.distinctThreads) Codex tasks; \(usage.repeatInvocations) repeats."
+        explanation: "\(usage.totalInvocations) invocations across \(usage.distinctThreads) Codex threads; \(usage.repeatInvocations) repeats."
     )
 }
 
