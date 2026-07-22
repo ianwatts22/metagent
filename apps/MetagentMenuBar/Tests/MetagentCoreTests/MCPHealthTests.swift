@@ -626,6 +626,35 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertEqual(shared.state(for: .claude), .pendingApproval)
     }
 
+    func testSnapshotScopeKeepsGlobalsAndOnlyTheSelectedProject() {
+        let snapshot = MCPHealthSnapshot(servers: [
+            MCPServerHealth(
+                client: .codex,
+                name: "global",
+                state: .configured,
+                detail: "",
+                globalState: .configured
+            ),
+            MCPServerHealth(
+                client: .claude,
+                name: "project",
+                state: .pendingApproval,
+                detail: "",
+                projectStates: [
+                    MCPProjectState(path: "/projects/one", state: .configured),
+                    MCPProjectState(path: "/projects/two", state: .pendingApproval)
+                ]
+            )
+        ])
+
+        let scoped = snapshot.scoped(to: "/projects/one")
+
+        XCTAssertEqual(scoped.servers.map(\.name), ["global", "project"])
+        XCTAssertEqual(scoped.servers.map(\.state), [.configured, .configured])
+        XCTAssertEqual(scoped.servers[1].projectStates.map(\.path), ["/projects/one"])
+        XCTAssertEqual(scoped.inventory.first { $0.name == "project" }?.projectPaths, ["/projects/one"])
+    }
+
     func testClaudeInventoryIgnoresDeletedProjectHistory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")

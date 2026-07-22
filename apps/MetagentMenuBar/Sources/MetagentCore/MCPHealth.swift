@@ -64,7 +64,7 @@ public struct MCPServerHealth: Codable, Equatable, Identifiable, Sendable {
         self.projectStates = projectStates
     }
 
-    func scoped(to projectPath: String) -> MCPServerHealth? {
+    public func scoped(to projectPath: String) -> MCPServerHealth? {
         let matchingProjectStates = projectStates.filter { $0.path == projectPath }
         guard globalState != nil || !matchingProjectStates.isEmpty else { return nil }
         let applicableStates = [globalState].compactMap { $0 } + matchingProjectStates.map(\.state)
@@ -105,6 +105,14 @@ public struct MCPHealthSnapshot: Codable, Equatable, Sendable {
 
     public func disabledCount(for client: MCPClient) -> Int {
         servers.filter { $0.client == client && $0.state == .disabled }.count
+    }
+
+    public func scoped(to projectPath: String?) -> MCPHealthSnapshot {
+        guard let projectPath else { return self }
+        return MCPHealthSnapshot(
+            servers: servers.compactMap { $0.scoped(to: projectPath) },
+            observedAt: observedAt
+        )
     }
 
     public var inventory: [MCPInventoryEntry] {

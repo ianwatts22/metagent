@@ -7,13 +7,15 @@ import SwiftUI
 struct MetagentMenuBarApp: App {
     @StateObject private var model = MetagentModel()
     @State private var selectedSection = PanelSection.overview
+    @State private var selectedProjectRoot: String?
 
     var body: some Scene {
         WindowGroup("Metagent", id: "main") {
             MetagentPanel(
                 model: model,
                 showsOpenWindowButton: false,
-                selectedSection: $selectedSection
+                selectedSection: $selectedSection,
+                selectedProjectRoot: $selectedProjectRoot
             )
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
         }
@@ -24,7 +26,8 @@ struct MetagentMenuBarApp: App {
             MetagentPanel(
                 model: model,
                 showsOpenWindowButton: true,
-                selectedSection: $selectedSection
+                selectedSection: $selectedSection,
+                selectedProjectRoot: $selectedProjectRoot
             )
                 .frame(width: 560, height: 640)
         } label: {
@@ -83,6 +86,7 @@ private struct MetagentPanel: View {
     let showsOpenWindowButton: Bool
     @Environment(\.openWindow) private var openWindow
     @Binding var selectedSection: PanelSection
+    @Binding var selectedProjectRoot: String?
 
     var body: some View {
         ZStack {
@@ -101,6 +105,11 @@ private struct MetagentPanel: View {
             .padding(showsOpenWindowButton ? 16 : 22)
         }
         .buttonBorderShape(.capsule)
+        .onChange(of: projectFilterProjects(model.projects).map(\.root)) { _, roots in
+            if let selectedProjectRoot, !roots.contains(selectedProjectRoot) {
+                self.selectedProjectRoot = nil
+            }
+        }
     }
 
     private var header: some View {
@@ -114,6 +123,19 @@ private struct MetagentPanel: View {
             }
 
             Spacer()
+
+            Picker("Directory", selection: $selectedProjectRoot) {
+                Text("All directories").tag(String?.none)
+                ForEach(projectFilterProjects(model.projects)) { project in
+                    Text(projectFilterLabel(project, projects: projectFilterProjects(model.projects)))
+                        .help(project.root)
+                        .tag(Optional(project.root))
+                }
+            }
+            .labelsHidden()
+            .frame(minWidth: showsOpenWindowButton ? 150 : 180, idealWidth: showsOpenWindowButton ? 180 : 230)
+            .help(selectedProjectRoot ?? "Show all directories")
+            .accessibilityLabel("Directory")
 
             Menu {
                 Button("Open Config", systemImage: "gearshape") {
@@ -152,24 +174,24 @@ private struct MetagentPanel: View {
     private var panelContent: some View {
         switch selectedSection {
         case .overview:
-            OverviewSection(model: model, isCompact: showsOpenWindowButton)
+            OverviewSection(model: model, isCompact: showsOpenWindowButton, selectedProjectRoot: selectedProjectRoot)
         case .skills:
             if showsOpenWindowButton {
-                SkillsMenuSection(model: model) {
+                SkillsMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
                     openWindow(id: "main")
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
             } else {
-                InventorySection(model: model)
+                InventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
         case .mcps:
             if showsOpenWindowButton {
-                MCPMenuSection(model: model) {
+                MCPMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
                     openWindow(id: "main")
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
             } else {
-                MCPInventorySection(model: model)
+                MCPInventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
         }
     }
@@ -276,6 +298,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
 private struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
     let isCompact: Bool
+    let selectedProjectRoot: String?
     @State private var showsDoctorFindings = false
     @State private var showsRepair = false
     @State private var showsMCPDetails = false
@@ -284,7 +307,7 @@ private struct OverviewSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             mcpConnections
-            if model.doctorActionCount > 0 {
+            if doctorActionCount > 0 {
                 cleanupStatus
             }
             summary
@@ -292,7 +315,7 @@ private struct OverviewSection: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $showsDoctorFindings) {
-            DoctorFindingsView(model: model) { projectRoot in
+            DoctorFindingsView(model: model, findings: doctorFindings) { projectRoot in
                 repairProjectRoot = projectRoot
                 model.previewRepair(projectRoot: projectRoot)
                 showsRepair = true
@@ -323,16 +346,16 @@ private struct OverviewSection: View {
     private var mcpConnections: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                if model.mcpHealth.observedAt == .distantPast {
+                if scopedMCPHealth.observedAt == .distantPast {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 28)
                 } else {
-                    Image(systemName: model.mcpHealth.attention.isEmpty
+                    Image(systemName: scopedMCPHealth.attention.isEmpty
                         ? "checkmark.circle.fill"
                         : "exclamationmark.triangle.fill")
                         .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(model.mcpHealth.attention.isEmpty ? Color.green : Color.orange)
+                        .foregroundStyle(scopedMCPHealth.attention.isEmpty ? Color.green : Color.orange)
                         .frame(width: 28)
                 }
 
@@ -349,11 +372,11 @@ private struct OverviewSection: View {
                 HStack(spacing: 14) {
                     MCPClientCount(
                         client: .codex,
-                        count: model.mcpHealth.count(for: .codex)
+                        count: scopedMCPHealth.count(for: .codex)
                     )
                     MCPClientCount(
                         client: .claude,
-                        count: model.mcpHealth.count(for: .claude)
+                        count: scopedMCPHealth.count(for: .claude)
                     )
                 }
 
@@ -430,19 +453,19 @@ private struct OverviewSection: View {
         if showsMCPDetails {
             return mcpDetailRows
         }
-        return groupedMCPRows(model.mcpHealth.attention)
+        return groupedMCPRows(scopedMCPHealth.attention)
     }
 
     private var mcpDetailRows: [MCPHealthDisplayRow] {
-        groupedMCPRows(model.mcpHealth.servers.filter {
+        groupedMCPRows(scopedMCPHealth.servers.filter {
             $0.state.needsAttention || $0.state == .disabled
         })
     }
 
     private var mcpSummaryText: String {
-        let configured = model.mcpHealth.configuredCount
-        let attention = groupedMCPRows(model.mcpHealth.attention).count
-        guard model.mcpHealth.observedAt != .distantPast else {
+        let configured = scopedMCPHealth.configuredCount
+        let attention = groupedMCPRows(scopedMCPHealth.attention).count
+        guard scopedMCPHealth.observedAt != .distantPast else {
             return "Checking configuration…"
         }
         if attention == 0 {
@@ -529,10 +552,10 @@ private struct OverviewSection: View {
             Spacer(minLength: 16)
 
             HStack(spacing: 10) {
-                if model.doctorActionCount > 0 {
+                if doctorActionCount > 0 {
                     if allDoctorFindingsRepairable {
                         Button {
-                            repairProjectRoot = model.doctorFindings.first?.projectRoot
+                            repairProjectRoot = doctorFindings.first?.projectRoot
                             model.previewRepair(projectRoot: repairProjectRoot)
                             showsRepair = true
                         } label: {
@@ -575,8 +598,8 @@ private struct OverviewSection: View {
         HStack(spacing: 0) {
             SummaryMetric(
                 title: "Skills",
-                value: "\(model.skillCount)",
-                detail: "across \(model.repoCount) projects",
+                value: "\(scopedSkillCount)",
+                detail: selectedProjectRoot == nil ? "across \(model.repoCount) projects" : "in this directory",
                 symbol: "sparkles"
             )
             Divider()
@@ -593,12 +616,20 @@ private struct OverviewSection: View {
     }
 
     private var recentInvocationCount: Int {
-        model.usageSnapshot.summaries.reduce(0) { $0 + $1.invocations30d }
+        model.usageSnapshot.summaries
+            .filter { summary in
+                guard let selectedProjectRoot else { return true }
+                guard summary.scope == "project" else { return true }
+                guard let path = summary.canonicalPath else { return false }
+                return path == selectedProjectRoot
+                    || path.hasPrefix(selectedProjectRoot + "/")
+            }
+            .reduce(0) { $0 + $1.invocations30d }
     }
 
     private var healthMessage: String {
-        if model.doctorActionCount == 1,
-           let issue = model.doctorFindings.first
+        if doctorActionCount == 1,
+           let issue = doctorFindings.first
         {
             return issue.summary ?? issue.message
         }
@@ -606,7 +637,29 @@ private struct OverviewSection: View {
     }
 
     private var allDoctorFindingsRepairable: Bool {
-        model.doctorFindings.count == 1 && model.doctorFindings[0].repairAction != nil
+        doctorFindings.count == 1 && doctorFindings[0].repairAction != nil
+    }
+
+    private var scopedMCPHealth: MCPHealthSnapshot {
+        model.mcpHealth.scoped(to: selectedProjectRoot)
+    }
+
+    private var doctorFindings: [DoctorIssue] {
+        guard let selectedProjectRoot else { return model.doctorFindings }
+        return model.doctorFindings.filter { $0.projectRoot == selectedProjectRoot }
+    }
+
+    private var doctorActionCount: Int {
+        groupedDoctorActionCount(doctorFindings)
+    }
+
+    private var scopedSkillCount: Int {
+        guard let selectedProjectRoot else { return model.skillCount }
+        return model.projects.reduce(0) { count, project in
+            count + project.skills.filter { skill in
+                skill.scope != "project" || project.root == selectedProjectRoot
+            }.count
+        }
     }
 
 }
@@ -767,11 +820,12 @@ private struct SummaryMetric: View {
 
 private struct DoctorFindingsView: View {
     @ObservedObject var model: MetagentModel
+    let findings: [DoctorIssue]
     let onPreviewRepair: (String?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     private var groups: [DoctorProjectGroup] {
-        DoctorProjectGroup.groups(from: model.doctorFindings)
+        DoctorProjectGroup.groups(from: findings)
     }
 
     var body: some View {
@@ -857,10 +911,11 @@ private struct DoctorFindingsView: View {
     }
 
     private var summaryText: String {
-        if model.doctorActionCount == 0 {
+        let actionCount = groupedDoctorActionCount(findings)
+        if actionCount == 0 {
             return "No action needed."
         }
-        return "\(model.doctorActionCount) \(model.doctorActionCount == 1 ? "cleanup" : "cleanups"), grouped by project."
+        return "\(actionCount) \(actionCount == 1 ? "cleanup" : "cleanups"), grouped by project."
     }
 }
 
@@ -1002,8 +1057,31 @@ private enum UsageFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private struct UsageSkillRow: Identifiable {
-    enum Status { case active, dormant, neverObserved, insufficient }
+private enum SkillScopeFilter: String, CaseIterable, Identifiable {
+    case all
+    case global
+    case project
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "All locations"
+        case .global: "Global"
+        case .project: "Project"
+        }
+    }
+
+    func includes(_ row: SkillTableRow) -> Bool {
+        switch self {
+        case .all: true
+        case .global: row.scope != "project"
+        case .project: row.scope == "project"
+        }
+    }
+}
+
+private struct UsageSkillRow: Identifiable, Sendable {
+    enum Status: Sendable { case active, dormant, neverObserved, insufficient }
 
     let id: String
     let skillName: String
@@ -1025,16 +1103,6 @@ private struct UsageSkillRow: Identifiable {
         case "plugin": "Plugin"
         case "system": "System"
         default: "Unknown"
-        }
-    }
-
-    var scopeSymbol: String {
-        switch scope {
-        case "project": "folder"
-        case "global": "globe"
-        case "plugin": "puzzlepiece.extension"
-        case "system": "gearshape"
-        default: "questionmark.circle"
         }
     }
 
@@ -1120,9 +1188,10 @@ private struct InventoryRemovalConfirmation: Identifiable {
 }
 
 private enum SkillTableView: String, CaseIterable, Identifiable {
+    case summary
+    case review
     case inventory
     case usage
-    case review
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
@@ -1170,19 +1239,6 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    var symbol: String {
-        switch self {
-        case .plugin: "powerplug.fill"
-        case .skillsCLI: "globe"
-        case .dotagentsLocal, .dotagentsManaged: "arrow.triangle.branch"
-        case .git: "shippingbox"
-        case .codexSystem, .codexInstalled: "sparkles"
-        case .claude: "link"
-        case .local: "person.crop.circle"
-        case .notInstalled: "clock.arrow.circlepath"
-        }
-    }
-
     static func resolve(
         inventory: InventorySkillRow?,
         usage: UsageSkillRow,
@@ -1205,54 +1261,7 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     }
 }
 
-private enum SkillLocationKind: String, Identifiable {
-    case agents
-    case codex
-    case claude
-    case historical
-    case other
-
-    var id: String { rawValue }
-
-    init(location: String) {
-        switch location {
-        case "agents": self = .agents
-        case "codex", "plugin": self = .codex
-        case "claude": self = .claude
-        default: self = .other
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .agents: ".agents"
-        case .codex: "Codex"
-        case .claude: "Claude"
-        case .historical: "Historical"
-        case .other: "Other"
-        }
-    }
-
-    var bundleIdentifier: String? {
-        switch self {
-        case .codex: "com.openai.codex"
-        case .claude: "com.anthropic.claudefordesktop"
-        default: nil
-        }
-    }
-
-    var fallbackSymbol: String {
-        switch self {
-        case .agents: "globe"
-        case .codex: "sparkles"
-        case .claude: "link"
-        case .historical: "clock.arrow.circlepath"
-        case .other: "folder"
-        }
-    }
-}
-
-private struct SkillTableRow: Identifiable {
+private struct SkillTableRow: Identifiable, Sendable {
     let inventory: InventorySkillRow?
     let usage: UsageSkillRow
     let historicalProjectRoot: String?
@@ -1278,10 +1287,6 @@ private struct SkillTableRow: Identifiable {
         }
         return "Previously observed; no installed bundle matched this path."
     }
-    var locationKinds: [SkillLocationKind] {
-        guard let inventory else { return usage.scope == "plugin" ? [.codex] : [.historical] }
-        return inventory.variants.map { SkillLocationKind(location: $0.location) }.uniqued()
-    }
     var sourceCategory: SkillSourceCategory {
         SkillSourceCategory.resolve(
             inventory: inventory,
@@ -1301,14 +1306,28 @@ private struct SkillTableRow: Identifiable {
         }
         return "\(sourceCategory.explanation)\n\(detail)"
     }
-    var sourceSymbol: String { sourceCategory.symbol }
     var scope: String { usage.scope }
     var scopeLabel: String { usage.scopeLabel }
-    var scopeSymbol: String { usage.scopeSymbol }
-    var metagentScoreSortValue: Int { inventory?.metagentScore.score ?? -1 }
+    var displayLocationText: String {
+        scope == "project" ? projectName : ""
+    }
+    var displayLocationSortValue: String {
+        scope == "project" ? projectName : "Global"
+    }
+    var displayLocationHelp: String {
+        scope == "project"
+            ? (projectRoot ?? projectName)
+            : "Available globally · \(scopeLabel)"
+    }
+    var displaysGlobalLocation: Bool { scope != "project" }
+    var metagentScoreSortValue: Int { inventory?.metagentStaticScore ?? -1 }
     var metagentScoreText: String { inventory?.metagentScoreText ?? "—" }
     var metagentScoreTint: Color? { inventory?.metagentScoreTint }
     var metagentScoreHelp: String { inventory?.metagentScoreHelp ?? "Not available for an uninstalled skill." }
+    var portfolioScoreSortValue: Int { inventory?.metagentScore.score ?? -1 }
+    var portfolioScoreText: String { inventory?.portfolioScoreText ?? "—" }
+    var portfolioScoreTint: Color? { inventory?.portfolioScoreTint }
+    var portfolioScoreHelp: String { inventory?.portfolioScoreHelp ?? "Not available for an uninstalled skill." }
     var pluginEvalSortValue: Int { inventory?.pluginEvalSortValue ?? -1 }
     var pluginEvalText: String { inventory?.pluginEvalText ?? "—" }
     var pluginEvalTint: Color? { inventory?.pluginEvalTint }
@@ -1422,25 +1441,29 @@ private struct SkillTableRow: Identifiable {
 
 private struct InventorySection: View {
     @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
     @State private var selection = Set<SkillTableRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
-    @State private var selectedProjectRoot: String?
+    @State private var cachedRows: [SkillTableRow] = []
     @State private var query = ""
     @State private var usageFilter = UsageFilter.all
+    @State private var scopeFilter = SkillScopeFilter.all
     @State private var pendingRemoval: InventoryRemovalConfirmation?
     @State private var pendingCodexReview: InventorySkillRow?
-    @AppStorage("metagent.skills.view.v1") private var selectedViewRaw = SkillTableView.inventory.rawValue
+    @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
     private var hiddenSourceRaw = "__unmigrated__"
-    @SceneStorage("metagent.skills.inventory.columns.v1")
+    @SceneStorage("metagent.skills.inventory.columns.v2")
     private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
-    @SceneStorage("metagent.skills.usage.columns.v2")
+    @SceneStorage("metagent.skills.summary.columns.v1")
+    private var summaryColumnCustomization = TableColumnCustomization<SkillTableRow>()
+    @SceneStorage("metagent.skills.usage.columns.v3")
     private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
-    @SceneStorage("metagent.skills.review.columns.v1")
+    @SceneStorage("metagent.skills.review.columns.v2")
     private var reviewColumnCustomization = TableColumnCustomization<SkillTableRow>()
 
     private var selectedView: SkillTableView {
-        SkillTableView(rawValue: selectedViewRaw) ?? .inventory
+        SkillTableView(rawValue: selectedViewRaw) ?? .summary
     }
 
     private var selectedViewBinding: Binding<SkillTableView> {
@@ -1459,50 +1482,32 @@ private struct InventorySection: View {
 
     private var columnCustomization: Binding<TableColumnCustomization<SkillTableRow>> {
         switch selectedView {
+        case .summary:
+            Binding(get: { summaryColumnCustomization }, set: { summaryColumnCustomization = $0 })
+        case .review:
+            Binding(get: { reviewColumnCustomization }, set: { reviewColumnCustomization = $0 })
         case .inventory:
             Binding(get: { inventoryColumnCustomization }, set: { inventoryColumnCustomization = $0 })
         case .usage:
             Binding(get: { usageColumnCustomization }, set: { usageColumnCustomization = $0 })
-        case .review:
-            Binding(get: { reviewColumnCustomization }, set: { reviewColumnCustomization = $0 })
         }
-    }
-
-    private var inventoryRows: [InventorySkillRow] {
-        InventorySkillRow.rows(
-            from: model.projects,
-            usage: model.usageSnapshot,
-            evaluations: model.skillEvaluations
-        )
     }
 
     private var allRows: [SkillTableRow] {
-        SkillTableRow.rows(
-            inventoryRows: inventoryRows,
-            usageRows: UsageSkillRow.rows(
-                projects: model.projects,
-                summaries: model.usageSnapshot.summaries,
-                isBackfillComplete: model.usageSnapshot.isBackfillComplete
-            ),
-            projectRoots: model.projects.map(\.root),
-            pluginInventoryAvailable: model.isPluginInventoryAvailable,
-            isBackfillComplete: model.usageSnapshot.isBackfillComplete
-        )
-    }
-
-    private var projectFilterProjects: [ProjectStatus] {
-        model.projects.filter { project in
-            let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
-            return !isPluginProject
-        }
+        cachedRows
     }
 
     private var rows: [SkillTableRow] {
         let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return allRows
         .filter { selectedView == .usage || $0.isInstalled }
-        .filter { selectedProjectRoot == nil || $0.projectRoot == selectedProjectRoot }
+        .filter {
+            selectedProjectRoot == nil
+                || $0.scope != "project"
+                || $0.projectRoot == selectedProjectRoot
+        }
         .filter { !hiddenSources.contains($0.sourceCategory) }
+        .filter { scopeFilter.includes($0) }
         .filter { usageFilter.includes(status: $0.usageStatus, totalInvocations: $0.totalInvocations) }
         .filter { searchQuery.isEmpty || $0.matches(searchQuery) }
     }
@@ -1532,8 +1537,8 @@ private struct InventorySection: View {
         let effectiveHiddenSources = selectedView == .usage
             ? hiddenSources
             : hiddenSources.subtracting([.notInstalled])
-        return selectedProjectRoot != nil
-            || usageFilter != .all
+        return usageFilter != .all
+            || scopeFilter != .all
             || !effectiveHiddenSources.isEmpty
             || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -1594,7 +1599,7 @@ private struct InventorySection: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 250)
+                .frame(width: 340)
 
                 Menu {
                     Button("Run Plugin Eval") {
@@ -1647,16 +1652,6 @@ private struct InventorySection: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 190)
 
-                Picker("Project", selection: $selectedProjectRoot) {
-                    Text("All Projects").tag(String?.none)
-                    ForEach(projectFilterProjects) { project in
-                        Text(projectFilterLabel(project, projects: projectFilterProjects))
-                            .help(project.root)
-                            .tag(Optional(project.root))
-                    }
-                }
-                .frame(minWidth: 150, idealWidth: 190)
-
                 Menu {
                     Button("Show All Sources") {
                         hiddenSourceRaw = ""
@@ -1689,6 +1684,13 @@ private struct InventorySection: View {
                     }
                 }
                 .frame(width: 170)
+
+                Picker("Location", selection: $scopeFilter) {
+                    ForEach(SkillScopeFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .frame(width: 145)
 
                 Spacer()
 
@@ -1730,8 +1732,10 @@ private struct InventorySection: View {
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
                         TableColumn(column.title, sortUsing: column.comparator) { row in
-                            if column.id == "location" {
-                                SkillLocationCell(kinds: row.locationKinds, help: row.locationHelp)
+                            if column.id == "display-location" {
+                                SkillScopeLocationCell(row: row)
+                            } else if column.id == "origin" {
+                                SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
                             } else if column.id == "last-used" {
                                 RelativeUsageDateCell(date: row.lastUsedDate)
                                     .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
@@ -1807,8 +1811,11 @@ private struct InventorySection: View {
             migrateSourceVisibilityIfNeeded()
             sortOrder = defaultSortOrder(for: selectedView)
         }
+        .task(id: model.skillTableRevision) {
+            await rebuildRows()
+        }
         .onChange(of: selectedViewRaw) { _, rawValue in
-            let view = SkillTableView(rawValue: rawValue) ?? .inventory
+            let view = SkillTableView(rawValue: rawValue) ?? .summary
             selection.formIntersection(Set(rows.map(\.id)))
             sortOrder = defaultSortOrder(for: view)
         }
@@ -1840,19 +1847,62 @@ private struct InventorySection: View {
 
     private func defaultSortOrder(for view: SkillTableView) -> [KeyPathComparator<SkillTableRow>] {
         switch view {
+        case .summary:
+            [KeyPathComparator(\SkillTableRow.invocations30d, order: .reverse)]
+        case .review:
+            [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
         case .inventory:
             [KeyPathComparator(\SkillTableRow.skillName)]
         case .usage:
             [KeyPathComparator(\SkillTableRow.totalInvocations, order: .reverse)]
-        case .review:
-            [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
         }
+    }
+
+    private func rebuildRows() async {
+        let projects = model.projects
+        let usage = model.usageSnapshot
+        let evaluations = model.skillEvaluations
+        let pluginInventoryAvailable = model.isPluginInventoryAvailable
+        let rows = await Task.detached(priority: .utility) {
+            let inventoryRows = InventorySkillRow.rows(
+                from: projects,
+                usage: usage,
+                evaluations: evaluations
+            )
+            return SkillTableRow.rows(
+                inventoryRows: inventoryRows,
+                usageRows: UsageSkillRow.rows(
+                    projects: projects,
+                    summaries: usage.summaries,
+                    isBackfillComplete: usage.isBackfillComplete
+                ),
+                projectRoots: projects.map(\.root),
+                pluginInventoryAvailable: pluginInventoryAvailable,
+                isBackfillComplete: usage.isBackfillComplete
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        cachedRows = rows
+        selection.formIntersection(Set(cachedRows.map(\.id)))
     }
 }
 
 private struct SkillsMenuSection: View {
     @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
     let openMainWindow: () -> Void
+
+    private var scopedProjects: [ProjectStatus] {
+        guard let selectedProjectRoot else { return model.projects }
+        return model.projects.filter { $0.root == selectedProjectRoot }
+    }
+
+    private var scopedSkillCount: Int {
+        guard let selectedProjectRoot else { return model.logicalSkillCount }
+        return model.projects.reduce(0) { count, project in
+            count + project.skills.filter { $0.scope != "project" || project.root == selectedProjectRoot }.count
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1866,8 +1916,12 @@ private struct SkillsMenuSection: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                MetricView(title: "Skills", value: "\(model.logicalSkillCount)", symbol: "tablecells")
-                StatusPathView(title: "Locations", value: model.locationSummaryText, symbol: "folder.badge.gearshape")
+                MetricView(title: "Skills", value: "\(scopedSkillCount)", symbol: "tablecells")
+                StatusPathView(
+                    title: "Locations",
+                    value: selectedProjectRoot == nil ? model.locationSummaryText : (scopedProjects.first?.name ?? "No match"),
+                    symbol: "folder.badge.gearshape"
+                )
             }
 
             Button(action: openMainWindow) {
@@ -1955,6 +2009,20 @@ private struct MCPInventoryRow: Identifiable {
         }
         return entry.projectPaths.joined(separator: "\n")
     }
+    var displaysGlobalLocation: Bool { !entry.globalClients.isEmpty }
+    var projectLocationText: String {
+        let names = entry.projectPaths.map { URL(fileURLWithPath: $0).lastPathComponent }.uniqued()
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        default: return "\(names.count) projects"
+        }
+    }
+    var locationSortValue: String {
+        [displaysGlobalLocation ? "Global" : nil, projectLocationText.isEmpty ? nil : projectLocationText]
+            .compactMap { $0 }
+            .joined(separator: " + ")
+    }
 
     func matches(_ query: String) -> Bool {
         guard !query.isEmpty else { return true }
@@ -1965,12 +2033,13 @@ private struct MCPInventoryRow: Identifiable {
 
 private struct MCPInventorySection: View {
     @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
     @State private var searchText = ""
     @State private var filter = MCPInventoryFilter.all
     @State private var sortOrder = [KeyPathComparator(\MCPInventoryRow.name)]
 
     private var allRows: [MCPInventoryRow] {
-        model.mcpHealth.inventory.map(MCPInventoryRow.init)
+        model.mcpHealth.scoped(to: selectedProjectRoot).inventory.map(MCPInventoryRow.init)
     }
 
     private var rows: [MCPInventoryRow] {
@@ -2046,11 +2115,8 @@ private struct MCPInventorySection: View {
                     }
                     .width(min: 140, ideal: 170)
 
-                    TableColumn("Scope", value: \.scopeLabel) { row in
-                        Text(row.scopeLabel)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .help(row.scopeHelp)
+                    TableColumn("Location", value: \.locationSortValue) { row in
+                        MCPLocationCell(row: row)
                     }
                     .width(min: 150, ideal: 240)
                 }
@@ -2064,10 +2130,11 @@ private struct MCPInventorySection: View {
 
 private struct MCPMenuSection: View {
     @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
     let openMainWindow: () -> Void
 
     private var rows: [MCPInventoryRow] {
-        model.mcpHealth.inventory.map(MCPInventoryRow.init)
+        model.mcpHealth.scoped(to: selectedProjectRoot).inventory.map(MCPInventoryRow.init)
     }
 
     var body: some View {
@@ -2134,6 +2201,30 @@ private struct MCPClientIcons: View {
     }
 }
 
+private struct MCPLocationCell: View {
+    let row: MCPInventoryRow
+
+    var body: some View {
+        HStack(spacing: 7) {
+            if row.displaysGlobalLocation {
+                Image(systemName: "globe")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            if !row.projectLocationText.isEmpty {
+                Text(row.projectLocationText)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .help(row.scopeHelp)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.locationSortValue)
+        .accessibilityHint(row.scopeHelp)
+    }
+}
+
 private struct MCPStateCell: View {
     let state: MCPConnectionState
     let label: String
@@ -2164,7 +2255,7 @@ private struct MCPStateCell: View {
     }
 }
 
-private struct InventorySkillRow: Identifiable {
+private struct InventorySkillRow: Identifiable, Sendable {
     let project: ProjectStatus
     let skill: SkillStatus
     let variants: [SkillStatus]
@@ -2273,17 +2364,6 @@ private struct InventorySkillRow: Identifiable {
         .compactMap { $0 }
         .joined(separator: "\n")
     }
-    var sourceSymbol: String {
-        switch skill.manager {
-        case "codex-plugin": "powerplug.fill"
-        case "skills-cli": "globe"
-        case "codex": "sparkles"
-        case "claude": "link"
-        case "dotagents": "arrow.triangle.branch"
-        case "git": "shippingbox"
-        default: "person.crop.circle"
-        }
-    }
     var tokenEstimate: Int { skill.tokenEstimate }
     var scriptFileCount: Int { skill.scriptFileCount }
     var assetFileCount: Int { skill.assetFileCount }
@@ -2296,13 +2376,23 @@ private struct InventorySkillRow: Identifiable {
             .compactMap { $0 }
             .joined(separator: "\n")
     }
-    var metagentScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
-    var metagentScoreTint: Color { scoreTint(metagentScore.grade) }
+    var metagentStaticScore: Int { metagentScore.structuralScore }
+    var metagentStaticGrade: SkillGrade { metagentScore.structuralGrade }
+    var metagentScoreText: String { "\(metagentStaticScore) \(metagentStaticGrade.rawValue)" }
+    var metagentScoreTint: Color { scoreTint(metagentStaticGrade) }
     var metagentScoreHelp: String {
+        let breakdown = metagentScore.components.filter { $0.id != "adoption" }.map {
+            "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
+        }.joined(separator: "\n")
+        return "Stable structural score; usage is excluded. Integrity and portfolio clarity are normalized from 60 points to 100.\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
+    }
+    var portfolioScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
+    var portfolioScoreTint: Color { scoreTint(metagentScore.grade) }
+    var portfolioScoreHelp: String {
         let breakdown = metagentScore.components.map {
             "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
         }.joined(separator: "\n")
-        return "Metagent Score v\(metagentScore.version) · \(metagentScore.confidence.rawValue) confidence\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
+        return "Usage-adjusted portfolio score: 60 points structural quality + 40 points observed adoption.\n\(breakdown)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }
@@ -2502,55 +2592,41 @@ private struct SkillColumnSpec: Identifiable {
         help: \.skillPath
     ),
     SkillColumnSpec(
-        id: "project",
-        title: "Project",
-        comparator: KeyPathComparator(\SkillTableRow.projectName),
-        minWidth: 120,
-        idealWidth: 160,
-        isNumeric: false,
-        isMonospaced: false,
-        isPrimary: false,
-        defaultViews: [.inventory],
-        value: \.projectName,
-        help: { $0.projectRoot ?? "No installed project" }
-    ),
-    SkillColumnSpec(
-        id: "location",
+        id: "display-location",
         title: "Location",
-        comparator: KeyPathComparator(\SkillTableRow.locationLabel),
-        minWidth: 64,
-        idealWidth: 76,
+        comparator: KeyPathComparator(\SkillTableRow.displayLocationSortValue),
+        minWidth: 92,
+        idealWidth: 150,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [],
-        value: \.locationLabel,
-        help: \.locationHelp
+        defaultViews: [.inventory, .usage],
+        value: \.displayLocationText,
+        help: \.displayLocationHelp
     ),
     SkillColumnSpec(
         id: "origin",
         title: "Source",
         comparator: KeyPathComparator(\SkillTableRow.sourceText),
-        minWidth: 120,
-        idealWidth: 170,
+        minWidth: 48,
+        idealWidth: 58,
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
         defaultViews: [.inventory, .review],
-        symbol: { $0.sourceSymbol },
         value: \.sourceText,
         help: \.sourceHelp
     ),
     SkillColumnSpec(
         id: "metagent-score",
-        title: "Metagent",
+        title: "Metagent Score",
         comparator: KeyPathComparator(\SkillTableRow.metagentScoreSortValue),
-        minWidth: 82,
-        idealWidth: 94,
+        minWidth: 104,
+        idealWidth: 116,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.inventory, .review],
+        defaultViews: [.summary, .review],
         showsBadge: true,
         tint: { $0.metagentScoreTint },
         value: \.metagentScoreText,
@@ -2558,18 +2634,33 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "plugin-eval",
-        title: "Plugin Eval",
+        title: "Plugin Eval Score",
         comparator: KeyPathComparator(\SkillTableRow.pluginEvalSortValue),
-        minWidth: 90,
-        idealWidth: 104,
+        minWidth: 112,
+        idealWidth: 126,
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.inventory, .review],
+        defaultViews: [.summary, .review],
         showsBadge: true,
         tint: \.pluginEvalTint,
         value: \.pluginEvalText,
         help: \.pluginEvalHelp
+    ),
+    SkillColumnSpec(
+        id: "portfolio-score",
+        title: "Portfolio",
+        comparator: KeyPathComparator(\SkillTableRow.portfolioScoreSortValue),
+        minWidth: 82,
+        idealWidth: 94,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.review],
+        showsBadge: true,
+        tint: { $0.portfolioScoreTint },
+        value: \.portfolioScoreText,
+        help: \.portfolioScoreHelp
     ),
     SkillColumnSpec(
         id: "codex-review",
@@ -2595,23 +2686,9 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.inventory],
+        defaultViews: [.summary, .inventory],
         value: { $0.tokenEstimate < 0 ? "—" : formatNumber($0.tokenEstimate) },
         help: { $0.tokenEstimate < 0 ? "Not available for an uninstalled skill." : formatNumber($0.tokenEstimate) }
-    ),
-    SkillColumnSpec(
-        id: "scope",
-        title: "Scope",
-        comparator: KeyPathComparator(\SkillTableRow.scope),
-        minWidth: 48,
-        idealWidth: 56,
-        isNumeric: false,
-        isMonospaced: false,
-        isPrimary: false,
-        defaultViews: [.usage],
-        symbol: { $0.scopeSymbol },
-        value: { _ in "" },
-        help: \.scopeLabel
     ),
     SkillColumnSpec(
         id: "installation",
@@ -2752,33 +2829,116 @@ private struct InventoryTableCell: View {
     }
 }
 
-private struct SkillLocationCell: View {
-    let kinds: [SkillLocationKind]
-    let help: String
+private struct SkillScopeLocationCell: View {
+    let row: SkillTableRow
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(kinds) { kind in
-                if let bundleIdentifier = kind.bundleIdentifier,
-                   let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier)
-                {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 17, height: 17)
-                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                } else {
-                    Image(systemName: kind.fallbackSymbol)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 17, height: 17)
-                }
+        Group {
+            if row.displaysGlobalLocation {
+                Image(systemName: "globe")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+            } else {
+                Text(row.displayLocationText)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .help(help)
+        .help(row.displayLocationHelp)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(kinds.map(\.title).joined(separator: ", "))
-        .accessibilityHint(help)
+        .accessibilityLabel(row.displaysGlobalLocation ? "Global" : row.displayLocationText)
+        .accessibilityHint(row.displayLocationHelp)
+    }
+}
+
+private struct SkillSourceIconCell: View {
+    let category: SkillSourceCategory
+    let help: String
+
+    var body: some View {
+        sourceIcon
+            .frame(width: 20, height: 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(category.title)
+            .accessibilityHint(help)
+    }
+
+    @ViewBuilder
+    private var sourceIcon: some View {
+        switch category {
+        case .plugin, .codexSystem, .codexInstalled:
+            applicationIcon("com.openai.codex", fallback: "sparkles")
+        case .claude:
+            applicationIcon("com.anthropic.claudefordesktop", fallback: "link")
+        case .dotagentsLocal, .dotagentsManaged:
+            DotagentsSourceMark()
+        case .skillsCLI:
+            VercelSourceMark()
+        case .git:
+            Image(systemName: "shippingbox")
+                .foregroundStyle(.secondary)
+        case .local:
+            Image(systemName: "person.crop.circle")
+                .foregroundStyle(.secondary)
+        case .notInstalled:
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func applicationIcon(_ bundleIdentifier: String, fallback: String) -> some View {
+        if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier) {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        } else {
+            Image(systemName: fallback)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct DotagentsSourceMark: View {
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: geometry.size.width * 0.23, style: .continuous)
+                    .fill(Color(red: 0.72, green: 1, blue: 0))
+                Circle()
+                    .fill(.black)
+                    .frame(width: geometry.size.width * 0.28)
+                    .padding(.leading, geometry.size.width * 0.2)
+                    .padding(.bottom, geometry.size.height * 0.2)
+            }
+        }
+    }
+}
+
+private struct VercelSourceMark: View {
+    var body: some View {
+        ZStack {
+            Circle().fill(.black)
+            Triangle()
+                .fill(.white)
+                .padding(4.5)
+        }
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -2900,6 +3060,24 @@ private func projectFilterLabel(_ project: ProjectStatus, projects: [ProjectStat
     }
     let parent = URL(fileURLWithPath: project.root).deletingLastPathComponent().lastPathComponent
     return "\(project.name) — \(parent)"
+}
+
+private func projectFilterProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {
+    projects.filter { project in
+        let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
+        return !isPluginProject
+    }
+}
+
+private func groupedDoctorActionCount(_ findings: [DoctorIssue]) -> Int {
+    Set(findings.map { issue in
+        [
+            issue.projectRoot ?? "general",
+            issue.category?.rawValue ?? "general",
+            issue.repairAction?.rawValue ?? "review",
+            issue.summary ?? issue.message
+        ].joined(separator: "|")
+    }).count
 }
 
 private extension Sequence where Element: Hashable {

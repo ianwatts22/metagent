@@ -32,6 +32,7 @@ final class SkillEvaluationTests: XCTestCase {
         )
 
         XCTAssertEqual(result.score, 100)
+        XCTAssertEqual(result.structuralScore, 100)
         XCTAssertEqual(result.grade, .a)
         XCTAssertEqual(result.confidence, .medium)
         XCTAssertEqual(result.components.map(\.score), [40, 40, 20])
@@ -47,6 +48,7 @@ final class SkillEvaluationTests: XCTestCase {
         )
 
         XCTAssertEqual(result.score, 60)
+        XCTAssertEqual(result.structuralScore, 100)
         XCTAssertEqual(result.grade, .d)
         XCTAssertEqual(result.components.first { $0.id == "adoption" }?.score, 0)
         XCTAssertEqual(result.components.first { $0.id == "integrity" }?.score, 40)
@@ -65,6 +67,7 @@ final class SkillEvaluationTests: XCTestCase {
 
         XCTAssertEqual(result.components.first { $0.id == "clarity" }?.score, 6)
         XCTAssertEqual(result.score, 66)
+        XCTAssertEqual(result.structuralScore, 77)
         XCTAssertEqual(result.grade, .d)
     }
 

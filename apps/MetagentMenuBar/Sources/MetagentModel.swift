@@ -43,6 +43,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isPluginInventoryAvailable = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
+    @Published private(set) var skillTableRevision = 0
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
@@ -281,6 +282,7 @@ final class MetagentModel: ObservableObject {
                         }
                     }.value
                     usageSnapshot = report.snapshot
+                    skillTableRevision += 1
                     usageStatusText = Self.usageStatus(report.snapshot)
                     guard report.hasMore else { break }
                     guard report.processedBytesAdvanced > 0 else {
@@ -327,6 +329,7 @@ final class MetagentModel: ObservableObject {
                     var snapshot = skillEvaluations
                     snapshot.records[record.canonicalPath] = record
                     skillEvaluations = snapshot
+                    skillTableRevision += 1
                     skillEvaluationStatusText = uniquePaths.count == 1
                         ? "Plugin Eval complete"
                         : "Plugin Eval \(index + 1) of \(uniquePaths.count)"
@@ -361,6 +364,7 @@ final class MetagentModel: ObservableObject {
                 var snapshot = skillEvaluations
                 snapshot.records[record.canonicalPath] = record
                 skillEvaluations = snapshot
+                skillTableRevision += 1
                 skillEvaluationStatusText = "Codex review complete"
             } catch {
                 skillEvaluationStatusText = "Codex review failed: \(error.localizedDescription)"
@@ -572,6 +576,7 @@ final class MetagentModel: ObservableObject {
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
+            skillTableRevision += 1
             let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))
             repoCount = projects.count
@@ -587,6 +592,7 @@ final class MetagentModel: ObservableObject {
             )
         } else {
             projects = []
+            skillTableRevision += 1
             repoCount = 0
             skillCount = 0
             locationSummaryText = "Skill locations unavailable"
@@ -636,6 +642,7 @@ final class MetagentModel: ObservableObject {
             }.value
             guard generation == skillEvaluationRefreshGeneration else { return }
             skillEvaluations = snapshot
+            skillTableRevision += 1
         }
     }
 

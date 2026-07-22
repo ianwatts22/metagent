@@ -58,6 +58,19 @@ public struct MetagentSkillScore: Codable, Equatable, Sendable {
         self.confidence = confidence
         self.components = components
     }
+
+    /// Stable quality score derived from non-usage components and normalized to 100.
+    public var structuralScore: Int {
+        let stableComponents = components.filter { $0.id != "adoption" }
+        let earned = stableComponents.reduce(0) { $0 + $1.score }
+        let maximum = stableComponents.reduce(0) { $0 + $1.maximum }
+        guard maximum > 0 else { return 0 }
+        return Int((Double(earned) / Double(maximum) * 100).rounded())
+    }
+
+    public var structuralGrade: SkillGrade {
+        .forScore(structuralScore)
+    }
 }
 
 public struct PluginEvalDeduction: Codable, Equatable, Sendable {

@@ -7,16 +7,18 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 
 Current surface:
 
-- two destinations: `Overview` and `Skills`
+- three destinations: `Overview`, `Skills`, and `MCPs`, all scoped by one top-level directory picker; the default is all directories
 - actionable health summary with Doctor findings grouped into project-level cleanups
 - contextual repair preview shown only when a fix is available
-- one native inset `Skills` table with persisted `Inventory`, `Usage`, and `Review` presets; presets change default columns and sorting while preserving one shared selection, context menu, search, and filter surface
-- `Inventory` shows name, project, source, Metagent Score, Plugin Eval, and estimated tokens by default; `Usage` shows icon-only scope, recent/all-time reads, and recency; `Review` emphasizes Metagent, Plugin Eval, Codex review, and recency; State remains an optional column
+- one native inset `Skills` table with persisted `Summary`, `Review`, `Inventory`, and `Usage` presets; presets change default columns and sorting while preserving one shared selection, context menu, search, and filter surface
+- `Summary` shows Skill, stable Metagent Score, Plugin Eval Score, and estimated tokens, ordered by 30-day usage; `Review` adds the usage-adjusted Portfolio and Codex review scores; `Inventory` emphasizes location and source; `Usage` shows recent/all-time reads and recency; State remains an optional column
 - historical non-plugin usage without a matching installed bundle remains available in `Usage` as `Not installed` but is hidden by default through source visibility; unmatched plugin history remains under `Codex plugins` with unknown state because it may be disabled or the plugin scan may be unavailable; inventory, evaluation, open-folder, and removal actions remain limited to installed skills
 - color-coded score badges that retain a letter label for non-color accessibility; Metagent and Codex use conventional absolute grade bands while Plugin Eval keeps its evaluator-owned grade
-- standardized source categories and glyphs: plug for Codex plugins, globe for Skills CLI, separate sparkles categories for Codex system and Codex-installed skills, branch for dotagents path declarations or packages, package for Git repositories, link for Claude, and person for local ownership; a dotagents path declaration means a legacy manifest points at a local bundle, not that dotagents downloaded it
-- a persisted multi-select Source menu can hide any category across every preset, including all Codex plugin skills; project and usage-lifecycle filters compose with source visibility and search
-- plugin-cache pseudo-projects are omitted from the Project filter; the optional Location column uses installed Codex and Claude app artwork plus a globe for `.agents`, with icon-only accessible cells
+- standardized icon-only source cells with accessible tooltips: installed Codex and Claude artwork for their sources, the dotagents mark for legacy dotagents declarations, the Vercel mark for Skills CLI, and restrained system glyphs for Git, local, and historical records; a dotagents path declaration means a legacy manifest points at a local bundle, not that dotagents downloaded it
+- a persisted multi-select Source menu can hide any category across every preset, including all Codex plugin skills; global/project location and usage-lifecycle filters compose with source visibility and search
+- plugin-cache pseudo-projects are omitted from the top-level directory filter; Skills and MCP tables use one Location convention: a globe for global availability and a folder name, without an icon, for project scope
+- Metagent Score is the stable structural score: operational integrity and portfolio clarity are normalized to 100. Portfolio preserves the usage-adjusted 60-point structure plus 40-point observed-adoption calculation for retention decisions without conflating usage with intrinsic quality.
+- unified skill rows are revision-cached after inventory, usage, or evaluation updates, so changing table presets does not repeat filesystem normalization and score work
 - task/repeat usage context and lower-frequency identity fields remain available through native column customization, persisted independently for each preset
 - selected-skill Plugin Eval and read-only Codex review actions, plus an explicit visible-skill Plugin Eval batch action; Codex review requires confirmation because it sends the selected skill contents to OpenAI
 - native Command-click multi-selection in the Skills table, with right-click actions to open skill folders, choose a compatible application, copy canonical paths, copy a concise improvement prompt, or approve manager-aware removal; plugin selections delegate removal of the owning plugin to Codex's plugin manager, and duplicate plugin targets collapse into one action
@@ -114,7 +116,9 @@ when the overall refresh action is used, and after a successful repair or
 removal. The MCP card and MCP tab also provide an MCP-only refresh action.
 
 The MCPs tab groups the same server name across Codex and Claude into one row and
-shows its clients, passive configuration state, and global/project reach. This
+shows its clients, passive configuration state, and global/project location. The
+top-level directory scope keeps globally applicable servers plus servers declared
+for the selected project. This
 inventory does not report tool, invocation, or token counts yet: tool discovery
 requires connecting to each server, and the current session index does not
 attribute calls or turn-wide token totals to individual MCP servers. Those fields
