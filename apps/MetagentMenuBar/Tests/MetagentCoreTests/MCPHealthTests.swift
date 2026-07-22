@@ -594,6 +594,38 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertEqual(snapshot.disabledCount(for: .codex), 1)
     }
 
+    func testSnapshotInventoryMergesClientsAndScopesByServerName() {
+        let snapshot = MCPHealthSnapshot(servers: [
+            MCPServerHealth(
+                client: .codex,
+                name: "shared",
+                state: .configured,
+                detail: "",
+                globalState: .configured
+            ),
+            MCPServerHealth(
+                client: .claude,
+                name: "shared",
+                state: .pendingApproval,
+                detail: "",
+                projectStates: [
+                    MCPProjectState(path: "/projects/one", state: .configured),
+                    MCPProjectState(path: "/projects/two", state: .pendingApproval)
+                ]
+            ),
+            MCPServerHealth(client: .claude, name: "other", state: .disabled, detail: "")
+        ])
+
+        XCTAssertEqual(snapshot.inventory.map(\.name), ["other", "shared"])
+        let shared = try! XCTUnwrap(snapshot.inventory.first { $0.name == "shared" })
+        XCTAssertEqual(shared.clients, [.claude, .codex])
+        XCTAssertEqual(shared.globalClients, [.codex])
+        XCTAssertEqual(shared.projectPaths, ["/projects/one", "/projects/two"])
+        XCTAssertEqual(shared.state, .pendingApproval)
+        XCTAssertEqual(shared.state(for: .codex), .configured)
+        XCTAssertEqual(shared.state(for: .claude), .pendingApproval)
+    }
+
     func testClaudeInventoryIgnoresDeletedProjectHistory() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")

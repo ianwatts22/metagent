@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MCPClient: String, Codable, CaseIterable, Sendable {
+public enum MCPClient: String, Codable, CaseIterable, Hashable, Sendable {
     case codex
     case claude
 
@@ -12,7 +12,7 @@ public enum MCPClient: String, Codable, CaseIterable, Sendable {
     }
 }
 
-public enum MCPConnectionState: String, Codable, Sendable {
+public enum MCPConnectionState: String, Codable, Hashable, Sendable {
     case configured
     case disabled
     case pendingApproval
@@ -105,6 +105,44 @@ public struct MCPHealthSnapshot: Codable, Equatable, Sendable {
 
     public func disabledCount(for client: MCPClient) -> Int {
         servers.filter { $0.client == client && $0.state == .disabled }.count
+    }
+
+    public var inventory: [MCPInventoryEntry] {
+        Dictionary(grouping: servers, by: \.name)
+            .map { name, matches in
+                let states = Dictionary(
+                    matches.map { ($0.client, $0.state) },
+                    uniquingKeysWith: { current, candidate in
+                        aggregateMCPState([current, candidate])
+                    }
+                )
+                return MCPInventoryEntry(
+                    name: name,
+                    clients: states.keys.sorted { $0.rawValue < $1.rawValue },
+                    clientStates: states,
+                    globalClients: Array(Set(matches.compactMap { server in
+                        server.globalState == nil ? nil : server.client
+                    })).sorted { $0.rawValue < $1.rawValue },
+                    projectPaths: Array(Set(matches.flatMap { $0.projectStates.map(\.path) })).sorted(),
+                    state: aggregateMCPState(Array(states.values))
+                )
+            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
+public struct MCPInventoryEntry: Equatable, Identifiable, Sendable {
+    public let name: String
+    public let clients: [MCPClient]
+    public let clientStates: [MCPClient: MCPConnectionState]
+    public let globalClients: [MCPClient]
+    public let projectPaths: [String]
+    public let state: MCPConnectionState
+
+    public var id: String { name }
+
+    public func state(for client: MCPClient) -> MCPConnectionState? {
+        clientStates[client]
     }
 }
 

@@ -104,6 +104,22 @@ Local deployment model:
 
 The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row shows configured counts and only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral. The icon-only refresh action exposes its meaning through a tooltip and accessibility label; the checked-at timestamp is intentionally omitted as low-signal chrome.
 
+The Overview is exception-only for skill cleanup. A compact cleanup row appears
+only when Doctor has an actionable finding; a healthy “no cleanup needed” card
+and generic operation output are intentionally omitted. Cleanup failures stay
+inside the review sheet that owns the operation.
+
+MCP health and Doctor do not poll on a timer. Both run when the app model starts,
+when the overall refresh action is used, and after a successful repair or
+removal. The MCP card and MCP tab also provide an MCP-only refresh action.
+
+The MCPs tab groups the same server name across Codex and Claude into one row and
+shows its clients, passive configuration state, and global/project reach. This
+inventory does not report tool, invocation, or token counts yet: tool discovery
+requires connecting to each server, and the current session index does not
+attribute calls or turn-wide token totals to individual MCP servers. Those fields
+must come from explicit runtime telemetry rather than UI-time log scans.
+
 “Configured” and “no known issues” do not mean a server was connected or a tool was invoked. Metagent does not start MCP processes, contact providers, refresh OAuth, inspect secrets, or claim live verification during the Overview check. Per-server details preserve that distinction and direct sign-in or unavailable states back to the owning client.
 
 Pending Claude project servers retain their project paths. Their `Resolve…`

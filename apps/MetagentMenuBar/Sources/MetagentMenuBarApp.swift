@@ -162,6 +162,15 @@ private struct MetagentPanel: View {
             } else {
                 InventorySection(model: model)
             }
+        case .mcps:
+            if showsOpenWindowButton {
+                MCPMenuSection(model: model) {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            } else {
+                MCPInventorySection(model: model)
+            }
         }
     }
 
@@ -243,6 +252,7 @@ private struct SectionNavigationButton: View {
 private enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case skills
+    case mcps
 
     var id: String { rawValue }
 
@@ -250,6 +260,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "Overview"
         case .skills: "Skills"
+        case .mcps: "MCPs"
         }
     }
 
@@ -257,6 +268,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge"
         case .skills: "sparkles"
+        case .mcps: "server.rack"
         }
     }
 }
@@ -267,32 +279,44 @@ private struct OverviewSection: View {
     @State private var showsDoctorFindings = false
     @State private var showsRepair = false
     @State private var showsMCPDetails = false
+    @State private var repairProjectRoot: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             mcpConnections
-            healthHero
-            summary
-
-            if let title = model.lastOutputTitle {
-                LastOutputView(
-                    title: title,
-                    lines: model.lastOutputLines,
-                    onCopy: model.copyLastOutput
-                )
-            } else {
-                Spacer(minLength: 0)
+            if model.doctorActionCount > 0 {
+                cleanupStatus
             }
+            summary
+            Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $showsDoctorFindings) {
             DoctorFindingsView(model: model) { projectRoot in
+                repairProjectRoot = projectRoot
                 model.previewRepair(projectRoot: projectRoot)
                 showsRepair = true
             }
         }
         .sheet(isPresented: $showsRepair) {
-            RepairSection(model: model)
+            RepairSection(model: model, projectRoot: repairProjectRoot)
+        }
+        .alert(
+            "Could not open Claude",
+            isPresented: Binding(
+                get: { model.lastOutputTitle == "Could not open Claude" },
+                set: { isPresented in
+                    if !isPresented {
+                        model.clearLastOutput()
+                    }
+                }
+            )
+        ) {
+            Button("OK") {
+                model.clearLastOutput()
+            }
+        } message: {
+            Text(model.lastOutputLines.first ?? "Open the project in Terminal and run Claude manually.")
         }
     }
 
@@ -486,19 +510,15 @@ private struct OverviewSection: View {
             .joined(separator: " ")
     }
 
-    private var healthHero: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(healthTint.opacity(0.14))
-                Image(systemName: healthSymbol)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(healthTint)
-            }
-            .frame(width: 42, height: 42)
+    private var cleanupStatus: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "wrench.and.screwdriver.fill")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(Color.orange)
+                .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(healthTitle)
+                Text("Skill cleanup")
                     .font(.headline)
                 Text(healthMessage)
                     .font(.caption)
@@ -512,7 +532,8 @@ private struct OverviewSection: View {
                 if model.doctorActionCount > 0 {
                     if allDoctorFindingsRepairable {
                         Button {
-                            model.previewRepair(projectRoot: model.doctorFindings.first?.projectRoot)
+                            repairProjectRoot = model.doctorFindings.first?.projectRoot
+                            model.previewRepair(projectRoot: repairProjectRoot)
                             showsRepair = true
                         } label: {
                             Label("Resolve", systemImage: "wrench.and.screwdriver")
@@ -541,11 +562,12 @@ private struct OverviewSection: View {
                 .disabled(model.isRunning)
             }
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.separator.opacity(0.45), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
         }
     }
 
@@ -570,21 +592,11 @@ private struct OverviewSection: View {
         .padding(.vertical, 4)
     }
 
-    private var healthTitle: String {
-        if model.doctorActionCount == 0 {
-            return "No cleanup needed"
-        }
-        return "\(model.doctorActionCount) \(model.doctorActionCount == 1 ? "cleanup" : "cleanups") recommended"
-    }
-
     private var recentInvocationCount: Int {
         model.usageSnapshot.summaries.reduce(0) { $0 + $1.invocations30d }
     }
 
     private var healthMessage: String {
-        if model.doctorActionCount == 0 {
-            return "Skills and projections look consistent."
-        }
         if model.doctorActionCount == 1,
            let issue = model.doctorFindings.first
         {
@@ -597,13 +609,6 @@ private struct OverviewSection: View {
         model.doctorFindings.count == 1 && model.doctorFindings[0].repairAction != nil
     }
 
-    private var healthSymbol: String {
-        model.doctorActionCount == 0 ? "checkmark.circle.fill" : "wrench.and.screwdriver.fill"
-    }
-
-    private var healthTint: Color {
-        model.doctorActionCount == 0 ? .green : .orange
-    }
 }
 
 private struct MCPClientCount: View {
@@ -1877,6 +1882,288 @@ private struct SkillsMenuSection: View {
     }
 }
 
+private enum MCPInventoryFilter: String, CaseIterable, Identifiable {
+    case all
+    case attention
+    case configured
+    case disabled
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .attention: "Needs attention"
+        case .configured: "Configured"
+        case .disabled: "Disabled"
+        }
+    }
+
+    func includes(_ row: MCPInventoryRow) -> Bool {
+        switch self {
+        case .all: true
+        case .attention: row.state.needsAttention
+        case .configured: row.state == .configured
+        case .disabled: row.state == .disabled
+        }
+    }
+}
+
+private struct MCPInventoryRow: Identifiable {
+    let entry: MCPInventoryEntry
+
+    var id: String { entry.id }
+    var name: String { entry.name }
+    var clients: [MCPClient] { entry.clients }
+    var state: MCPConnectionState { entry.state }
+    var clientsSortValue: String { clients.map(\.displayName).joined(separator: ", ") }
+    var statusSortValue: Int {
+        switch state {
+        case .unavailable: 0
+        case .needsSignIn: 1
+        case .pendingApproval: 2
+        case .disabled: 3
+        case .configured: 4
+        }
+    }
+    var statusLabel: String {
+        switch state {
+        case .configured: "Configured"
+        case .disabled: "Disabled"
+        case .pendingApproval: "Pending approval"
+        case .needsSignIn: "Needs sign-in"
+        case .unavailable: "Unavailable"
+        }
+    }
+    var scopeLabel: String {
+        let global = !entry.globalClients.isEmpty
+        let projects = entry.projectPaths.count
+        return switch (global, projects) {
+        case (true, 0): "Global"
+        case (true, 1): "Global + 1 project"
+        case (true, _): "Global + \(projects) projects"
+        case (false, 1): "1 project"
+        case (false, let count) where count > 1: "\(count) projects"
+        default: "Client config"
+        }
+    }
+    var scopeHelp: String {
+        guard !entry.projectPaths.isEmpty else {
+            return entry.globalClients.isEmpty
+                ? "Discovered in client configuration."
+                : "Available from global client configuration."
+        }
+        return entry.projectPaths.joined(separator: "\n")
+    }
+
+    func matches(_ query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        return ([name, clientsSortValue, statusLabel, scopeLabel] + entry.projectPaths)
+            .contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+}
+
+private struct MCPInventorySection: View {
+    @ObservedObject var model: MetagentModel
+    @State private var searchText = ""
+    @State private var filter = MCPInventoryFilter.all
+    @State private var sortOrder = [KeyPathComparator(\MCPInventoryRow.name)]
+
+    private var allRows: [MCPInventoryRow] {
+        model.mcpHealth.inventory.map(MCPInventoryRow.init)
+    }
+
+    private var rows: [MCPInventoryRow] {
+        allRows
+            .filter { filter.includes($0) && $0.matches(searchText) }
+            .sorted(using: sortOrder)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MCPs")
+                        .font(.title2.weight(.semibold))
+                    Text("\(allRows.count) servers across Codex and Claude")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                TextField("Search MCPs", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+
+                Picker("Status", selection: $filter) {
+                    ForEach(MCPInventoryFilter.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .frame(width: 155)
+
+                Button {
+                    model.refreshMCPHealth()
+                } label: {
+                    if model.isMCPRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.glass)
+                .disabled(model.isMCPRefreshing)
+                .help("Refresh passive MCP inventory")
+                .accessibilityLabel("Refresh MCP inventory")
+            }
+
+            if rows.isEmpty {
+                EmptyStateView(
+                    title: allRows.isEmpty ? "No MCP servers found" : "No matching MCPs",
+                    message: allRows.isEmpty
+                        ? "Refresh after configuring an MCP server in Codex or Claude."
+                        : "Clear the search or choose a different status.",
+                    symbol: "server.rack"
+                )
+            } else {
+                Table(rows, sortOrder: $sortOrder) {
+                    TableColumn("MCP", value: \.name) { row in
+                        Text(row.name)
+                            .font(.callout.weight(.medium))
+                            .help(row.name)
+                    }
+                    .width(min: 220, ideal: 320)
+
+                    TableColumn("Clients", value: \.clientsSortValue) { row in
+                        MCPClientIcons(clients: row.clients)
+                    }
+                    .width(min: 90, ideal: 120)
+
+                    TableColumn("Status", value: \.statusSortValue) { row in
+                        MCPStateCell(state: row.state, label: row.statusLabel)
+                    }
+                    .width(min: 140, ideal: 170)
+
+                    TableColumn("Scope", value: \.scopeLabel) { row in
+                        Text(row.scopeLabel)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .help(row.scopeHelp)
+                    }
+                    .width(min: 150, ideal: 240)
+                }
+                .tableStyle(.inset)
+                .alternatingRowBackgrounds(.enabled)
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct MCPMenuSection: View {
+    @ObservedObject var model: MetagentModel
+    let openMainWindow: () -> Void
+
+    private var rows: [MCPInventoryRow] {
+        model.mcpHealth.inventory.map(MCPInventoryRow.init)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("MCPs")
+                    .font(.headline)
+                Spacer()
+                Button(action: openMainWindow) {
+                    Label("Window", systemImage: "macwindow")
+                }
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                MetricView(title: "Servers", value: "\(rows.count)", symbol: "server.rack")
+                MetricView(
+                    title: "Attention",
+                    value: "\(rows.filter { $0.state.needsAttention }.count)",
+                    symbol: "exclamationmark.triangle"
+                )
+            }
+
+            Button(action: openMainWindow) {
+                Label("Open MCPs", systemImage: "arrow.up.right.square")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+
+            Spacer()
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct MCPClientIcons: View {
+    let clients: [MCPClient]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(clients, id: \.self) { client in
+                if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier(for: client)) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 18, height: 18)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .help(client.displayName)
+                } else {
+                    Image(systemName: client == .codex ? "sparkles" : "link")
+                        .frame(width: 18, height: 18)
+                        .help(client.displayName)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(clients.map(\.displayName).joined(separator: ", "))
+    }
+
+    private func bundleIdentifier(for client: MCPClient) -> String {
+        switch client {
+        case .codex: "com.openai.codex"
+        case .claude: "com.anthropic.claudefordesktop"
+        }
+    }
+}
+
+private struct MCPStateCell: View {
+    let state: MCPConnectionState
+    let label: String
+
+    var body: some View {
+        Label(label, systemImage: symbol)
+            .font(.callout)
+            .foregroundStyle(tint)
+    }
+
+    private var symbol: String {
+        switch state {
+        case .configured: "checkmark.circle"
+        case .disabled: "pause.circle"
+        case .pendingApproval: "questionmark.circle"
+        case .needsSignIn: "person.crop.circle.badge.exclamationmark"
+        case .unavailable: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch state {
+        case .configured: .green
+        case .disabled: .secondary
+        case .pendingApproval, .needsSignIn: .orange
+        case .unavailable: .red
+        }
+    }
+}
+
 private struct InventorySkillRow: Identifiable {
     let project: ProjectStatus
     let skill: SkillStatus
@@ -2631,6 +2918,7 @@ private extension Sequence {
 
 private struct RepairSection: View {
     @ObservedObject var model: MetagentModel
+    let projectRoot: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -2667,15 +2955,15 @@ private struct RepairSection: View {
             } else if model.isRunning {
                 ProgressView("Preparing preview…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let title = model.lastOutputTitle {
-                LastOutputView(
-                    title: title,
+            } else if !model.lastOutputLines.isEmpty {
+                CleanupFailureView(
                     lines: model.lastOutputLines,
+                    onRetry: { model.previewRepair(projectRoot: projectRoot) },
                     onCopy: model.copyLastOutput
                 )
             } else {
                 Button {
-                    model.previewRepair()
+                    model.previewRepair(projectRoot: projectRoot)
                 } label: {
                     Label("Preview cleanup", systemImage: "doc.text.magnifyingglass")
                 }
@@ -2686,6 +2974,49 @@ private struct RepairSection: View {
         .padding(20)
         .frame(minWidth: 820, minHeight: 580)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct CleanupFailureView: View {
+    let lines: [String]
+    let onRetry: () -> Void
+    let onCopy: () -> Void
+    @State private var showsDetails = false
+
+    private var changedAfterPreview: Bool {
+        lines.contains { $0.localizedCaseInsensitiveContains("changed after preview") }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(
+                changedAfterPreview ? "Cleanup changed" : "Cleanup couldn’t be prepared",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(Color.orange)
+
+            Text(changedAfterPreview
+                ? "The files changed after Metagent prepared the preview. Preview them again before applying anything."
+                : "Metagent couldn’t prepare a safe cleanup preview. Try again, then inspect the details if it still fails.")
+                .foregroundStyle(.secondary)
+
+            Button("Preview again", action: onRetry)
+                .buttonStyle(.glassProminent)
+
+            DisclosureGroup("Technical details", isExpanded: $showsDetails) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    RawOutputBlock(title: nil, lines: Array(lines.prefix(18)))
+                    Button("Copy details", systemImage: "doc.on.doc", action: onCopy)
+                        .buttonStyle(.glass)
+                }
+                .padding(.top, 8)
+            }
+            .font(.caption.weight(.medium))
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

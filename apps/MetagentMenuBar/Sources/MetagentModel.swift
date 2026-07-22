@@ -517,6 +517,12 @@ final class MetagentModel: ObservableObject {
         pasteboard.setString(text, forType: .string)
     }
 
+    func clearLastOutput() {
+        lastOutputTitle = nil
+        lastOutputLines = []
+        showsRawOutput = false
+    }
+
     func copyRepairSummary() {
         guard let repairPreview else { return }
         let text = repairPreview.summaryText
