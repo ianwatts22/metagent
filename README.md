@@ -1,194 +1,152 @@
-# metagent
+<p align="center">
+  <img src="public/brand/wordmark.svg" alt="Metagent" width="360">
+</p>
 
-A native control center for inspecting and maintaining coding-agent skills.
+<p align="center">
+  A native control center and local analysis toolkit for coding-agent skills, MCP servers, and project instructions.
+</p>
 
-The repo is intentionally boring:
+Metagent answers the questions that get difficult once several agents, plugin
+systems, and skill managers share one machine:
 
-- Swift owns the native Mac app, shared core logic, SQLite inventory cache, and small command helper.
-- MCP should be an access layer over the Swift core, not a second implementation.
-- Local roots, secrets, account mappings, and generated state stay outside the repo.
+- Which skills and MCP servers are available globally or for this project?
+- Who owns each skill, and which copy is canonical?
+- Which skills are actually being read in retained Codex sessions?
+- Which configurations need attention, and which are simply disabled?
+- What should an agent know about a repository before it starts work?
 
-## Agent Skill
+The macOS app is the primary human interface. The `metagent` CLI and MCP server
+expose the same Swift core to terminals and agents.
 
-The publishable skill lives at [.agents/skills/metagent/SKILL.md](.agents/skills/metagent/SKILL.md).
-It helps agents reason about agent workflows, MCP/tool availability, skill usage,
-and durable instruction boundaries.
+> **Status:** early developer preview for macOS 26+. Metagent is local-first and
+> does not upload inventory or usage history. Optional Codex skill review sends
+> only the selected, bounded skill copy to OpenAI after confirmation.
 
-Once this repo is public at `ianwatts22/metagent`, it should be installable with:
+## What it includes
 
-```bash
-npx skills add ianwatts22/metagent --skill metagent
-```
+### Native macOS app
 
-See [docs/skill-publishing.md](docs/skill-publishing.md) for the publication and local-install checklist.
+- One directory filter across Overview, Skills, and MCP inventory.
+- Unified skill inventory and usage views with native sorting, filtering,
+  multi-selection, column customization, and manager-aware removal.
+- Stable **Quality**, usage-aware **Utility**, external **Plugin Eval**, and
+  optional **Codex review** signals kept separate.
+- Passive Codex and Claude MCP configuration health with explicit global,
+  project, sign-in, approval, disabled, and unavailable states.
+- Doctor findings grouped into actionable project-level cleanups.
 
-## Current Tools
+### Project analysis CLI
 
-### Swift Mac App
-
-The macOS app is the primary product surface:
-
-- scans `.agents`, `.codex`, and `.claude` skill locations directly through `MetagentCore`
-- distinguishes lock-managed `.agents` skills from unmanaged bundles whose original authority may be unknown
-- shows skill size, word, token, reference, script, asset, icon, and logo metadata
-- stores the latest inventory snapshot in SQLite at `~/Library/Application Support/Metagent/inventory.sqlite`
-- incrementally indexes retained Codex session evidence into `~/Library/Application Support/Metagent/usage.sqlite`
-- shows 7-day, 30-day, and all-time skill reads, active turns, threads, repeats, recency, and coverage
-- runs Doctor, read-only repair previews, direct project skill-link repair, and maintenance actions from Swift
-
-Launching `Metagent.app` opens a normal resizable app window and keeps the menu bar extra available for quick status/actions.
-
-Build it:
-
-```bash
-cd apps/MetagentMenuBar
-CLANG_MODULE_CACHE_PATH=/private/tmp/metagent-clang-cache swift build
-```
-
-Package a local `.app` bundle:
+Analyze the current folder or any explicit project:
 
 ```bash
-scripts/build-menu-bar-app.sh
+metagent analyze --root /absolute/path/to/project --json
 ```
 
-Install it into the user Applications folder so Spotlight can find it:
+The report combines project instructions, skills and provenance, retained usage,
+relevant MCP configuration, plugin inventory, and Doctor findings.
+
+Narrower commands are also available:
 
 ```bash
-scripts/install-menu-bar-app.sh --restart
-```
-
-During iterative app development, rebuild and restart automatically:
-
-```bash
-scripts/dev-menu-bar-app.sh
-```
-
-That installs:
-
-```text
-~/Applications/Metagent.app
-```
-
-### `metagent` Swift Helper
-
-The command helper is built from the same Swift package and provides headless agent access. It is not the app's backend.
-
-Install it:
-
-```bash
-scripts/install-cli.sh
-```
-
-Current helper commands:
-
-```bash
-metagent config show --json
 metagent inventory --json
-metagent skills scan --json
-metagent skills repair
-metagent skills repair --apply
-metagent skills doctor
-metagent skills remove SKILL --root PROJECT
-metagent skills remove SKILL --root PROJECT --apply
-metagent usage status
-metagent usage refresh
+metagent skills scan --root /absolute/path/to/project --json
+metagent skills doctor --root /absolute/path/to/project --json
+metagent skills evaluate /absolute/path/to/skill --provider plugin-eval --json
+metagent usage status --json
 ```
 
-`metagent inventory --json` is the preferred machine-readable view. It combines configured projects, home skills, Codex system/install locations, and currently installed Codex plugin skills. Plugin and package-manager-owned entries are read-only in Metagent.
+### Local MCP server
 
-See [docs/skill-provenance.md](docs/skill-provenance.md) for the ownership fields, lock precedence, projection rules, and removal safety model.
-
-Skill removal is a dry run unless `--apply` is present. Local skills move into Metagent recovery; skills CLI packages are backed up and then removed through their owning package manager.
-
-The MCP entry point is reserved but not implemented:
+Agents can consume the same project-analysis contract over stdio:
 
 ```bash
 metagent mcp --stdio
 ```
 
-### `metagent skills`
+The MCP layer is intentionally thin: scanning, health, usage, and analysis remain
+in `MetagentCore` rather than being reimplemented for each interface.
 
-Find projects with `.agents/skills` and ensure Claude Code sees the same skills through `.claude/skills -> ../.agents/skills`.
+### Agent skill
 
-Dry run:
+The publishable Metagent skill lives at
+[`.agents/skills/metagent/`](.agents/skills/metagent/) and teaches agents how to
+reason about tool availability, skill provenance, usage evidence, and durable
+instruction ownership.
 
-```bash
-cd apps/MetagentMenuBar
-swift run metagent skills repair
-```
-
-Apply:
-
-```bash
-cd apps/MetagentMenuBar
-swift run metagent skills repair --apply
-```
-
-Scan only:
+Install it globally with the Skills CLI:
 
 ```bash
-cd apps/MetagentMenuBar
-swift run metagent skills scan --root ~/code_projects
+npx skills add ianwatts22/metagent --skill metagent --global
 ```
 
-Check current state:
+## Install from source
+
+Requirements:
+
+- macOS 26 or newer
+- Xcode with a Swift toolchain
+- an Apple Development signing identity for local app installation
+
+Clone the repository, then install the app and command-line helper:
 
 ```bash
-metagent skills doctor
+git clone https://github.com/ianwatts22/metagent.git
+cd metagent
+scripts/install-menu-bar-app.sh --restart
+scripts/install-cli.sh
 ```
 
-Repair only creates a missing project symlink or replaces a wrong symlink. It never
-replaces a real `.claude/skills` directory and never copies Claude content into
-`.agents`. Whole-directory links remain current automatically when skills are added
-or removed, so no background sync is needed.
+The app is installed at `~/Applications/Metagent.app`; the CLI is installed at
+`~/.local/bin/metagent`.
 
-### `metagent usage`
-
-Inspect the cached skill-usage index or process a bounded incremental batch:
+For development:
 
 ```bash
-metagent usage status
-metagent usage refresh --max-bytes 67108864 --max-files 100
+scripts/dev-menu-bar-app.sh
 ```
 
-Historical rows use `session_backfill` provenance and are derived from observed
-`SKILL.md` reads in retained Codex JSONL sessions. They are not fabricated OTel
-events. Metagent stores normalized skill identity, time, thread, turn, and
-evidence metadata; it does not store prompt or tool-output content.
+## Data and privacy
 
-Use the Linear `misc` team project `metagent` for future fold-in candidates:
-https://linear.app/social-glass/project/metagent-730ac559ca5c.
+Metagent stores generated state outside the repository:
 
-## Default Roots
+- inventory: `~/Library/Application Support/Metagent/inventory.sqlite`
+- skill usage: `~/Library/Application Support/Metagent/usage.sqlite`
+- evaluations: `~/Library/Application Support/Metagent/skill-evaluations-v1.json`
 
-When no roots are passed and no config exists, `metagent` scans:
+Usage history is derived from observed `SKILL.md` reads in retained Codex JSONL
+sessions. Metagent stores normalized identity, timestamps, thread/turn IDs, and
+evidence metadata—not prompts or tool-output content. Missing telemetry is never
+treated as proof that a skill is useless.
 
-- `~/code_projects`
-- `~/Library/CloudStorage`
-- `~/Documents/Codex`
+Passive MCP health reads local client configuration. It does not start servers,
+contact providers, inspect secrets, or claim that a configured server was
+successfully invoked.
 
-Put machine-local roots in:
+## Architecture
 
-```text
-~/.config/metagent/config.toml
-```
+Swift is the source of truth:
 
-Example:
+- `MetagentCore` owns inventory, provenance, usage, Doctor, MCP health, and
+  project analysis.
+- `MetagentMenuBar` imports the core directly for the native UI.
+- `metagent` is a thin headless wrapper for CLI and MCP access.
 
-```toml
-roots = [
-  "~/code_projects",
-  "~/Library/CloudStorage",
-  "~/Documents/Codex",
-]
-max_depth = 6
-ignore_projects = []
-```
+Machine-local roots, secrets, account mappings, logs, and generated state stay
+outside the repository. See [architecture](docs/architecture.md),
+[skill provenance](docs/skill-provenance.md), [skill scoring](docs/skill-scoring.md),
+and [macOS app behavior](docs/menu-bar.md) for details.
 
-## Verification
+## Verify
 
 ```bash
 scripts/verify.sh
 ```
 
-Requires `sg` from ast-grep on `PATH` for structural guardrail warnings.
+The structural guardrails require `sg` from ast-grep on `PATH`.
+
+## Contributing
+
+Bug reports and focused proposals are welcome through
+[GitHub Issues](https://github.com/ianwatts22/metagent/issues). Please run
+`scripts/verify.sh` before opening a pull request.
