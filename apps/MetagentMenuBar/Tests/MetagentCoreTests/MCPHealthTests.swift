@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import MetagentCore
 
@@ -181,18 +182,22 @@ final class MCPHealthTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
+        let firstProject = root.appendingPathComponent("one")
+        let secondProject = root.appendingPathComponent("two")
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude"),
             withIntermediateDirectories: true
         )
+        try FileManager.default.createDirectory(at: firstProject, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondProject, withIntermediateDirectories: true)
         try Data("""
         {
           "projects": {
-            "/one": {
+            "\(firstProject.path)": {
               "mcpServers": {"shared": {}, "disabled-only": {}},
               "disabledMcpServers": ["shared", "disabled-only"]
             },
-            "/two": {"mcpServers": {"shared": {}}}
+            "\(secondProject.path)": {"mcpServers": {"shared": {}}}
           }
         }
         """.utf8).write(to: root.appendingPathComponent(".claude.json"))
@@ -587,5 +592,38 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertEqual(snapshot.count(for: .claude), 1)
         XCTAssertEqual(snapshot.attention.count, 3)
         XCTAssertEqual(snapshot.disabledCount(for: .codex), 1)
+    }
+
+    func testClaudeInventoryIgnoresDeletedProjectHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let deletedProject = root.appendingPathComponent("deleted-worktree")
+        try Data("""
+        {"projects":{"\(deletedProject.path)":{"mcpServers":{"stale":{}}}}}
+        """.utf8).write(to: root.appendingPathComponent(".claude.json"))
+
+        let servers = MetagentCore.scanClaudeMCPConfiguration(homeDirectory: root)
+
+        XCTAssertTrue(servers.isEmpty)
+    }
+
+    func testClaudeInventoryReportsUnreadableProjectHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unreadableProject = root.appendingPathComponent("unreadable-project")
+        try FileManager.default.createDirectory(at: unreadableProject, withIntermediateDirectories: true)
+        try Data("""
+        {"projects":{"\(unreadableProject.path)":{"mcpServers":{"unknown":{}}}}}
+        """.utf8).write(to: root.appendingPathComponent(".claude.json"))
+        XCTAssertEqual(chmod(unreadableProject.path, 0o000), 0)
+        defer { _ = chmod(unreadableProject.path, 0o700) }
+
+        let servers = MetagentCore.scanClaudeMCPConfiguration(homeDirectory: root)
+
+        XCTAssertEqual(servers.map(\.name), ["Claude configuration"])
+        XCTAssertEqual(servers.map(\.state), [.unavailable])
     }
 }

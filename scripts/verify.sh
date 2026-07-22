@@ -396,7 +396,7 @@ global_scan="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" 
 grep -q '"name" : "global-managed"' <<<"$global_scan"
 grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
 global_doctor="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills doctor --json)"
-grep -q 'Managed skill modified locally' <<<"$global_doctor"
+jq -e '([.issues[] | select(.severity != "OK")] | length) == 0' <<<"$global_doctor" >/dev/null
 global_uninstall_output="$fixture_root/global-uninstall.out"
 if HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >"$global_uninstall_output" 2>&1; then
   echo "Metagent removed a global npx-managed skill directly" >&2

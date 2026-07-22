@@ -8,7 +8,7 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 Current surface:
 
 - two destinations: `Overview` and `Skills`
-- actionable health summary with Doctor findings grouped by project and cause
+- actionable health summary with Doctor findings grouped into project-level cleanups
 - contextual repair preview shown only when a fix is available
 - one native inset `Skills` table with persisted `Inventory`, `Usage`, and `Review` presets; presets change default columns and sorting while preserving one shared selection, context menu, search, and filter surface
 - `Inventory` shows name, project, source, Metagent Score, Plugin Eval, and estimated tokens by default; `Usage` shows icon-only scope, recent/all-time reads, and recency; `Review` emphasizes Metagent, Plugin Eval, Codex review, and recency; State remains an optional column
@@ -31,7 +31,8 @@ Refresh behavior:
 - The `Refresh` buttons rerun Swift core scans on demand.
 - Successful link repair triggers a status refresh.
 - Skill provenance is resolved from skills-CLI locks first, then dotagents manifests/locks, Git repository evidence, and finally explicit user/project-local placement. Agent-specific standalone and plugin sources retain their named manager instead of falling back to `origin unknown`.
-- The Doctor card opens the current findings. `Fixable` means the finding can be fixed by the direct project symlink repair; Doctor itself remains read-only.
+- Doctor does not treat Skills CLI lock hashes as local-integrity fingerprints. Those hashes describe source folders used for update checks, while installation can intentionally omit source-only files, so comparing them to the installed copy creates false warnings.
+- The Doctor card opens the current grouped cleanups. Repairable findings show an exact preview before applying a narrowly scoped action. Obsolete Codex projection cleanup removes only stale symlinks under `.codex/skills`; canonical skill folders are never removed.
 - The UI keeps the most recent scan in memory until the next refresh.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
 - Plugin Eval and Codex review results are persisted to `~/Library/Application Support/Metagent/skill-evaluations-v1.json`.
@@ -101,16 +102,17 @@ Local deployment model:
 - `--restart` asks the existing app to quit and opens the installed copy.
 - `scripts/install-cli.sh` installs the Swift helper to `~/.local/bin/metagent` for headless/MCP use.
 
-The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row shows configured counts and only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral.
+The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row shows configured counts and only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral. The icon-only refresh action exposes its meaning through a tooltip and accessibility label; the checked-at timestamp is intentionally omitted as low-signal chrome.
 
 “Configured” and “no known issues” do not mean a server was connected or a tool was invoked. Metagent does not start MCP processes, contact providers, refresh OAuth, inspect secrets, or claim live verification during the Overview check. Per-server details preserve that distinction and direct sign-in or unavailable states back to the owning client.
 
-Pending Claude project servers retain their project paths. Their action opens a
-new Terminal in the relevant project and starts `claude`, where Claude presents
-its normal project trust prompt. Metagent does not approve the server, edit the
-manifest, or authenticate on the user's behalf. Pending servers are grouped into
-one actionable row per project, including when the same server name is awaiting
-approval in several projects.
+Pending Claude project servers retain their project paths. Their `Resolve…`
+action opens a new Terminal in the relevant project and starts `claude`, where
+Claude presents its normal project trust prompt. Deleted project-history entries
+are ignored so Metagent never offers an action for a missing worktree. Metagent
+does not approve the server, edit the manifest, or authenticate on the user's
+behalf. Pending servers are grouped into one actionable row per project,
+including when the same server name is awaiting approval in several projects.
 
 For iterative SwiftUI work, run:
 

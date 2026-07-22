@@ -115,32 +115,19 @@ private struct MetagentPanel: View {
 
             Spacer()
 
-            HStack(spacing: 10) {
-                VStack(alignment: .trailing, spacing: 3) {
-                    Label(healthLabel, systemImage: healthSymbol)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(healthTint)
-
-                    if let lastRun = model.lastRunText {
-                        Text(lastRun)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+            Menu {
+                Button("Open Config", systemImage: "gearshape") {
+                    model.openConfig()
                 }
-
-                Menu {
-                    Button("Open Config", systemImage: "gearshape") {
-                        model.openConfig()
-                    }
-                    Button("Open Logs", systemImage: "doc.text") {
-                        model.openLogs()
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
+                Button("Open Logs", systemImage: "doc.text") {
+                    model.openLogs()
                 }
-                .buttonStyle(.glass)
-                .help("More")
+            } label: {
+                Image(systemName: "ellipsis")
             }
+            .buttonStyle(.glass)
+            .help("More")
+            .accessibilityLabel("More options")
         }
     }
 
@@ -217,20 +204,6 @@ private struct MetagentPanel: View {
         }
     }
 
-    private var healthLabel: String {
-        if model.problemCount == 0 {
-            return "Healthy"
-        }
-        return "\(model.problemCount) to review"
-    }
-
-    private var healthSymbol: String {
-        model.problemCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-    }
-
-    private var healthTint: Color {
-        model.problemCount == 0 ? .green : .orange
-    }
 }
 
 private struct PanelBackdrop: View {
@@ -313,8 +286,8 @@ private struct OverviewSection: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $showsDoctorFindings) {
-            DoctorFindingsView(model: model) {
-                model.previewRepair()
+            DoctorFindingsView(model: model) { projectRoot in
+                model.previewRepair(projectRoot: projectRoot)
                 showsRepair = true
             }
         }
@@ -360,25 +333,21 @@ private struct OverviewSection: View {
                     )
                 }
 
-                if !isCompact, model.mcpHealth.observedAt != .distantPast {
-                    Text("Checked \(model.mcpHealth.observedAt.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-
                 Button {
                     model.refreshMCPHealth()
                 } label: {
-                    if isCompact {
-                        Image(systemName: "arrow.clockwise")
+                    if model.isMCPRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
                     } else {
-                        Label("Check", systemImage: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise")
                     }
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(.plain)
+                .frame(width: 24, height: 24)
                 .disabled(model.isMCPRefreshing)
                 .help("Refresh passive MCP configuration and sign-in evidence")
+                .accessibilityLabel("Refresh MCP status")
 
                 if !mcpDetailRows.isEmpty {
                     Button {
@@ -518,30 +487,39 @@ private struct OverviewSection: View {
     }
 
     private var healthHero: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 14) {
             ZStack {
                 Circle()
                     .fill(healthTint.opacity(0.14))
                 Image(systemName: healthSymbol)
-                    .font(.system(size: 25, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(healthTint)
             }
-            .frame(width: 54, height: 54)
+            .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(healthTitle)
-                    .font(.title2.weight(.semibold))
+                    .font(.headline)
                 Text(healthMessage)
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 16)
 
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    if model.problemCount > 0 {
+            HStack(spacing: 10) {
+                if model.doctorActionCount > 0 {
+                    if allDoctorFindingsRepairable {
+                        Button {
+                            model.previewRepair(projectRoot: model.doctorFindings.first?.projectRoot)
+                            showsRepair = true
+                        } label: {
+                            Label("Resolve", systemImage: "wrench.and.screwdriver")
+                        }
+                        .buttonStyle(.glassProminent)
+                        .disabled(model.isRunning)
+                    } else {
                         Button {
                             showsDoctorFindings = true
                         } label: {
@@ -550,35 +528,25 @@ private struct OverviewSection: View {
                         .buttonStyle(.glassProminent)
                         .disabled(model.isRunning)
                     }
-
-                    if model.doctorRepairableCount > 0 {
-                        Button {
-                            model.previewRepair()
-                            showsRepair = true
-                        } label: {
-                            Label("Preview fixes", systemImage: "doc.text.magnifyingglass")
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(model.isRunning)
-                    }
-
-                    Button {
-                        model.refreshStatus()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.glass)
-                    .help("Refresh")
-                    .disabled(model.isRunning)
                 }
-                .controlSize(.large)
+
+                Button {
+                    model.refreshStatus()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .frame(width: 24, height: 24)
+                .help("Refresh Doctor")
+                .disabled(model.isRunning)
             }
         }
-        .padding(20)
-        .glassEffect(
-            .regular.tint(healthTint.opacity(0.08)),
-            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
-        )
+        .padding(16)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(.separator.opacity(0.45), lineWidth: 0.5)
+        }
     }
 
     private var summary: some View {
@@ -597,24 +565,16 @@ private struct OverviewSection: View {
                 detail: "in the last 30 days",
                 symbol: "clock.arrow.circlepath"
             )
-            Divider()
-                .padding(.vertical, 4)
-            SummaryMetric(
-                title: "Doctor",
-                value: model.problemCount == 0 ? "No issues" : model.problemText,
-                detail: model.problemCount == 0 ? "No action needed" : "Review findings",
-                symbol: "stethoscope"
-            )
         }
         .frame(height: 76, alignment: .top)
         .padding(.vertical, 4)
     }
 
     private var healthTitle: String {
-        if model.problemCount == 0 {
-            return "Doctor found no issues"
+        if model.doctorActionCount == 0 {
+            return "No cleanup needed"
         }
-        return "Doctor: \(model.problemCount) \(model.problemCount == 1 ? "item needs" : "items need") attention"
+        return "\(model.doctorActionCount) \(model.doctorActionCount == 1 ? "cleanup" : "cleanups") recommended"
     }
 
     private var recentInvocationCount: Int {
@@ -622,21 +582,27 @@ private struct OverviewSection: View {
     }
 
     private var healthMessage: String {
-        if model.problemCount == 0 {
-            return "No inventory or repair action is needed."
+        if model.doctorActionCount == 0 {
+            return "Skills and projections look consistent."
         }
-        if model.doctorReviewCount == 0 {
-            return "\(model.doctorRepairableCount) can be fixed automatically."
+        if model.doctorActionCount == 1,
+           let issue = model.doctorFindings.first
+        {
+            return issue.summary ?? issue.message
         }
-        return "\(model.doctorRepairableCount) fixable · \(model.doctorReviewCount) need review"
+        return "Grouped by project and resolution."
+    }
+
+    private var allDoctorFindingsRepairable: Bool {
+        model.doctorFindings.count == 1 && model.doctorFindings[0].repairAction != nil
     }
 
     private var healthSymbol: String {
-        model.problemCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+        model.doctorActionCount == 0 ? "checkmark.circle.fill" : "wrench.and.screwdriver.fill"
     }
 
     private var healthTint: Color {
-        model.problemCount == 0 ? .green : .orange
+        model.doctorActionCount == 0 ? .green : .orange
     }
 }
 
@@ -718,7 +684,7 @@ private struct MCPHealthRow: View {
            server.state == .pendingApproval,
            server.projectPaths.count == 1
         {
-            return "Open in Claude…"
+            return "Resolve…"
         }
         return switch server.client {
         case .codex:
@@ -796,7 +762,7 @@ private struct SummaryMetric: View {
 
 private struct DoctorFindingsView: View {
     @ObservedObject var model: MetagentModel
-    let onPreviewRepair: () -> Void
+    let onPreviewRepair: (String?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     private var groups: [DoctorProjectGroup] {
@@ -807,7 +773,7 @@ private struct DoctorFindingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Doctor Findings")
+                    Text("Doctor")
                         .font(.title2.weight(.semibold))
                     Text(summaryText)
                         .font(.callout)
@@ -840,7 +806,17 @@ private struct DoctorFindingsView: View {
                                         .foregroundStyle(.secondary)
 
                                     ForEach(category.issues) { issue in
-                                        DoctorFindingRow(issue: issue)
+                                        DoctorFindingRow(
+                                            issue: issue,
+                                            isDisabled: model.isRunning,
+                                            onResolve: issue.repairAction == nil ? nil : {
+                                                onPreviewRepair(issue.projectRoot)
+                                                dismiss()
+                                            },
+                                            onOpenProject: issue.projectRoot.map { root in
+                                                { model.openProjectRoot(root) }
+                                            }
+                                        )
                                     }
                                 }
                                 .padding(.vertical, 4)
@@ -848,49 +824,27 @@ private struct DoctorFindingsView: View {
                         } header: {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(project.name)
-                                if let root = project.root {
-                                    Text(root)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .textCase(nil)
-                                }
                             }
+                            .help(project.root ?? "General findings")
                         }
                     }
                 }
                 .listStyle(.inset)
             }
 
-            HStack(spacing: 10) {
-                if model.doctorRepairableCount > 0 {
-                    Label(
-                        "\(model.doctorRepairableCount) fixable",
-                        systemImage: "link.badge.plus"
-                    )
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.blue)
-                }
-
+            HStack {
                 Spacer()
 
                 Button {
                     model.runDoctor()
                 } label: {
-                    Label("Run Again", systemImage: "stethoscope")
+                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(.plain)
+                .frame(width: 24, height: 24)
+                .help("Run Doctor again")
+                .accessibilityLabel("Run Doctor again")
                 .disabled(model.isRunning)
-
-                if model.doctorRepairableCount > 0 {
-                    Button {
-                        onPreviewRepair()
-                        dismiss()
-                    } label: {
-                        Label("Preview fixes", systemImage: "doc.text.magnifyingglass")
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(model.isRunning)
-                }
             }
         }
         .padding(18)
@@ -898,54 +852,56 @@ private struct DoctorFindingsView: View {
     }
 
     private var summaryText: String {
-        if model.problemCount == 0 {
+        if model.doctorActionCount == 0 {
             return "No action needed."
         }
-        if model.doctorReviewCount == 0 {
-            return "\(model.doctorRepairableCount) finding(s) can be fixed automatically."
-        }
-        return "\(model.doctorRepairableCount) fixable, \(model.doctorReviewCount) to review."
+        return "\(model.doctorActionCount) \(model.doctorActionCount == 1 ? "cleanup" : "cleanups"), grouped by project."
     }
 }
 
 private struct DoctorFindingRow: View {
     let issue: DoctorIssue
-    @State private var showsTechnicalDetail = false
+    let isDisabled: Bool
+    let onResolve: (() -> Void)?
+    let onOpenProject: (() -> Void)?
+    @State private var showsDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 9) {
                 Image(systemName: issue.severity == .failure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(issue.severity == .failure ? .red : .orange)
 
                 Text(issue.summary ?? issue.message)
                     .font(.callout.weight(.medium))
+                    .lineLimit(2)
 
                 Spacer()
 
-                if issue.repairAction == .repairProjection {
-                    Text("Fixable")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(.blue.opacity(0.1), in: Capsule())
+                if let onResolve {
+                    Button("Resolve…", action: onResolve)
+                        .buttonStyle(.glass)
+                        .disabled(isDisabled)
+                } else if let onOpenProject {
+                    Button("Open", action: onOpenProject)
+                        .buttonStyle(.plain)
                 }
             }
+            .help(issue.guidance ?? issue.message)
 
-            if let guidance = issue.guidance {
-                Text(guidance)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 24)
-            }
-
-            DisclosureGroup("Technical detail", isExpanded: $showsTechnicalDetail) {
-                Text(issue.message)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(.top, 3)
+            DisclosureGroup("Details", isExpanded: $showsDetails) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let guidance = issue.guidance {
+                        Text(guidance)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(issue.message)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+                .padding(.top, 3)
             }
             .font(.caption2)
             .padding(.leading, 24)
@@ -2681,9 +2637,9 @@ private struct RepairSection: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline, spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Fix skill links")
+                    Text("Resolve cleanup")
                         .font(.title2.weight(.semibold))
-                    Text("Review every change before applying it.")
+                    Text("Review the exact changes before applying them.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2721,7 +2677,7 @@ private struct RepairSection: View {
                 Button {
                     model.previewRepair()
                 } label: {
-                    Label("Preview fixes", systemImage: "doc.text.magnifyingglass")
+                    Label("Preview cleanup", systemImage: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
@@ -2821,9 +2777,11 @@ private struct RepairPreviewView: View {
                 Button {
                     onApply()
                 } label: {
-                    Label("Apply fixes", systemImage: "checkmark.circle")
+                    Label("Apply cleanup", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.glassProminent)
+                .disabled(!preview.canApply)
+                .help(preview.canApply ? "Apply only the reviewed cleanup actions" : "No cleanup actions to apply")
 
                 Button {
                     onCopySummary()

@@ -71,7 +71,7 @@ final class MetagentModel: ObservableObject {
     }
 
     var problemText: String {
-        if problemCount == 0 {
+        if doctorActionCount == 0 {
             return "No doctor issues"
         }
         if failureCount > 0 {
@@ -83,7 +83,7 @@ final class MetagentModel: ObservableObject {
         if doctorRepairableCount > 0 {
             return "\(doctorRepairableCount) fixable"
         }
-        return "\(doctorReviewCount) to review"
+        return "\(doctorActionCount) \(doctorActionCount == 1 ? "cleanup" : "cleanups")"
     }
 
     var doctorRepairableCount: Int {
@@ -96,6 +96,17 @@ final class MetagentModel: ObservableObject {
 
     var doctorFindings: [DoctorIssue] {
         doctorIssues.filter { $0.severity != .ok }
+    }
+
+    var doctorActionCount: Int {
+        Set(doctorFindings.map { issue in
+            [
+                issue.projectRoot ?? "general",
+                issue.category?.rawValue ?? "general",
+                issue.repairAction?.rawValue ?? "review",
+                issue.summary ?? issue.message
+            ].joined(separator: "|")
+        }).count
     }
 
     var skillInventory: [SkillStatus] {
@@ -359,12 +370,22 @@ final class MetagentModel: ObservableObject {
     }
 
     func repairNow() {
-        guard !isRunning else { return }
+        guard !isRunning, let repairPreview, repairPreview.canApply else { return }
+        let roots = repairPreview.projects.map(\.root)
         runOperation(
-            title: "Fix Skill Links",
-            runningText: "Fixing skill links..."
+            title: "Resolve Cleanup",
+            runningText: "Applying cleanup..."
         ) {
-            let report = try MetagentCore.repairSkills(options: SkillsRepairOptions(apply: true))
+            let report = try MetagentCore.repairSkills(options: SkillsRepairOptions(
+                apply: true,
+                scanOptions: SkillScanOptions(
+                    roots: roots,
+                    maxDepth: 0,
+                    respectConfiguredIgnores: false
+                ),
+                approvedCodexProjectionPaths: repairPreview.plannedCodexProjectionPaths,
+                approvedActionsByProject: repairPreview.actionsByProject
+            ))
             return CommandOutcome(succeeded: true, lines: Self.renderRepairReport(report), repairPreview: nil)
         } completion: { [weak self] result in
             if result.succeeded {
@@ -373,20 +394,30 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func previewRepair() {
+    func previewRepair(projectRoot: String? = nil) {
+        guard !isRunning else { return }
+        repairPreview = nil
+        showsRawOutput = false
+        let scanOptions = projectRoot.map {
+            SkillScanOptions(roots: [$0], maxDepth: 0, respectConfiguredIgnores: false)
+        } ?? SkillScanOptions()
         runOperation(
-            title: "Fix Preview",
-            runningText: "Checking skill links..."
+            title: "Cleanup Preview",
+            runningText: "Preparing cleanup preview..."
         ) {
-            let report = try MetagentCore.repairSkills()
+            let report = try MetagentCore.repairSkills(options: SkillsRepairOptions(scanOptions: scanOptions))
             return CommandOutcome(
                 succeeded: true,
                 lines: Self.renderRepairReport(report),
                 repairPreview: RepairPreview(report: report)
             )
         } completion: { [weak self] result in
-            self?.repairPreview = result.repairPreview
-            self?.showsRawOutput = false
+            guard let self, result.succeeded else { return }
+            repairPreview = result.repairPreview
+            showsRawOutput = false
+            lastOutputTitle = nil
+            statusText = "\(repoCount) locations, \(skillCount) skills"
+            systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
         }
     }
 
@@ -496,6 +527,10 @@ final class MetagentModel: ObservableObject {
 
     func openProject(_ project: RepairProjectPreview) {
         NSWorkspace.shared.open(URL(fileURLWithPath: project.root))
+    }
+
+    func openProjectRoot(_ root: String) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: root))
     }
 
     func openConfig() {
@@ -1072,7 +1107,21 @@ struct RepairPreview: Decodable, Sendable {
     }
 
     var title: String {
-        apply ? "Fix Skill Links" : "Fix Preview"
+        apply ? "Resolve Cleanup" : "Cleanup Preview"
+    }
+
+    var plannedCodexProjectionPaths: [String] {
+        projects.flatMap(\.plannedCodexProjectionPaths)
+    }
+
+    var canApply: Bool {
+        !projects.isEmpty && summary.actionCount > 0
+    }
+
+    var actionsByProject: [String: [String]] {
+        Dictionary(uniqueKeysWithValues: projects.map { project in
+            (project.root, project.actions.map(\.text).sorted())
+        })
     }
 
     var summaryText: String {
@@ -1117,6 +1166,7 @@ struct RepairProjectPreview: Decodable, Identifiable, Sendable {
     let actionCount: Int
     let skippedCount: Int
     let lines: [RepairLinePreview]
+    let plannedCodexProjectionPaths: [String]
 
     var id: String { root }
 
@@ -1128,6 +1178,7 @@ struct RepairProjectPreview: Decodable, Identifiable, Sendable {
         self.actionCount = project.actionCount
         self.skippedCount = project.skippedCount
         self.lines = project.lines.map(RepairLinePreview.init(line:))
+        self.plannedCodexProjectionPaths = project.plannedCodexProjectionPaths
     }
 
     var displayName: String {
@@ -1158,6 +1209,7 @@ struct RepairProjectPreview: Decodable, Identifiable, Sendable {
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
         case lines
+        case plannedCodexProjectionPaths = "planned_codex_projection_paths"
     }
 
 }

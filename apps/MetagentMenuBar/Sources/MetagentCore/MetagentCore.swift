@@ -1,7 +1,6 @@
 import Foundation
 import Darwin
 import SQLite3
-import CryptoKit
 
 public struct MetagentConfig: Codable, Equatable, Sendable {
     public var roots: [String]
@@ -334,13 +333,19 @@ public enum DoctorSeverity: String, Codable, Sendable {
 public struct SkillsRepairOptions: Equatable, Sendable {
     public var apply: Bool
     public var scanOptions: SkillScanOptions
+    public var approvedCodexProjectionPaths: [String]?
+    public var approvedActionsByProject: [String: [String]]?
 
     public init(
         apply: Bool = false,
-        scanOptions: SkillScanOptions = SkillScanOptions()
+        scanOptions: SkillScanOptions = SkillScanOptions(),
+        approvedCodexProjectionPaths: [String]? = nil,
+        approvedActionsByProject: [String: [String]]? = nil
     ) {
         self.apply = apply
         self.scanOptions = scanOptions
+        self.approvedCodexProjectionPaths = approvedCodexProjectionPaths
+        self.approvedActionsByProject = approvedActionsByProject
     }
 }
 
@@ -355,6 +360,15 @@ public struct SkillsRepairReport: Codable, Equatable, Sendable {
         self.mode = apply ? "APPLY" : "DRY-RUN"
         self.projects = projects
         self.summary = SkillsRepairSummary(projects: projects)
+    }
+
+    public var actionsByProject: [String: [String]] {
+        Dictionary(uniqueKeysWithValues: projects.map { project in
+            (
+                project.root,
+                project.lines.filter { $0.kind == .action }.map(\.text).sorted()
+            )
+        })
     }
 }
 
@@ -391,11 +405,13 @@ public struct SkillsRepairProject: Codable, Equatable, Identifiable, Sendable {
     public var actionCount: Int
     public var skippedCount: Int
     public var lines: [SkillsRepairLine]
+    public var plannedCodexProjectionPaths: [String]
 
-    public init(root: String, lines: [SkillsRepairLine]) {
+    public init(root: String, lines: [SkillsRepairLine], plannedCodexProjectionPaths: [String] = []) {
         self.root = root
         self.name = URL(fileURLWithPath: root).lastPathComponent
         self.lines = lines
+        self.plannedCodexProjectionPaths = plannedCodexProjectionPaths
         self.validSkillCount = Self.validSkillCount(from: lines)
         self.warningCount = lines.filter { $0.kind == .warning }.count
         self.actionCount = lines.filter { $0.kind == .action }.count
@@ -410,6 +426,7 @@ public struct SkillsRepairProject: Codable, Equatable, Identifiable, Sendable {
         case actionCount = "action_count"
         case skippedCount = "skipped_count"
         case lines
+        case plannedCodexProjectionPaths = "planned_codex_projection_paths"
     }
 
     private static func validSkillCount(from lines: [SkillsRepairLine]) -> Int {
@@ -664,17 +681,17 @@ public enum MetagentCore {
                 ))
             }
 
-            let obsoleteCodexProjections = project.skills.filter {
-                $0.location == "codex" && $0.representation == "projection"
-            }
+            let obsoleteCodexProjections = obsoleteCodexProjectionURLs(project)
             if !obsoleteCodexProjections.isEmpty {
+                let count = obsoleteCodexProjections.count
                 issues.append(.init(
                     severity: .warning,
-                    message: "\(project.root) has \(obsoleteCodexProjections.count) obsolete .codex skill projection(s)",
-                    summary: "Obsolete Codex skill projections",
+                    message: "\(project.root) has \(count) obsolete .codex skill projection(s)",
+                    summary: "Remove \(count) obsolete Codex skill \(count == 1 ? "link" : "links")",
                     projectRoot: project.root,
                     category: .projection,
-                    guidance: "Codex now discovers .agents/skills directly. Review these links, then remove only the projections."
+                    guidance: "Codex now discovers .agents/skills directly. Metagent can remove only these obsolete symlinks after you review the preview.",
+                    repairAction: .repairProjection
                 ))
             }
 
@@ -715,24 +732,6 @@ public enum MetagentCore {
                     projectRoot: project.root,
                     category: .skills,
                     guidance: "Rename or remove the hidden directory if it should be an active skill."
-                ))
-            }
-
-            let lock = readProjectSkillLocks(root: projectRoot)
-            for skill in project.skills where skill.location == "agents" && skill.manager == "skills-cli" {
-                guard let lockEntry = lock[skill.name],
-                      let expectedHash = lockEntry.computedHash ?? lockEntry.skillFolderHash,
-                      !expectedHash.isEmpty,
-                      let actualHash = try? computeSkillFolderHash(URL(fileURLWithPath: skill.path)),
-                      actualHash != expectedHash
-                else { continue }
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(skill.path) differs from its skills CLI installation hash",
-                    summary: "Managed skill modified locally",
-                    projectRoot: project.root,
-                    category: .skills,
-                    guidance: "Avoid editing this managed bundle. Reinstall or update it through the skills CLI, or copy it to a separately named local skill first."
                 ))
             }
 
@@ -800,18 +799,59 @@ public enum MetagentCore {
     }
 
     public static func repairSkills(options: SkillsRepairOptions = SkillsRepairOptions()) throws -> SkillsRepairReport {
-        let scan = try scanSkills(options: options.scanOptions)
-        let canonicalHome = canonicalProjectPath(homeURL())
-        var projects: [SkillsRepairProject] = []
-
-        for project in scan.projects where hasCanonicalSkillsSurface(project)
-            && canonicalProjectPath(URL(fileURLWithPath: project.root)) != canonicalHome
-        {
-            let lines = try repairProjectProjection(project, apply: options.apply)
-            projects.append(SkillsRepairProject(root: project.root, lines: lines))
+        if options.apply, let approvedActions = options.approvedActionsByProject {
+            let currentPreview = try repairSkills(options: SkillsRepairOptions(
+                scanOptions: options.scanOptions
+            ))
+            guard currentPreview.actionsByProject == approvedActions.mapValues({ $0.sorted() }) else {
+                throw NSError(domain: "MetagentSkillsRepair", code: 3, userInfo: [
+                    NSLocalizedDescriptionKey: "cleanup changed after preview; review it again before applying"
+                ])
+            }
         }
 
-        return SkillsRepairReport(apply: options.apply, projects: projects)
+        let scan = try scanSkills(options: options.scanOptions)
+        let canonicalHome = canonicalProjectPath(homeURL())
+        var inventoryProjects = scan.projects
+        if options.scanOptions.roots.isEmpty,
+           let homeProject = try scanHomeSkills(maxDepth: 0).projects.first(where: {
+               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
+           }),
+           !inventoryProjects.contains(where: {
+               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
+           })
+        {
+            inventoryProjects.append(homeProject)
+        }
+        var repairProjects: [SkillsRepairProject] = []
+
+        for project in inventoryProjects {
+            let isHomeProject = canonicalProjectPath(URL(fileURLWithPath: project.root)) == canonicalHome
+            let shouldInclude = isHomeProject
+                ? hasObsoleteCodexProjections(project)
+                : hasCanonicalSkillsSurface(project) || hasObsoleteCodexProjections(project)
+            guard shouldInclude else { continue }
+            let currentPaths = obsoleteCodexProjectionURLs(project).map(\.path)
+            let currentPathSet = Set(currentPaths)
+            let approvedPaths = options.approvedCodexProjectionPaths.map { paths in
+                Set(paths).intersection(currentPathSet)
+            }
+            let plannedPaths = approvedPaths.map { approved in
+                currentPaths.filter(approved.contains)
+            } ?? currentPaths
+            let lines = try repairProjectProjection(
+                project,
+                apply: options.apply,
+                approvedCodexProjectionPaths: approvedPaths
+            )
+            repairProjects.append(SkillsRepairProject(
+                root: project.root,
+                lines: lines,
+                plannedCodexProjectionPaths: plannedPaths
+            ))
+        }
+
+        return SkillsRepairReport(apply: options.apply, projects: repairProjects)
     }
 
     public static func saveInventorySnapshot(_ report: SkillScanReport) {
@@ -2113,48 +2153,6 @@ private func gitOriginURL(gitPath: URL) -> String? {
     return nil
 }
 
-private func computeSkillFolderHash(_ skillDir: URL) throws -> String {
-    let rootComponents = skillDir.standardizedFileURL.pathComponents
-    let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-    guard let enumerator = fileManager.enumerator(
-        at: skillDir,
-        includingPropertiesForKeys: Array(keys),
-        options: []
-    ) else {
-        throw NSError(domain: "MetagentSkillHash", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "could not enumerate \(skillDir.path)"
-        ])
-    }
-
-    var files: [(relativePath: String, data: Data)] = []
-    for case let path as URL in enumerator {
-        let values = try path.resourceValues(forKeys: keys)
-        if values.isDirectory == true,
-           [".git", "node_modules"].contains(path.lastPathComponent)
-        {
-            enumerator.skipDescendants()
-            continue
-        }
-        guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-        let components = path.standardizedFileURL.pathComponents
-        guard components.count > rootComponents.count else { continue }
-        files.append((
-            relativePath: components.dropFirst(rootComponents.count).joined(separator: "/"),
-            data: try Data(contentsOf: path)
-        ))
-    }
-
-    files.sort {
-        $0.relativePath.localizedCompare($1.relativePath) == .orderedAscending
-    }
-    var hash = SHA256()
-    for file in files {
-        hash.update(data: Data(file.relativePath.utf8))
-        hash.update(data: file.data)
-    }
-    return hash.finalize().map { String(format: "%02x", $0) }.joined()
-}
-
 private func readProjectSkillLocks(root: URL) -> [String: SkillLockEntry] {
     if canonicalProjectPath(root) == canonicalProjectPath(homeURL()) {
         return readSkillLock(globalSkillLockPath())
@@ -2508,9 +2506,41 @@ private func hasCanonicalSkillsSurface(_ project: SkillProject) -> Bool {
         || !project.hiddenSkillDirs.isEmpty
 }
 
-private func repairProjectProjection(
+private func hasObsoleteCodexProjections(_ project: SkillProject) -> Bool {
+    !obsoleteCodexProjectionURLs(project).isEmpty
+}
+
+private func obsoleteCodexProjectionURLs(_ project: SkillProject) -> [URL] {
+    let projectRoot = URL(fileURLWithPath: project.root).standardizedFileURL
+    let canonicalAgentPaths = Set(project.skills.lazy
+        .filter { $0.location == "agents" }
+        .map(\.canonicalPath))
+    return project.skills.compactMap { skill in
+        guard skill.location == "codex",
+              skill.representation == "projection",
+              !skill.symlinkedContainer,
+              canonicalAgentPaths.contains(skill.canonicalPath)
+        else { return nil }
+        let url = URL(fileURLWithPath: skill.path)
+        return isSymlink(url) && !hasSymlinkedAncestor(of: url, below: projectRoot) ? url : nil
+    }
+}
+
+private func hasSymlinkedAncestor(of url: URL, below root: URL) -> Bool {
+    let root = root.standardizedFileURL
+    var ancestor = url.standardizedFileURL.deletingLastPathComponent()
+    while ancestor.path != root.path {
+        guard ancestor.path.hasPrefix(root.path + "/") else { return true }
+        if isSymlink(ancestor) { return true }
+        ancestor = ancestor.deletingLastPathComponent()
+    }
+    return false
+}
+
+func repairProjectProjection(
     _ project: SkillProject,
-    apply: Bool
+    apply: Bool,
+    approvedCodexProjectionPaths: Set<String>? = nil
 ) throws -> [SkillsRepairLine] {
     let root = URL(fileURLWithPath: project.root)
     let canonicalSkills = root.appendingPathComponent(".agents").appendingPathComponent("skills")
@@ -2519,6 +2549,49 @@ private func repairProjectProjection(
     var lines: [SkillsRepairLine] = [
         .init(kind: .info, text: "valid local skills: \(project.validSkills.count)")
     ]
+
+    let currentObsoleteCodexProjections = obsoleteCodexProjectionURLs(project)
+    let currentPaths = Set(currentObsoleteCodexProjections.map(\.path))
+    if let approvedCodexProjectionPaths {
+        let missingPaths = approvedCodexProjectionPaths.subtracting(currentPaths)
+        guard missingPaths.isEmpty else {
+            throw NSError(domain: "MetagentSkillsRepair", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "cleanup changed after preview; review it again before applying"
+            ])
+        }
+    }
+    let obsoleteCodexProjections = approvedCodexProjectionPaths.map { approved in
+        currentObsoleteCodexProjections.filter { approved.contains($0.path) }
+    } ?? currentObsoleteCodexProjections
+    func resolveObsoleteCodexProjections() throws {
+        guard !obsoleteCodexProjections.isEmpty else { return }
+        let projectRoot = URL(fileURLWithPath: project.root).standardizedFileURL
+        let canonicalAgentPaths = Set(project.skills.lazy
+            .filter { $0.location == "agents" }
+            .map(\.canonicalPath))
+        if apply {
+            for url in obsoleteCodexProjections {
+                guard isSymlink(url),
+                      !hasSymlinkedAncestor(of: url, below: projectRoot),
+                      canonicalAgentPaths.contains(canonicalProjectPath(url))
+                else {
+                    throw NSError(domain: "MetagentSkillsRepair", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: "refusing to remove non-canonical projection at \(url.path)"
+                    ])
+                }
+            }
+            for url in obsoleteCodexProjections {
+                try fileManager.removeItem(at: url)
+            }
+            lines.append(contentsOf: obsoleteCodexProjections.map {
+                .init(kind: .action, text: "removed obsolete Codex link: \($0.path)")
+            })
+        } else {
+            lines.append(contentsOf: obsoleteCodexProjections.map {
+                .init(kind: .action, text: "would remove obsolete Codex link: \($0.path)")
+            })
+        }
+    }
 
     if !project.hiddenSkillDirs.isEmpty {
         lines.append(.init(kind: .warning, text: "warning: \(project.hiddenSkillDirs.count) hidden skill dir(s) ignored"))
@@ -2530,16 +2603,23 @@ private func repairProjectProjection(
         lines.append(.init(kind: .info, text: "no valid SKILL.md folders yet"))
     }
 
+    if canonicalProjectPath(root) == canonicalProjectPath(homeURL()) {
+        try resolveObsoleteCodexProjections()
+        return lines
+    }
+
     if isSymlink(claudeDirectory) {
         lines.append(.init(
             kind: .skipped,
             text: "manual review: .claude is a symlink; refusing to modify its shared target"
         ))
+        try resolveObsoleteCodexProjections()
         return lines
     }
 
     if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) {
         lines.append(.init(kind: .info, text: "healthy: .claude/skills -> ../.agents/skills"))
+        try resolveObsoleteCodexProjections()
         return lines
     }
     if fileManager.fileExists(atPath: claudeSkills.path), !isSymlink(claudeSkills) {
@@ -2547,6 +2627,7 @@ private func repairProjectProjection(
             kind: .skipped,
             text: "manual review: .claude/skills exists and is not a symlink"
         ))
+        try resolveObsoleteCodexProjections()
         return lines
     }
 
@@ -2568,6 +2649,7 @@ private func repairProjectProjection(
         lines.append(.init(kind: .action, text: "would \(action) -> ../.agents/skills"))
     }
 
+    try resolveObsoleteCodexProjections()
     return lines
 }
 

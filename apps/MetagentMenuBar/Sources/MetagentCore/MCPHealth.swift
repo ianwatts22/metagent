@@ -226,6 +226,21 @@ public extension MetagentCore {
                 if let projects = object["projects"] as? [String: Any] {
                     for (projectPath, projectValue) in projects {
                         guard let project = projectValue as? [String: Any] else { continue }
+                        let projectURL = URL(fileURLWithPath: projectPath).resolvingSymlinksInPath()
+                        do {
+                            let values = try projectURL.resourceValues(forKeys: [.isDirectoryKey])
+                            guard values.isDirectory == true else { continue }
+                            _ = try FileManager.default.contentsOfDirectory(atPath: projectURL.path)
+                        } catch {
+                            let error = error as NSError
+                            if error.domain == NSCocoaErrorDomain,
+                               error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError
+                            {
+                                continue
+                            }
+                            configurationUnavailable = true
+                            continue
+                        }
                         projectScopes.append(claudeProjectMCPScope(
                             projectPath: projectPath,
                             project: project,
