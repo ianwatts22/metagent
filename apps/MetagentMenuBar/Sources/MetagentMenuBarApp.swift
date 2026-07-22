@@ -88,6 +88,14 @@ private struct MetagentPanel: View {
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
 
+    private var directoryOptions: [DirectoryFilterOption] {
+        directoryFilterOptions(
+            projects: model.projects,
+            mcpHealth: model.mcpHealth,
+            doctorIssues: model.doctorIssues
+        )
+    }
+
     var body: some View {
         ZStack {
             PanelBackdrop()
@@ -105,7 +113,7 @@ private struct MetagentPanel: View {
             .padding(showsOpenWindowButton ? 16 : 22)
         }
         .buttonBorderShape(.capsule)
-        .onChange(of: projectFilterProjects(model.projects).map(\.root)) { _, roots in
+        .onChange(of: directoryOptions.map(\.root)) { _, roots in
             if let selectedProjectRoot, !roots.contains(selectedProjectRoot) {
                 self.selectedProjectRoot = nil
             }
@@ -126,10 +134,10 @@ private struct MetagentPanel: View {
 
             Picker("Directory", selection: $selectedProjectRoot) {
                 Text("All directories").tag(String?.none)
-                ForEach(projectFilterProjects(model.projects)) { project in
-                    Text(projectFilterLabel(project, projects: projectFilterProjects(model.projects)))
-                        .help(project.root)
-                        .tag(Optional(project.root))
+                ForEach(directoryOptions) { directory in
+                    Text(directoryFilterLabel(directory, options: directoryOptions))
+                        .help(directory.root)
+                        .tag(Optional(directory.root))
                 }
             }
             .labelsHidden()
@@ -619,7 +627,7 @@ private struct OverviewSection: View {
         model.usageSnapshot.summaries
             .filter { summary in
                 guard let selectedProjectRoot else { return true }
-                guard summary.scope == "project" else { return true }
+                if ["global", "system", "plugin"].contains(summary.scope) { return true }
                 guard let path = summary.canonicalPath else { return false }
                 return path == selectedProjectRoot
                     || path.hasPrefix(selectedProjectRoot + "/")
@@ -646,7 +654,9 @@ private struct OverviewSection: View {
 
     private var doctorFindings: [DoctorIssue] {
         guard let selectedProjectRoot else { return model.doctorFindings }
-        return model.doctorFindings.filter { $0.projectRoot == selectedProjectRoot }
+        return model.doctorFindings.filter {
+            $0.projectRoot.map(standardizedDirectoryPath) == selectedProjectRoot
+        }
     }
 
     private var doctorActionCount: Int {
@@ -655,11 +665,7 @@ private struct OverviewSection: View {
 
     private var scopedSkillCount: Int {
         guard let selectedProjectRoot else { return model.skillCount }
-        return model.projects.reduce(0) { count, project in
-            count + project.skills.filter { skill in
-                skill.scope != "project" || project.root == selectedProjectRoot
-            }.count
-        }
+        return logicalSkillCount(projects: model.projects, selectedProjectRoot: selectedProjectRoot)
     }
 
 }
@@ -1306,8 +1312,16 @@ private struct SkillTableRow: Identifiable, Sendable {
         }
         return "\(sourceCategory.explanation)\n\(detail)"
     }
-    var scope: String { usage.scope }
-    var scopeLabel: String { usage.scopeLabel }
+    var scope: String { inventory?.skill.scope ?? usage.scope }
+    var scopeLabel: String {
+        switch scope {
+        case "project": "Project"
+        case "global": "Global"
+        case "plugin": "Plugin"
+        case "system": "System"
+        default: "Unknown"
+        }
+    }
     var displayLocationText: String {
         scope == "project" ? projectName : ""
     }
@@ -1899,9 +1913,7 @@ private struct SkillsMenuSection: View {
 
     private var scopedSkillCount: Int {
         guard let selectedProjectRoot else { return model.logicalSkillCount }
-        return model.projects.reduce(0) { count, project in
-            count + project.skills.filter { $0.scope != "project" || project.root == selectedProjectRoot }.count
-        }
+        return logicalSkillCount(projects: model.projects, selectedProjectRoot: selectedProjectRoot)
     }
 
     var body: some View {
@@ -3054,19 +3066,56 @@ private func scoreTint(_ grade: SkillGrade) -> Color {
     }
 }
 
-private func projectFilterLabel(_ project: ProjectStatus, projects: [ProjectStatus]) -> String {
-    guard projects.filter({ $0.name == project.name }).count > 1 else {
-        return project.name
-    }
-    let parent = URL(fileURLWithPath: project.root).deletingLastPathComponent().lastPathComponent
-    return "\(project.name) — \(parent)"
+private struct DirectoryFilterOption: Identifiable {
+    let root: String
+    let name: String
+
+    var id: String { root }
 }
 
-private func projectFilterProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {
-    projects.filter { project in
+private func directoryFilterOptions(
+    projects: [ProjectStatus],
+    mcpHealth: MCPHealthSnapshot,
+    doctorIssues: [DoctorIssue]
+) -> [DirectoryFilterOption] {
+    var namesByRoot: [String: String] = [:]
+    for project in projects {
         let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
-        return !isPluginProject
+        guard !isPluginProject else { continue }
+        namesByRoot[standardizedDirectoryPath(project.root)] = project.name
     }
+    let additionalRoots = mcpHealth.servers.flatMap { $0.projectStates.map(\.path) }
+        + doctorIssues.compactMap(\.projectRoot)
+    for root in additionalRoots {
+        let canonicalRoot = standardizedDirectoryPath(root)
+        if namesByRoot[canonicalRoot] == nil {
+            namesByRoot[canonicalRoot] = URL(fileURLWithPath: canonicalRoot).lastPathComponent
+        }
+    }
+    return namesByRoot.map { DirectoryFilterOption(root: $0.key, name: $0.value) }
+        .sorted { left, right in
+            if left.root == NSHomeDirectory() { return true }
+            if right.root == NSHomeDirectory() { return false }
+            let nameOrder = left.name.localizedStandardCompare(right.name)
+            return nameOrder == .orderedSame ? left.root < right.root : nameOrder == .orderedAscending
+        }
+}
+
+private func directoryFilterLabel(_ directory: DirectoryFilterOption, options: [DirectoryFilterOption]) -> String {
+    guard options.filter({ $0.name == directory.name }).count > 1 else {
+        return directory.name
+    }
+    let parent = URL(fileURLWithPath: directory.root).deletingLastPathComponent().lastPathComponent
+    return "\(directory.name) — \(parent)"
+}
+
+private func logicalSkillCount(projects: [ProjectStatus], selectedProjectRoot: String) -> Int {
+    Set<String>(projects.flatMap { project in
+        project.skills.compactMap { skill in
+            guard skill.scope != "project" || project.root == selectedProjectRoot else { return nil }
+            return "\(project.root)\u{0}\(skill.name)"
+        }
+    }).count
 }
 
 private func groupedDoctorActionCount(_ findings: [DoctorIssue]) -> Int {
