@@ -1188,9 +1188,18 @@ private struct UsageSkillRow: Identifiable, Sendable {
     }
 }
 
-private struct InventoryRemovalConfirmation: Identifiable {
-    let id = UUID()
-    let rows: [InventorySkillRow]
+private enum InventoryConfirmation: Identifiable {
+    case removal([InventorySkillRow])
+    case codexReview(InventorySkillRow)
+
+    var id: String {
+        switch self {
+        case let .removal(rows):
+            "removal:" + rows.map(\.id).sorted().joined(separator: ",")
+        case let .codexReview(row):
+            "codex-review:\(row.id)"
+        }
+    }
 }
 
 private enum SkillTableView: String, CaseIterable, Identifiable {
@@ -1338,7 +1347,7 @@ private struct SkillTableRow: Identifiable, Sendable {
     var metagentScoreText: String { inventory?.metagentScoreText ?? "—" }
     var metagentScoreTint: Color? { inventory?.metagentScoreTint }
     var metagentScoreHelp: String { inventory?.metagentScoreHelp ?? "Not available for an uninstalled skill." }
-    var portfolioScoreSortValue: Int { inventory?.metagentScore.score ?? -1 }
+    var portfolioScoreSortValue: Int { inventory?.utilityScore ?? -1 }
     var portfolioScoreText: String { inventory?.portfolioScoreText ?? "—" }
     var portfolioScoreTint: Color? { inventory?.portfolioScoreTint }
     var portfolioScoreHelp: String { inventory?.portfolioScoreHelp ?? "Not available for an uninstalled skill." }
@@ -1470,14 +1479,13 @@ private struct InventorySection: View {
     @State private var query = ""
     @State private var usageFilter = UsageFilter.all
     @State private var scopeFilter = SkillScopeFilter.all
-    @State private var pendingRemoval: InventoryRemovalConfirmation?
-    @State private var pendingCodexReview: InventorySkillRow?
+    @State private var pendingConfirmation: InventoryConfirmation?
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
     private var hiddenSourceRaw = "__unmigrated__"
     @SceneStorage("metagent.skills.inventory.columns.v2")
     private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
-    @SceneStorage("metagent.skills.summary.columns.v2")
+    @SceneStorage("metagent.skills.summary.columns.v3")
     private var summaryColumnCustomization = TableColumnCustomization<SkillTableRow>()
     @SceneStorage("metagent.skills.usage.columns.v3")
     private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
@@ -1632,7 +1640,7 @@ private struct InventorySection: View {
                     .disabled(selectedRow == nil)
                     Button("Review with Codex") {
                         if let selectedRow {
-                            pendingCodexReview = selectedRow
+                            pendingConfirmation = .codexReview(selectedRow)
                         }
                     }
                     .disabled(selectedRow == nil)
@@ -1648,7 +1656,7 @@ private struct InventorySection: View {
                 .disabled(visibleInventoryRows.isEmpty || model.isSkillEvaluating)
 
                 Button(role: .destructive) {
-                    pendingRemoval = InventoryRemovalConfirmation(rows: selectedRemovalRows)
+                    pendingConfirmation = .removal(selectedRemovalRows)
                 } label: {
                     Label(
                         selectedRemovalRows.count > 1 ? "Remove \(selectedRemovalRows.count)" : "Remove",
@@ -1822,7 +1830,7 @@ private struct InventorySection: View {
                         systemImage: "trash",
                         role: .destructive
                     ) {
-                        pendingRemoval = InventoryRemovalConfirmation(rows: removableRows)
+                        pendingConfirmation = .removal(removableRows)
                     }
                     .disabled(removableRows.isEmpty || model.isRunning)
                 }
@@ -1841,29 +1849,31 @@ private struct InventorySection: View {
             selection.formIntersection(Set(rows.map(\.id)))
             sortOrder = defaultSortOrder(for: view)
         }
-        .alert(item: $pendingRemoval) { confirmation in
-            let requests = confirmation.rows.compactMap(\.removalRequest)
-            let names = confirmation.rows.prefix(6).map(\.skillName).joined(separator: ", ")
-            let suffix = confirmation.rows.count > 6 ? ", …" : ""
-            return Alert(
-                title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
-                message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: confirmation.rows))"),
-                primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
-                    selection.removeAll()
-                    model.uninstallSkills(requests)
-                },
-                secondaryButton: .cancel()
-            )
-        }
-        .alert(item: $pendingCodexReview) { row in
-            Alert(
-                title: Text("Review \(row.skillName) with Codex?"),
-                message: Text("Metagent will copy this skill into an isolated temporary directory, disable Codex tools and user configuration, and send the copied contents to OpenAI for an ephemeral review. The skill and other local files cannot be edited or read by the review."),
-                primaryButton: .default(Text("Run Review")) {
-                    model.reviewSkillWithCodex(path: row.canonicalPath)
-                },
-                secondaryButton: .cancel()
-            )
+        .alert(item: $pendingConfirmation) { confirmation in
+            switch confirmation {
+            case let .removal(rows):
+                let requests = rows.compactMap(\.removalRequest)
+                let names = rows.prefix(6).map(\.skillName).joined(separator: ", ")
+                let suffix = rows.count > 6 ? ", …" : ""
+                return Alert(
+                    title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
+                    message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: rows))"),
+                    primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
+                        selection.removeAll()
+                        model.uninstallSkills(requests)
+                    },
+                    secondaryButton: .cancel()
+                )
+            case let .codexReview(row):
+                return Alert(
+                    title: Text("Review \(row.skillName) with Codex?"),
+                    message: Text("Metagent will copy this skill into an isolated temporary directory, disable Codex tools and user configuration, and send the copied contents to OpenAI for an ephemeral review. The skill and other local files cannot be edited or read by the review."),
+                    primaryButton: .default(Text("Run Review")) {
+                        model.reviewSkillWithCodex(path: row.canonicalPath)
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
         }
     }
 
@@ -2405,23 +2415,35 @@ private struct InventorySkillRow: Identifiable, Sendable {
             .compactMap { $0 }
             .joined(separator: "\n")
     }
-    var metagentStaticScore: Int { metagentScore.structuralScore }
-    var metagentStaticGrade: SkillGrade { metagentScore.structuralGrade }
+    var metagentStaticScore: Int {
+        metagentScore.qualityScore(
+            pluginEvalScore: pluginEval?.score,
+            codexReviewScore: codexReview?.score
+        )
+    }
+    var metagentStaticGrade: SkillGrade { .forScore(metagentStaticScore) }
+    var utilityScore: Int { metagentScore.utilityScore(qualityScore: metagentStaticScore) }
+    var utilityGrade: SkillGrade { .forScore(utilityScore) }
     var metagentScoreText: String { "\(metagentStaticScore) \(metagentStaticGrade.rawValue)" }
     var metagentScoreTint: Color { scoreTint(metagentStaticGrade) }
     var metagentScoreHelp: String {
         let breakdown = metagentScore.components.filter { $0.id != "adoption" }.map {
             "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
         }.joined(separator: "\n")
-        return "Quality is stable; usage is excluded. Integrity and portfolio clarity are normalized from 60 points to 100.\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
+        let pluginLine = pluginEval.map { "Plugin Eval: \($0.score)/100 · 60% weight" }
+            ?? "Plugin Eval: not run · excluded"
+        let codexLine = codexReview.map { "Codex review: \($0.score)/100 · 20% weight" }
+            ?? "Codex review: not run · excluded"
+        return "Quality excludes usage. Available inputs are normalized: Plugin Eval 60%, structural integrity 20%, Codex review 20%.\nStructural integrity: \(metagentScore.structuralScore)/100 · 20% weight\n\(pluginLine)\n\(codexLine)\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
     }
-    var portfolioScoreText: String { "\(metagentScore.score) \(metagentScore.grade.rawValue)" }
-    var portfolioScoreTint: Color { scoreTint(metagentScore.grade) }
+    var portfolioScoreText: String { "\(utilityScore) \(utilityGrade.rawValue)" }
+    var portfolioScoreTint: Color { scoreTint(utilityGrade) }
     var portfolioScoreHelp: String {
-        let breakdown = metagentScore.components.map {
-            "\($0.label): \($0.score)/\($0.maximum) — \($0.explanation)"
-        }.joined(separator: "\n")
-        return "Utility combines 60 points of structural quality with 40 points of observed adoption.\n\(breakdown)"
+        let adoption = metagentScore.components.first { $0.id == "adoption" }
+        let adoptionText = adoption.map {
+            "Observed adoption: \($0.score)/\($0.maximum) — \($0.explanation)"
+        } ?? "Observed adoption: unavailable"
+        return "Utility combines Quality at 70% with observed adoption at 30%.\nQuality: \(metagentStaticScore)/100\n\(adoptionText)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }
@@ -2629,7 +2651,7 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.inventory, .usage],
+        defaultViews: [.summary, .inventory, .usage],
         value: \.displayLocationText,
         help: \.displayLocationHelp
     ),
@@ -2685,7 +2707,7 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.review],
+        defaultViews: [.summary, .review],
         showsBadge: true,
         tint: { $0.portfolioScoreTint },
         value: \.portfolioScoreText,

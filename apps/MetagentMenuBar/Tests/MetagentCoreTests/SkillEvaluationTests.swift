@@ -85,6 +85,55 @@ final class SkillEvaluationTests: XCTestCase {
         XCTAssertEqual(result.confidence, .low)
     }
 
+    func testQualityUsesPluginEvalAsPrimaryStableSignal() {
+        let skill = makeSkill()
+        let result = MetagentCore.scoreSkill(
+            skill,
+            variants: [skill],
+            usage: nil,
+            usageCoverageComplete: true
+        )
+
+        XCTAssertEqual(
+            result.qualityScore(pluginEvalScore: 81, codexReviewScore: nil),
+            86
+        )
+        XCTAssertEqual(
+            result.qualityScore(pluginEvalScore: 81, codexReviewScore: 90),
+            87
+        )
+    }
+
+    func testUtilityCombinesQualityAndNormalizedAdoption() {
+        let skill = makeSkill()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let usage = SkillUsageSummary(
+            id: skill.canonicalPath,
+            skillName: "demo",
+            canonicalPath: skill.canonicalPath,
+            scope: "project",
+            totalInvocations: 16,
+            invocations7d: 16,
+            invocations30d: 16,
+            activeTurns: 12,
+            distinctThreads: 8,
+            repeatInvocations: 4,
+            directInvocations: 16,
+            inferredInvocations: 0,
+            firstUsedAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(-86_400)),
+            lastUsedAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(-86_400))
+        )
+        let result = MetagentCore.scoreSkill(
+            skill,
+            variants: [skill],
+            usage: usage,
+            usageCoverageComplete: true,
+            now: now
+        )
+
+        XCTAssertEqual(result.utilityScore(qualityScore: 86), 90)
+    }
+
     func testSharedGradeThresholds() {
         XCTAssertEqual(SkillGrade.forScore(90), .a)
         XCTAssertEqual(SkillGrade.forScore(89), .b)

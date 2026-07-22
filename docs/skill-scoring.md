@@ -1,9 +1,9 @@
 # Skill scoring
 
-Metagent keeps four signals separate because they answer different questions:
+Metagent exposes four related signals because they answer different questions:
 
-- **Quality** measures stable operational integrity and identity clarity without usage.
-- **Utility** combines Quality's inputs with observed adoption from retained Codex history.
+- **Quality** is the stable aggregate of available structural and evaluator evidence, excluding usage.
+- **Utility** combines Quality with observed adoption from retained Codex history.
 - **Plugin Eval** is the score and grade emitted by the installed `plugin-eval` CLI. Metagent does not reproduce or reinterpret its formula.
 - **Codex review** is an optional model judgment against a fixed rubric. It only runs after confirmation. Metagent copies up to 1 MiB of the selected skill into an isolated temporary directory, embeds its text in the review request, disables Codex tools and user configuration, confines local file access with the macOS sandbox, and sends the copied skill contents to OpenAI. It uses ChatGPT.app's native Codex binary by default; `METAGENT_CODEX` may point to another native executable.
 
@@ -11,9 +11,11 @@ None of these scores authorizes automatic removal or modification.
 
 ## Quality
 
-Quality is a stable 0–100 score. It adds the 40-point operational-integrity and
-20-point portfolio-clarity components below, then normalizes the 60-point total
-to 100. Usage changes do not change Quality.
+Quality is a stable 0–100 weighted mean. Plugin Eval is the primary signal at
+60%, structural integrity and portfolio clarity contribute 20%, and optional
+Codex review contributes 20%. Missing optional evaluations are excluded rather
+than treated as zero, and the remaining weights are normalized. Usage changes
+do not change Quality.
 
 ### Operational integrity — 40 points
 
@@ -31,10 +33,9 @@ to 100. Usage changes do not change Quality.
 
 ## Utility
 
-Utility is the full Metagent Score v2 calculation: the 60 structural points used
-by Quality plus 40 points of observed adoption. It is intended for retention and
-prioritization decisions, where both intrinsic quality and demonstrated use
-matter.
+Utility weights Quality at 70% and observed adoption at 30%. It is intended for
+retention and prioritization decisions, where both intrinsic quality and
+demonstrated use matter.
 
 ### Observed adoption — 40 points
 

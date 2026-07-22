@@ -71,6 +71,39 @@ public struct MetagentSkillScore: Codable, Equatable, Sendable {
     public var structuralGrade: SkillGrade {
         .forScore(structuralScore)
     }
+
+    /// Stable aggregate led by skill-content evaluation when it is available.
+    /// Missing optional evaluators are excluded rather than treated as zero.
+    public func qualityScore(
+        pluginEvalScore: Int?,
+        codexReviewScore: Int?
+    ) -> Int {
+        var weightedTotal = structuralScore * 20
+        var totalWeight = 20
+        if let pluginEvalScore {
+            weightedTotal += min(100, max(0, pluginEvalScore)) * 60
+            totalWeight += 60
+        }
+        if let codexReviewScore {
+            weightedTotal += min(100, max(0, codexReviewScore)) * 20
+            totalWeight += 20
+        }
+        return Int((Double(weightedTotal) / Double(totalWeight)).rounded())
+    }
+
+    /// Retention-oriented aggregate: 70% quality and 30% observed adoption.
+    public func utilityScore(qualityScore: Int) -> Int {
+        let adoption = components.first { $0.id == "adoption" }
+        let adoptionScore: Int
+        if let adoption, adoption.maximum > 0 {
+            adoptionScore = Int(
+                (Double(adoption.score) / Double(adoption.maximum) * 100).rounded()
+            )
+        } else {
+            adoptionScore = 0
+        }
+        return Int((Double(qualityScore) * 0.7 + Double(adoptionScore) * 0.3).rounded())
+    }
 }
 
 public struct PluginEvalDeduction: Codable, Equatable, Sendable {
