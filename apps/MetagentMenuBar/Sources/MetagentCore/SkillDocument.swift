@@ -7,6 +7,7 @@ public struct SkillDocumentMetadata: Equatable, Identifiable, Sendable {
 }
 
 public struct SkillDocument: Equatable, Sendable {
+    public let directoryPath: String
     public let name: String
     public let description: String?
     public let metadata: [SkillDocumentMetadata]
@@ -31,6 +32,31 @@ public struct SkillMarkdownBlock: Equatable, Identifiable, Sendable {
     public let text: String
 }
 
+public struct SkillPortablePathFinding: Equatable, Identifiable, Sendable {
+    public var id: String { relativePath }
+    public let relativePath: String
+    public let occurrenceCount: Int
+    public let canReplaceAutomatically: Bool
+}
+
+public struct SkillPortablePathScan: Equatable, Sendable {
+    public let homePath: String
+    public let findings: [SkillPortablePathFinding]
+
+    public var replaceableOccurrenceCount: Int {
+        findings.filter(\.canReplaceAutomatically).reduce(0) { $0 + $1.occurrenceCount }
+    }
+
+    public var reviewOccurrenceCount: Int {
+        findings.filter { !$0.canReplaceAutomatically }.reduce(0) { $0 + $1.occurrenceCount }
+    }
+}
+
+public struct SkillPortablePathUpdateReport: Equatable, Sendable {
+    public let updatedFiles: [String]
+    public let replacedOccurrenceCount: Int
+}
+
 extension MetagentCore {
     public static func loadSkillDocument(at skillDirectoryPath: String) throws -> SkillDocument {
         let directory = URL(fileURLWithPath: skillDirectoryPath).standardizedFileURL
@@ -42,6 +68,7 @@ extension MetagentCore {
         let metadata = topLevelSkillMetadata(lines: parsed.frontmatter)
             .filter { !["Name", "Description"].contains($0.key) }
         return SkillDocument(
+            directoryPath: directory.path,
             name: name,
             description: skillFrontmatterDescription(lines: parsed.frontmatter),
             metadata: metadata,
@@ -88,6 +115,12 @@ extension MetagentCore {
         guard !cleanName.contains(where: \.isNewline) else {
             throw skillDocumentError(code: 4, message: "The skill name must fit on one line.")
         }
+        guard isValidEditableSkillName(cleanName) else {
+            throw skillDocumentError(
+                code: 5,
+                message: "Use letters, numbers, periods, underscores, or hyphens; the name must start with a letter or number."
+            )
+        }
 
         let parsed = splitSkillDocument(currentText)
         var frontmatter = parsed.frontmatter
@@ -101,6 +134,7 @@ extension MetagentCore {
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
         let descriptionReplacement = descriptionLines.count == 1
+            || cleanDescription.unicodeScalars.contains(where: isYAMLForbiddenControl)
             ? ["description: \(yamlQuoted(cleanDescription))"]
             : ["description: |-"] + descriptionLines.map { "  \($0)" }
         replaceFrontmatterField(
@@ -117,13 +151,225 @@ extension MetagentCore {
 
         \(cleanBody)
         """
-        try (updated + "\n").write(to: path, atomically: true, encoding: .utf8)
-        return try loadSkillDocument(at: directory.path)
+        let targetDirectory = directory
+            .deletingLastPathComponent()
+            .appendingPathComponent(cleanName, isDirectory: true)
+            .standardizedFileURL
+        guard targetDirectory.path != directory.path else {
+            try (updated + "\n").write(to: path, atomically: true, encoding: .utf8)
+            return try loadSkillDocument(at: directory.path)
+        }
+        guard !FileManager.default.fileExists(atPath: targetDirectory.path) else {
+            throw skillDocumentError(
+                code: 6,
+                message: "A skill folder named \(cleanName) already exists."
+            )
+        }
+
+        let projections = skillProjectionLinks(resolvingTo: directory)
+        var renamedProjections: [(old: URL, new: URL, destination: String)] = []
+        do {
+            try FileManager.default.moveItem(at: directory, to: targetDirectory)
+            for projection in projections {
+                let renamed = projection.url
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(cleanName)
+                try FileManager.default.removeItem(at: projection.url)
+                do {
+                    try FileManager.default.createSymbolicLink(
+                        atPath: renamed.path,
+                        withDestinationPath: renamedSymlinkDestination(
+                            projection.destination,
+                            newName: cleanName
+                        )
+                    )
+                    renamedProjections.append((
+                        old: projection.url,
+                        new: renamed,
+                        destination: projection.destination
+                    ))
+                } catch {
+                    try? FileManager.default.createSymbolicLink(
+                        atPath: projection.url.path,
+                        withDestinationPath: projection.destination
+                    )
+                    throw error
+                }
+            }
+            try (updated + "\n").write(
+                to: targetDirectory.appendingPathComponent("SKILL.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+        } catch {
+            for projection in renamedProjections.reversed() {
+                try? FileManager.default.removeItem(at: projection.new)
+                try? FileManager.default.createSymbolicLink(
+                    atPath: projection.old.path,
+                    withDestinationPath: projection.destination
+                )
+            }
+            if FileManager.default.fileExists(atPath: targetDirectory.path),
+               !FileManager.default.fileExists(atPath: directory.path)
+            {
+                try? FileManager.default.moveItem(at: targetDirectory, to: directory)
+            }
+            throw skillDocumentError(
+                code: 7,
+                message: "Couldn’t rename the skill folder safely: \(error.localizedDescription)"
+            )
+        }
+        return try loadSkillDocument(at: targetDirectory.path)
     }
 
     public static func skillMarkdownBlocks(_ markdown: String) -> [SkillMarkdownBlock] {
         parseSkillMarkdownBlocks(markdown)
     }
+
+    public static func scanSkillForPersonalPaths(
+        at skillDirectoryPath: String
+    ) throws -> SkillPortablePathScan {
+        let directory = try editableCanonicalSkillDirectory(at: skillDirectoryPath)
+        return SkillPortablePathScan(
+            homePath: FileManager.default.homeDirectoryForCurrentUser.path,
+            findings: portablePathFiles(in: directory).map(\.finding)
+        )
+    }
+
+    public static func replacePersonalPathsWithTilde(
+        at skillDirectoryPath: String
+    ) throws -> SkillPortablePathUpdateReport {
+        let directory = try editableCanonicalSkillDirectory(at: skillDirectoryPath)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = portablePathFiles(in: directory).filter {
+            $0.finding.canReplaceAutomatically
+        }
+        var originals: [(url: URL, text: String)] = []
+        do {
+            for candidate in candidates {
+                let text = try String(contentsOf: candidate.url, encoding: .utf8)
+                originals.append((candidate.url, text))
+                try text.replacingOccurrences(of: home, with: "~")
+                    .write(to: candidate.url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            for original in originals {
+                try? original.text.write(to: original.url, atomically: true, encoding: .utf8)
+            }
+            throw skillDocumentError(
+                code: 9,
+                message: "Couldn’t make the skill portable; edited files were restored. \(error.localizedDescription)"
+            )
+        }
+        return SkillPortablePathUpdateReport(
+            updatedFiles: candidates.map(\.finding.relativePath),
+            replacedOccurrenceCount: candidates.reduce(0) {
+                $0 + $1.finding.occurrenceCount
+            }
+        )
+    }
+}
+
+private func editableCanonicalSkillDirectory(at path: String) throws -> URL {
+    let directory = URL(fileURLWithPath: path).standardizedFileURL
+    let skillFile = directory.appendingPathComponent("SKILL.md")
+    let values = try skillFile.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    guard directory.resolvingSymlinksInPath().standardizedFileURL.path == directory.path,
+          values.isRegularFile == true,
+          values.isSymbolicLink != true
+    else {
+        throw skillDocumentError(
+            code: 8,
+            message: "Only a canonical, non-symlinked skill can be scanned or changed."
+        )
+    }
+    return directory
+}
+
+private func portablePathFiles(
+    in directory: URL
+) -> [(url: URL, finding: SkillPortablePathFinding)] {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+    guard let enumerator = FileManager.default.enumerator(
+        at: directory,
+        includingPropertiesForKeys: Array(keys),
+        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+    ) else { return [] }
+    return enumerator.compactMap { item in
+        guard let url = item as? URL,
+              let values = try? url.resourceValues(forKeys: keys),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              (values.fileSize ?? 0) <= 2_000_000,
+              let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return nil }
+        let count = max(0, text.components(separatedBy: home).count - 1)
+        guard count > 0 else { return nil }
+        let componentCount = max(1, url.pathComponents.count - directory.pathComponents.count)
+        let relative = url.pathComponents.suffix(componentCount).joined(separator: "/")
+        let isDocumentation = url.lastPathComponent.lowercased() == "skill.md"
+            || (
+                url.pathComponents.contains(where: { $0.lowercased() == "references" })
+                    && ["md", "mdx", "txt"].contains(url.pathExtension.lowercased())
+            )
+        return (
+            url,
+            SkillPortablePathFinding(
+                relativePath: relative,
+                occurrenceCount: count,
+                canReplaceAutomatically: isDocumentation
+            )
+        )
+    }
+    .sorted { $0.finding.relativePath < $1.finding.relativePath }
+}
+
+private struct SkillProjectionLink {
+    let url: URL
+    let destination: String
+}
+
+private func skillProjectionLinks(resolvingTo directory: URL) -> [SkillProjectionLink] {
+    let skillsDirectory = directory.deletingLastPathComponent()
+    let agentDirectory = skillsDirectory.deletingLastPathComponent()
+    guard skillsDirectory.lastPathComponent == "skills",
+          [".agents", ".claude", ".codex"].contains(agentDirectory.lastPathComponent)
+    else { return [] }
+    let projectRoot = agentDirectory.deletingLastPathComponent()
+    return [".agents", ".claude", ".codex"].compactMap { container in
+        let candidate = projectRoot
+            .appendingPathComponent(container)
+            .appendingPathComponent("skills")
+            .appendingPathComponent(directory.lastPathComponent)
+        guard candidate.path != directory.path,
+              (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true,
+              candidate.resolvingSymlinksInPath().standardizedFileURL.path == directory.path,
+              let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: candidate.path)
+        else { return nil }
+        return SkillProjectionLink(url: candidate, destination: destination)
+    }
+}
+
+private func renamedSymlinkDestination(_ destination: String, newName: String) -> String {
+    let parent = (destination as NSString).deletingLastPathComponent
+    return (parent as NSString).appendingPathComponent(newName)
+}
+
+private func isValidEditableSkillName(_ name: String) -> Bool {
+    guard let first = name.unicodeScalars.first, isASCIIAlphanumeric(first) else {
+        return false
+    }
+    return name.unicodeScalars.dropFirst().allSatisfy {
+        isASCIIAlphanumeric($0) || $0 == "." || $0 == "_" || $0 == "-"
+    }
+}
+
+private func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+    let value = scalar.value
+    return (48...57).contains(value)
+        || (65...90).contains(value)
+        || (97...122).contains(value)
 }
 
 private func splitSkillDocument(_ text: String) -> (frontmatter: [String], body: String) {
@@ -323,6 +569,15 @@ private func yamlQuoted(_ value: String) -> String {
         }
     }
     return "\"\(escaped)\""
+}
+
+private func isYAMLForbiddenControl(_ scalar: UnicodeScalar) -> Bool {
+    switch scalar.value {
+    case 0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F, 0x7F...0x84, 0x86...0x9F:
+        true
+    default:
+        false
+    }
 }
 
 private func skillDocumentError(code: Int, message: String) -> NSError {

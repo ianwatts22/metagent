@@ -341,9 +341,11 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: canonical.path))
         XCTAssertThrowsError(try FileManager.default.destinationOfSymbolicLink(atPath: projection.path))
         XCTAssertTrue(report.lines.contains("removed 1 per-skill projection link(s)"))
-        let recovery = URL(fileURLWithPath: try XCTUnwrap(report.backupPath))
-            .appendingPathComponent("demo")
+        let recoveryRoot = URL(fileURLWithPath: try XCTUnwrap(report.backupPath))
+        let recovery = recoveryRoot.appendingPathComponent("demo")
         XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("SKILL.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveryRoot.appendingPathComponent("before.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveryRoot.appendingPathComponent("after.json").path))
     }
 
     private func fixtureRoot(_ label: String) throws -> URL {

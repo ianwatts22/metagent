@@ -157,11 +157,16 @@ final class SkillOverlapTests: XCTestCase {
         )
 
         XCTAssertEqual(updated.name, "demo-renamed")
+        XCTAssertEqual(updated.directoryPath, root.appendingPathComponent("demo-renamed").path)
         XCTAssertEqual(updated.description, "First line.\nSecond line.")
         XCTAssertEqual(updated.bodyMarkdown, "# New heading\n\n- First\n- Second")
         XCTAssertEqual(updated.metadata.map(\.key), ["Version"])
         XCTAssertTrue(updated.rawText.contains("allowed-tools:"))
         XCTAssertTrue(updated.rawText.contains("  - Read"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: skill.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("demo-renamed/SKILL.md").path
+        ))
     }
 
     func testSkillDocumentRoundTripsQuotedYAMLScalars() throws {
@@ -171,16 +176,16 @@ final class SkillOverlapTests: XCTestCase {
         try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try """
         ---
-        name: "demo\\\\tool"
-        description: "Use \\"quoted\\" values, a \\\\ path, a line\\x20break \\U0001F600, JSON \\uD83D\\uDE00, and controls \\0\\a\\v\\e."
+        name: demo
+        description: "Use \\"quoted\\" values, a \\\\ path, a line\\x20break \\U0001F600, JSON \\uD83D\\uDE00, and controls \\0\\a\\v\\e.\\nSecond line."
         ---
 
         Original body.
         """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
         let original = try MetagentCore.loadSkillDocument(at: skill.path)
 
-        XCTAssertEqual(original.name, "demo\\tool")
-        let expectedDescription = "Use \"quoted\" values, a \\ path, a line break 😀, JSON 😀, and controls \u{0}\u{7}\u{B}\u{1B}."
+        XCTAssertEqual(original.name, "demo")
+        let expectedDescription = "Use \"quoted\" values, a \\ path, a line break 😀, JSON 😀, and controls \u{0}\u{7}\u{B}\u{1B}.\nSecond line."
         XCTAssertEqual(original.description, expectedDescription)
         XCTAssertEqual(
             skillDescription(from: original.rawText),
@@ -201,6 +206,109 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertFalse(updated.rawText.unicodeScalars.contains {
             [0x00, 0x07, 0x0B, 0x1B].contains($0.value)
         })
+    }
+
+    func testSkillDocumentRenamePreservesProjectionLinks() throws {
+        let root = try fixtureRoot("editor-projection")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent(".agents/skills/demo")
+        let projection = root.appendingPathComponent(".claude/skills/demo")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: projection.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        ---
+        name: demo
+        description: Projected demo.
+        ---
+
+        Original body.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            atPath: projection.path,
+            withDestinationPath: "../../.agents/skills/demo"
+        )
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+
+        let updated = try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: "renamed-demo",
+            description: original.description ?? "",
+            bodyMarkdown: original.bodyMarkdown
+        )
+
+        let renamedSkill = root.appendingPathComponent(".agents/skills/renamed-demo")
+        let renamedProjection = root.appendingPathComponent(".claude/skills/renamed-demo")
+        XCTAssertEqual(updated.directoryPath, renamedSkill.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projection.path))
+        XCTAssertEqual(
+            renamedProjection.resolvingSymlinksInPath().standardizedFileURL.path,
+            renamedSkill.path
+        )
+    }
+
+    func testPortablePathScanOnlyAutomaticallyChangesDocumentation() throws {
+        let root = try fixtureRoot("portable-paths")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent("demo")
+        let references = skill.appendingPathComponent("references")
+        let scripts = skill.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: references, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        try """
+        ---
+        name: demo
+        description: Use \(home)/code_projects.
+        ---
+
+        Read \(home)/Documents.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "See \(home)/notes."
+            .write(to: references.appendingPathComponent("guide.md"), atomically: true, encoding: .utf8)
+        try "#!/bin/zsh\ncd '\(home)/code_projects'\n"
+            .write(to: scripts.appendingPathComponent("run.sh"), atomically: true, encoding: .utf8)
+
+        let scan = try MetagentCore.scanSkillForPersonalPaths(at: skill.path)
+        XCTAssertEqual(scan.replaceableOccurrenceCount, 3)
+        XCTAssertEqual(scan.reviewOccurrenceCount, 1)
+
+        let report = try MetagentCore.replacePersonalPathsWithTilde(at: skill.path)
+        XCTAssertEqual(report.replacedOccurrenceCount, 3)
+        XCTAssertTrue(try String(
+            contentsOf: skill.appendingPathComponent("SKILL.md"),
+            encoding: .utf8
+        ).contains("~/code_projects"))
+        XCTAssertTrue(try String(
+            contentsOf: references.appendingPathComponent("guide.md"),
+            encoding: .utf8
+        ).contains("~/notes"))
+        XCTAssertTrue(try String(
+            contentsOf: scripts.appendingPathComponent("run.sh"),
+            encoding: .utf8
+        ).contains(home))
+    }
+
+    func testSkillDocumentRenameRejectsExistingFolder() throws {
+        let root = try fixtureRoot("editor-collision")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = try writeSkill(root: root, relativePath: "demo", body: "Original.")
+        _ = try writeSkill(root: root, relativePath: "taken", body: "Existing.")
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+
+        XCTAssertThrowsError(try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: "taken",
+            description: original.description ?? "",
+            bodyMarkdown: original.bodyMarkdown
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("already exists"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: skill.appendingPathComponent("SKILL.md").path))
     }
 
     func testSkillDocumentUpdateRejectsConcurrentChanges() throws {

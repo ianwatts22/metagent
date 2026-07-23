@@ -2463,7 +2463,7 @@ private struct DuplicateReviewExperience: View {
                     }
                     .padding(8)
                 }
-                .frame(width: 245)
+                .frame(width: 220)
 
                 Divider()
 
@@ -2531,56 +2531,54 @@ private struct DuplicateReviewDetail: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(group.skillName)
-                        .font(.title2.weight(.semibold))
-                    Text("\(group.rows.count) installed copies · \(group.similarityText) content similarity")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("\(group.kind == .pluginReplacement ? "Replacement" : "Review")")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
-            }
-
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: group.kind == .pluginReplacement
-                    ? "lightbulb.max.fill"
-                    : "lightbulb")
-                    .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Recommendation")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.skillName)
+                            .font(.title3.weight(.semibold))
+                        Text("\(group.rows.count) copies · \(group.similarityText) similar")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(group.kind == .pluginReplacement ? "Replacement" : "Review")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(group.recommendationTitle)
-                        .font(.headline)
-                    Text(group.recommendationDetail)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
                 }
-                Spacer(minLength: 12)
-                if !group.suggestedRemovalRows.isEmpty {
-                    Button("Use recommendation", action: onUseRecommendation)
-                        .buttonStyle(.bordered)
-                }
-            }
-            .padding(12)
-            .background(
-                group.kind == .pluginReplacement
-                    ? Color.orange.opacity(0.10)
-                    : Color.secondary.opacity(0.07),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
 
-            ScrollView {
+                HStack(alignment: .center, spacing: 9) {
+                    Image(systemName: group.kind == .pluginReplacement
+                        ? "lightbulb.max.fill"
+                        : "lightbulb")
+                        .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.recommendationTitle)
+                            .font(.callout.weight(.semibold))
+                        Text(group.recommendationDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 8)
+                    if !group.suggestedRemovalRows.isEmpty {
+                        Button("Apply", action: onUseRecommendation)
+                            .buttonStyle(.bordered)
+                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
+                    }
+                }
+                .padding(10)
+                .background(
+                    group.kind == .pluginReplacement
+                        ? Color.orange.opacity(0.10)
+                        : Color.secondary.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 290), spacing: 10, alignment: .top)],
+                    columns: [GridItem(.adaptive(minimum: 280), spacing: 8, alignment: .top)],
                     alignment: .leading,
-                    spacing: 10
+                    spacing: 8
                 ) {
                     ForEach(group.rows) { row in
                         DuplicateCandidateCard(
@@ -2600,30 +2598,28 @@ private struct DuplicateReviewDetail: View {
                         )
                     }
                 }
-                .padding(.trailing, 8)
-            }
 
-            Divider()
-
-            HStack {
-                Button("Keep all and continue", action: onKeepAll)
-                    .disabled(isRunning)
-                Spacer()
-                Text(selectedRemovalCount == 0
-                    ? "Choose Remove on any copy you don’t want."
-                    : "\(selectedRemovalCount) selected for removal")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button(
-                    selectedRemovalCount == 1 ? "Review removal…" : "Review \(selectedRemovalCount) removals…",
-                    role: .destructive,
-                    action: onReviewRemoval
-                )
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedRemovalCount == 0 || isRunning)
+                HStack {
+                    Button("Keep all", action: onKeepAll)
+                        .disabled(isRunning)
+                    Spacer()
+                    if selectedRemovalCount > 0 {
+                        Text("\(selectedRemovalCount) selected")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button(
+                        selectedRemovalCount == 1 ? "Review removal…" : "Review \(selectedRemovalCount) removals…",
+                        role: .destructive,
+                        action: onReviewRemoval
+                    )
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selectedRemovalCount == 0 || isRunning)
+                }
+                .padding(.top, 2)
             }
+            .padding(12)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -2643,7 +2639,7 @@ private struct DuplicateCandidateCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 9) {
+            HStack(alignment: .top, spacing: 8) {
                 SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.sourceText)
@@ -2652,7 +2648,7 @@ private struct DuplicateCandidateCard: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 if row.overlap?.suggestedRemoval == true {
                     Text("Recommended remove")
                         .font(.caption2.weight(.semibold))
@@ -2667,7 +2663,7 @@ private struct DuplicateCandidateCard: View {
                 Text(row.descriptionText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(2)
             }
 
             HStack(spacing: 14) {
@@ -2677,16 +2673,19 @@ private struct DuplicateCandidateCard: View {
             }
             .font(.caption)
 
-            Text(row.canonicalPath ?? row.skillPath)
+            Text(displayUserPath(row.canonicalPath ?? row.skillPath))
                 .font(.caption2.monospaced())
                 .foregroundStyle(.tertiary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
-                .help(row.canonicalPath ?? row.skillPath)
+                .help(displayUserPath(row.canonicalPath ?? row.skillPath))
 
             HStack {
-                Button("View", action: onView)
-                Button("Info", action: onInfo)
+                Button("Open skill", action: onView)
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
+                }
+                .help("Get Info")
                 Spacer()
                 if canRemove {
                     Picker(
@@ -2710,7 +2709,7 @@ private struct DuplicateCandidateCard: View {
                 }
             }
         }
-        .padding(12)
+        .padding(10)
         .background(
             isMarkedForRemoval ? Color.red.opacity(0.08) : Color.primary.opacity(0.035),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -3166,7 +3165,7 @@ private struct ProjectsSection: View {
                     TableColumn("Project", value: \.name) { row in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(row.name).font(.callout.weight(.medium))
-                            Text(row.root).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text(displayUserPath(row.root)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         }
                         .help(row.root)
                     }
@@ -3496,7 +3495,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
             .joined(separator: " + ")
     }
     var locationHelp: String {
-        variants.map { "\($0.locationLabel): \($0.path)" }.joined(separator: "\n")
+        variants.map { "\($0.locationLabel): \(displayUserPath($0.path))" }.joined(separator: "\n")
     }
     var originText: String { skill.tableOriginText }
     var originHelp: String {
@@ -4230,10 +4229,10 @@ private struct SkillNameCell: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .help(row.skillPath)
+                .help(displayUserPath(row.skillPath))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(row.skillName)
-                .accessibilityHint(row.skillPath)
+                .accessibilityHint(displayUserPath(row.skillPath))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4271,7 +4270,6 @@ private struct SkillSourceIconCell: View {
     var body: some View {
         sourceIcon
             .frame(width: 20, height: 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .help(help)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(category.title)
@@ -4421,7 +4419,7 @@ private struct SkillInfoView: View {
                     LabeledContent("Version", value: row.versionText)
                     LabeledContent("Updated", value: row.updatedText)
                     LabeledContent("Path") {
-                        Text(row.canonicalPath)
+                        Text(displayUserPath(row.canonicalPath))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
@@ -4449,36 +4447,40 @@ private struct SkillInfoView: View {
             .formStyle(.grouped)
 
             HStack {
-                Button("View Skill") {
+                Button("Open Skill") {
                     showsReader = true
                 }
-                Button("Open") {
-                    openSkillDirectories([URL(fileURLWithPath: row.canonicalPath)])
+                .buttonStyle(.borderedProminent)
+                Menu("Actions") {
+                    Button("Open Folder") {
+                        openSkillDirectories([URL(fileURLWithPath: row.canonicalPath)])
+                    }
+                    Button("Open SKILL.md") {
+                        openSkillFiles([URL(fileURLWithPath: row.canonicalPath).appendingPathComponent("SKILL.md")])
+                    }
+                    Button("Open in Editor") {
+                        let directory = URL(fileURLWithPath: row.canonicalPath)
+                        openSkillDirectoriesInEditor(
+                            [directory],
+                            skillFiles: [directory.appendingPathComponent("SKILL.md")]
+                        )
+                    }
+                    Divider()
+                    Button("Copy Path") {
+                        copyToPasteboard(row.canonicalPath)
+                    }
+                    Button(row.skillIconPath == nil ? "Add Icon…" : "Change Icon…") {
+                        showsIconEditor = true
+                    }
+                    .disabled(!row.canEditIcon)
                 }
-                Button("Open SKILL.md") {
-                    openSkillFiles([URL(fileURLWithPath: row.canonicalPath).appendingPathComponent("SKILL.md")])
-                }
-                Button("Open in Editor") {
-                    let directory = URL(fileURLWithPath: row.canonicalPath)
-                    openSkillDirectoriesInEditor(
-                        [directory],
-                        skillFiles: [directory.appendingPathComponent("SKILL.md")]
-                    )
-                }
-                Button("Copy Path") {
-                    copyToPasteboard(row.canonicalPath)
-                }
-                Button(row.skillIconPath == nil ? "Add Icon…" : "Change Icon…") {
-                    showsIconEditor = true
-                }
-                .disabled(!row.canEditIcon)
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(22)
-        .frame(width: 620, height: 620)
+        .frame(width: 620, height: 600)
         .sheet(isPresented: $showsIconEditor) {
             SkillIconEditorView(model: model, row: row)
         }
@@ -4503,6 +4505,10 @@ private struct SkillReaderView: View {
     @State private var draftName = ""
     @State private var draftDescription = ""
     @State private var draftBody = ""
+    @State private var renamedSkillPath: String?
+    @State private var portablePathScan: SkillPortablePathScan?
+    @State private var showsPortablePathConfirmation = false
+    @State private var actionMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4526,7 +4532,7 @@ private struct SkillReaderView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(document?.name ?? row.skillName)
                         .font(.title2.weight(.semibold))
-                    Text(row.canonicalPath)
+                    Text(displayUserPath(currentSkillPath))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -4642,6 +4648,13 @@ private struct SkillReaderView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            if let actionMessage {
+                Text(actionMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
             HStack {
                 if isEditing {
@@ -4656,11 +4669,18 @@ private struct SkillReaderView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canSave)
                 } else {
-                    Button("Open SKILL.md") {
-                        openSkillFiles([skillFileURL])
-                    }
-                    Button("Open in Editor") {
-                        openSkillDirectoriesInEditor([skillDirectoryURL], skillFiles: [skillFileURL])
+                    Menu("Actions") {
+                        Button("Open SKILL.md") {
+                            openSkillFiles([skillFileURL])
+                        }
+                        Button("Open in Editor") {
+                            openSkillDirectoriesInEditor([skillDirectoryURL], skillFiles: [skillFileURL])
+                        }
+                        Divider()
+                        Button("Make Paths Portable…") {
+                            scanForPersonalPaths()
+                        }
+                        .disabled(!row.canEditDocument)
                     }
                     Spacer()
                     Button("Done") { dismiss() }
@@ -4673,14 +4693,34 @@ private struct SkillReaderView: View {
         .task {
             loadDocument()
         }
+        .confirmationDialog(
+            "Make paths portable?",
+            isPresented: $showsPortablePathConfirmation,
+            titleVisibility: .visible
+        ) {
+            if (portablePathScan?.replaceableOccurrenceCount ?? 0) > 0 {
+                Button("Replace in documentation") {
+                    replacePersonalPaths()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let scan = portablePathScan {
+                Text(portablePathConfirmationMessage(scan))
+            }
+        }
     }
 
     private var skillDirectoryURL: URL {
-        URL(fileURLWithPath: row.canonicalPath).standardizedFileURL
+        URL(fileURLWithPath: currentSkillPath).standardizedFileURL
     }
 
     private var skillFileURL: URL {
         skillDirectoryURL.appendingPathComponent("SKILL.md")
+    }
+
+    private var currentSkillPath: String {
+        renamedSkillPath ?? row.canonicalPath
     }
 
     private var canSave: Bool {
@@ -4698,7 +4738,7 @@ private struct SkillReaderView: View {
 
     private func loadDocument() {
         do {
-            document = try MetagentCore.loadSkillDocument(at: row.canonicalPath)
+            document = try MetagentCore.loadSkillDocument(at: currentSkillPath)
             loadError = nil
         } catch {
             loadError = error.localizedDescription
@@ -4724,13 +4764,14 @@ private struct SkillReaderView: View {
         let name = draftName
         let description = draftDescription
         let body = draftBody
+        let path = currentSkillPath
         isSaving = true
         saveError = nil
         Task {
             do {
                 let updated = try await Task.detached(priority: .userInitiated) {
                     try MetagentCore.updateSkillDocument(
-                        at: row.canonicalPath,
+                        at: path,
                         expectedRawText: original.rawText,
                         name: name,
                         description: description,
@@ -4738,6 +4779,7 @@ private struct SkillReaderView: View {
                     )
                 }.value
                 document = updated
+                renamedSkillPath = updated.directoryPath
                 isEditing = false
                 model.refreshStatus()
             } catch {
@@ -4745,6 +4787,42 @@ private struct SkillReaderView: View {
             }
             isSaving = false
         }
+    }
+
+    private func scanForPersonalPaths() {
+        do {
+            let scan = try MetagentCore.scanSkillForPersonalPaths(at: currentSkillPath)
+            portablePathScan = scan
+            if scan.findings.isEmpty {
+                actionMessage = "No references to \(displayUserPath(scan.homePath)) were found."
+            } else {
+                actionMessage = nil
+                showsPortablePathConfirmation = true
+            }
+        } catch {
+            actionMessage = error.localizedDescription
+        }
+    }
+
+    private func replacePersonalPaths() {
+        do {
+            let report = try MetagentCore.replacePersonalPathsWithTilde(at: currentSkillPath)
+            actionMessage = "Replaced \(report.replacedOccurrenceCount) path reference(s) in \(report.updatedFiles.count) documentation file(s). Scripts and config files were left for manual review."
+            loadDocument()
+            model.refreshStatus()
+        } catch {
+            actionMessage = error.localizedDescription
+        }
+    }
+
+    private func portablePathConfirmationMessage(_ scan: SkillPortablePathScan) -> String {
+        var parts = [
+            "Replace \(scan.replaceableOccurrenceCount) exact \(scan.homePath) reference(s) with ~ in SKILL.md and reference documentation."
+        ]
+        if scan.reviewOccurrenceCount > 0 {
+            parts.append("\(scan.reviewOccurrenceCount) reference(s) in scripts or config will not be changed because ~ may not expand there.")
+        }
+        return parts.joined(separator: "\n\n")
     }
 }
 
@@ -5477,6 +5555,17 @@ private func standardizedDirectoryPath(_ path: String) -> String {
     return url.path
 }
 
+private func displayUserPath(_ path: String) -> String {
+    let home = NSHomeDirectory()
+    if path == home {
+        return "~"
+    }
+    guard path.hasPrefix(home + "/") else {
+        return path
+    }
+    return "~" + path.dropFirst(home.count)
+}
+
 private func parseISO8601Date(_ value: String) -> Date? {
     let fractional = ISO8601DateFormatter()
     fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -5859,7 +5948,7 @@ private struct RepairProjectView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(project.displayName)
                         .font(.callout.weight(.semibold))
-                    Text(project.root)
+                    Text(displayUserPath(project.root))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

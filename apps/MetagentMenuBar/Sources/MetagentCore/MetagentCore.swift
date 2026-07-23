@@ -1100,6 +1100,11 @@ public enum MetagentCore {
             if removedProjectionCount > 0 {
                 lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
             }
+            lines.append(finalizeRemovalRecovery(
+                recovery,
+                projectRoot: root,
+                skillName: skillName
+            ))
             return SkillUninstallReport(
                 projectRoot: root.path,
                 skillName: skillName,
@@ -1155,6 +1160,11 @@ public enum MetagentCore {
             lines.append("kept \(retained.count) independent same-name legacy location(s); review them separately")
         }
         lines.append("verified canonical local skill is absent")
+        lines.append(finalizeRemovalRecovery(
+            recovery,
+            projectRoot: root,
+            skillName: skillName
+        ))
         return SkillUninstallReport(
             projectRoot: root.path,
             skillName: skillName,
@@ -1230,6 +1240,11 @@ public enum MetagentCore {
             lines.append("removed \(projections.count) per-skill projection link(s)")
         }
         lines.append("verified canonical standalone skill is absent")
+        lines.append(finalizeRemovalRecovery(
+            recovery,
+            projectRoot: root,
+            skillName: skillName
+        ))
         return SkillUninstallReport(
             projectRoot: root.path,
             skillName: skillName,
@@ -2681,7 +2696,80 @@ private func prepareRemovalRecovery(
         atomically: true,
         encoding: .utf8
     )
+    try writeRemovalInventorySnapshot(
+        to: recoveryRoot.appendingPathComponent("before.json"),
+        phase: "before",
+        projectRoot: projectRoot,
+        skillName: skillName
+    )
     return recoveryRoot
+}
+
+private struct RemovalInventorySnapshot: Codable {
+    struct Copy: Codable {
+        let path: String
+        let location: String
+        let manager: String
+        let representation: String
+    }
+
+    let phase: String
+    let capturedAt: String
+    let projectRoot: String
+    let skillName: String
+    let canonicalSkillCount: Int
+    let matchingCopies: [Copy]
+}
+
+private func writeRemovalInventorySnapshot(
+    to destination: URL,
+    phase: String,
+    projectRoot: URL,
+    skillName: String
+) throws {
+    let project = try readProjectSkills(root: projectRoot)
+    let canonicalSkillCount = Set<String>(project.skills.compactMap { skill -> String? in
+        guard skill.representation == "canonical" else { return nil }
+        return skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
+    }).count
+    let snapshot = RemovalInventorySnapshot(
+        phase: phase,
+        capturedAt: ISO8601DateFormatter().string(from: Date()),
+        projectRoot: projectRoot.path,
+        skillName: skillName,
+        canonicalSkillCount: canonicalSkillCount,
+        matchingCopies: project.skills
+            .filter { $0.name == skillName }
+            .map {
+                RemovalInventorySnapshot.Copy(
+                    path: $0.path,
+                    location: $0.location,
+                    manager: $0.manager,
+                    representation: $0.representation
+                )
+            }
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(snapshot).write(to: destination, options: .atomic)
+}
+
+private func finalizeRemovalRecovery(
+    _ recovery: URL,
+    projectRoot: URL,
+    skillName: String
+) -> String {
+    do {
+        try writeRemovalInventorySnapshot(
+            to: recovery.appendingPathComponent("after.json"),
+            phase: "after",
+            projectRoot: projectRoot,
+            skillName: skillName
+        )
+        return "captured before/after inventory snapshots in \(recovery.path)"
+    } catch {
+        return "warning: the skill archive is intact, but the after snapshot failed: \(error.localizedDescription)"
+    }
 }
 
 private func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
