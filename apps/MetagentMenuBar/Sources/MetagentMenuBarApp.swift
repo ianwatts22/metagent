@@ -917,7 +917,7 @@ private struct DoctorFindingsView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(project.name)
                             }
-                            .help(project.root ?? "General findings")
+                            .help(project.root.map(displayUserPath) ?? "General findings")
                         }
                     }
                 }
@@ -2835,13 +2835,13 @@ private struct MCPInventoryRow: Identifiable {
     }
     var scopeHelp: String {
         if !entry.globalClients.isEmpty, !entry.projectPaths.isEmpty {
-            return "Configured globally and also for:\n\(entry.projectPaths.joined(separator: "\n"))"
+            return "Configured globally and also for:\n\(entry.projectPaths.map(displayUserPath).joined(separator: "\n"))"
         }
         if !entry.globalClients.isEmpty {
             return "Configured globally in at least one client. Check Status for availability."
         }
         if !entry.projectPaths.isEmpty {
-            return "Configured only for:\n\(entry.projectPaths.joined(separator: "\n"))"
+            return "Configured only for:\n\(entry.projectPaths.map(displayUserPath).joined(separator: "\n"))"
         }
         return "Discovered in client configuration."
     }
@@ -3167,7 +3167,7 @@ private struct ProjectsSection: View {
                             Text(row.name).font(.callout.weight(.medium))
                             Text(displayUserPath(row.root)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         }
-                        .help(row.root)
+                        .help(displayUserPath(row.root))
                     }
                     .width(min: 260, ideal: 360)
                     TableColumn("Skills", value: \.skillCount) { row in
@@ -4374,6 +4374,8 @@ private struct SkillInfoView: View {
     @State private var showsIconEditor = false
     @State private var showsScoreExplanation = false
     @State private var showsReader = false
+    @State private var updatedSkillName: String?
+    @State private var updatedSkillPath: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -4395,9 +4397,9 @@ private struct SkillInfoView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(row.skillName)
+                    Text(updatedSkillName ?? row.skillName)
                         .font(.title2.weight(.semibold))
-                    Text(row.locationHelp)
+                    Text(displayUserPath(currentSkillPath))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -4419,7 +4421,7 @@ private struct SkillInfoView: View {
                     LabeledContent("Version", value: row.versionText)
                     LabeledContent("Updated", value: row.updatedText)
                     LabeledContent("Path") {
-                        Text(displayUserPath(row.canonicalPath))
+                        Text(displayUserPath(currentSkillPath))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
@@ -4453,13 +4455,13 @@ private struct SkillInfoView: View {
                 .buttonStyle(.borderedProminent)
                 Menu("Actions") {
                     Button("Open Folder") {
-                        openSkillDirectories([URL(fileURLWithPath: row.canonicalPath)])
+                        openSkillDirectories([URL(fileURLWithPath: currentSkillPath)])
                     }
                     Button("Open SKILL.md") {
-                        openSkillFiles([URL(fileURLWithPath: row.canonicalPath).appendingPathComponent("SKILL.md")])
+                        openSkillFiles([URL(fileURLWithPath: currentSkillPath).appendingPathComponent("SKILL.md")])
                     }
                     Button("Open in Editor") {
-                        let directory = URL(fileURLWithPath: row.canonicalPath)
+                        let directory = URL(fileURLWithPath: currentSkillPath)
                         openSkillDirectoriesInEditor(
                             [directory],
                             skillFiles: [directory.appendingPathComponent("SKILL.md")]
@@ -4467,7 +4469,7 @@ private struct SkillInfoView: View {
                     }
                     Divider()
                     Button("Copy Path") {
-                        copyToPasteboard(row.canonicalPath)
+                        copyToPasteboard(currentSkillPath)
                     }
                     Button(row.skillIconPath == nil ? "Add Icon…" : "Change Icon…") {
                         showsIconEditor = true
@@ -4482,20 +4484,38 @@ private struct SkillInfoView: View {
         .padding(22)
         .frame(width: 620, height: 600)
         .sheet(isPresented: $showsIconEditor) {
-            SkillIconEditorView(model: model, row: row)
+            SkillIconEditorView(
+                model: model,
+                row: row,
+                skillPath: currentSkillPath,
+                skillName: updatedSkillName ?? row.skillName
+            )
         }
         .sheet(isPresented: $showsScoreExplanation) {
             ScoreExplanationView()
         }
         .sheet(isPresented: $showsReader) {
-            SkillReaderView(model: model, row: row)
+            SkillReaderView(
+                model: model,
+                row: row,
+                initialSkillPath: currentSkillPath
+            ) { updated in
+                updatedSkillName = updated.name
+                updatedSkillPath = updated.directoryPath
+            }
         }
+    }
+
+    private var currentSkillPath: String {
+        updatedSkillPath ?? row.canonicalPath
     }
 }
 
 private struct SkillReaderView: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
+    var initialSkillPath: String? = nil
+    var onDocumentChange: ((SkillDocument) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var document: SkillDocument?
     @State private var loadError: String?
@@ -4509,6 +4529,7 @@ private struct SkillReaderView: View {
     @State private var portablePathScan: SkillPortablePathScan?
     @State private var showsPortablePathConfirmation = false
     @State private var actionMessage: String?
+    @State private var isCheckingPortablePaths = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4548,7 +4569,7 @@ private struct SkillReaderView: View {
                             beginEditing()
                         }
                     }
-                    .disabled(!row.canEditDocument || isSaving)
+                    .disabled(!row.canEditDocument || isSaving || isCheckingPortablePaths)
                     .help(row.canEditDocument
                         ? (isEditing ? "Discard unsaved edits and return to the reader." : "Edit this local SKILL.md.")
                         : "This skill is managed by \(row.skill.tableOriginText) and is read-only here.")
@@ -4680,7 +4701,7 @@ private struct SkillReaderView: View {
                         Button("Make Paths Portable…") {
                             scanForPersonalPaths()
                         }
-                        .disabled(!row.canEditDocument)
+                        .disabled(!row.canEditDocument || isCheckingPortablePaths)
                     }
                     Spacer()
                     Button("Done") { dismiss() }
@@ -4720,11 +4741,11 @@ private struct SkillReaderView: View {
     }
 
     private var currentSkillPath: String {
-        renamedSkillPath ?? row.canonicalPath
+        renamedSkillPath ?? initialSkillPath ?? row.canonicalPath
     }
 
     private var canSave: Bool {
-        guard !isSaving, let document else { return false }
+        guard !isSaving, !isCheckingPortablePaths, let document else { return false }
         let cleanName = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanDescription = draftDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         return !cleanName.isEmpty
@@ -4780,6 +4801,7 @@ private struct SkillReaderView: View {
                 }.value
                 document = updated
                 renamedSkillPath = updated.directoryPath
+                onDocumentChange?(updated)
                 isEditing = false
                 model.refreshStatus()
             } catch {
@@ -4790,34 +4812,48 @@ private struct SkillReaderView: View {
     }
 
     private func scanForPersonalPaths() {
-        do {
-            let scan = try MetagentCore.scanSkillForPersonalPaths(at: currentSkillPath)
-            portablePathScan = scan
-            if scan.findings.isEmpty {
-                actionMessage = "No references to \(displayUserPath(scan.homePath)) were found."
-            } else {
-                actionMessage = nil
-                showsPortablePathConfirmation = true
+        let path = currentSkillPath
+        isCheckingPortablePaths = true
+        Task {
+            do {
+                let scan = try await Task.detached(priority: .userInitiated) {
+                    try MetagentCore.scanSkillForPersonalPaths(at: path)
+                }.value
+                portablePathScan = scan
+                if scan.findings.isEmpty {
+                    actionMessage = "No personal home-directory references were found."
+                } else {
+                    actionMessage = nil
+                    showsPortablePathConfirmation = true
+                }
+            } catch {
+                actionMessage = error.localizedDescription
             }
-        } catch {
-            actionMessage = error.localizedDescription
+            isCheckingPortablePaths = false
         }
     }
 
     private func replacePersonalPaths() {
-        do {
-            let report = try MetagentCore.replacePersonalPathsWithTilde(at: currentSkillPath)
-            actionMessage = "Replaced \(report.replacedOccurrenceCount) path reference(s) in \(report.updatedFiles.count) documentation file(s). Scripts and config files were left for manual review."
-            loadDocument()
-            model.refreshStatus()
-        } catch {
-            actionMessage = error.localizedDescription
+        let path = currentSkillPath
+        isCheckingPortablePaths = true
+        Task {
+            do {
+                let report = try await Task.detached(priority: .userInitiated) {
+                    try MetagentCore.replacePersonalPathsWithTilde(at: path)
+                }.value
+                actionMessage = "Replaced \(report.replacedOccurrenceCount) path reference(s) in \(report.updatedFiles.count) documentation file(s). Scripts and config files were left for manual review."
+                loadDocument()
+                model.refreshStatus()
+            } catch {
+                actionMessage = error.localizedDescription
+            }
+            isCheckingPortablePaths = false
         }
     }
 
     private func portablePathConfirmationMessage(_ scan: SkillPortablePathScan) -> String {
         var parts = [
-            "Replace \(scan.replaceableOccurrenceCount) exact \(scan.homePath) reference(s) with ~ in SKILL.md and reference documentation."
+            "Replace \(scan.replaceableOccurrenceCount) exact home-directory reference(s) with ~ in SKILL.md and reference documentation."
         ]
         if scan.reviewOccurrenceCount > 0 {
             parts.append("\(scan.reviewOccurrenceCount) reference(s) in scripts or config will not be changed because ~ may not expand there.")
@@ -5143,6 +5179,8 @@ private struct LucideSkillIcon: Identifiable {
 private struct SkillIconEditorView: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
+    var skillPath: String? = nil
+    var skillName: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var selectedSource = SkillIconSource.emoji
     @State private var selectedEmoji = "✨"
@@ -5168,7 +5206,7 @@ private struct SkillIconEditorView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(row.skillIconPath == nil ? "Add an icon" : "Change icon")
                         .font(.title2.weight(.semibold))
-                    Text(row.skillName)
+                    Text(skillName ?? row.skillName)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -5316,7 +5354,10 @@ private struct SkillIconEditorView: View {
             return
         }
         let data = selectedSource == .emoji ? emojiPNG(selectedEmoji) : lucidePNG(selectedLucide)
-        guard let data, model.updateSkillIcon(path: row.canonicalPath, pngData: data) else {
+        guard let data, model.updateSkillIcon(
+            path: skillPath ?? row.canonicalPath,
+            pngData: data
+        ) else {
             NSSound.beep()
             return
         }
@@ -5333,7 +5374,7 @@ private struct SkillIconEditorView: View {
               let url = panel.url,
               let image = NSImage(contentsOf: url),
               let data = normalizedPNG(image),
-              model.updateSkillIcon(path: row.canonicalPath, pngData: data)
+              model.updateSkillIcon(path: skillPath ?? row.canonicalPath, pngData: data)
         else { return }
         dismiss()
     }

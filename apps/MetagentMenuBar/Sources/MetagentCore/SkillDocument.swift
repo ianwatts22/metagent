@@ -159,7 +159,8 @@ extension MetagentCore {
             try (updated + "\n").write(to: path, atomically: true, encoding: .utf8)
             return try loadSkillDocument(at: directory.path)
         }
-        guard !FileManager.default.fileExists(atPath: targetDirectory.path) else {
+        let targetExists = FileManager.default.fileExists(atPath: targetDirectory.path)
+        guard !targetExists || urlsReferToSameFile(directory, targetDirectory) else {
             throw skillDocumentError(
                 code: 6,
                 message: "A skill folder named \(cleanName) already exists."
@@ -169,7 +170,7 @@ extension MetagentCore {
         let projections = skillProjectionLinks(resolvingTo: directory)
         var renamedProjections: [(old: URL, new: URL, destination: String)] = []
         do {
-            try FileManager.default.moveItem(at: directory, to: targetDirectory)
+            try moveItemAllowingCaseOnlyRename(from: directory, to: targetDirectory)
             for projection in projections {
                 let renamed = projection.url
                     .deletingLastPathComponent()
@@ -209,10 +210,8 @@ extension MetagentCore {
                     withDestinationPath: projection.destination
                 )
             }
-            if FileManager.default.fileExists(atPath: targetDirectory.path),
-               !FileManager.default.fileExists(atPath: directory.path)
-            {
-                try? FileManager.default.moveItem(at: targetDirectory, to: directory)
+            if FileManager.default.fileExists(atPath: targetDirectory.path) {
+                try? moveItemAllowingCaseOnlyRename(from: targetDirectory, to: directory)
             }
             throw skillDocumentError(
                 code: 7,
@@ -249,7 +248,7 @@ extension MetagentCore {
             for candidate in candidates {
                 let text = try String(contentsOf: candidate.url, encoding: .utf8)
                 originals.append((candidate.url, text))
-                try text.replacingOccurrences(of: home, with: "~")
+                try replacingHomePath(in: text, home: home, replacement: "~").text
                     .write(to: candidate.url, atomically: true, encoding: .utf8)
             }
         } catch {
@@ -304,13 +303,19 @@ private func portablePathFiles(
               (values.fileSize ?? 0) <= 2_000_000,
               let text = try? String(contentsOf: url, encoding: .utf8)
         else { return nil }
-        let count = max(0, text.components(separatedBy: home).count - 1)
+        let count = replacingHomePath(in: text, home: home, replacement: "~").count
         guard count > 0 else { return nil }
-        let componentCount = max(1, url.pathComponents.count - directory.pathComponents.count)
-        let relative = url.pathComponents.suffix(componentCount).joined(separator: "/")
+        let resolvedDirectoryComponents = directory.resolvingSymlinksInPath().pathComponents
+        let resolvedFileComponents = url.resolvingSymlinksInPath().pathComponents
+        let componentCount = max(
+            1,
+            resolvedFileComponents.count - resolvedDirectoryComponents.count
+        )
+        let relativeComponents = Array(resolvedFileComponents.suffix(componentCount))
+        let relative = relativeComponents.joined(separator: "/")
         let isDocumentation = url.lastPathComponent.lowercased() == "skill.md"
             || (
-                url.pathComponents.contains(where: { $0.lowercased() == "references" })
+                relativeComponents.first?.lowercased() == "references"
                     && ["md", "mdx", "txt"].contains(url.pathExtension.lowercased())
             )
         return (
@@ -323,6 +328,64 @@ private func portablePathFiles(
         )
     }
     .sorted { $0.finding.relativePath < $1.finding.relativePath }
+}
+
+private func replacingHomePath(
+    in text: String,
+    home: String,
+    replacement: String
+) -> (text: String, count: Int) {
+    guard !home.isEmpty else { return (text, 0) }
+    var result = text
+    var ranges: [Range<String.Index>] = []
+    var searchStart = text.startIndex
+    while searchStart < text.endIndex,
+          let range = text.range(of: home, range: searchStart..<text.endIndex)
+    {
+        let hasLeadingBoundary = range.lowerBound == text.startIndex
+            || text[text.index(before: range.lowerBound)].isWhitespace
+            || "\"'`([{<=:".contains(text[text.index(before: range.lowerBound)])
+        let hasTrailingBoundary = range.upperBound == text.endIndex
+            || text[range.upperBound] == "/"
+            || text[range.upperBound].isWhitespace
+            || "\"'`)]}>,.:;!?".contains(text[range.upperBound])
+        if hasLeadingBoundary, hasTrailingBoundary {
+            ranges.append(range)
+        }
+        searchStart = range.upperBound
+    }
+    for range in ranges.reversed() {
+        result.replaceSubrange(range, with: replacement)
+    }
+    return (result, ranges.count)
+}
+
+private func urlsReferToSameFile(_ lhs: URL, _ rhs: URL) -> Bool {
+    let keys: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+    guard let lhsIdentifier = try? lhs.resourceValues(forKeys: keys).fileResourceIdentifier as? NSObject,
+          let rhsIdentifier = try? rhs.resourceValues(forKeys: keys).fileResourceIdentifier as? NSObject
+    else { return false }
+    return lhsIdentifier.isEqual(rhsIdentifier)
+}
+
+private func moveItemAllowingCaseOnlyRename(from source: URL, to destination: URL) throws {
+    let fileManager = FileManager.default
+    let destinationExists = fileManager.fileExists(atPath: destination.path)
+    guard destinationExists, urlsReferToSameFile(source, destination) else {
+        try fileManager.moveItem(at: source, to: destination)
+        return
+    }
+
+    let temporary = source
+        .deletingLastPathComponent()
+        .appendingPathComponent(".metagent-rename-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.moveItem(at: source, to: temporary)
+    do {
+        try fileManager.moveItem(at: temporary, to: destination)
+    } catch {
+        try? fileManager.moveItem(at: temporary, to: source)
+        throw error
+    }
 }
 
 private struct SkillProjectionLink {

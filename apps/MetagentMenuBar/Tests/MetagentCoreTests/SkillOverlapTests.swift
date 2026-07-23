@@ -250,6 +250,37 @@ final class SkillOverlapTests: XCTestCase {
         )
     }
 
+    func testSkillDocumentSupportsCaseOnlyDirectoryRename() throws {
+        let root = try fixtureRoot("case-only-rename")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent("Demo")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try """
+        ---
+        name: Demo
+        description: Demo description.
+        ---
+
+        Body.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+
+        let updated = try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: "demo",
+            description: original.description ?? "",
+            bodyMarkdown: original.bodyMarkdown
+        )
+
+        XCTAssertEqual(updated.name, "demo")
+        XCTAssertEqual(updated.directoryPath, root.appendingPathComponent("demo").path)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: root.path),
+            ["demo"]
+        )
+    }
+
     func testPortablePathScanOnlyAutomaticallyChangesDocumentation() throws {
         let root = try fixtureRoot("portable-paths")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -267,29 +298,56 @@ final class SkillOverlapTests: XCTestCase {
 
         Read \(home)/Documents.
         """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
-        try "See \(home)/notes."
+        try "See \(home)/notes and \(home). Keep \(home)2, /mnt/backup\(home)/notes, and <\(home)> portable."
             .write(to: references.appendingPathComponent("guide.md"), atomically: true, encoding: .utf8)
         try "#!/bin/zsh\ncd '\(home)/code_projects'\n"
             .write(to: scripts.appendingPathComponent("run.sh"), atomically: true, encoding: .utf8)
 
         let scan = try MetagentCore.scanSkillForPersonalPaths(at: skill.path)
-        XCTAssertEqual(scan.replaceableOccurrenceCount, 3)
+        XCTAssertEqual(scan.replaceableOccurrenceCount, 5)
         XCTAssertEqual(scan.reviewOccurrenceCount, 1)
 
         let report = try MetagentCore.replacePersonalPathsWithTilde(at: skill.path)
-        XCTAssertEqual(report.replacedOccurrenceCount, 3)
+        XCTAssertEqual(report.replacedOccurrenceCount, 5)
         XCTAssertTrue(try String(
             contentsOf: skill.appendingPathComponent("SKILL.md"),
             encoding: .utf8
         ).contains("~/code_projects"))
-        XCTAssertTrue(try String(
+        let updatedReference = try String(
             contentsOf: references.appendingPathComponent("guide.md"),
             encoding: .utf8
-        ).contains("~/notes"))
+        )
+        XCTAssertTrue(updatedReference.contains("~/notes"))
+        XCTAssertTrue(updatedReference.contains("~."))
+        XCTAssertTrue(updatedReference.contains("<~>"))
+        XCTAssertTrue(updatedReference.contains("\(home)2"))
+        XCTAssertTrue(updatedReference.contains("/mnt/backup\(home)/notes"))
         XCTAssertTrue(try String(
             contentsOf: scripts.appendingPathComponent("run.sh"),
             encoding: .utf8
         ).contains(home))
+    }
+
+    func testPortablePathScanDoesNotTreatAncestorReferencesAsSkillDocumentation() throws {
+        let ancestor = try fixtureRoot("references")
+        defer { try? FileManager.default.removeItem(at: ancestor) }
+        let skill = ancestor.appendingPathComponent("project/.agents/skills/demo")
+        let scripts = skill.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        try """
+        ---
+        name: demo
+        description: Demo.
+        ---
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "config \(home)/bin"
+            .write(to: scripts.appendingPathComponent("config.txt"), atomically: true, encoding: .utf8)
+
+        let scan = try MetagentCore.scanSkillForPersonalPaths(at: skill.path)
+
+        XCTAssertEqual(scan.replaceableOccurrenceCount, 0)
+        XCTAssertEqual(scan.reviewOccurrenceCount, 1)
     }
 
     func testSkillDocumentRenameRejectsExistingFolder() throws {
