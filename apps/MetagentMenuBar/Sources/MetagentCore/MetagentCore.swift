@@ -951,7 +951,7 @@ public enum MetagentCore {
             mutability: agentsSkill.mutability,
             command: command,
             applySupported: agentsSkill.representation == "canonical"
-                && ["local", "git", "dotagents", "skills-cli"].contains(agentsSkill.manager)
+                && ["local", "dotagents", "skills-cli"].contains(agentsSkill.manager)
         )
     }
 
@@ -1322,19 +1322,6 @@ private struct DotagentsSkillEntry {
     var isLocked: Bool
 }
 
-private struct RepositoryEvidence {
-    var root: String
-    var name: String
-    var remoteURL: String?
-    var trackedSkillPaths: Set<String>
-
-    var authority: String { "repository:\(name)" }
-
-    func tracks(_ skill: URL) -> Bool {
-        trackedSkillPaths.contains(canonicalProjectPath(skill))
-    }
-}
-
 private struct SkillOriginEvidence {
     var originKind: String
     var manager: String
@@ -1349,8 +1336,7 @@ private struct SkillOriginEvidence {
 private func canonicalSkillOwnership(
     scope: String,
     skillLock: SkillLockEntry?,
-    dotagents: DotagentsSkillEntry?,
-    repository: RepositoryEvidence?
+    dotagents: DotagentsSkillEntry?
 ) -> SkillOriginEvidence {
     if let skillLock {
         return SkillOriginEvidence(
@@ -1369,34 +1355,20 @@ private func canonicalSkillOwnership(
         return SkillOriginEvidence(
             originKind: isLocalPath ? "dotagents-local" : "dotagents-managed",
             manager: "dotagents",
-            authority: isLocalPath
-                ? (repository?.authority ?? (scope == "global" ? "user-owned" : "project-owned"))
-                : dotagents.source,
+            authority: dotagents.source,
             mutability: isLocalPath ? "editable" : "managed-read-only",
             source: dotagents.source,
             sourceType: dotagents.isLocked ? "dotagents-lock" : "dotagents-config",
             sourceURL: isLocalPath
-                ? repository?.remoteURL
+                ? nil
                 : (dotagents.source.contains("://") ? dotagents.source : nil),
-            ref: nil
-        )
-    }
-    if let repository {
-        return SkillOriginEvidence(
-            originKind: "git-repository",
-            manager: "git",
-            authority: repository.authority,
-            mutability: "editable",
-            source: repository.root,
-            sourceType: "git-repository",
-            sourceURL: repository.remoteURL,
             ref: nil
         )
     }
     return SkillOriginEvidence(
         originKind: scope == "global" ? "user-local" : "project-local",
         manager: "local",
-        authority: scope == "global" ? "user-owned" : "project-owned",
+        authority: "unknown",
         mutability: "editable",
         source: nil,
         sourceType: "local",
@@ -1665,7 +1637,6 @@ private func readProjectSkills(root: URL) throws -> SkillProject {
     let agentsSkillsDir = root.appendingPathComponent(".agents").appendingPathComponent("skills")
     let skillLock = readProjectSkillLocks(root: root)
     let dotagentsSkills = readDotagentsSkills(root: root)
-    let repository = repositoryEvidence(for: root)
     let scope = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? "global" : "project"
     var validSkills: [String] = []
     var inventory: [SkillInventoryItem] = []
@@ -1676,7 +1647,6 @@ private func readProjectSkills(root: URL) throws -> SkillProject {
         skillsDir: agentsSkillsDir,
         skillLock: skillLock,
         dotagentsSkills: dotagentsSkills,
-        repository: repository,
         scope: scope,
         validSkills: &validSkills,
         inventory: &inventory,
@@ -1720,7 +1690,6 @@ private func readAgentsSkills(
     skillsDir: URL,
     skillLock: [String: SkillLockEntry],
     dotagentsSkills: [String: DotagentsSkillEntry],
-    repository: RepositoryEvidence?,
     scope: String,
     validSkills: inout [String],
     inventory: inout [SkillInventoryItem],
@@ -1757,12 +1726,10 @@ private func readAgentsSkills(
                 : entryEvidence
         }
         let projection = symlinkedContainer || isSymlink(entry)
-        let trackedRepository = repository?.tracks(entry) == true ? repository : nil
         let ownership = canonicalSkillOwnership(
             scope: scope,
             skillLock: lockEntry,
-            dotagents: dotagentsEntry,
-            repository: trackedRepository
+            dotagents: dotagentsEntry
         )
         inventory.append(makeSkillItem(
             name: name,
@@ -2196,9 +2163,6 @@ private func folderKind(
     if location == "agents", originKind.hasPrefix("dotagents") {
         return originKind
     }
-    if location == "agents", originKind == "git-repository" {
-        return "repository"
-    }
     if location == "agents", originKind.hasSuffix("-local") {
         return originKind
     }
@@ -2247,12 +2211,13 @@ private func parseDotagentsConfig(_ path: URL) -> [String: DotagentsSkillEntry] 
 
     for rawLine in text.components(separatedBy: .newlines) {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
-        if line == "[[skills]]" {
+        let header = tomlHeaderWithoutComment(line)
+        if header == "[[skills]]" {
             flush()
             name = nil
             source = nil
             inSkill = true
-        } else if line.hasPrefix("[") {
+        } else if header.hasPrefix("[") {
             flush()
             name = nil
             source = nil
@@ -2273,16 +2238,21 @@ private func parseDotagentsLock(_ path: URL) -> [String: DotagentsSkillEntry] {
     var name: String?
     for rawLine in text.components(separatedBy: .newlines) {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
-        if line.hasPrefix("[skills."), line.hasSuffix("]") {
-            name = String(line.dropFirst(8).dropLast())
+        let header = tomlHeaderWithoutComment(line)
+        if header.hasPrefix("[skills."), header.hasSuffix("]") {
+            name = String(header.dropFirst(8).dropLast())
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        } else if line.hasPrefix("[") {
+        } else if header.hasPrefix("[") {
             name = nil
         } else if line.hasPrefix("source"), let name, let source = tomlStringValue(line) {
             entries[name] = DotagentsSkillEntry(source: source, isLocked: true)
         }
     }
     return entries
+}
+
+private func tomlHeaderWithoutComment(_ line: String) -> String {
+    String(line.prefix { $0 != "#" }).trimmingCharacters(in: .whitespaces)
 }
 
 private func tomlStringValue(_ line: String) -> String? {
@@ -2330,91 +2300,10 @@ private func dotagentsPathSource(
     return sourceURL.standardizedFileURL.path == expectedSkill.standardizedFileURL.path
 }
 
-private func repositoryEvidence(for projectRoot: URL) -> RepositoryEvidence? {
-    let isHome = canonicalProjectPath(projectRoot) == canonicalProjectPath(homeURL())
-    var candidate = (isHome ? projectRoot.appendingPathComponent(".agents") : projectRoot)
-        .standardizedFileURL
-    while candidate.path != "/" {
-        let gitPath = candidate.appendingPathComponent(".git")
-        if fileManager.fileExists(atPath: gitPath.path) {
-            return RepositoryEvidence(
-                root: candidate.path,
-                name: candidate.lastPathComponent,
-                remoteURL: gitOriginURL(gitPath: gitPath),
-                trackedSkillPaths: gitTrackedSkillPaths(
-                    repositoryRoot: candidate,
-                    projectRoot: projectRoot
-                )
-            )
-        }
-        candidate.deleteLastPathComponent()
-    }
-    return nil
-}
-
-private func gitTrackedSkillPaths(repositoryRoot: URL, projectRoot: URL) -> Set<String> {
-    let skillsDirectory = projectRoot.appendingPathComponent(".agents/skills")
-    let relativeSkillsPath = relativePath(skillsDirectory, from: repositoryRoot)
-    guard !relativeSkillsPath.hasPrefix("../"), relativeSkillsPath != "..",
-          let result = try? runSubprocess(
-              executable: URL(fileURLWithPath: "/usr/bin/git"),
-              arguments: ["-C", repositoryRoot.path, "ls-files", "-z", "--", relativeSkillsPath],
-              timeout: 5
-          ),
-          result.status == 0,
-          !result.timedOut
-    else { return [] }
-
-    let prefix = relativeSkillsPath.hasSuffix("/") ? relativeSkillsPath : relativeSkillsPath + "/"
-    let paths = String(decoding: result.standardOutput, as: UTF8.self)
-        .split(separator: "\0")
-        .compactMap { trackedFile -> String? in
-            let path = String(trackedFile)
-            guard path.hasPrefix(prefix) else { return nil }
-            let remainder = path.dropFirst(prefix.count)
-            guard let skillName = remainder.split(separator: "/").first else { return nil }
-            return canonicalProjectPath(skillsDirectory.appendingPathComponent(String(skillName)))
-        }
-    return Set(paths)
-}
-
-private func relativePath(_ target: URL, from base: URL) -> String {
-    let targetComponents = target.standardizedFileURL.pathComponents
-    let baseComponents = base.standardizedFileURL.pathComponents
-    var common = 0
-    while common < min(targetComponents.count, baseComponents.count),
-          targetComponents[common] == baseComponents[common]
-    {
-        common += 1
-    }
-    return Array(repeating: "..", count: baseComponents.count - common)
-        .joined(separator: "/")
-        + (baseComponents.count == common ? "" : "/")
-        + targetComponents.dropFirst(common).joined(separator: "/")
-}
-
 private func projectRoot(for skillsDirectory: URL) -> URL {
     skillsDirectory
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-}
-
-private func gitOriginURL(gitPath: URL) -> String? {
-    let config = gitPath.appendingPathComponent("config")
-    guard let text = try? String(contentsOf: config, encoding: .utf8) else { return nil }
-    var inOrigin = false
-    for rawLine in text.components(separatedBy: .newlines) {
-        let line = rawLine.trimmingCharacters(in: .whitespaces)
-        if line.hasPrefix("[") {
-            inOrigin = line == "[remote \"origin\"]"
-            continue
-        }
-        if inOrigin, line.hasPrefix("url"), let equals = line.firstIndex(of: "=") {
-            let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
-            return value.isEmpty ? nil : value
-        }
-    }
-    return nil
 }
 
 private func readProjectSkillLocks(root: URL) -> [String: SkillLockEntry] {

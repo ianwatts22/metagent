@@ -20,7 +20,7 @@ Metagent reads exactly one skills CLI lock per scope:
 
 The locks are not merged. A root-level global `skills-lock.json` or nested project `.agents/.skill-lock.json` is legacy state; Doctor reports it for review instead of silently treating it as ownership evidence.
 
-An `.agents/skills` bundle found in the applicable lock is `skills-cli` managed and read-only. An unlocked physical bundle is `local` managed and editable, but its authority remains `unknown`. That distinction protects imported or formerly managed skills without falsely claiming that the user authored them.
+An `.agents/skills` bundle found in the applicable lock is `skills-cli` managed and read-only. An unlocked physical bundle is `local` managed and editable, but its upstream remains unknown. `local` means “no active installer evidence,” not “confirmed authored by this user.” Ordinary Git tracking records where files are versioned; it does not prove where a skill originally came from and is therefore not an upstream source.
 
 Physical `.codex/skills/.system` bundles are Codex system skills. Other physical `.codex/skills` bundles are Codex-installed. Symlinks into `.agents/skills` inherit the canonical bundle's manager and authority and are represented as projections.
 
@@ -28,9 +28,20 @@ Dotagents ownership requires a declaration whose source is distinct from the
 installed skill path. Dotagents may adopt an orphan skill by writing a
 self-referential `path:.agents/skills/<name>` entry during `sync`; that entry is
 bookkeeping, not evidence that dotagents owns the content. Metagent classifies
-those adopted bundles from stronger evidence such as Skills CLI locks, tracked
-Git files, or local ownership. A distinct external `path:` source remains
+those adopted bundles from stronger evidence such as Skills CLI locks or a
+distinct declared source. A distinct external `path:` source remains
 `dotagents · local`, while non-path sources remain `dotagents · managed`.
+
+To retire obsolete self-referential dotagents state without touching any skill
+or projection, preview the repository utility first:
+
+```bash
+scripts/retire-dotagents-state.sh ~/.agents /absolute/path/to/project
+scripts/retire-dotagents-state.sh --apply ~/.agents /absolute/path/to/project
+```
+
+The apply mode refuses distinct sources, requires the macOS Trash, and preserves
+non-empty generated ignore files for manual review.
 
 Installed Codex plugins are discovered from `codex plugin list --json`, then their active bundled skills are inventoried from the matching versioned cache when available. They are always `codex-plugin`, `managed-read-only`, and never eligible for content edits or Metagent deletion.
 

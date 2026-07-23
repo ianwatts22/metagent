@@ -132,21 +132,21 @@ final class SkillProvenanceTests: XCTestCase {
         try """
         version = 1
 
-        [[skills]]
+        [[skills]] # adopted declaration
         name = "demo" # local display name
         source = "path:.agents/skills/demo" # canonical source
         """.write(to: root.appendingPathComponent("agents.toml"), atomically: true, encoding: .utf8)
         try """
         version = 1
 
-        [skills.demo]
+        [skills.demo] # adopted lock entry
         source = "path:.agents/skills/demo"
         """.write(to: root.appendingPathComponent("agents.lock"), atomically: true, encoding: .utf8)
 
         let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first { $0.location == "agents" })
 
         XCTAssertEqual(skill.manager, "local")
-        XCTAssertEqual(skill.authority, "project-owned")
+        XCTAssertEqual(skill.authority, "unknown")
         XCTAssertEqual(skill.originKind, "project-local")
         XCTAssertEqual(skill.mutability, "editable")
         XCTAssertEqual(skill.sourceType, "local")
@@ -204,7 +204,7 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertEqual(skill.source, "path:shared/demo")
     }
 
-    func testRepositoryAndProjectLocalSkillsKeepExplicitOwnership() throws {
+    func testGitTrackingDoesNotInventUpstreamOwnership() throws {
         let repository = try fixtureRoot("repository")
         let local = try fixtureRoot("local")
         defer {
@@ -222,13 +222,15 @@ final class SkillProvenanceTests: XCTestCase {
         let untrackedSkill = try XCTUnwrap(repositorySkills.first { $0.name == "untracked-skill" })
         let localSkill = try XCTUnwrap(try scan(local).projects.first?.skills.first)
 
-        XCTAssertEqual(repositorySkill.manager, "git")
-        XCTAssertEqual(repositorySkill.authority, "repository:\(repository.lastPathComponent)")
-        XCTAssertEqual(repositorySkill.originKind, "git-repository")
+        XCTAssertEqual(repositorySkill.manager, "local")
+        XCTAssertEqual(repositorySkill.authority, "unknown")
+        XCTAssertEqual(repositorySkill.originKind, "project-local")
+        XCTAssertNil(repositorySkill.source)
+        XCTAssertNil(repositorySkill.sourceURL)
         XCTAssertEqual(untrackedSkill.manager, "local")
         XCTAssertEqual(untrackedSkill.originKind, "project-local")
         XCTAssertEqual(localSkill.manager, "local")
-        XCTAssertEqual(localSkill.authority, "project-owned")
+        XCTAssertEqual(localSkill.authority, "unknown")
         XCTAssertEqual(localSkill.originKind, "project-local")
     }
 

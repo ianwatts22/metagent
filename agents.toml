@@ -1,9 +1,0 @@
-version = 1
-agents = ["claude", "codex", "cursor"]
-
-[trust]
-allow_all = true
-
-[[skills]]
-name = "metagent"
-source = "path:.agents/skills/metagent"

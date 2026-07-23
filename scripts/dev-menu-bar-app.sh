@@ -10,7 +10,7 @@ snapshot() {
     "$app_source/Package.swift" \
     "$app_source/Info.plist" \
     -type f \
-    \( -name '*.swift' -o -name '*.plist' -o -name '*.svg' -o -name '*.pdf' -o -name '*.icns' \) \
+    \( -name '*.swift' -o -name '*.plist' -o -name '*.svg' -o -name '*.json' -o -name '*.pdf' -o -name '*.icns' -o -name 'VERSION' \) \
     -exec stat -f '%m:%z:%N' {} \; \
     | LC_ALL=C sort \
     | shasum

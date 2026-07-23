@@ -78,7 +78,9 @@ For the `agent-meta` to `metagent` migration, the intended end state is:
 Legacy `~/.agents/agents.toml` and `~/.agents/agents.lock` files may still exist
 on an older machine. Metagent treats their declarations as provenance while
 they remain present; review and trash them explicitly if dotagents no longer
-owns those entries rather than silently merging formats. Retain
+owns those entries rather than silently merging formats. Use
+`scripts/retire-dotagents-state.sh` to verify that every declaration is
+self-referential and preview the exact cleanup before applying it. Retain
 the active lock at `${XDG_STATE_HOME}/skills/.skill-lock.json` when
 `XDG_STATE_HOME` is set; otherwise retain `~/.agents/.skill-lock.json`, along
 with the installed skill directories.

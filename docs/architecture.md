@@ -141,9 +141,9 @@ Metagent does not generate manifests or lockfiles. `npx skills` may maintain
 `skills-lock.json` for packages it installed, and dotagents may maintain
 `agents.toml` plus `agents.lock`. Metagent reads both manager formats. A
 self-referential dotagents path created while adopting an existing local skill
-is reconciliation bookkeeping rather than manager ownership. Git provenance
-requires tracked files inside the skill, not merely a containing repository;
-otherwise Metagent falls back to explicit project/user-local ownership.
+is reconciliation bookkeeping rather than manager ownership. Git tracking is
+storage/version-control evidence, not proof of upstream origin; without an
+installer lock or distinct manager source, Metagent reports local/unknown.
 Global `~/.claude/skills` remains outside this project projection rule.
 
 ## Verification

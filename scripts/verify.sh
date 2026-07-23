@@ -17,6 +17,7 @@ bash -n "$repo_root/scripts/install-menu-bar-app.sh"
 bash -n "$repo_root/scripts/dev-menu-bar-app.sh"
 bash -n "$repo_root/scripts/install-cli.sh"
 bash -n "$repo_root/scripts/build-menu-bar-app.sh"
+bash -n "$repo_root/scripts/retire-dotagents-state.sh"
 
 (
   cd "$app_source"
@@ -33,6 +34,9 @@ plutil -lint "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist" >/dev/nul
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/MacOS/MetagentMenuBar"
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-LICENSE.txt"
+test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-sprite.svg"
+test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-tags.json"
+test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.txt"
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
 "$swift_helper" skills --help >/dev/null
@@ -52,6 +56,64 @@ cleanup_fixture() {
   fi
 }
 trap cleanup_fixture EXIT
+
+mkdir -p \
+  "$fixture_root/dotagents-safe/.agents/skills/demo" \
+  "$fixture_root/dotagents-commented/.agents/skills/demo" \
+  "$fixture_root/dotagents-empty/.agents/skills" \
+  "$fixture_root/dotagents-invalid-name/.agents/skills" \
+  "$fixture_root/dotagents-reordered/.agents/skills/demo" \
+  "$fixture_root/dotagents-unsafe/.agents/skills/demo" \
+  "$fixture_root/dotagents-unsafe/.agents/skills/other"
+cat >"$fixture_root/dotagents-safe/agents.toml" <<'EOF'
+version = 1
+[[skills]]
+name = "demo"
+source = "path:.agents/skills/demo"
+EOF
+cat >"$fixture_root/dotagents-commented/agents.toml" <<'EOF'
+version = 1
+[[skills]] # valid TOML comment
+name = "demo"
+source = "path:.agents/skills/demo"
+EOF
+cat >"$fixture_root/dotagents-empty/agents.toml" <<'EOF'
+version = 1
+agents = ["claude", "codex"]
+EOF
+cat >"$fixture_root/dotagents-reordered/agents.toml" <<'EOF'
+version = 1
+[[skills]]
+source = "path:.agents/skills/demo"
+name = "demo"
+EOF
+cat >"$fixture_root/dotagents-invalid-name/agents.toml" <<'EOF'
+version = 1
+[[skills]]
+name = "../external"
+source = "path:.agents/skills/../external"
+EOF
+cat >"$fixture_root/dotagents-unsafe/agents.toml" <<'EOF'
+version = 1
+[[skills]]
+name = "demo"
+source = "path:.agents/skills/other"
+EOF
+"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-safe" >/dev/null
+"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-commented" >/dev/null
+"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-reordered" >/dev/null
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty" >/dev/null 2>&1; then
+  echo "dotagents retirement accepted a manifest without skill declarations" >&2
+  exit 1
+fi
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name" >/dev/null 2>&1; then
+  echo "dotagents retirement accepted an invalid skill name" >&2
+  exit 1
+fi
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe" >/dev/null 2>&1; then
+  echo "dotagents retirement accepted a different same-root source" >&2
+  exit 1
+fi
 
 mkdir -p \
   "$fixture_root/home/.config/metagent" \

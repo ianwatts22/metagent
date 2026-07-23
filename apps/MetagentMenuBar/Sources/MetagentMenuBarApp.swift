@@ -55,17 +55,7 @@ private struct MenuBarIcon: View {
 
 @MainActor private enum AppBrand {
     static let menuBarIcon: NSImage? = {
-        for bundle in [Bundle.main, Bundle.module] {
-            guard let url = bundle.url(forResource: "MenuBarIconTemplate", withExtension: "pdf"),
-                  let image = NSImage(contentsOf: url)
-            else {
-                continue
-            }
-            image.isTemplate = true
-            image.size = NSSize(width: 18, height: 18)
-            return image
-        }
-        return nil
+        loadMenuBarIcon(in: .main) ?? loadMenuBarIcon(in: .module)
     }()
 
     private static let applicationIcons: [String: NSImage] = {
@@ -94,6 +84,15 @@ private struct MenuBarIcon: View {
 
     static func clearSkillIconCache() {
         skillIcons.removeAllObjects()
+    }
+
+    private static func loadMenuBarIcon(in bundle: Bundle) -> NSImage? {
+        guard let url = bundle.url(forResource: "MenuBarIconTemplate", withExtension: "pdf"),
+              let image = NSImage(contentsOf: url)
+        else { return nil }
+        image.isTemplate = true
+        image.size = NSSize(width: 18, height: 18)
+        return image
     }
 }
 
@@ -1114,6 +1113,44 @@ private enum SkillScopeFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum SkillGrouping: String, CaseIterable, Identifiable {
+    case none
+    case source
+    case location
+    case upstream
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .none: "No grouping"
+        case .source: "Source"
+        case .location: "Location"
+        case .upstream: "Upstream"
+        }
+    }
+
+    func title(for row: SkillTableRow) -> String {
+        switch self {
+        case .none: ""
+        case .source: row.sourceText
+        case .location: row.displaysGlobalLocation ? "Global" : row.projectName
+        case .upstream: row.upstreamText == "—" ? "No upstream recorded" : row.upstreamText
+        }
+    }
+
+    func key(for row: SkillTableRow) -> String {
+        switch self {
+        case .none: ""
+        case .source: row.sourceCategory.rawValue
+        case .location:
+            row.displaysGlobalLocation
+                ? "global"
+                : "project:\(row.projectRoot ?? row.displayLocationSortValue)"
+        case .upstream: row.upstreamText
+        }
+    }
+}
+
 private struct UsageSkillRow: Identifiable, Sendable {
     enum Status: Sendable { case active, dormant, neverObserved, insufficient }
 
@@ -1245,7 +1282,6 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     case skillsCLI
     case dotagentsLocal
     case dotagentsManaged
-    case git
     case codexSystem
     case codexInstalled
     case claude
@@ -1260,11 +1296,10 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         case .skillsCLI: "Skills CLI"
         case .dotagentsLocal: "dotagents · external path"
         case .dotagentsManaged: "dotagents · package"
-        case .git: "Git repository"
         case .codexSystem: "Codex system"
         case .codexInstalled: "Codex installed"
-        case .claude: "Claude"
-        case .local: "Local"
+        case .claude: "Claude installed"
+        case .local: "Local or unknown"
         case .notInstalled: "Not installed"
         }
     }
@@ -1275,10 +1310,16 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
             "dotagents manages this installation from a distinct local source path. Self-referential orphan-adoption records are classified as local instead."
         case .dotagentsManaged:
             "The skill is declared as a package managed by dotagents rather than as a local path."
-        case .git:
-            "Git repository owns this skill because Git tracks files inside its canonical bundle."
+        case .skillsCLI:
+            "Skills CLI owns this installation because its lockfile records the skill and upstream package."
+        case .local:
+            "No installer, lockfile, or independent upstream source is recorded. The skill may be locally authored or imported; ordinary Git tracking does not establish provenance."
         case .notInstalled:
             "Historical Codex usage matched this skill, but no current installed bundle matches its recorded path or identity."
+        case .codexInstalled:
+            "The canonical skill bundle is installed in Codex. It may also be projected into another agent."
+        case .claude:
+            "The canonical skill bundle is installed in Claude. It may also be projected into another agent."
         default:
             title
         }
@@ -1297,7 +1338,6 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         case "skills-cli": return .skillsCLI
         case "dotagents":
             return inventory.skill.originKind == "dotagents-managed" ? .dotagentsManaged : .dotagentsLocal
-        case "git": return .git
         case "codex":
             return inventory.skill.authority == "codex-system" ? .codexSystem : .codexInstalled
         case "claude": return .claude
@@ -1311,8 +1351,11 @@ private struct SkillTableRow: Identifiable, Sendable {
     let usage: UsageSkillRow
     let historicalProjectRoot: String?
     let pluginInventoryAvailable: Bool
+    var groupTitle: String? = nil
+    var children: [SkillTableRow]? = nil
 
-    var id: String { inventory?.id ?? "historical:\(usage.id)" }
+    var id: String { groupTitle == nil ? (inventory?.id ?? "historical:\(usage.id)") : usage.id }
+    var isGroup: Bool { children != nil }
     var skillName: String { inventory?.skillName ?? usage.skillName }
     var projectName: String {
         inventory?.projectName
@@ -1515,6 +1558,30 @@ private struct SkillTableRow: Identifiable, Sendable {
         return rows
     }
 
+    static func group(id: String, title: String, children: [SkillTableRow]) -> SkillTableRow {
+        SkillTableRow(
+            inventory: nil,
+            usage: UsageSkillRow(
+                id: "group:\(id)",
+                skillName: title,
+                canonicalPath: nil,
+                scope: "group",
+                totalInvocations: 0,
+                invocations7d: 0,
+                invocations30d: 0,
+                distinctThreads: 0,
+                repeatInvocations: 0,
+                lastUsedDate: nil,
+                lastUsedSortValue: -.infinity,
+                status: .insufficient
+            ),
+            historicalProjectRoot: nil,
+            pluginInventoryAvailable: true,
+            groupTitle: title,
+            children: children
+        )
+    }
+
     private static func inferredProjectRoot(for path: String?, roots: [String]) -> String? {
         guard let path else { return nil }
         let canonicalPath = standardizedDirectoryPath(path)
@@ -1539,6 +1606,7 @@ private struct InventorySection: View {
     @State private var iconTarget: InventorySkillRow?
     @State private var showsScoreExplanation = false
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
+    @AppStorage("metagent.skills.grouping.v1") private var groupingRaw = SkillGrouping.none.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
     private var hiddenSourceRaw = "__unmigrated__"
     @SceneStorage("metagent.skills.inventory.columns.v3")
@@ -1558,6 +1626,20 @@ private struct InventorySection: View {
         Binding(
             get: { selectedView },
             set: { selectedViewRaw = $0.rawValue }
+        )
+    }
+
+    private var grouping: SkillGrouping {
+        SkillGrouping(rawValue: groupingRaw) ?? .none
+    }
+
+    private var groupingBinding: Binding<SkillGrouping> {
+        Binding(
+            get: { grouping },
+            set: {
+                groupingRaw = $0.rawValue
+                selection.removeAll()
+            }
         )
     }
 
@@ -1604,13 +1686,27 @@ private struct InventorySection: View {
         rows.sorted(using: sortOrder)
     }
 
+    private var displayRows: [SkillTableRow] {
+        guard grouping != .none else { return sortedRows }
+        return Dictionary(grouping: rows, by: grouping.key(for:))
+            .map { key, children in
+                SkillTableRow.group(
+                    id: "\(grouping.rawValue):\(key)",
+                    title: children.first.map(grouping.title(for:)) ?? key,
+                    children: children.sorted(using: sortOrder)
+                )
+            }
+            .sorted { $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending }
+    }
+
     private var selectedRow: InventorySkillRow? {
-        guard selection.count == 1, let selectedID = selection.first else { return nil }
-        return rows.first { $0.id == selectedID }?.inventory
+        let resolved = resolvedRows(for: selection)
+        guard resolved.count == 1 else { return nil }
+        return resolved.first?.inventory
     }
 
     private var selectedRows: [SkillTableRow] {
-        rows.filter { selection.contains($0.id) }
+        resolvedRows(for: selection)
     }
 
     private var selectedRemovalRows: [InventorySkillRow] {
@@ -1633,7 +1729,16 @@ private struct InventorySection: View {
 
     private func rows(for contextSelection: Set<SkillTableRow.ID>) -> [SkillTableRow] {
         let ids = contextSelection.isEmpty ? selection : contextSelection
-        return rows.filter { ids.contains($0.id) }
+        return resolvedRows(for: ids)
+    }
+
+    private func resolvedRows(for ids: Set<SkillTableRow.ID>) -> [SkillTableRow] {
+        displayRows.flatMap { row -> [SkillTableRow] in
+            if ids.contains(row.id) {
+                return row.children ?? [row]
+            }
+            return row.children?.filter { ids.contains($0.id) } ?? []
+        }
     }
 
     private func copyPaths(_ rows: [SkillTableRow]) {
@@ -1789,6 +1894,14 @@ private struct InventorySection: View {
                 }
                 .frame(width: 145)
 
+                Picker("Group by", selection: groupingBinding) {
+                    ForEach(SkillGrouping.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .frame(width: 145)
+                .help("Group the current Skills view. Groups can be expanded or collapsed and apply across Summary, Review, Inventory, and Usage.")
+
                 Spacer()
 
                 if selectedView == .usage {
@@ -1822,14 +1935,21 @@ private struct InventorySection: View {
                 )
             } else {
                 Table(
-                    sortedRows,
+                    displayRows,
+                    children: \.children,
                     selection: $selection,
                     sortOrder: $sortOrder,
                     columnCustomization: columnCustomization
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
                         TableColumn(column.title, sortUsing: column.comparator) { row in
-                            if column.id == "skill" {
+                            if row.isGroup {
+                                if column.id == "skill" {
+                                    SkillNameCell(row: row)
+                                } else {
+                                    Color.clear
+                                }
+                            } else if column.id == "skill" {
                                 SkillNameCell(row: row)
                             } else if column.id == "display-location" {
                                 SkillScopeLocationCell(row: row)
@@ -1857,7 +1977,7 @@ private struct InventorySection: View {
                         .defaultVisibility(column.defaultVisibility(selectedView))
                     }
                 }
-                .id(selectedView)
+                .id("\(selectedView.rawValue):\(grouping.rawValue)")
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
                 .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
@@ -2326,6 +2446,7 @@ private struct ProjectDirectoryRow: Identifiable {
     let mcpCount: Int
     let claudeState: LinkState
     let codexOnlyCount: Int
+    let claudeOnlyCount: Int
     let issueCount: Int
 
     var id: String { root }
@@ -2354,15 +2475,25 @@ private struct ProjectDirectoryRow: Identifiable {
         )
         let agentsPaths = Set(matchingProjects.flatMap { project in
             project.skills
-                .filter { $0.location == "agents" }
+                .filter { $0.location == "agents" && $0.representation == "canonical" }
                 .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
         })
-        codexOnlyCount = Set(matchingProjects.flatMap { project in
+        let codexPaths = Set(matchingProjects.flatMap { project in
             project.skills
-                .filter { $0.location == "codex" }
+                .filter {
+                    $0.location == "codex"
+                        && $0.representation == "canonical"
+                        && $0.authority != "codex-system"
+                }
                 .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
-                .filter { !agentsPaths.contains($0) }
-        }).count
+        })
+        let claudePaths = Set(matchingProjects.flatMap { project in
+            project.skills
+                .filter { $0.location == "claude" && $0.representation == "canonical" }
+                .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
+        })
+        codexOnlyCount = codexPaths.subtracting(agentsPaths).subtracting(claudePaths).count
+        claudeOnlyCount = claudePaths.subtracting(agentsPaths).subtracting(codexPaths).count
         issueCount = groupedDoctorActionCount(doctorIssues.filter {
             $0.severity != .ok
                 && $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
@@ -2480,6 +2611,13 @@ private struct ProjectsSection: View {
                             .help("Skills stored only in .codex/skills. Skills shared through .agents/skills are not counted because Codex discovers those automatically.")
                     }
                     .width(min: 86, ideal: 104)
+                    TableColumn("Claude-only", value: \.claudeOnlyCount) { row in
+                        Text(row.claudeOnlyCount == 0 ? "—" : row.claudeOnlyCount.formatted())
+                            .monospacedDigit()
+                            .font(.callout)
+                            .help("Skills stored only in .claude/skills. Skills shared through .agents/skills are not counted.")
+                    }
+                    .width(min: 90, ideal: 108)
                     TableColumn("Issues", value: \.issueCount) { row in
                         let value = row.issueCount == 0 ? "—" : row.issueCount.formatted()
                         let tint: Color = row.issueCount == 0 ? .secondary : .orange
@@ -2739,7 +2877,12 @@ private struct InventorySkillRow: Identifiable, Sendable {
     }
 
     private static func canonicalSkillOrder(_ left: SkillStatus, _ right: SkillStatus) -> Bool {
-        let priority = ["agents": 0, "claude": 1, "codex": 2]
+        let leftRepresentationPriority = left.representation == "canonical" ? 0 : 1
+        let rightRepresentationPriority = right.representation == "canonical" ? 0 : 1
+        if leftRepresentationPriority != rightRepresentationPriority {
+            return leftRepresentationPriority < rightRepresentationPriority
+        }
+        let priority = ["agents": 0, "codex": 1, "claude": 2]
         let leftPriority = priority[left.location, default: 3]
         let rightPriority = priority[right.location, default: 3]
         if leftPriority != rightPriority {
@@ -2899,7 +3042,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
     var removalRequest: SkillRemovalRequest? {
         if let agentsVariant,
            agentsVariant.representation == "canonical",
-           ["local", "git", "dotagents", "skills-cli"].contains(agentsVariant.manager)
+           ["local", "dotagents", "skills-cli"].contains(agentsVariant.manager)
         {
             return SkillRemovalRequest(
                 id: "canonical:\(project.root):\(agentsVariant.name)",
@@ -3415,34 +3558,47 @@ private struct SkillNameCell: View {
     let row: SkillTableRow
 
     var body: some View {
-        HStack(spacing: 7) {
-            Group {
-                if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .scaledToFit()
-                } else {
-                    Image(systemName: "sparkles")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(.tertiary)
-                        .padding(2)
+        Group {
+            if row.isGroup {
+                HStack(spacing: 7) {
+                    Text(row.skillName)
+                        .font(.body.weight(.semibold))
+                    Text((row.children?.count ?? 0).formatted())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-            }
-            .frame(width: 18, height: 18)
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            .accessibilityHidden(true)
+                .accessibilityLabel("\(row.skillName), \(row.children?.count ?? 0) skills")
+            } else {
+                HStack(spacing: 7) {
+                    Group {
+                        if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            Image(systemName: "sparkles")
+                                .resizable()
+                                .scaledToFit()
+                                .foregroundStyle(.tertiary)
+                                .padding(2)
+                        }
+                    }
+                    .frame(width: 18, height: 18)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .accessibilityHidden(true)
 
-            Text(row.skillName)
-                .font(.body.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
+                    Text(row.skillName)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .help(row.skillPath)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(row.skillName)
+                .accessibilityHint(row.skillPath)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .help(row.skillPath)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.skillName)
-        .accessibilityHint(row.skillPath)
     }
 }
 
@@ -3495,11 +3651,8 @@ private struct SkillSourceIconCell: View {
             DotagentsSourceMark()
         case .skillsCLI:
             VercelSourceMark()
-        case .git:
-            Image(systemName: "arrow.triangle.branch")
-                .foregroundStyle(.secondary)
         case .local:
-            Image(systemName: "person.crop.circle")
+            Image(systemName: "questionmark.folder")
                 .foregroundStyle(.secondary)
         case .notInstalled:
             Image(systemName: "clock.arrow.circlepath")
@@ -3747,6 +3900,7 @@ private struct LucideSkillIcon: Identifiable {
     let id: String
     let name: String
     let body: String
+    var tags: [String] = []
 
     var svgData: Data {
         Data("""
@@ -3758,7 +3912,9 @@ private struct LucideSkillIcon: Identifiable {
 
     var image: NSImage? { NSImage(data: svgData) }
 
-    static let catalog = [
+    static let catalog = loadCatalog()
+
+    private static let fallbackCatalog = [
         LucideSkillIcon(id: "sparkles", name: "Sparkles", body: #"""
         <path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/>
         """#),
@@ -3808,6 +3964,93 @@ private struct LucideSkillIcon: Identifiable {
         <path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/>
         """#)
     ]
+
+    var searchText: String {
+        ([id, name] + tags).joined(separator: " ")
+    }
+
+    private static func loadCatalog() -> [LucideSkillIcon] {
+        guard let spriteURL = resourceURL(
+            packagedName: "Lucide-sprite",
+            sourceName: "sprite",
+            extension: "svg"
+        ),
+        let sprite = try? String(contentsOf: spriteURL, encoding: .utf8),
+        let expression = try? NSRegularExpression(
+            pattern: #"<symbol id="([^"]+)" viewBox="0 0 24 24">\s*(.*?)\s*</symbol>"#,
+            options: [.dotMatchesLineSeparators]
+        )
+        else { return fallbackCatalog }
+
+        let tags = loadTags()
+        let range = NSRange(sprite.startIndex..<sprite.endIndex, in: sprite)
+        let icons = expression.matches(in: sprite, range: range).compactMap { match -> LucideSkillIcon? in
+            guard match.numberOfRanges == 3,
+                  let idRange = Range(match.range(at: 1), in: sprite),
+                  let bodyRange = Range(match.range(at: 2), in: sprite)
+            else { return nil }
+            let id = String(sprite[idRange])
+            return LucideSkillIcon(
+                id: id,
+                name: id
+                    .split(separator: "-")
+                    .map { $0.capitalized }
+                    .joined(separator: " "),
+                body: String(sprite[bodyRange]),
+                tags: tags[id] ?? []
+            )
+        }
+        return icons.isEmpty ? fallbackCatalog : icons
+    }
+
+    private static func loadTags() -> [String: [String]] {
+        guard let url = resourceURL(
+            packagedName: "Lucide-tags",
+            sourceName: "tags",
+            extension: "json"
+        ),
+        let data = try? Data(contentsOf: url),
+        let tags = try? JSONDecoder().decode([String: [String]].self, from: data)
+        else { return [:] }
+        return tags
+    }
+
+    private static func resourceURL(
+        packagedName: String,
+        sourceName: String,
+        extension fileExtension: String
+    ) -> URL? {
+        resourceURL(
+            in: .main,
+            packagedName: packagedName,
+            sourceName: sourceName,
+            extension: fileExtension
+        ) ?? resourceURL(
+            in: .module,
+            packagedName: packagedName,
+            sourceName: sourceName,
+            extension: fileExtension
+        )
+    }
+
+    private static func resourceURL(
+        in bundle: Bundle,
+        packagedName: String,
+        sourceName: String,
+        extension fileExtension: String
+    ) -> URL? {
+        if let packaged = bundle.url(forResource: packagedName, withExtension: fileExtension) {
+            return packaged
+        }
+        if let source = bundle.url(
+            forResource: sourceName,
+            withExtension: fileExtension,
+            subdirectory: "Lucide"
+        ) {
+            return source
+        }
+        return bundle.url(forResource: sourceName, withExtension: fileExtension)
+    }
 }
 
 private struct SkillIconEditorView: View {
@@ -3818,8 +4061,7 @@ private struct SkillIconEditorView: View {
     @State private var selectedEmoji = "✨"
     @State private var selectedLucideID = LucideSkillIcon.catalog[0].id
     @State private var lucideQuery = ""
-
-    private let presets = ["✨", "🔎", "🧭", "🛠️", "🧪", "📊", "🧠", "🎨", "🔐", "🚀", "📝", "🧹"]
+    @FocusState private var emojiFieldIsFocused: Bool
 
     private var selectedLucide: LucideSkillIcon {
         LucideSkillIcon.catalog.first { $0.id == selectedLucideID } ?? LucideSkillIcon.catalog[0]
@@ -3829,7 +4071,7 @@ private struct SkillIconEditorView: View {
         let query = lucideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return LucideSkillIcon.catalog }
         return LucideSkillIcon.catalog.filter {
-            $0.name.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
+            $0.searchText.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -3878,7 +4120,7 @@ private struct SkillIconEditorView: View {
             }
         }
         .padding(22)
-        .frame(width: 620, height: 560)
+        .frame(width: 680, height: 600)
     }
 
     private var emojiPane: some View {
@@ -3886,23 +4128,22 @@ private struct SkillIconEditorView: View {
             emojiPreview.frame(width: 96, height: 96)
             VStack(alignment: .leading, spacing: 12) {
                 Text("Choose an emoji").font(.headline)
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(42)), count: 6), spacing: 8) {
-                    ForEach(presets, id: \.self) { emoji in
-                        Button {
-                            selectedEmoji = emoji
-                        } label: {
-                            Text(emoji)
-                                .font(.title2)
-                                .frame(width: 38, height: 38)
-                                .background(selectedEmoji == emoji ? Color.accentColor.opacity(0.18) : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                TextField("Or type an emoji", text: $selectedEmoji)
+                TextField("Selected emoji", text: $selectedEmoji)
                     .textFieldStyle(.roundedBorder)
+                    .focused($emojiFieldIsFocused)
                     .frame(width: 190)
+                Button {
+                    emojiFieldIsFocused = true
+                    DispatchQueue.main.async {
+                        NSApp.orderFrontCharacterPalette(nil)
+                    }
+                } label: {
+                    Label("Open Emoji & Symbols", systemImage: "face.smiling")
+                }
+                Text("Use the macOS character palette to search the complete emoji library. Your selection is inserted into the field above.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -3935,9 +4176,13 @@ private struct SkillIconEditorView: View {
                         }
                     }
                 }
-                Text(selectedLucide.name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(selectedLucide.name)
+                    Spacer()
+                    Text("\(visibleLucideIcons.count.formatted()) of \(LucideSkillIcon.catalog.count.formatted())")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }

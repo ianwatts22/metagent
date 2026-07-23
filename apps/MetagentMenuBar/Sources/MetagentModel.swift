@@ -760,12 +760,10 @@ final class MetagentModel: ObservableObject {
         let plugin = projects.reduce(0) { $0 + $1.pluginSkillCount }
         let skillsCLI = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "skills-cli") }
         let dotagents = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "dotagents") }
-        let repository = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "git") }
         let local = projects.reduce(0) { $0 + $1.agentsSkillCount(manager: "local") }
         let ownership = [
             skillsCLI > 0 ? "\(skillsCLI) skills CLI" : nil,
             dotagents > 0 ? "\(dotagents) dotagents" : nil,
-            repository > 0 ? "\(repository) repository" : nil,
             local > 0 ? "\(local) local" : nil
         ].compactMap { $0 }.joined(separator: ", ")
 
@@ -1060,10 +1058,8 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
             return "Skills CLI"
         case "dotagents":
             return "dotagents"
-        case "git":
-            return "Repository"
         case "local":
-            return authority == "user-owned" ? "User local" : "Project local"
+            return "Local / unknown"
         case "codex-plugin":
             return "Plugin"
         case "codex":
@@ -1084,7 +1080,6 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
         case "npx-installed": "npx installed"
         case "dotagents-local": "dotagents local"
         case "dotagents-managed": "dotagents managed"
-        case "repository": "repository"
         case "user-local": "user local"
         case "project-local": "project local"
         case "agents-local", "native", "unmanaged": "unmanaged"
