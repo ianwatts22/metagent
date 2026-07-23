@@ -1865,19 +1865,15 @@ private struct InventorySection: View {
         rows.compactMap(\.inventory)
     }
 
-    private var visibleOverlapGroupCount: Int {
-        Set(rows.compactMap { $0.overlap?.groupID }).count
-    }
-
-    private var duplicateReviewGroups: [DuplicateReviewGroup] {
-        let visibleGroupIDs = Set(rows.compactMap { $0.overlap?.groupID })
+    private var completeVisibleDuplicateGroups: [DuplicateReviewGroup] {
+        let visibleRowIDs = Set(rows.map(\.id))
         return Dictionary(grouping: allRows.compactMap { row -> SkillTableRow? in
             row.overlap == nil ? nil : row
         }, by: { $0.overlap?.groupID ?? "" })
             .compactMap { id, groupRows -> DuplicateReviewGroup? in
                 guard !id.isEmpty,
-                      visibleGroupIDs.contains(id),
-                      !reviewedDuplicateGroupIDs.contains(id),
+                      groupRows.count > 1,
+                      groupRows.allSatisfy({ visibleRowIDs.contains($0.id) }),
                       let overlap = groupRows.compactMap(\.overlap).first
                 else { return nil }
                 return DuplicateReviewGroup(
@@ -1898,6 +1894,18 @@ private struct InventorySection: View {
                 if leftPriority != rightPriority { return leftPriority < rightPriority }
                 return $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
             }
+    }
+
+    private var duplicateReviewGroups: [DuplicateReviewGroup] {
+        completeVisibleDuplicateGroups.filter { !reviewedDuplicateGroupIDs.contains($0.id) }
+    }
+
+    private var visibleOverlapGroupCount: Int {
+        completeVisibleDuplicateGroups.count
+    }
+
+    private var hasDetectedOverlapGroups: Bool {
+        allRows.contains { $0.overlap != nil }
     }
 
     private var hasActiveFilter: Bool {
@@ -2129,6 +2137,8 @@ private struct InventorySection: View {
             } else if selectedView == .duplicates {
                 DuplicateReviewExperience(
                     groups: duplicateReviewGroups,
+                    hasVisibleGroups: !completeVisibleDuplicateGroups.isEmpty,
+                    hasDetectedGroups: hasDetectedOverlapGroups,
                     selectedGroupID: $selectedDuplicateGroupID,
                     removalIDs: $duplicateRemovalIDs,
                     isRunning: model.isRunning,
@@ -2369,6 +2379,8 @@ private struct InventorySection: View {
 
 private struct DuplicateReviewExperience: View {
     let groups: [DuplicateReviewGroup]
+    let hasVisibleGroups: Bool
+    let hasDetectedGroups: Bool
     @Binding var selectedGroupID: String?
     @Binding var removalIDs: Set<SkillTableRow.ID>
     let isRunning: Bool
@@ -2384,14 +2396,28 @@ private struct DuplicateReviewExperience: View {
 
     var body: some View {
         if groups.isEmpty {
-            ContentUnavailableView {
-                Label("Duplicate review complete", systemImage: "checkmark.circle")
-            } description: {
-                Text("You kept the remaining groups for this session.")
-            } actions: {
-                Button("Review again", action: onReviewAgain)
+            if hasVisibleGroups {
+                ContentUnavailableView {
+                    Label("Duplicate review complete", systemImage: "checkmark.circle")
+                } description: {
+                    Text("You kept the remaining groups for this session.")
+                } actions: {
+                    Button("Review again", action: onReviewAgain)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView {
+                    Label(
+                        hasDetectedGroups ? "No complete groups match" : "No duplicate skills found",
+                        systemImage: hasDetectedGroups ? "line.3.horizontal.decrease.circle" : "checkmark.circle"
+                    )
+                } description: {
+                    Text(hasDetectedGroups
+                        ? "A directory, source, scope, usage, or search filter is hiding part of each group. Adjust the filters to compare every copy safely."
+                        : "Metagent found no same-name or overlapping canonical skill bundles.")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             HStack(spacing: 0) {
                 ScrollView {

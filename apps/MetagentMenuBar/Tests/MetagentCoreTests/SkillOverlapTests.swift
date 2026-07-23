@@ -172,7 +172,7 @@ final class SkillOverlapTests: XCTestCase {
         try """
         ---
         name: "demo\\\\tool"
-        description: "Use \\"quoted\\" values and a \\\\ path."
+        description: "Use \\"quoted\\" values, a \\\\ path, a line\\x20break \\U0001F600, JSON \\uD83D\\uDE00, and controls \\0\\a\\v\\e."
         ---
 
         Original body.
@@ -180,7 +180,12 @@ final class SkillOverlapTests: XCTestCase {
         let original = try MetagentCore.loadSkillDocument(at: skill.path)
 
         XCTAssertEqual(original.name, "demo\\tool")
-        XCTAssertEqual(original.description, "Use \"quoted\" values and a \\ path.")
+        let expectedDescription = "Use \"quoted\" values, a \\ path, a line break 😀, JSON 😀, and controls \u{0}\u{7}\u{B}\u{1B}."
+        XCTAssertEqual(original.description, expectedDescription)
+        XCTAssertEqual(
+            skillDescription(from: original.rawText),
+            expectedDescription
+        )
 
         let updated = try MetagentCore.updateSkillDocument(
             at: skill.path,
@@ -193,6 +198,9 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(updated.name, original.name)
         XCTAssertEqual(updated.description, original.description)
         XCTAssertEqual(updated.bodyMarkdown, "Updated body.")
+        XCTAssertFalse(updated.rawText.unicodeScalars.contains {
+            [0x00, 0x07, 0x0B, 0x1B].contains($0.value)
+        })
     }
 
     func testSkillDocumentUpdateRejectsConcurrentChanges() throws {

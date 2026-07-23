@@ -2021,7 +2021,7 @@ func skillDescription(from skillText: String) -> String? {
     let line = frontmatter[descriptionIndex].trimmingCharacters(in: .whitespaces)
     let rawValue = String(line.dropFirst("description:".count)).trimmingCharacters(in: .whitespaces)
     if !["|", "|-", "|+", ">", ">-", ">+"].contains(rawValue) {
-        let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard let value = decodedYAMLScalar(rawValue) else { return nil }
         return value.isEmpty ? nil : value
     }
 

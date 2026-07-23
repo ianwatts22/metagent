@@ -96,7 +96,10 @@ extension MetagentCore {
             replacement: ["name: \(yamlQuoted(cleanName))"],
             lines: &frontmatter
         )
-        let descriptionLines = cleanDescription.components(separatedBy: .newlines)
+        let descriptionLines = cleanDescription
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
         let descriptionReplacement = descriptionLines.count == 1
             ? ["description: \(yamlQuoted(cleanDescription))"]
             : ["description: |-"] + descriptionLines.map { "  \($0)" }
@@ -145,7 +148,7 @@ private func skillFrontmatterValue(key: String, lines: [String]) -> String? {
             && $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix)
     }) else { return nil }
     let rawValue = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-    let value = decodedYAMLScalar(rawValue)
+    guard let value = decodedYAMLScalar(rawValue) else { return nil }
     return value.isEmpty ? nil : value
 }
 
@@ -158,7 +161,7 @@ private func skillFrontmatterDescription(lines: [String]) -> String? {
     let rawValue = String(lines[index].dropFirst(prefix.count))
         .trimmingCharacters(in: .whitespaces)
     guard ["|", "|-", "|+", ">", ">-", ">+"].contains(rawValue) else {
-        let value = decodedYAMLScalar(rawValue)
+        guard let value = decodedYAMLScalar(rawValue) else { return nil }
         return value.isEmpty ? nil : value
     }
     let continuation = lines.dropFirst(index + 1)
@@ -168,19 +171,88 @@ private func skillFrontmatterDescription(lines: [String]) -> String? {
     return value.isEmpty ? nil : value
 }
 
-private func decodedYAMLScalar(_ rawValue: String) -> String {
+func decodedYAMLScalar(_ rawValue: String) -> String? {
     guard rawValue.count >= 2 else { return rawValue }
-    if rawValue.first == "\"", rawValue.last == "\"",
-       let data = rawValue.data(using: .utf8),
-       let decoded = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String
-    {
-        return decoded
+    if rawValue.first == "\"", rawValue.last == "\"" {
+        if let data = rawValue.data(using: .utf8),
+           let decoded = try? JSONSerialization.jsonObject(
+               with: data,
+               options: .fragmentsAllowed
+           ) as? String
+        {
+            return decoded
+        }
+        return decodedYAMLDoubleQuoted(String(rawValue.dropFirst().dropLast()))
     }
     if rawValue.first == "'", rawValue.last == "'" {
         return String(rawValue.dropFirst().dropLast())
             .replacingOccurrences(of: "''", with: "'")
     }
     return rawValue
+}
+
+private func decodedYAMLDoubleQuoted(_ encoded: String) -> String? {
+    let characters = Array(encoded)
+    var decoded = ""
+    var index = 0
+    while index < characters.count {
+        let character = characters[index]
+        guard character == "\\" else {
+            decoded.append(character)
+            index += 1
+            continue
+        }
+        index += 1
+        guard index < characters.count else { return nil }
+        let escape = characters[index]
+        index += 1
+        switch escape {
+        case "0": decoded.append("\0")
+        case "a": decoded.append("\u{7}")
+        case "b": decoded.append("\u{8}")
+        case "t": decoded.append("\t")
+        case "n": decoded.append("\n")
+        case "v": decoded.append("\u{B}")
+        case "f": decoded.append("\u{C}")
+        case "r": decoded.append("\r")
+        case "e": decoded.append("\u{1B}")
+        case " ": decoded.append(" ")
+        case "\"": decoded.append("\"")
+        case "/": decoded.append("/")
+        case "\\": decoded.append("\\")
+        case "N": decoded.append("\u{85}")
+        case "_": decoded.append("\u{A0}")
+        case "L": decoded.append("\u{2028}")
+        case "P": decoded.append("\u{2029}")
+        case "x", "u", "U":
+            let count = escape == "x" ? 2 : (escape == "u" ? 4 : 8)
+            guard index + count <= characters.count else { return nil }
+            let hex = String(characters[index..<(index + count)])
+            guard let value = UInt32(hex, radix: 16) else { return nil }
+            index += count
+            if escape == "u", (0xD800...0xDBFF).contains(value) {
+                guard index + 6 <= characters.count,
+                      characters[index] == "\\",
+                      characters[index + 1] == "u"
+                else { return nil }
+                let lowHex = String(characters[(index + 2)..<(index + 6)])
+                guard let low = UInt32(lowHex, radix: 16),
+                      (0xDC00...0xDFFF).contains(low),
+                      let scalar = UnicodeScalar(
+                          0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00)
+                      )
+                else { return nil }
+                decoded.unicodeScalars.append(scalar)
+                index += 6
+            } else {
+                guard let scalar = UnicodeScalar(value) else { return nil }
+                decoded.unicodeScalars.append(scalar)
+            }
+        default:
+            return nil
+        }
+    }
+    return decoded
 }
 
 private func topLevelSkillMetadata(lines: [String]) -> [SkillDocumentMetadata] {
@@ -226,10 +298,30 @@ private func replaceFrontmatterField(
 }
 
 private func yamlQuoted(_ value: String) -> String {
-    let escaped = value
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-        .replacingOccurrences(of: "\n", with: "\\n")
+    var escaped = ""
+    for scalar in value.unicodeScalars {
+        switch scalar.value {
+        case 0x00: escaped += "\\0"
+        case 0x07: escaped += "\\a"
+        case 0x08: escaped += "\\b"
+        case 0x09: escaped += "\\t"
+        case 0x0A: escaped += "\\n"
+        case 0x0B: escaped += "\\v"
+        case 0x0C: escaped += "\\f"
+        case 0x0D: escaped += "\\r"
+        case 0x1B: escaped += "\\e"
+        case 0x22: escaped += "\\\""
+        case 0x5C: escaped += "\\\\"
+        case 0x85: escaped += "\\N"
+        case 0xA0: escaped += "\\_"
+        case 0x2028: escaped += "\\L"
+        case 0x2029: escaped += "\\P"
+        case 0x01...0x1F, 0x7F...0x9F:
+            escaped += String(format: "\\u%04X", scalar.value)
+        default:
+            escaped.unicodeScalars.append(scalar)
+        }
+    }
     return "\"\(escaped)\""
 }
 
