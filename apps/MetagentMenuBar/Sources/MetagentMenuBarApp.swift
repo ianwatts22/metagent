@@ -3232,7 +3232,8 @@ private func pluginUsageMatchKey(id: String, canonicalPath: String?) -> String? 
           components[0] == "plugin",
           let canonicalPath,
           let identity = pluginCacheIdentity(canonicalPath),
-          identity.plugin == components[1]
+          [identity.owner, identity.plugin].contains(components[1]),
+          identity.skill == components[2]
     else { return nil }
     return identity.key
 }
@@ -3244,7 +3245,9 @@ private func pluginUsageMatchKey(_ skill: SkillStatus) -> String? {
     return identity.key
 }
 
-private func pluginCacheIdentity(_ canonicalPath: String) -> (marketplace: String, plugin: String, skill: String, key: String)? {
+private func pluginCacheIdentity(
+    _ canonicalPath: String
+) -> (marketplace: String, plugin: String, skill: String, owner: String, key: String)? {
     let url = URL(fileURLWithPath: canonicalPath)
     let components = url.pathComponents
     guard let skillsIndex = components.lastIndex(of: "skills"),
@@ -3257,10 +3260,9 @@ private func pluginCacheIdentity(_ canonicalPath: String) -> (marketplace: Strin
     // OpenAI renamed this marketplace directory without changing plugin
     // identity. Preserve every other marketplace so unrelated installations
     // with matching folder names do not share usage.
-    let stableMarketplace = ["openai-curated", "openai-curated-remote"].contains(marketplace)
-        ? "openai-curated"
-        : marketplace
-    return (marketplace, plugin, skill, "\(stableMarketplace):\(plugin):\(skill)")
+    let stableMarketplace = MetagentCore.normalizedPluginMarketplace(marketplace)
+    let owner = "\(stableMarketplace)/\(plugin)"
+    return (marketplace, plugin, skill, owner, "\(owner):\(skill)")
 }
 
 private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {

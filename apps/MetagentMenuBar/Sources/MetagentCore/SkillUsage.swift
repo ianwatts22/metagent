@@ -103,9 +103,15 @@ public extension MetagentCore {
         }
         return ISO8601DateFormatter().date(from: value)
     }
+
+    static func normalizedPluginMarketplace(_ marketplace: String) -> String {
+        ["openai-curated", "openai-curated-remote"].contains(marketplace)
+            ? "openai-curated"
+            : marketplace
+    }
 }
 
-private let skillUsageParserVersion = 14
+private let skillUsageParserVersion = 15
 private let skillUsageSQLiteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let skillUsageEventsTable = "skill_usage_events"
 private let skillUsageSourcesTable = "skill_usage_sources"
@@ -1211,9 +1217,11 @@ private final class SkillUsageStore {
            components.prefix(skillsIndex).contains("plugins"),
            components.prefix(skillsIndex).contains("cache")
         {
+            let marketplace = skillsIndex >= 3 ? components[skillsIndex - 3] : "unknown"
             let pluginName = skillsIndex >= 2 ? components[skillsIndex - 2] : "plugin"
+            let pluginOwner = "\(MetagentCore.normalizedPluginMarketplace(marketplace))/\(pluginName)"
             return ParsedSkillIdentity(
-                id: "plugin:\(pluginName):\(folderName)",
+                id: "plugin:\(pluginOwner):\(folderName)",
                 name: "\(pluginName):\(frontmatterName)",
                 confirmationName: frontmatterName,
                 canonicalPath: directory.path,

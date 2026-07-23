@@ -135,7 +135,7 @@ final class SkillUsageTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let oldSkill = try fixture.makeSkill(
-            at: ".codex/plugins/cache/openai-curated-remote/example-plugin/1.0.0/skills/example-skill",
+            at: ".codex/plugins/cache/openai-curated/example-plugin/1.0.0/skills/example-skill",
             name: "old-name"
         )
         let newSkill = try fixture.makeSkill(
@@ -171,7 +171,9 @@ final class SkillUsageTests: XCTestCase {
         ], to: fixture.sessions.appendingPathComponent("rollout-new-plugin.jsonl"))
 
         let summaries = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.summaries
-        let summary = try XCTUnwrap(summaries.first { $0.id == "plugin:example-plugin:example-skill" })
+        let summary = try XCTUnwrap(summaries.first {
+            $0.id == "plugin:openai-curated/example-plugin:example-skill"
+        })
         XCTAssertEqual(summaries.filter { $0.id == summary.id }.count, 1)
         XCTAssertEqual(summary.skillName, "example-plugin:new-name")
         XCTAssertEqual(summary.canonicalPath, newSkill.deletingLastPathComponent().path)
@@ -179,6 +181,46 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(summary.activeTurns, 1)
         XCTAssertEqual(summary.distinctThreads, 1)
         XCTAssertEqual(summary.repeatInvocations, 1)
+    }
+
+    func testPluginUsageKeepsSeparateMarketplacesDistinct() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let curated = try fixture.makeSkill(
+            at: ".codex/plugins/cache/openai-curated/example-plugin/1.0.0/skills/example-skill",
+            name: "curated-name"
+        )
+        let bundled = try fixture.makeSkill(
+            at: ".codex/plugins/cache/openai-bundled/example-plugin/1.0.0/skills/example-skill",
+            name: "bundled-name"
+        )
+        try fixture.write([
+            fixture.line(
+                timestamp: "2026-07-19T12:00:00.000Z",
+                type: "session_meta",
+                payload: ["id": "marketplace-session", "cwd": fixture.root.path]
+            ),
+            fixture.line(
+                timestamp: "2026-07-19T12:00:01.000Z",
+                type: "turn_context",
+                payload: ["turn_id": "marketplace-turn", "cwd": fixture.root.path]
+            ),
+            fixture.toolCall(callID: "call-curated-plugin", command: "cat \(curated.path)"),
+            fixture.toolCall(callID: "call-bundled-plugin", command: "cat \(bundled.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-marketplaces.jsonl"))
+
+        let summaries = try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.summaries
+        let pluginSummaries = summaries.filter { $0.scope == "plugin" }
+
+        XCTAssertEqual(pluginSummaries.count, 2)
+        XCTAssertEqual(
+            Set(pluginSummaries.map(\.id)),
+            [
+                "plugin:openai-curated/example-plugin:example-skill",
+                "plugin:openai-bundled/example-plugin:example-skill",
+            ]
+        )
+        XCTAssertTrue(pluginSummaries.allSatisfy { $0.totalInvocations == 1 })
     }
 
     func testSameSkillIdentityAtDifferentPathsProducesUniqueSummaryIDs() throws {
@@ -871,7 +913,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertFalse(snapshot.isBackfillComplete)
         XCTAssertTrue(snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(snapshot.displayParserVersion, 13)
-        XCTAssertEqual(snapshot.targetParserVersion, 14)
+        XCTAssertEqual(snapshot.targetParserVersion, 15)
     }
 
     func testParserUpgradeServesPreviousGenerationUntilAtomicCutover() throws {
@@ -934,7 +976,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(cutover.snapshot.totalInvocations, 2)
         XCTAssertTrue(cutover.snapshot.isBackfillComplete)
         XCTAssertFalse(cutover.snapshot.isParserUpgradeBackfill)
-        XCTAssertEqual(cutover.snapshot.displayParserVersion, 14)
+        XCTAssertEqual(cutover.snapshot.displayParserVersion, 15)
     }
 }
 
