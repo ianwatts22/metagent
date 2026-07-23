@@ -1849,23 +1849,32 @@ private func makeSkillItem(
     inherited: SkillInventoryItem? = nil
 ) -> SkillInventoryItem {
     let stats = skillStats(path)
+    let recognizedEvidence = recognizedExternalSkillEvidence(
+        name: name,
+        path: path,
+        currentManager: evidence?.manager ?? manager
+    )
+    let resolvedEvidence = recognizedEvidence ?? evidence
+    let resolvedOriginKind = resolvedEvidence?.originKind ?? originKind
     return SkillInventoryItem(
         name: name,
         description: stats.description,
         path: path.path,
         location: location,
         locationLabel: ".\(location)",
-        originKind: originKind,
+        originKind: resolvedOriginKind,
         scope: scope,
-        manager: manager,
-        authority: authority,
-        mutability: mutability,
+        manager: resolvedEvidence?.manager ?? manager,
+        authority: resolvedEvidence?.authority ?? authority,
+        mutability: representation == "projection"
+            ? "managed-read-only"
+            : (resolvedEvidence?.mutability ?? mutability),
         representation: representation,
         canonicalPath: canonicalPath,
-        source: evidence?.source ?? origin?.source ?? inherited?.source,
-        sourceType: evidence?.sourceType ?? origin?.sourceType ?? inherited?.sourceType,
-        sourceURL: evidence?.sourceURL ?? origin?.sourceUrl ?? inherited?.sourceURL,
-        ref: evidence?.ref ?? origin?.ref ?? inherited?.ref,
+        source: resolvedEvidence?.source ?? origin?.source ?? inherited?.source,
+        sourceType: resolvedEvidence?.sourceType ?? origin?.sourceType ?? inherited?.sourceType,
+        sourceURL: resolvedEvidence?.sourceURL ?? origin?.sourceUrl ?? inherited?.sourceURL,
+        ref: resolvedEvidence?.ref ?? origin?.ref ?? inherited?.ref,
         installedAt: origin?.installedAt ?? inherited?.installedAt,
         updatedAt: origin?.updatedAt
             ?? inherited?.updatedAt
@@ -1874,7 +1883,7 @@ private func makeSkillItem(
         folderKind: folderKind(
             path: path,
             location: location,
-            originKind: originKind,
+            originKind: resolvedOriginKind,
             representation: representation,
             symlinkedContainer: symlinkedContainer
         ),
@@ -1897,6 +1906,47 @@ private func makeSkillItem(
         iconSmallPath: stats.iconSmallPath,
         iconLargePath: stats.iconLargePath
     )
+}
+
+private func recognizedExternalSkillEvidence(
+    name: String,
+    path: URL,
+    currentManager: String
+) -> SkillOriginEvidence? {
+    guard currentManager == "local" else { return nil }
+    let skillPath = path.appendingPathComponent("SKILL.md")
+    guard name == "impeccable",
+          fileManager.fileExists(atPath: path.appendingPathComponent("scripts/context.mjs").path),
+          fileManager.fileExists(atPath: path.appendingPathComponent("reference/hooks.md").path),
+          let text = try? String(contentsOf: skillPath, encoding: .utf8),
+          text.contains(".agents/skills/impeccable/scripts/")
+    else {
+        return nil
+    }
+    let version = frontmatterScalar(key: "version", text: text)
+    return SkillOriginEvidence(
+        originKind: "external-cli",
+        manager: "external-cli",
+        authority: "Impeccable CLI",
+        mutability: "managed-read-only",
+        source: "pbakaus/impeccable",
+        sourceType: "bundle-signature",
+        sourceURL: "https://github.com/pbakaus/impeccable",
+        ref: version
+    )
+}
+
+private func frontmatterScalar(key: String, text: String) -> String? {
+    let prefix = "\(key):"
+    for line in text.components(separatedBy: .newlines).prefix(40) {
+        guard line.first?.isWhitespace != true,
+              line.trimmingCharacters(in: .whitespaces).hasPrefix(prefix)
+        else { continue }
+        let rawValue = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return value.isEmpty ? nil : value
+    }
+    return nil
 }
 
 private func skillStats(_ skillDir: URL) -> SkillStats {
@@ -1956,7 +2006,7 @@ private func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, oth
     }
 }
 
-private func skillDescription(from skillText: String) -> String? {
+func skillDescription(from skillText: String) -> String? {
     let lines = skillText.components(separatedBy: .newlines)
     guard lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---" else { return nil }
     guard let closingIndex = lines.dropFirst().firstIndex(where: {
@@ -2161,6 +2211,9 @@ private func folderKind(
         return "npx-installed"
     }
     if location == "agents", originKind.hasPrefix("dotagents") {
+        return originKind
+    }
+    if location == "agents", originKind == "external-cli" {
         return originKind
     }
     if location == "agents", originKind.hasSuffix("-local") {

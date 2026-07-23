@@ -9,6 +9,7 @@ Swift owns the product core:
 - skill inventory scanning across `.agents/`, `.codex/`, and `.claude`
 - `.agents` provenance from `.agents/.skill-lock.json`
 - skill size, word, token, resource, icon, and logo metadata
+- duplicate and scope-overlap detection across distinct canonical skill bundles
 - SQLite inventory snapshots for fast startup
 - streaming Codex session evidence and incremental skill-usage history
 - deterministic portfolio scoring plus cached Plugin Eval and optional Codex review results
@@ -142,8 +143,12 @@ Metagent does not generate manifests or lockfiles. `npx skills` may maintain
 `agents.toml` plus `agents.lock`. Metagent reads both manager formats. A
 self-referential dotagents path created while adopting an existing local skill
 is reconciliation bookkeeping rather than manager ownership. Git tracking is
-storage/version-control evidence, not proof of upstream origin; without an
-installer lock or distinct manager source, Metagent reports local/unknown.
+storage/version-control evidence, not proof of upstream origin. Metagent can
+also recognize a deliberately small registry of third-party CLI bundle
+signatures when installed content includes manager-specific, versioned
+evidence; a generic `version` field is insufficient. Without an installer lock,
+a distinct manager source, or a recognized signature, Metagent reports
+local/unknown.
 Global `~/.claude/skills` remains outside this project projection rule.
 
 ## Verification

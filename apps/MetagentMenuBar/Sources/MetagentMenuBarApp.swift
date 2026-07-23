@@ -1270,11 +1270,17 @@ private enum InventoryConfirmation: Identifiable {
 private enum SkillTableView: String, CaseIterable, Identifiable {
     case summary
     case review
+    case duplicates
     case inventory
     case usage
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .duplicates: "Duplicates"
+        default: rawValue.capitalized
+        }
+    }
 }
 
 private enum SkillSourceCategory: String, CaseIterable, Identifiable {
@@ -1282,6 +1288,7 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     case skillsCLI
     case dotagentsLocal
     case dotagentsManaged
+    case externalCLI
     case codexSystem
     case codexInstalled
     case claude
@@ -1296,6 +1303,7 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         case .skillsCLI: "Skills CLI"
         case .dotagentsLocal: "dotagents · external path"
         case .dotagentsManaged: "dotagents · package"
+        case .externalCLI: "External CLI"
         case .codexSystem: "Codex system"
         case .codexInstalled: "Codex installed"
         case .claude: "Claude installed"
@@ -1312,6 +1320,8 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
             "The skill is declared as a package managed by dotagents rather than as a local path."
         case .skillsCLI:
             "Skills CLI owns this installation because its lockfile records the skill and upstream package."
+        case .externalCLI:
+            "A known third-party CLI owns this versioned bundle. Metagent matched a specific bundle signature rather than inferring ownership from Git or folder location."
         case .local:
             "No installer, lockfile, or independent upstream source is recorded. The skill may be locally authored or imported; ordinary Git tracking does not establish provenance."
         case .notInstalled:
@@ -1338,10 +1348,52 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         case "skills-cli": return .skillsCLI
         case "dotagents":
             return inventory.skill.originKind == "dotagents-managed" ? .dotagentsManaged : .dotagentsLocal
+        case "external-cli": return .externalCLI
         case "codex":
             return inventory.skill.authority == "codex-system" ? .codexSystem : .codexInstalled
         case "claude": return .claude
         default: return .local
+        }
+    }
+}
+
+private struct SkillOverlapMembership: Sendable {
+    let groupID: String
+    let kind: SkillOverlapKind
+    let similarity: Double
+    let suggestedRemoval: Bool
+
+    var title: String {
+        switch kind {
+        case .pluginReplacement: suggestedRemoval ? "Plugin replaces this" : "Plugin replacement"
+        case .exactDuplicate: "Exact duplicate"
+        case .globalProject: "Global + project"
+        case .sameName: "Same name"
+        }
+    }
+
+    var sortValue: Int {
+        switch kind {
+        case .pluginReplacement: 0
+        case .exactDuplicate: 1
+        case .globalProject: 2
+        case .sameName: 3
+        }
+    }
+
+    var help: String {
+        let percent = (similarity * 100).rounded().formatted(.number.precision(.fractionLength(0)))
+        switch kind {
+        case .pluginReplacement:
+            return suggestedRemoval
+                ? "This global standalone bundle closely overlaps an installed plugin skill (\(percent)% content similarity). Removing the standalone copy is recommended; the plugin remains available."
+                : "An installed plugin and standalone bundle closely overlap (\(percent)% content similarity). Compare the copies before removing anything."
+        case .exactDuplicate:
+            return "These are byte-equivalent after normalizing provider paths. Keep the copy whose scope and lifecycle owner you actually need."
+        case .globalProject:
+            return "The same skill name exists globally and in a project. This may be intentional so collaborators receive the project copy."
+        case .sameName:
+            return "Distinct installed bundles share this skill name, but their contents are not similar enough for Metagent to call one a replacement."
         }
     }
 }
@@ -1351,6 +1403,7 @@ private struct SkillTableRow: Identifiable, Sendable {
     let usage: UsageSkillRow
     let historicalProjectRoot: String?
     let pluginInventoryAvailable: Bool
+    var overlap: SkillOverlapMembership? = nil
     var groupTitle: String? = nil
     var children: [SkillTableRow]? = nil
 
@@ -1483,6 +1536,9 @@ private struct SkillTableRow: Identifiable, Sendable {
         default: "Historical usage with no matching installed bundle."
         }
     }
+    var overlapSortValue: Int { overlap?.sortValue ?? Int.max }
+    var overlapText: String { overlap?.title ?? "—" }
+    var overlapHelp: String { overlap?.help ?? "No duplicate or overlapping installation detected." }
 
     func matches(_ query: String) -> Bool {
         [
@@ -1506,7 +1562,8 @@ private struct SkillTableRow: Identifiable, Sendable {
         usageRows: [UsageSkillRow],
         projectRoots: [String],
         pluginInventoryAvailable: Bool,
-        isBackfillComplete: Bool
+        isBackfillComplete: Bool,
+        overlaps: [SkillOverlapGroup]
     ) -> [SkillTableRow] {
         let usageByPath = Dictionary(grouping: usageRows.compactMap { row -> (String, UsageSkillRow)? in
             guard let path = row.canonicalPath else { return nil }
@@ -1516,6 +1573,22 @@ private struct SkillTableRow: Identifiable, Sendable {
             pluginUsageMatchKey(id: row.id, canonicalPath: row.canonicalPath).map { ($0, row) }
         }, by: \.0).compactMapValues { $0.first?.1 }
         var matchedUsageIDs = Set<String>()
+        let overlapsByPath = Dictionary(
+            overlaps.flatMap { group in
+                group.members.map { member in
+                    (
+                        standardizedDirectoryPath(member.canonicalPath),
+                        SkillOverlapMembership(
+                            groupID: group.id,
+                            kind: group.kind,
+                            similarity: group.similarity,
+                            suggestedRemoval: member.suggestedRemoval
+                        )
+                    )
+                }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         var rows = inventoryRows.map { inventory -> SkillTableRow in
             let matched = usageByPath[standardizedDirectoryPath(inventory.canonicalPath)]
@@ -1541,7 +1614,8 @@ private struct SkillTableRow: Identifiable, Sendable {
                 inventory: inventory,
                 usage: usage,
                 historicalProjectRoot: nil,
-                pluginInventoryAvailable: pluginInventoryAvailable
+                pluginInventoryAvailable: pluginInventoryAvailable,
+                overlap: overlapsByPath[standardizedDirectoryPath(inventory.canonicalPath)]
             )
         }
 
@@ -1603,6 +1677,7 @@ private struct InventorySection: View {
     @State private var scopeFilter = SkillScopeFilter.all
     @State private var pendingConfirmation: InventoryConfirmation?
     @State private var inspectedSkill: InventorySkillRow?
+    @State private var viewedSkill: InventorySkillRow?
     @State private var iconTarget: InventorySkillRow?
     @State private var showsScoreExplanation = false
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
@@ -1617,6 +1692,8 @@ private struct InventorySection: View {
     private var usageColumnCustomization = TableColumnCustomization<SkillTableRow>()
     @SceneStorage("metagent.skills.review.columns.v2")
     private var reviewColumnCustomization = TableColumnCustomization<SkillTableRow>()
+    @SceneStorage("metagent.skills.duplicates.columns.v1")
+    private var duplicateColumnCustomization = TableColumnCustomization<SkillTableRow>()
 
     private var selectedView: SkillTableView {
         SkillTableView(rawValue: selectedViewRaw) ?? .summary
@@ -1656,6 +1733,8 @@ private struct InventorySection: View {
             Binding(get: { summaryColumnCustomization }, set: { summaryColumnCustomization = $0 })
         case .review:
             Binding(get: { reviewColumnCustomization }, set: { reviewColumnCustomization = $0 })
+        case .duplicates:
+            Binding(get: { duplicateColumnCustomization }, set: { duplicateColumnCustomization = $0 })
         case .inventory:
             Binding(get: { inventoryColumnCustomization }, set: { inventoryColumnCustomization = $0 })
         case .usage:
@@ -1671,6 +1750,7 @@ private struct InventorySection: View {
         let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return allRows
         .filter { selectedView == .usage || $0.isInstalled }
+        .filter { selectedView != .duplicates || $0.overlap != nil }
         .filter {
             selectedProjectRoot == nil
                 || $0.scope != "project"
@@ -1727,6 +1807,10 @@ private struct InventorySection: View {
 
     private var visibleInventoryRows: [InventorySkillRow] {
         rows.compactMap(\.inventory)
+    }
+
+    private var visibleOverlapGroupCount: Int {
+        Set(rows.compactMap { $0.overlap?.groupID }).count
     }
 
     private var hasActiveFilter: Bool {
@@ -1788,7 +1872,9 @@ private struct InventorySection: View {
                     Text("Skills")
                         .font(.headline)
                     Text(selectedRows.isEmpty
-                        ? "\(rows.count) visible skills"
+                        ? (selectedView == .duplicates
+                            ? "\(visibleOverlapGroupCount) groups · \(rows.count) installed copies"
+                            : "\(rows.count) visible skills")
                         : "\(selectedRows.count) selected · \(rows.count) visible")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1804,7 +1890,7 @@ private struct InventorySection: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 340)
+                .frame(width: 430)
 
                 Button {
                     showsScoreExplanation = true
@@ -1912,7 +1998,7 @@ private struct InventorySection: View {
                     }
                 }
                 .frame(width: 145)
-                .help("Group the current Skills view. Groups can be expanded or collapsed and apply across Summary, Review, Inventory, and Usage.")
+                .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
 
                 Spacer()
 
@@ -1997,8 +2083,12 @@ private struct InventorySection: View {
                     let removableRows = contextRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
                     let paths = contextRows.compactMap(\.canonicalPath)
                     let openableURLs = skillDirectoryURLs(for: contextRows)
+                    let skillFiles = skillFileURLs(for: contextRows)
                     let openWithApplications = applicationsForOpening(openableURLs)
                     if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+                        Button("View Skill", systemImage: "doc.text.magnifyingglass") {
+                            viewedSkill = inventory
+                        }
                         Button("Get Info", systemImage: "info.circle") {
                             inspectedSkill = inventory
                         }
@@ -2029,6 +2119,14 @@ private struct InventorySection: View {
                         }
                     }
                     .disabled(openableURLs.isEmpty || openWithApplications.isEmpty)
+                    Button("Open SKILL.md", systemImage: "doc.text") {
+                        openSkillFiles(skillFiles)
+                    }
+                    .disabled(skillFiles.isEmpty)
+                    Button("Open in Editor", systemImage: "chevron.left.forwardslash.chevron.right") {
+                        openSkillDirectoriesInEditor(openableURLs, skillFiles: skillFiles)
+                    }
+                    .disabled(openableURLs.isEmpty)
                     Divider()
                     Button("Copy Path", systemImage: "doc.on.doc") {
                         copyPaths(contextRows)
@@ -2104,6 +2202,9 @@ private struct InventorySection: View {
         .sheet(item: $inspectedSkill) { row in
             SkillInfoView(model: model, row: row)
         }
+        .sheet(item: $viewedSkill) { row in
+            SkillReaderView(row: row)
+        }
         .sheet(item: $iconTarget) { row in
             SkillIconEditorView(model: model, row: row)
         }
@@ -2118,6 +2219,11 @@ private struct InventorySection: View {
             [KeyPathComparator(\SkillTableRow.invocations30d, order: .reverse)]
         case .review:
             [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
+        case .duplicates:
+            [
+                KeyPathComparator(\SkillTableRow.overlapSortValue),
+                KeyPathComparator(\SkillTableRow.skillName),
+            ]
         case .inventory:
             [KeyPathComparator(\SkillTableRow.skillName)]
         case .usage:
@@ -2137,6 +2243,7 @@ private struct InventorySection: View {
                 usage: usage,
                 evaluations: evaluations
             )
+            let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill.coreSkill })
             return SkillTableRow.rows(
                 inventoryRows: inventoryRows,
                 usageRows: UsageSkillRow.rows(
@@ -2146,7 +2253,8 @@ private struct InventorySection: View {
                 ),
                 projectRoots: projects.map(\.root),
                 pluginInventoryAvailable: pluginInventoryAvailable,
-                isBackfillComplete: usage.isBackfillComplete
+                isBackfillComplete: usage.isBackfillComplete,
+                overlaps: overlaps
             )
         }.value
         guard !Task.isCancelled else { return }
@@ -3144,7 +3252,9 @@ private func pluginCacheIdentity(_ canonicalPath: String) -> (marketplace: Strin
     let marketplace = components[skillsIndex - 3]
     let plugin = components[skillsIndex - 2]
     let skill = url.lastPathComponent
-    return (marketplace, plugin, skill, "\(marketplace):\(plugin):\(skill)")
+    // Marketplace aliases and cache versions can change while the plugin and
+    // skill identity stay stable. Usage is aggregated as plugin:<plugin>:<skill>.
+    return (marketplace, plugin, skill, "\(plugin):\(skill)")
 }
 
 private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
@@ -3243,7 +3353,7 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.summary, .inventory, .usage],
+        defaultViews: [.summary, .duplicates, .inventory, .usage],
         value: \.displayLocationText,
         help: \.displayLocationHelp
     ),
@@ -3256,9 +3366,22 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.summary, .inventory, .review],
+        defaultViews: [.summary, .duplicates, .inventory, .review],
         value: \.sourceText,
         help: \.sourceHelp
+    ),
+    SkillColumnSpec(
+        id: "overlap",
+        title: "Overlap",
+        comparator: KeyPathComparator(\SkillTableRow.overlapSortValue),
+        minWidth: 128,
+        idealWidth: 160,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.duplicates],
+        value: \.overlapText,
+        help: \.overlapHelp
     ),
     SkillColumnSpec(
         id: "description",
@@ -3282,7 +3405,7 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: false,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.summary, .inventory],
+        defaultViews: [.summary, .duplicates, .inventory],
         value: \.upstreamText,
         help: \.upstreamHelp
     ),
@@ -3446,7 +3569,7 @@ private struct SkillColumnSpec: Identifiable {
         isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
-        defaultViews: [.summary, .usage],
+        defaultViews: [.summary, .duplicates, .usage],
         value: { $0.invocations30d.formatted() },
         help: { "\($0.invocations30d.formatted()) reads in the last 30 days" }
     ),
@@ -3663,6 +3786,9 @@ private struct SkillSourceIconCell: View {
             DotagentsSourceMark()
         case .skillsCLI:
             VercelSourceMark()
+        case .externalCLI:
+            Image(systemName: "terminal.fill")
+                .foregroundStyle(.secondary)
         case .local:
             Image(systemName: "questionmark.folder")
                 .foregroundStyle(.secondary)
@@ -3746,6 +3872,7 @@ private struct SkillInfoView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showsIconEditor = false
     @State private var showsScoreExplanation = false
+    @State private var showsReader = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -3819,8 +3946,21 @@ private struct SkillInfoView: View {
             .formStyle(.grouped)
 
             HStack {
+                Button("View Skill") {
+                    showsReader = true
+                }
                 Button("Open") {
                     openSkillDirectories([URL(fileURLWithPath: row.canonicalPath)])
+                }
+                Button("Open SKILL.md") {
+                    openSkillFiles([URL(fileURLWithPath: row.canonicalPath).appendingPathComponent("SKILL.md")])
+                }
+                Button("Open in Editor") {
+                    let directory = URL(fileURLWithPath: row.canonicalPath)
+                    openSkillDirectoriesInEditor(
+                        [directory],
+                        skillFiles: [directory.appendingPathComponent("SKILL.md")]
+                    )
                 }
                 Button("Copy Path") {
                     copyToPasteboard(row.canonicalPath)
@@ -3842,6 +3982,136 @@ private struct SkillInfoView: View {
         .sheet(isPresented: $showsScoreExplanation) {
             ScoreExplanationView()
         }
+        .sheet(isPresented: $showsReader) {
+            SkillReaderView(row: row)
+        }
+    }
+}
+
+private struct SkillReaderView: View {
+    let row: InventorySkillRow
+    @Environment(\.dismiss) private var dismiss
+    @State private var document: SkillDocument?
+    @State private var loadError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Group {
+                    if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        Image(systemName: "doc.text")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(.secondary)
+                            .padding(6)
+                    }
+                }
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document?.name ?? row.skillName)
+                        .font(.title2.weight(.semibold))
+                    Text(row.canonicalPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+            }
+
+            if let document {
+                if let description = document.description {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Description")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(description)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                }
+
+                if !document.metadata.isEmpty {
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
+                        ForEach(document.metadata) { item in
+                            GridRow {
+                                Text(item.key)
+                                    .foregroundStyle(.secondary)
+                                Text(item.value)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .font(.callout)
+                }
+
+                Divider()
+
+                ScrollView {
+                    Text(renderedMarkdown(document.bodyMarkdown))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(.trailing, 10)
+                }
+            } else if let loadError {
+                ContentUnavailableView(
+                    "Couldn’t read this skill",
+                    systemImage: "doc.badge.ellipsis",
+                    description: Text(loadError)
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView("Loading skill…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            Divider()
+            HStack {
+                Button("Open SKILL.md") {
+                    openSkillFiles([skillFileURL])
+                }
+                Button("Open in Editor") {
+                    openSkillDirectoriesInEditor([skillDirectoryURL], skillFiles: [skillFileURL])
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 760, height: 720)
+        .task {
+            do {
+                document = try MetagentCore.loadSkillDocument(at: row.canonicalPath)
+            } catch {
+                loadError = error.localizedDescription
+            }
+        }
+    }
+
+    private var skillDirectoryURL: URL {
+        URL(fileURLWithPath: row.canonicalPath).standardizedFileURL
+    }
+
+    private var skillFileURL: URL {
+        skillDirectoryURL.appendingPathComponent("SKILL.md")
+    }
+
+    private func renderedMarkdown(_ markdown: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: markdown,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+        )) ?? AttributedString(markdown)
     }
 }
 
@@ -4385,6 +4655,13 @@ private func skillDirectoryURLs(for rows: [SkillTableRow]) -> [URL] {
     }.uniqued()
 }
 
+private func skillFileURLs(for rows: [SkillTableRow]) -> [URL] {
+    skillDirectoryURLs(for: rows).compactMap { directory in
+        let file = directory.appendingPathComponent("SKILL.md")
+        return FileManager.default.fileExists(atPath: file.path) ? file : nil
+    }
+}
+
 @MainActor private func applicationsForOpening(_ urls: [URL]) -> [SkillOpeningApplication] {
     guard let firstURL = urls.first else { return [] }
     let candidateSets = urls.map { url in
@@ -4406,6 +4683,48 @@ private func skillDirectoryURLs(for rows: [SkillTableRow]) -> [URL] {
         }
         .uniqued(by: \.id)
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+}
+
+@MainActor private func openSkillFiles(_ urls: [URL]) {
+    urls.forEach { NSWorkspace.shared.open($0) }
+}
+
+@MainActor private func openSkillDirectoriesInEditor(_ directories: [URL], skillFiles: [URL]) {
+    guard !directories.isEmpty else { return }
+    guard let editor = preferredCodeEditor(for: skillFiles.first) else {
+        openSkillFiles(skillFiles)
+        return
+    }
+    openSkillDirectories(directories, with: editor)
+}
+
+@MainActor private func preferredCodeEditor(for skillFile: URL?) -> URL? {
+    let knownEditorBundleIdentifiers = [
+        "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.microsoft.VSCode",
+        "com.exafunction.windsurf",
+        "dev.zed.Zed",
+        "com.sublimetext.4",
+        "com.panic.Nova",
+        "com.barebones.bbedit",
+        "com.macromates.TextMate",
+        "com.apple.dt.Xcode",
+    ]
+    if let override = UserDefaults.standard.string(forKey: "metagent.editor.bundle-id"),
+       let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: override)
+    {
+        return application
+    }
+    if let skillFile,
+       let defaultApplication = NSWorkspace.shared.urlForApplication(toOpen: skillFile),
+       let bundleIdentifier = Bundle(url: defaultApplication)?.bundleIdentifier,
+       knownEditorBundleIdentifiers.contains(bundleIdentifier)
+    {
+        return defaultApplication
+    }
+    return knownEditorBundleIdentifiers.lazy.compactMap {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+    }.first
 }
 
 @MainActor private func openSkillDirectories(_ urls: [URL], with applicationURL: URL? = nil) {

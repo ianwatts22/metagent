@@ -1058,6 +1058,8 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
             return "Skills CLI"
         case "dotagents":
             return "dotagents"
+        case "external-cli":
+            return authority
         case "local":
             return "Local / unknown"
         case "codex-plugin":
@@ -1080,6 +1082,7 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
         case "npx-installed": "npx installed"
         case "dotagents-local": "dotagents local"
         case "dotagents-managed": "dotagents managed"
+        case "external-cli": "external CLI"
         case "user-local": "user local"
         case "project-local": "project local"
         case "agents-local", "native", "unmanaged": "unmanaged"

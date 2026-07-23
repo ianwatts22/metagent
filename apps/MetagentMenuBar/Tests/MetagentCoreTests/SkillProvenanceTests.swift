@@ -67,6 +67,40 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertNotNil(skill.updatedAt.flatMap { ISO8601DateFormatter().date(from: $0) })
     }
 
+    func testKnownExternalCLIBundleUsesSpecificManagerEvidence() throws {
+        let root = try fixtureRoot("external-cli")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent(".agents/skills/impeccable")
+        try FileManager.default.createDirectory(
+            at: skill.appendingPathComponent("scripts"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: skill.appendingPathComponent("reference"),
+            withIntermediateDirectories: true
+        )
+        try """
+        ---
+        name: impeccable
+        description: External design workflow.
+        version: 3.9.1
+        ---
+
+        Run `node .agents/skills/impeccable/scripts/context.mjs`.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "".write(to: skill.appendingPathComponent("scripts/context.mjs"), atomically: true, encoding: .utf8)
+        try "".write(to: skill.appendingPathComponent("reference/hooks.md"), atomically: true, encoding: .utf8)
+
+        let inventoried = try XCTUnwrap(try scan(root).projects.first?.skills.first)
+
+        XCTAssertEqual(inventoried.manager, "external-cli")
+        XCTAssertEqual(inventoried.authority, "Impeccable CLI")
+        XCTAssertEqual(inventoried.source, "pbakaus/impeccable")
+        XCTAssertEqual(inventoried.sourceURL, "https://github.com/pbakaus/impeccable")
+        XCTAssertEqual(inventoried.ref, "3.9.1")
+        XCTAssertEqual(inventoried.mutability, "managed-read-only")
+    }
+
     func testUpdateSkillIconWritesPortableAssetAndPreservesMetadata() throws {
         let root = try fixtureRoot("icon")
         defer { try? FileManager.default.removeItem(at: root) }
