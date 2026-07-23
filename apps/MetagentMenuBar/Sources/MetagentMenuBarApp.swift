@@ -115,9 +115,8 @@ private struct MetagentPanel: View {
         ZStack {
             PanelBackdrop()
 
-            VStack(alignment: .leading, spacing: showsOpenWindowButton ? 14 : 18) {
-                header
-                navigation
+            VStack(alignment: .leading, spacing: showsOpenWindowButton ? 12 : 14) {
+                topBar
                 panelContent
                     .animation(.snappy(duration: 0.25), value: selectedSection)
 
@@ -125,7 +124,9 @@ private struct MetagentPanel: View {
                     compactFooter
                 }
             }
-            .padding(showsOpenWindowButton ? 16 : 22)
+            .padding(.horizontal, showsOpenWindowButton ? 16 : 18)
+            .padding(.top, showsOpenWindowButton ? 16 : 10)
+            .padding(.bottom, showsOpenWindowButton ? 16 : 18)
         }
         .buttonBorderShape(.capsule)
         .onChange(of: directoryOptions.map(\.root)) { _, roots in
@@ -135,29 +136,91 @@ private struct MetagentPanel: View {
         }
     }
 
-    private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Metagent")
-                    .font(.title.weight(.semibold))
-                Text(model.statusText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Picker("Directory", selection: $selectedProjectRoot) {
-                Text("All directories").tag(String?.none)
-                ForEach(directoryOptions) { directory in
-                    Text(directoryFilterLabel(directory, options: directoryOptions))
-                        .help(directory.root)
-                        .tag(Optional(directory.root))
+    @ViewBuilder
+    private var topBar: some View {
+        if showsOpenWindowButton {
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    brand
+                    Spacer(minLength: 8)
+                    headerControls
                 }
+                navigation
             }
-            .labelsHidden()
-            .frame(minWidth: showsOpenWindowButton ? 150 : 180, idealWidth: showsOpenWindowButton ? 180 : 230)
-            .help(selectedProjectRoot ?? "Show all directories")
+            .padding(8)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            HStack(spacing: 12) {
+                brand
+                    .frame(minWidth: 150, alignment: .leading)
+
+                Divider()
+                    .frame(height: 30)
+
+                navigation
+
+                Divider()
+                    .frame(height: 30)
+
+                headerControls
+            }
+            .padding(8)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    private var brand: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("Metagent")
+                .font(.title2.weight(.semibold))
+            Text(model.statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var headerControls: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button {
+                    selectedProjectRoot = nil
+                } label: {
+                    if selectedProjectRoot == nil {
+                        Label("All directories", systemImage: "checkmark")
+                    } else {
+                        Text("All directories")
+                    }
+                }
+                Divider()
+                ForEach(directoryOptions) { directory in
+                    Button {
+                        selectedProjectRoot = directory.root
+                    } label: {
+                        if selectedProjectRoot == directory.root {
+                            Label(
+                                directoryFilterLabel(directory, options: directoryOptions),
+                                systemImage: "checkmark"
+                            )
+                        } else {
+                            Text(directoryFilterLabel(directory, options: directoryOptions))
+                        }
+                    }
+                }
+            } label: {
+                Label(selectedDirectoryLabel, systemImage: "scope")
+                    .lineLimit(1)
+                    .frame(
+                        minWidth: showsOpenWindowButton ? 125 : 150,
+                        idealWidth: showsOpenWindowButton ? 150 : 180,
+                        maxWidth: showsOpenWindowButton ? 165 : 210,
+                        alignment: .leading
+                    )
+            }
+            .buttonStyle(.glass)
+            .controlSize(.regular)
+            .frame(height: 34)
+            .help(selectedProjectRoot.map(displayUserPath) ?? "Show all directories")
             .accessibilityLabel("Directory")
 
             Menu {
@@ -169,11 +232,23 @@ private struct MetagentPanel: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
+                    .frame(width: 18)
             }
             .buttonStyle(.glass)
+            .controlSize(.regular)
+            .frame(width: 42, height: 34)
             .help("More")
             .accessibilityLabel("More options")
         }
+    }
+
+    private var selectedDirectoryLabel: String {
+        guard let selectedProjectRoot,
+              let directory = directoryOptions.first(where: { $0.root == selectedProjectRoot })
+        else {
+            return "All directories"
+        }
+        return directoryFilterLabel(directory, options: directoryOptions)
     }
 
     private var navigation: some View {
@@ -189,8 +264,7 @@ private struct MetagentPanel: View {
                 }
             }
         }
-        .padding(4)
-        .glassEffect(.clear, in: Capsule())
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -282,8 +356,13 @@ private struct SectionNavigationButton: View {
     let action: () -> Void
 
     var body: some View {
-        button
-            .buttonStyle(.plain)
+        if isSelected {
+            button
+                .buttonStyle(.glassProminent)
+        } else {
+            button
+                .buttonStyle(.plain)
+        }
     }
 
     private var button: some View {
@@ -292,11 +371,7 @@ private struct SectionNavigationButton: View {
                 .font(.callout.weight(isSelected ? .semibold : .medium))
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(
-                    isSelected ? Color.accentColor : Color.clear,
-                    in: Capsule()
-                )
+                .padding(.vertical, 5)
                 .contentShape(Capsule())
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -2074,6 +2149,7 @@ private struct InventorySection: View {
                     )
                 }
                 .help("Choose which skill sources are visible")
+                .buttonStyle(.glass)
 
                 Picker("Usage", selection: $usageFilter) {
                     ForEach(UsageFilter.allCases) { option in
@@ -2081,6 +2157,7 @@ private struct InventorySection: View {
                     }
                 }
                 .frame(width: 170)
+                .buttonStyle(.glass)
 
                 Picker("Location", selection: $scopeFilter) {
                     ForEach(SkillScopeFilter.allCases) { option in
@@ -2088,6 +2165,7 @@ private struct InventorySection: View {
                     }
                 }
                 .frame(width: 145)
+                .buttonStyle(.glass)
 
                 if selectedView != .duplicates {
                     Picker("Group by", selection: groupingBinding) {
@@ -2530,21 +2608,29 @@ private struct DuplicateReviewDetail: View {
         group.rows.filter { removalIDs.contains($0.id) }.count
     }
 
+    private var candidateColumns: [GridItem] {
+        if group.rows.count <= 2 {
+            return Array(
+                repeating: GridItem(.flexible(minimum: 280), spacing: 10, alignment: .top),
+                count: max(group.rows.count, 1)
+            )
+        }
+        return [GridItem(.adaptive(minimum: 280), spacing: 10, alignment: .top)]
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.skillName)
-                            .font(.title3.weight(.semibold))
-                        Text("\(group.rows.count) copies · \(group.similarityText) similar")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Text(group.skillName)
+                        .font(.title3.weight(.semibold))
                     Spacer()
-                    Text(group.kind == .pluginReplacement ? "Replacement" : "Review")
+                    Label("\(group.similarityText) similar", systemImage: "equal.circle.fill")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Color.accentColor.opacity(0.10), in: Capsule())
                 }
 
                 HStack(alignment: .center, spacing: 9) {
@@ -2552,7 +2638,16 @@ private struct DuplicateReviewDetail: View {
                         ? "lightbulb.max.fill"
                         : "lightbulb")
                         .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
+                        .font(.title3)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            (group.kind == .pluginReplacement ? Color.orange : Color.secondary).opacity(0.10),
+                            in: Circle()
+                        )
                     VStack(alignment: .leading, spacing: 2) {
+                        Text("Recommendation")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
                         Text(group.recommendationTitle)
                             .font(.callout.weight(.semibold))
                         Text(group.recommendationDetail)
@@ -2562,23 +2657,18 @@ private struct DuplicateReviewDetail: View {
                     }
                     Spacer(minLength: 8)
                     if !group.suggestedRemovalRows.isEmpty {
-                        Button("Apply", action: onUseRecommendation)
-                            .buttonStyle(.bordered)
+                        Button("Use recommendation", action: onUseRecommendation)
+                            .buttonStyle(.glass)
                             .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
                     }
                 }
-                .padding(10)
-                .background(
-                    group.kind == .pluginReplacement
-                        ? Color.orange.opacity(0.10)
-                        : Color.secondary.opacity(0.07),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
 
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 280), spacing: 8, alignment: .top)],
+                    columns: candidateColumns,
                     alignment: .leading,
-                    spacing: 8
+                    spacing: 10
                 ) {
                     ForEach(group.rows) { row in
                         DuplicateCandidateCard(
@@ -2601,6 +2691,7 @@ private struct DuplicateReviewDetail: View {
 
                 HStack {
                     Button("Keep all", action: onKeepAll)
+                        .buttonStyle(.glass)
                         .disabled(isRunning)
                     Spacer()
                     if selectedRemovalCount > 0 {
@@ -2613,7 +2704,7 @@ private struct DuplicateReviewDetail: View {
                         role: .destructive,
                         action: onReviewRemoval
                     )
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .disabled(selectedRemovalCount == 0 || isRunning)
                 }
                 .padding(.top, 2)
@@ -2637,20 +2728,27 @@ private struct DuplicateCandidateCard: View {
         return "Remove"
     }
 
+    private var isProjectSkill: Bool { row.scope == "project" }
+    private var locationLabel: String {
+        isProjectSkill ? row.projectName : "Global"
+    }
+    private var locationHelp: String {
+        guard isProjectSkill else { return "Global skill available across directories" }
+        guard let projectRoot = row.projectRoot else {
+            return "Project skill available in \(row.projectName)"
+        }
+        return "Project skill available from \(displayUserPath(projectRoot))"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
                 SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.sourceText)
-                        .font(.callout.weight(.semibold))
-                    Text(row.scope == "project" ? row.projectName : row.scopeLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(row.sourceText)
+                    .font(.callout.weight(.semibold))
                 Spacer(minLength: 8)
                 if row.overlap?.suggestedRemoval == true {
-                    Text("Recommended remove")
+                    Text("Suggested removal")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.orange)
                         .padding(.horizontal, 7)
@@ -2658,6 +2756,17 @@ private struct DuplicateCandidateCard: View {
                         .background(.orange.opacity(0.12), in: Capsule())
                 }
             }
+
+            Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isProjectSkill ? Color.accentColor : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    (isProjectSkill ? Color.accentColor : Color.secondary).opacity(0.10),
+                    in: Capsule()
+                )
+                .help(locationHelp)
 
             if row.descriptionText != "—" {
                 Text(row.descriptionText)
@@ -2681,10 +2790,12 @@ private struct DuplicateCandidateCard: View {
                 .help(displayUserPath(row.canonicalPath ?? row.skillPath))
 
             HStack {
-                Button("Open skill", action: onView)
+                Button("View", action: onView)
+                    .buttonStyle(.glass)
                 Button(action: onInfo) {
                     Image(systemName: "info.circle")
                 }
+                .buttonStyle(.glass)
                 .help("Get Info")
                 Spacer()
                 if canRemove {
@@ -2710,6 +2821,7 @@ private struct DuplicateCandidateCard: View {
             }
         }
         .padding(10)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(
             isMarkedForRemoval ? Color.red.opacity(0.08) : Color.primary.opacity(0.035),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)

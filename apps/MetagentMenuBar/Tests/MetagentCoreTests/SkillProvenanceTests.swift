@@ -54,6 +54,11 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertEqual(skill.updatedAt, "2026-07-20T12:00:00.000Z")
         XCTAssertEqual(skill.referenceFileCount, 1)
         XCTAssertEqual(skill.scriptFileCount, 1)
+
+        let removal = try MetagentCore.planSkillRemoval(projectRoot: root.path, skillName: "demo")
+        XCTAssertEqual(removal.manager, "skills-cli")
+        XCTAssertEqual(removal.command, "npx --yes skills remove demo --yes")
+        XCTAssertTrue(removal.applySupported)
     }
 
     func testLocalSkillFallsBackToLatestContentModificationDate() throws {
