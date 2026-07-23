@@ -10,6 +10,7 @@ Swift owns the product core:
 - `.agents` provenance from `.agents/.skill-lock.json`
 - skill size, word, token, resource, icon, and logo metadata
 - duplicate and scope-overlap detection across distinct canonical skill bundles
+- safe skill-document parsing, block-level Markdown presentation, and conflict-aware atomic edits
 - SQLite inventory snapshots for fast startup
 - streaming Codex session evidence and incremental skill-usage history
 - deterministic portfolio scoring plus cached Plugin Eval and optional Codex review results

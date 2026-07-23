@@ -128,6 +128,91 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertFalse(document.bodyMarkdown.contains("description:"))
     }
 
+    func testSkillDocumentUpdatePreservesOtherMetadataAndMarkdownLines() throws {
+        let root = try fixtureRoot("editor")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent("demo")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try """
+        ---
+        name: demo
+        description: Old description.
+        version: 2.4.0
+        allowed-tools:
+          - Read
+        ---
+
+        # Old heading
+
+        Old body.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+
+        let updated = try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: "demo-renamed",
+            description: "First line.\nSecond line.",
+            bodyMarkdown: "# New heading\n\n- First\n- Second"
+        )
+
+        XCTAssertEqual(updated.name, "demo-renamed")
+        XCTAssertEqual(updated.description, "First line.\nSecond line.")
+        XCTAssertEqual(updated.bodyMarkdown, "# New heading\n\n- First\n- Second")
+        XCTAssertEqual(updated.metadata.map(\.key), ["Version"])
+        XCTAssertTrue(updated.rawText.contains("allowed-tools:"))
+        XCTAssertTrue(updated.rawText.contains("  - Read"))
+    }
+
+    func testSkillDocumentUpdateRejectsConcurrentChanges() throws {
+        let root = try fixtureRoot("editor-conflict")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = try writeSkill(root: root, relativePath: "demo", body: "Original.")
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+        try original.rawText
+            .replacingOccurrences(of: "Original.", with: "Changed elsewhere.")
+            .write(
+                to: skill.appendingPathComponent("SKILL.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        XCTAssertThrowsError(try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: original.name,
+            description: original.description ?? "",
+            bodyMarkdown: "My edit."
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed on disk"))
+        }
+    }
+
+    func testSkillMarkdownBlocksPreserveReadableStructure() {
+        let blocks = MetagentCore.skillMarkdownBlocks("""
+        # Heading
+
+        First paragraph
+        continues here.
+
+        - One
+        - Two
+
+        ```bash
+        echo hello
+        echo world
+        ```
+        """)
+
+        XCTAssertEqual(blocks.count, 5)
+        XCTAssertEqual(blocks[0].kind, .heading(level: 1))
+        XCTAssertEqual(blocks[1].text, "First paragraph continues here.")
+        XCTAssertEqual(blocks[2].kind, .unorderedListItem)
+        XCTAssertEqual(blocks[3].kind, .unorderedListItem)
+        XCTAssertEqual(blocks[4].kind, .code(language: "bash"))
+        XCTAssertEqual(blocks[4].text, "echo hello\necho world")
+    }
+
     private func fixtureRoot(_ name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metagent-overlap-\(name)-\(UUID().uuidString)")

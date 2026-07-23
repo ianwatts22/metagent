@@ -1668,6 +1668,57 @@ private struct SkillTableRow: Identifiable, Sendable {
     }
 }
 
+private struct DuplicateReviewGroup: Identifiable {
+    let id: String
+    let kind: SkillOverlapKind
+    let similarity: Double
+    let rows: [SkillTableRow]
+
+    var skillName: String { rows.first?.skillName ?? "Unnamed skill" }
+    var suggestedRemovalRows: [SkillTableRow] {
+        rows.filter { $0.overlap?.suggestedRemoval == true && $0.inventory?.removalRequest != nil }
+    }
+    var similarityText: String {
+        similarity.formatted(.percent.precision(.fractionLength(0)))
+    }
+    var recommendationTitle: String {
+        switch kind {
+        case .pluginReplacement:
+            suggestedRemovalRows.isEmpty
+                ? "Compare the plugin and standalone copies"
+                : "Keep the plugin; remove the standalone copy"
+        case .exactDuplicate:
+            "Choose one canonical copy"
+        case .globalProject:
+            "Keeping both may be intentional"
+        case .sameName:
+            "Compare before removing anything"
+        }
+    }
+    var recommendationDetail: String {
+        switch kind {
+        case .pluginReplacement:
+            suggestedRemovalRows.isEmpty
+                ? "The contents overlap, but Metagent cannot safely choose a removable standalone copy."
+                : "The plugin owns updates and remains available. The selected standalone bundle is redundant."
+        case .exactDuplicate:
+            "The contents match. Keep the copy whose location and lifecycle owner you want."
+        case .globalProject:
+            "A project copy can be useful for collaborators even when you also keep the skill globally."
+        case .sameName:
+            "These bundles share a name but differ enough that one is not a safe replacement for the other."
+        }
+    }
+    var symbol: String {
+        switch kind {
+        case .pluginReplacement: "powerplug.fill"
+        case .exactDuplicate: "square.on.square"
+        case .globalProject: "folder.badge.plus"
+        case .sameName: "questionmark.diamond"
+        }
+    }
+}
+
 private struct InventorySection: View {
     @ObservedObject var model: MetagentModel
     let selectedProjectRoot: String?
@@ -1682,6 +1733,9 @@ private struct InventorySection: View {
     @State private var viewedSkill: InventorySkillRow?
     @State private var iconTarget: InventorySkillRow?
     @State private var showsScoreExplanation = false
+    @State private var selectedDuplicateGroupID: String?
+    @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
+    @State private var reviewedDuplicateGroupIDs = Set<String>()
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.grouping.v1") private var groupingRaw = SkillGrouping.none.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
@@ -1815,6 +1869,35 @@ private struct InventorySection: View {
         Set(rows.compactMap { $0.overlap?.groupID }).count
     }
 
+    private var duplicateReviewGroups: [DuplicateReviewGroup] {
+        Dictionary(grouping: rows.compactMap { row -> SkillTableRow? in
+            row.overlap == nil ? nil : row
+        }, by: { $0.overlap?.groupID ?? "" })
+            .compactMap { id, groupRows -> DuplicateReviewGroup? in
+                guard !id.isEmpty,
+                      !reviewedDuplicateGroupIDs.contains(id),
+                      let overlap = groupRows.compactMap(\.overlap).first
+                else { return nil }
+                return DuplicateReviewGroup(
+                    id: id,
+                    kind: overlap.kind,
+                    similarity: overlap.similarity,
+                    rows: groupRows.sorted {
+                        if $0.overlap?.suggestedRemoval != $1.overlap?.suggestedRemoval {
+                            return $1.overlap?.suggestedRemoval == true
+                        }
+                        return $0.sourceText.localizedCaseInsensitiveCompare($1.sourceText) == .orderedAscending
+                    }
+                )
+            }
+            .sorted {
+                let leftPriority = $0.rows.first?.overlap?.sortValue ?? Int.max
+                let rightPriority = $1.rows.first?.overlap?.sortValue ?? Int.max
+                if leftPriority != rightPriority { return leftPriority < rightPriority }
+                return $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
+            }
+    }
+
     private var hasActiveFilter: Bool {
         let effectiveHiddenSources = selectedView == .usage
             ? hiddenSources
@@ -1903,40 +1986,42 @@ private struct InventorySection: View {
                 .help("Quality = Plugin Eval 60% + management confidence 20% + optional Codex review 20%; available inputs are normalized. Utility = Quality 70% + observed adoption 30%. Click for full details.")
                 .accessibilityLabel("How scores work")
 
-                Menu {
-                    Button("Run Plugin Eval") {
-                        if let selectedRow {
-                            model.evaluateSkillWithPluginEval(path: selectedRow.canonicalPath)
+                if selectedView != .duplicates {
+                    Menu {
+                        Button("Run Plugin Eval") {
+                            if let selectedRow {
+                                model.evaluateSkillWithPluginEval(path: selectedRow.canonicalPath)
+                            }
                         }
-                    }
-                    .disabled(selectedRow == nil)
-                    Button("Review with Codex") {
-                        if let selectedRow {
-                            pendingConfirmation = .codexReview(selectedRow)
+                        .disabled(selectedRow == nil)
+                        Button("Review with Codex") {
+                            if let selectedRow {
+                                pendingConfirmation = .codexReview(selectedRow)
+                            }
                         }
+                        .disabled(selectedRow == nil)
+                        Divider()
+                        Button("Run Plugin Eval for Visible Skills") {
+                            model.evaluateSkillsWithPluginEval(paths: visibleInventoryRows.map(\.canonicalPath))
+                        }
+                        .disabled(visibleInventoryRows.isEmpty)
+                    } label: {
+                        Label("Evaluate", systemImage: "checkmark.seal")
                     }
-                    .disabled(selectedRow == nil)
-                    Divider()
-                    Button("Run Plugin Eval for Visible Skills") {
-                        model.evaluateSkillsWithPluginEval(paths: visibleInventoryRows.map(\.canonicalPath))
-                    }
-                    .disabled(visibleInventoryRows.isEmpty)
-                } label: {
-                    Label("Evaluate", systemImage: "checkmark.seal")
-                }
-                .buttonStyle(.glass)
-                .disabled(visibleInventoryRows.isEmpty || model.isSkillEvaluating)
+                    .buttonStyle(.glass)
+                    .disabled(visibleInventoryRows.isEmpty || model.isSkillEvaluating)
 
-                Button(role: .destructive) {
-                    pendingConfirmation = .removal(selectedRemovalRows)
-                } label: {
-                    Label(
-                        selectedRemovalRows.count > 1 ? "Remove \(selectedRemovalRows.count)" : "Remove",
-                        systemImage: "trash"
-                    )
+                    Button(role: .destructive) {
+                        pendingConfirmation = .removal(selectedRemovalRows)
+                    } label: {
+                        Label(
+                            selectedRemovalRows.count > 1 ? "Remove \(selectedRemovalRows.count)" : "Remove",
+                            systemImage: "trash"
+                        )
+                    }
+                    .buttonStyle(.glass)
+                    .disabled(selectedRemovalRows.isEmpty || model.isRunning)
                 }
-                .buttonStyle(.glass)
-                .disabled(selectedRemovalRows.isEmpty || model.isRunning)
 
                 Button {
                     model.refreshStatus()
@@ -1994,13 +2079,15 @@ private struct InventorySection: View {
                 }
                 .frame(width: 145)
 
-                Picker("Group by", selection: groupingBinding) {
-                    ForEach(SkillGrouping.allCases) { option in
-                        Text(option.title).tag(option)
+                if selectedView != .duplicates {
+                    Picker("Group by", selection: groupingBinding) {
+                        ForEach(SkillGrouping.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
                     }
+                    .frame(width: 145)
+                    .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
                 }
-                .frame(width: 145)
-                .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
 
                 Spacer()
 
@@ -2027,127 +2114,45 @@ private struct InventorySection: View {
 
             if rows.isEmpty {
                 EmptyStateView(
-                    title: hasActiveFilter ? "No matching skills" : "No skills found",
+                    title: selectedView == .duplicates
+                        ? (hasActiveFilter ? "No matching duplicates" : "No duplicate installations")
+                        : (hasActiveFilter ? "No matching skills" : "No skills found"),
                     message: hasActiveFilter
                         ? "Clear the search or choose All Projects."
-                        : "Refresh after configuring roots or adding skills.",
-                    symbol: "tablecells"
+                        : (selectedView == .duplicates
+                            ? "Metagent found no same-name or overlapping canonical skill bundles."
+                            : "Refresh after configuring roots or adding skills."),
+                    symbol: selectedView == .duplicates ? "checkmark.circle" : "tablecells"
+                )
+            } else if selectedView == .duplicates {
+                DuplicateReviewExperience(
+                    groups: duplicateReviewGroups,
+                    selectedGroupID: $selectedDuplicateGroupID,
+                    removalIDs: $duplicateRemovalIDs,
+                    isRunning: model.isRunning,
+                    onView: { row in viewedSkill = row.inventory },
+                    onInfo: { row in inspectedSkill = row.inventory },
+                    onReviewRemoval: { candidateRows in
+                        let removableRows = candidateRows.compactMap(\.inventory)
+                            .filter { $0.removalRequest != nil }
+                        guard !removableRows.isEmpty else { return }
+                        pendingConfirmation = .removal(removableRows)
+                    },
+                    onKeepAll: { group in
+                        reviewedDuplicateGroupIDs.insert(group.id)
+                        duplicateRemovalIDs.subtract(group.rows.map(\.id))
+                        selectedDuplicateGroupID = duplicateReviewGroups.first {
+                            $0.id != group.id
+                        }?.id
+                    },
+                    onReviewAgain: {
+                        reviewedDuplicateGroupIDs.removeAll()
+                        selectedDuplicateGroupID = nil
+                        duplicateRemovalIDs.removeAll()
+                    }
                 )
             } else {
-                Table(
-                    displayRows,
-                    children: \.children,
-                    selection: $selection,
-                    sortOrder: $sortOrder,
-                    columnCustomization: columnCustomization
-                ) {
-                    TableColumnForEach(skillColumnSpecs) { column in
-                        TableColumn(column.title, sortUsing: column.comparator) { row in
-                            if row.isGroup {
-                                if column.id == "skill" {
-                                    SkillNameCell(row: row)
-                                } else {
-                                    Color.clear
-                                }
-                            } else if column.id == "skill" {
-                                SkillNameCell(row: row)
-                            } else if column.id == "display-location" {
-                                SkillScopeLocationCell(row: row)
-                            } else if column.id == "origin" {
-                                SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
-                            } else if column.id == "last-used" {
-                                RelativeUsageDateCell(date: row.lastUsedDate)
-                                    .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
-                                    .help(column.help(row))
-                            } else {
-                                InventoryTableCell(
-                                    text: column.value(row),
-                                    help: column.help(row),
-                                    isNumeric: column.isNumeric,
-                                    isMonospaced: column.isMonospaced,
-                                    isPrimary: column.isPrimary,
-                                    showsBadge: column.showsBadge,
-                                    symbol: column.symbol?(row),
-                                    tint: column.tint?(row)
-                                )
-                            }
-                        }
-                        .width(min: column.minWidth, ideal: column.idealWidth)
-                        .customizationID(column.id)
-                        .defaultVisibility(column.defaultVisibility(selectedView))
-                    }
-                }
-                .id("\(selectedView.rawValue):\(grouping.rawValue)")
-                .tableStyle(.inset)
-                .alternatingRowBackgrounds(.enabled)
-                .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
-                    let contextRows = rows(for: contextSelection)
-                    let removableRows = contextRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
-                    let paths = contextRows.compactMap(\.canonicalPath)
-                    let openableURLs = skillDirectoryURLs(for: contextRows)
-                    let skillFiles = skillFileURLs(for: contextRows)
-                    let openWithApplications = applicationsForOpening(openableURLs)
-                    if contextRows.count == 1, let inventory = contextRows.first?.inventory {
-                        Button("View Skill", systemImage: "doc.text.magnifyingglass") {
-                            viewedSkill = inventory
-                        }
-                        Button("Get Info", systemImage: "info.circle") {
-                            inspectedSkill = inventory
-                        }
-                        Button(
-                            inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
-                            systemImage: "photo.badge.plus"
-                        ) {
-                            iconTarget = inventory
-                        }
-                        .disabled(!inventory.canEditIcon)
-                        Divider()
-                    }
-                    Button("Open", systemImage: "folder") {
-                        openSkillDirectories(openableURLs)
-                    }
-                    .disabled(openableURLs.isEmpty)
-                    Menu("Open With", systemImage: "square.and.arrow.up") {
-                        ForEach(openWithApplications) { application in
-                            Button {
-                                openSkillDirectories(openableURLs, with: application.url)
-                            } label: {
-                                Label {
-                                    Text(application.name)
-                                } icon: {
-                                    Image(nsImage: application.icon)
-                                }
-                            }
-                        }
-                    }
-                    .disabled(openableURLs.isEmpty || openWithApplications.isEmpty)
-                    Button("Open SKILL.md", systemImage: "doc.text") {
-                        openSkillFiles(skillFiles)
-                    }
-                    .disabled(skillFiles.isEmpty)
-                    Button("Open in Editor", systemImage: "chevron.left.forwardslash.chevron.right") {
-                        openSkillDirectoriesInEditor(openableURLs, skillFiles: skillFiles)
-                    }
-                    .disabled(openableURLs.isEmpty)
-                    Divider()
-                    Button("Copy Path", systemImage: "doc.on.doc") {
-                        copyPaths(contextRows)
-                    }
-                    .disabled(paths.isEmpty)
-                    Button("Copy to Improve", systemImage: "wand.and.sparkles") {
-                        copyToImprove(contextRows)
-                    }
-                    .disabled(paths.isEmpty)
-                    Divider()
-                    Button(
-                        removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
-                        systemImage: "trash",
-                        role: .destructive
-                    ) {
-                        pendingConfirmation = .removal(removableRows)
-                    }
-                    .disabled(removableRows.isEmpty || model.isRunning)
-                }
+                skillsTable
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -2170,6 +2175,7 @@ private struct InventorySection: View {
         .onChange(of: selectedViewRaw) { _, rawValue in
             let view = SkillTableView(rawValue: rawValue) ?? .summary
             selection.formIntersection(Set(rows.map(\.id)))
+            duplicateRemovalIDs.removeAll()
             sortOrder = defaultSortOrder(for: view)
         }
         .alert(item: $pendingConfirmation) { confirmation in
@@ -2184,7 +2190,17 @@ private struct InventorySection: View {
                     primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
                         if model.uninstallSkills(requests) {
                             let removedIDs = Set(rows.map(\.id))
-                            cachedRows.removeAll { removedIDs.contains($0.id) }
+                            let resolvedGroupIDs = Set(cachedRows
+                                .filter { row in
+                                    row.inventory.map { removedIDs.contains($0.id) } ?? false
+                                }
+                                .compactMap(\.overlap?.groupID))
+                            cachedRows.removeAll { row in
+                                row.inventory.map { removedIDs.contains($0.id) } ?? false
+                            }
+                            reviewedDuplicateGroupIDs.formUnion(resolvedGroupIDs)
+                            duplicateRemovalIDs.removeAll()
+                            selectedDuplicateGroupID = nil
                             selection.removeAll()
                         }
                     },
@@ -2205,7 +2221,7 @@ private struct InventorySection: View {
             SkillInfoView(model: model, row: row)
         }
         .sheet(item: $viewedSkill) { row in
-            SkillReaderView(row: row)
+            SkillReaderView(model: model, row: row)
         }
         .sheet(item: $iconTarget) { row in
             SkillIconEditorView(model: model, row: row)
@@ -2213,6 +2229,101 @@ private struct InventorySection: View {
         .sheet(isPresented: $showsScoreExplanation) {
             ScoreExplanationView()
         }
+    }
+
+    private var skillsTable: some View {
+        Table(
+            displayRows,
+            children: \.children,
+            selection: $selection,
+            sortOrder: $sortOrder,
+            columnCustomization: columnCustomization
+        ) {
+            TableColumnForEach(skillColumnSpecs) { column in
+                TableColumn(column.title, sortUsing: column.comparator) { row in
+                    SkillTableColumnCell(column: column, row: row)
+                }
+                .width(min: column.minWidth, ideal: column.idealWidth)
+                .customizationID(column.id)
+                .defaultVisibility(column.defaultVisibility(selectedView))
+            }
+        }
+        .id("\(selectedView.rawValue):\(grouping.rawValue)")
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds(.enabled)
+        .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
+            skillContextMenu(for: contextSelection)
+        }
+    }
+
+    @ViewBuilder
+    private func skillContextMenu(for contextSelection: Set<SkillTableRow.ID>) -> some View {
+        let contextRows = rows(for: contextSelection)
+        let removableRows = contextRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
+        let paths = contextRows.compactMap(\.canonicalPath)
+        let openableURLs = skillDirectoryURLs(for: contextRows)
+        let skillFiles = skillFileURLs(for: contextRows)
+        let openWithApplications = applicationsForOpening(openableURLs)
+        if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+            Button("View Skill", systemImage: "doc.text.magnifyingglass") {
+                viewedSkill = inventory
+            }
+            Button("Get Info", systemImage: "info.circle") {
+                inspectedSkill = inventory
+            }
+            Button(
+                inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
+                systemImage: "photo.badge.plus"
+            ) {
+                iconTarget = inventory
+            }
+            .disabled(!inventory.canEditIcon)
+            Divider()
+        }
+        Button("Open", systemImage: "folder") {
+            openSkillDirectories(openableURLs)
+        }
+        .disabled(openableURLs.isEmpty)
+        Menu("Open With", systemImage: "square.and.arrow.up") {
+            ForEach(openWithApplications) { application in
+                Button {
+                    openSkillDirectories(openableURLs, with: application.url)
+                } label: {
+                    Label {
+                        Text(application.name)
+                    } icon: {
+                        Image(nsImage: application.icon)
+                    }
+                }
+            }
+        }
+        .disabled(openableURLs.isEmpty || openWithApplications.isEmpty)
+        Button("Open SKILL.md", systemImage: "doc.text") {
+            openSkillFiles(skillFiles)
+        }
+        .disabled(skillFiles.isEmpty)
+        Button("Open in Editor", systemImage: "chevron.left.forwardslash.chevron.right") {
+            openSkillDirectoriesInEditor(openableURLs, skillFiles: skillFiles)
+        }
+        .disabled(openableURLs.isEmpty)
+        Divider()
+        Button("Copy Path", systemImage: "doc.on.doc") {
+            copyPaths(contextRows)
+        }
+        .disabled(paths.isEmpty)
+        Button("Copy to Improve", systemImage: "wand.and.sparkles") {
+            copyToImprove(contextRows)
+        }
+        .disabled(paths.isEmpty)
+        Divider()
+        Button(
+            removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
+            systemImage: "trash",
+            role: .destructive
+        ) {
+            pendingConfirmation = .removal(removableRows)
+        }
+        .disabled(removableRows.isEmpty || model.isRunning)
     }
 
     private func defaultSortOrder(for view: SkillTableView) -> [KeyPathComparator<SkillTableRow>] {
@@ -2262,6 +2373,335 @@ private struct InventorySection: View {
         guard !Task.isCancelled else { return }
         cachedRows = rows
         selection.formIntersection(Set(cachedRows.map(\.id)))
+    }
+}
+
+private struct DuplicateReviewExperience: View {
+    let groups: [DuplicateReviewGroup]
+    @Binding var selectedGroupID: String?
+    @Binding var removalIDs: Set<SkillTableRow.ID>
+    let isRunning: Bool
+    let onView: (SkillTableRow) -> Void
+    let onInfo: (SkillTableRow) -> Void
+    let onReviewRemoval: ([SkillTableRow]) -> Void
+    let onKeepAll: (DuplicateReviewGroup) -> Void
+    let onReviewAgain: () -> Void
+
+    private var selectedGroup: DuplicateReviewGroup? {
+        groups.first { $0.id == selectedGroupID } ?? groups.first
+    }
+
+    var body: some View {
+        if groups.isEmpty {
+            ContentUnavailableView {
+                Label("Duplicate review complete", systemImage: "checkmark.circle")
+            } description: {
+                Text("You kept the remaining groups for this session.")
+            } actions: {
+                Button("Review again", action: onReviewAgain)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            HStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 5) {
+                        ForEach(groups) { group in
+                            Button {
+                                select(group)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: group.symbol)
+                                        .foregroundStyle(
+                                            group.id == selectedGroup?.id ? Color.accentColor : .secondary
+                                        )
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(group.skillName)
+                                            .font(.callout.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text("\(group.rows.count) copies · \(group.similarityText)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if group.id == selectedGroup?.id {
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(group.id == selectedGroup?.id
+                                            ? Color.accentColor.opacity(0.12)
+                                            : Color.clear)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(width: 245)
+
+                Divider()
+
+                if let selectedGroup {
+                    DuplicateReviewDetail(
+                        group: selectedGroup,
+                        removalIDs: $removalIDs,
+                        isRunning: isRunning,
+                        onView: onView,
+                        onInfo: onInfo,
+                        onUseRecommendation: {
+                            removalIDs.subtract(selectedGroup.rows.map(\.id))
+                            removalIDs.formUnion(selectedGroup.suggestedRemovalRows.map(\.id))
+                        },
+                        onReviewRemoval: {
+                            onReviewRemoval(selectedGroup.rows.filter { removalIDs.contains($0.id) })
+                        },
+                        onKeepAll: {
+                            onKeepAll(selectedGroup)
+                        }
+                    )
+                    .id(selectedGroup.id)
+                }
+            }
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.quaternary.opacity(0.18))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
+            .onAppear {
+                if selectedGroupID == nil {
+                    selectedGroupID = groups.first?.id
+                }
+            }
+            .onChange(of: groups.map(\.id)) { _, ids in
+                guard !ids.contains(selectedGroupID ?? "") else { return }
+                selectedGroupID = ids.first
+                removalIDs.removeAll()
+            }
+        }
+    }
+
+    private func select(_ group: DuplicateReviewGroup) {
+        guard selectedGroupID != group.id else { return }
+        selectedGroupID = group.id
+        removalIDs.removeAll()
+    }
+}
+
+private struct DuplicateReviewDetail: View {
+    let group: DuplicateReviewGroup
+    @Binding var removalIDs: Set<SkillTableRow.ID>
+    let isRunning: Bool
+    let onView: (SkillTableRow) -> Void
+    let onInfo: (SkillTableRow) -> Void
+    let onUseRecommendation: () -> Void
+    let onReviewRemoval: () -> Void
+    let onKeepAll: () -> Void
+
+    private var selectedRemovalCount: Int {
+        group.rows.filter { removalIDs.contains($0.id) }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(group.skillName)
+                        .font(.title2.weight(.semibold))
+                    Text("\(group.rows.count) installed copies · \(group.similarityText) content similarity")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(group.kind == .pluginReplacement ? "Replacement" : "Review")")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: group.kind == .pluginReplacement
+                    ? "lightbulb.max.fill"
+                    : "lightbulb")
+                    .foregroundStyle(group.kind == .pluginReplacement ? Color.orange : .secondary)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Recommendation")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(group.recommendationTitle)
+                        .font(.headline)
+                    Text(group.recommendationDetail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                if !group.suggestedRemovalRows.isEmpty {
+                    Button("Use recommendation", action: onUseRecommendation)
+                        .buttonStyle(.bordered)
+                }
+            }
+            .padding(12)
+            .background(
+                group.kind == .pluginReplacement
+                    ? Color.orange.opacity(0.10)
+                    : Color.secondary.opacity(0.07),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 290), spacing: 10, alignment: .top)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(group.rows) { row in
+                        DuplicateCandidateCard(
+                            row: row,
+                            isMarkedForRemoval: Binding(
+                                get: { removalIDs.contains(row.id) },
+                                set: { shouldRemove in
+                                    if shouldRemove {
+                                        removalIDs.insert(row.id)
+                                    } else {
+                                        removalIDs.remove(row.id)
+                                    }
+                                }
+                            ),
+                            onView: { onView(row) },
+                            onInfo: { onInfo(row) }
+                        )
+                    }
+                }
+                .padding(.trailing, 8)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Keep all and continue", action: onKeepAll)
+                    .disabled(isRunning)
+                Spacer()
+                Text(selectedRemovalCount == 0
+                    ? "Choose Remove on any copy you don’t want."
+                    : "\(selectedRemovalCount) selected for removal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button(
+                    selectedRemovalCount == 1 ? "Review removal…" : "Review \(selectedRemovalCount) removals…",
+                    role: .destructive,
+                    action: onReviewRemoval
+                )
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedRemovalCount == 0 || isRunning)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct DuplicateCandidateCard: View {
+    let row: SkillTableRow
+    @Binding var isMarkedForRemoval: Bool
+    let onView: () -> Void
+    let onInfo: () -> Void
+
+    private var canRemove: Bool { row.inventory?.removalRequest != nil }
+    private var removalLabel: String {
+        guard let request = row.inventory?.removalRequest else { return "Keep" }
+        if case .plugin = request.kind { return "Remove plugin" }
+        return "Remove"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.sourceText)
+                        .font(.callout.weight(.semibold))
+                    Text(row.scope == "project" ? row.projectName : row.scopeLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if row.overlap?.suggestedRemoval == true {
+                    Text("Recommended remove")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.orange.opacity(0.12), in: Capsule())
+                }
+            }
+
+            if row.descriptionText != "—" {
+                Text(row.descriptionText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            HStack(spacing: 14) {
+                LabeledContent("30d", value: row.invocations30d.formatted())
+                LabeledContent("All", value: row.totalInvocations.formatted())
+                LabeledContent("Updated", value: row.updatedText)
+            }
+            .font(.caption)
+
+            Text(row.canonicalPath ?? row.skillPath)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(row.canonicalPath ?? row.skillPath)
+
+            HStack {
+                Button("View", action: onView)
+                Button("Info", action: onInfo)
+                Spacer()
+                if canRemove {
+                    Picker(
+                        "Decision",
+                        selection: $isMarkedForRemoval
+                    ) {
+                        Text("Keep").tag(false)
+                        Text(removalLabel).tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: removalLabel == "Remove plugin" ? 190 : 155)
+                    .help(removalLabel == "Remove plugin"
+                        ? "Removing this copy uninstalls its entire plugin."
+                        : "The final removal still requires approval.")
+                } else {
+                    Label("Keep", systemImage: "lock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Metagent does not have a safe removal action for this managed copy.")
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            isMarkedForRemoval ? Color.red.opacity(0.08) : Color.primary.opacity(0.035),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(isMarkedForRemoval ? Color.red.opacity(0.35) : Color.clear, lineWidth: 1)
+        }
     }
 }
 
@@ -3106,6 +3546,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
             && skill.mutability == "editable"
             && skill.manager != "codex-plugin"
     }
+    var canEditDocument: Bool { canEditIcon }
     var metagentStaticScore: Int {
         metagentScore.qualityScore(
             pluginEvalScore: pluginEval?.score,
@@ -3335,6 +3776,43 @@ private struct SkillColumnSpec: Identifiable {
 
     func defaultVisibility(_ view: SkillTableView) -> Visibility {
         defaultViews.contains(view) ? .visible : .hidden
+    }
+}
+
+private struct SkillTableColumnCell: View {
+    let column: SkillColumnSpec
+    let row: SkillTableRow
+
+    @ViewBuilder
+    var body: some View {
+        if row.isGroup {
+            if column.id == "skill" {
+                SkillNameCell(row: row)
+            } else {
+                Color.clear
+            }
+        } else if column.id == "skill" {
+            SkillNameCell(row: row)
+        } else if column.id == "display-location" {
+            SkillScopeLocationCell(row: row)
+        } else if column.id == "origin" {
+            SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
+        } else if column.id == "last-used" {
+            RelativeUsageDateCell(date: row.lastUsedDate)
+                .foregroundStyle(row.totalInvocations == 0 ? Color.secondary : Color.primary)
+                .help(column.help(row))
+        } else {
+            InventoryTableCell(
+                text: column.value(row),
+                help: column.help(row),
+                isNumeric: column.isNumeric,
+                isMonospaced: column.isMonospaced,
+                isPrimary: column.isPrimary,
+                showsBadge: column.showsBadge,
+                symbol: column.symbol?(row),
+                tint: column.tint?(row)
+            )
+        }
     }
 }
 
@@ -3991,16 +4469,23 @@ private struct SkillInfoView: View {
             ScoreExplanationView()
         }
         .sheet(isPresented: $showsReader) {
-            SkillReaderView(row: row)
+            SkillReaderView(model: model, row: row)
         }
     }
 }
 
 private struct SkillReaderView: View {
+    @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
     @Environment(\.dismiss) private var dismiss
     @State private var document: SkillDocument?
     @State private var loadError: String?
+    @State private var saveError: String?
+    @State private var isEditing = false
+    @State private var isSaving = false
+    @State private var draftName = ""
+    @State private var draftDescription = ""
+    @State private var draftBody = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4032,44 +4517,101 @@ private struct SkillReaderView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                if document != nil {
+                    Button(isEditing ? "Reading" : "Edit") {
+                        if isEditing {
+                            cancelEditing()
+                        } else {
+                            beginEditing()
+                        }
+                    }
+                    .disabled(!row.canEditDocument || isSaving)
+                    .help(row.canEditDocument
+                        ? (isEditing ? "Discard unsaved edits and return to the reader." : "Edit this local SKILL.md.")
+                        : "This skill is managed by \(row.skill.tableOriginText) and is read-only here.")
+                }
             }
 
             if let document {
-                if let description = document.description {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Description")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(description)
-                            .font(.body)
-                            .textSelection(.enabled)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
-                }
+                if isEditing {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Name")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextField("Skill name", text: $draftName)
+                                .textFieldStyle(.roundedBorder)
+                        }
 
-                if !document.metadata.isEmpty {
-                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
-                        ForEach(document.metadata) { item in
-                            GridRow {
-                                Text(item.key)
-                                    .foregroundStyle(.secondary)
-                                Text(item.value)
-                                    .textSelection(.enabled)
-                            }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Description")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextEditor(text: $draftDescription)
+                                .font(.body)
+                                .scrollContentBackground(.hidden)
+                                .padding(7)
+                                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                                .frame(minHeight: 72, maxHeight: 110)
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Instructions")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextEditor(text: $draftBody)
+                                .font(.system(.body, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(8)
+                                .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+                                .frame(maxHeight: .infinity)
+                        }
+
+                        if let saveError {
+                            Label(saveError, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .font(.callout)
-                }
-
-                Divider()
-
-                ScrollView {
-                    Text(renderedMarkdown(document.bodyMarkdown))
+                } else {
+                    if let description = document.description {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Description")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(description)
+                                .font(.body)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    if !document.metadata.isEmpty {
+                        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
+                            ForEach(document.metadata) { item in
+                                GridRow {
+                                    Text(item.key)
+                                        .foregroundStyle(.secondary)
+                                    Text(item.value)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .font(.callout)
+                    }
+
+                    Divider()
+
+                    ScrollView {
+                        SkillMarkdownDocumentView(
+                            blocks: MetagentCore.skillMarkdownBlocks(document.bodyMarkdown)
+                        )
                         .padding(.trailing, 10)
+                    }
                 }
             } else if let loadError {
                 ContentUnavailableView(
@@ -4085,25 +4627,34 @@ private struct SkillReaderView: View {
 
             Divider()
             HStack {
-                Button("Open SKILL.md") {
-                    openSkillFiles([skillFileURL])
+                if isEditing {
+                    Button("Cancel", action: cancelEditing)
+                        .disabled(isSaving)
+                    Spacer()
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button("Save changes", action: saveChanges)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canSave)
+                } else {
+                    Button("Open SKILL.md") {
+                        openSkillFiles([skillFileURL])
+                    }
+                    Button("Open in Editor") {
+                        openSkillDirectoriesInEditor([skillDirectoryURL], skillFiles: [skillFileURL])
+                    }
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
                 }
-                Button("Open in Editor") {
-                    openSkillDirectoriesInEditor([skillDirectoryURL], skillFiles: [skillFileURL])
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(22)
         .frame(width: 760, height: 720)
         .task {
-            do {
-                document = try MetagentCore.loadSkillDocument(at: row.canonicalPath)
-            } catch {
-                loadError = error.localizedDescription
-            }
+            loadDocument()
         }
     }
 
@@ -4115,10 +4666,161 @@ private struct SkillReaderView: View {
         skillDirectoryURL.appendingPathComponent("SKILL.md")
     }
 
-    private func renderedMarkdown(_ markdown: String) -> AttributedString {
+    private var canSave: Bool {
+        guard !isSaving, let document else { return false }
+        let cleanName = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDescription = draftDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !cleanName.isEmpty
+            && !cleanDescription.isEmpty
+            && (
+                cleanName != document.name
+                    || cleanDescription != (document.description ?? "")
+                    || draftBody != document.bodyMarkdown
+            )
+    }
+
+    private func loadDocument() {
+        do {
+            document = try MetagentCore.loadSkillDocument(at: row.canonicalPath)
+            loadError = nil
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func beginEditing() {
+        guard row.canEditDocument, let document else { return }
+        draftName = document.name
+        draftDescription = document.description ?? ""
+        draftBody = document.bodyMarkdown
+        saveError = nil
+        isEditing = true
+    }
+
+    private func cancelEditing() {
+        isEditing = false
+        saveError = nil
+    }
+
+    private func saveChanges() {
+        guard canSave, let original = document else { return }
+        let name = draftName
+        let description = draftDescription
+        let body = draftBody
+        isSaving = true
+        saveError = nil
+        Task {
+            do {
+                let updated = try await Task.detached(priority: .userInitiated) {
+                    try MetagentCore.updateSkillDocument(
+                        at: row.canonicalPath,
+                        expectedRawText: original.rawText,
+                        name: name,
+                        description: description,
+                        bodyMarkdown: body
+                    )
+                }.value
+                document = updated
+                isEditing = false
+                model.refreshStatus()
+            } catch {
+                saveError = error.localizedDescription
+            }
+            isSaving = false
+        }
+    }
+}
+
+private struct SkillMarkdownDocumentView: View {
+    let blocks: [SkillMarkdownBlock]
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(blocks) { block in
+                SkillMarkdownBlockView(block: block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+}
+
+private struct SkillMarkdownBlockView: View {
+    let block: SkillMarkdownBlock
+
+    var body: some View {
+        switch block.kind {
+        case let .heading(level):
+            Text(inlineMarkdown(block.text))
+                .font(headingFont(level))
+                .padding(.top, level <= 2 ? 5 : 1)
+                .fixedSize(horizontal: false, vertical: true)
+        case .paragraph:
+            Text(inlineMarkdown(block.text))
+                .font(.body)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        case .unorderedListItem:
+            listRow(marker: "•")
+        case let .orderedListItem(marker):
+            listRow(marker: marker)
+        case .quote:
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(.tertiary)
+                    .frame(width: 3)
+                Text(inlineMarkdown(block.text))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case let .code(language):
+            VStack(alignment: .leading, spacing: 6) {
+                if let language {
+                    Text(language.uppercased())
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                ScrollView(.horizontal) {
+                    Text(block.text)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        case .divider:
+            Divider()
+        }
+    }
+
+    private func listRow(marker: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(marker)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 18, alignment: .trailing)
+            Text(inlineMarkdown(block.text))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, 4)
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .title2.weight(.semibold)
+        case 2: .title3.weight(.semibold)
+        case 3: .headline
+        default: .callout.weight(.semibold)
+        }
+    }
+
+    private func inlineMarkdown(_ markdown: String) -> AttributedString {
         (try? AttributedString(
             markdown: markdown,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
         )) ?? AttributedString(markdown)
     }
 }
