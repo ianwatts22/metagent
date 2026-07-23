@@ -461,15 +461,16 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func uninstallSkills(_ requests: [SkillRemovalRequest]) {
+    @discardableResult
+    func uninstallSkills(_ requests: [SkillRemovalRequest]) -> Bool {
         let uniqueRequests = Dictionary(requests.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             .values
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        guard !uniqueRequests.isEmpty else { return }
+        guard !uniqueRequests.isEmpty else { return false }
         let title = uniqueRequests.count == 1
             ? "Remove \(uniqueRequests[0].displayName)"
             : "Remove \(uniqueRequests.count) items"
-        runOperation(title: title, runningText: "Removing selected skills...") {
+        return runOperation(title: title, runningText: "Removing selected skills...") {
             var lines: [String] = []
             for request in uniqueRequests {
                 do {
@@ -646,13 +647,14 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    @discardableResult
     private func runOperation(
         title: String,
         runningText: String,
         operation: @escaping @Sendable () throws -> CommandOutcome,
         completion: ((CommandOutcome) -> Void)? = nil
-    ) {
-        guard !isRunning else { return }
+    ) -> Bool {
+        guard !isRunning else { return false }
         isRunning = true
         statusText = runningText
         systemImage = "arrow.triangle.2.circlepath"
@@ -682,6 +684,7 @@ final class MetagentModel: ObservableObject {
 
             completion?(result)
         }
+        return true
     }
 
     nonisolated private static func timestamp() -> String {

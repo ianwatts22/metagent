@@ -17,8 +17,8 @@ final class SkillProvenanceTests: XCTestCase {
             at: skillDirectory.appendingPathComponent("scripts"),
             withIntermediateDirectories: true
         )
-        try "Details".write(
-            to: skillDirectory.appendingPathComponent("references/details.md"),
+        try "---\nname: nested\ndescription: nested reference\n---\n".write(
+            to: skillDirectory.appendingPathComponent("references/SKILL.md"),
             atomically: true,
             encoding: .utf8
         )

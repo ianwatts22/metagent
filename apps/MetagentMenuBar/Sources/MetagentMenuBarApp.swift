@@ -90,6 +90,10 @@ private struct MenuBarIcon: View {
         skillIcons.setObject(image, forKey: key)
         return image
     }
+
+    static func clearSkillIconCache() {
+        skillIcons.removeAllObjects()
+    }
 }
 
 private struct MetagentPanel: View {
@@ -1917,10 +1921,11 @@ private struct InventorySection: View {
                     title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
                     message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: rows))"),
                     primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
-                        let removedIDs = Set(rows.map(\.id))
-                        cachedRows.removeAll { removedIDs.contains($0.id) }
-                        selection.removeAll()
-                        model.uninstallSkills(requests)
+                        if model.uninstallSkills(requests) {
+                            let removedIDs = Set(rows.map(\.id))
+                            cachedRows.removeAll { removedIDs.contains($0.id) }
+                            selection.removeAll()
+                        }
                     },
                     secondaryButton: .cancel()
                 )
@@ -1954,6 +1959,7 @@ private struct InventorySection: View {
     }
 
     private func rebuildRows() async {
+        AppBrand.clearSkillIconCache()
         let projects = model.projects
         let usage = model.usageSnapshot
         let evaluations = model.skillEvaluations
@@ -3445,6 +3451,12 @@ private func githubRepositoryName(url: String?) -> String? {
 
 private func githubRepositoryName(source: String?) -> String? {
     guard let source, !source.isEmpty, !source.hasPrefix("path:") else { return nil }
+    guard !source.hasPrefix("/"),
+          !source.hasPrefix("~/"),
+          !source.hasPrefix("./"),
+          !source.hasPrefix("../"),
+          !source.hasPrefix("file:")
+    else { return nil }
     if source.contains("github.com") { return githubRepositoryName(url: source) }
     let components = source.split(separator: "/")
     guard components.count >= 2 else { return nil }

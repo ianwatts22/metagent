@@ -1914,7 +1914,7 @@ private func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, oth
         stats.characterCount += characters
         stats.wordCount += words
 
-        if entry.lastPathComponent == "SKILL.md" {
+        if entry.standardizedFileURL == root.appendingPathComponent("SKILL.md").standardizedFileURL {
             stats.description = skillDescription(from: text)
             stats.skillFileCharacterCount += characters
             stats.skillFileWordCount += words
