@@ -43,7 +43,7 @@ extension MetagentCore {
             .filter { !["Name", "Description"].contains($0.key) }
         return SkillDocument(
             name: name,
-            description: skillDescription(from: text),
+            description: skillFrontmatterDescription(lines: parsed.frontmatter),
             metadata: metadata,
             bodyMarkdown: parsed.body.trimmingCharacters(in: .whitespacesAndNewlines),
             rawFrontmatter: parsed.frontmatter.isEmpty ? nil : parsed.frontmatter.joined(separator: "\n"),
@@ -145,8 +145,42 @@ private func skillFrontmatterValue(key: String, lines: [String]) -> String? {
             && $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix)
     }) else { return nil }
     let rawValue = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-    let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    let value = decodedYAMLScalar(rawValue)
     return value.isEmpty ? nil : value
+}
+
+private func skillFrontmatterDescription(lines: [String]) -> String? {
+    let prefix = "description:"
+    guard let index = lines.firstIndex(where: {
+        $0.first?.isWhitespace != true
+            && $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix)
+    }) else { return nil }
+    let rawValue = String(lines[index].dropFirst(prefix.count))
+        .trimmingCharacters(in: .whitespaces)
+    guard ["|", "|-", "|+", ">", ">-", ">+"].contains(rawValue) else {
+        let value = decodedYAMLScalar(rawValue)
+        return value.isEmpty ? nil : value
+    }
+    let continuation = lines.dropFirst(index + 1)
+        .prefix { $0.first?.isWhitespace == true || $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+    let value = continuation.joined(separator: rawValue.hasPrefix(">") ? " " : "\n")
+    return value.isEmpty ? nil : value
+}
+
+private func decodedYAMLScalar(_ rawValue: String) -> String {
+    guard rawValue.count >= 2 else { return rawValue }
+    if rawValue.first == "\"", rawValue.last == "\"",
+       let data = rawValue.data(using: .utf8),
+       let decoded = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String
+    {
+        return decoded
+    }
+    if rawValue.first == "'", rawValue.last == "'" {
+        return String(rawValue.dropFirst().dropLast())
+            .replacingOccurrences(of: "''", with: "'")
+    }
+    return rawValue
 }
 
 private func topLevelSkillMetadata(lines: [String]) -> [SkillDocumentMetadata] {
@@ -213,7 +247,7 @@ private func parseSkillMarkdownBlocks(_ markdown: String) -> [SkillMarkdownBlock
     var paragraph: [String] = []
     var code: [String] = []
     var codeLanguage: String?
-    var isInCodeBlock = false
+    var codeFence: (character: Character, length: Int)?
 
     func flushParagraph() {
         guard !paragraph.isEmpty else { return }
@@ -230,20 +264,19 @@ private func parseSkillMarkdownBlocks(_ markdown: String) -> [SkillMarkdownBlock
     for rawLine in lines {
         let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("```") {
-            if isInCodeBlock {
+        if let activeFence = codeFence {
+            if isClosingMarkdownFence(trimmed, matching: activeFence) {
                 flushCode()
-                isInCodeBlock = false
-            } else {
-                flushParagraph()
-                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                codeLanguage = language.isEmpty ? nil : language
-                isInCodeBlock = true
+                codeFence = nil
+                continue
             }
+            code.append(line)
             continue
         }
-        if isInCodeBlock {
-            code.append(line)
+        if let openingFence = openingMarkdownFence(trimmed) {
+            flushParagraph()
+            codeFence = (openingFence.character, openingFence.length)
+            codeLanguage = openingFence.info.isEmpty ? nil : openingFence.info
             continue
         }
         if trimmed.isEmpty {
@@ -283,7 +316,7 @@ private func parseSkillMarkdownBlocks(_ markdown: String) -> [SkillMarkdownBlock
         }
         paragraph.append(trimmed)
     }
-    if isInCodeBlock {
+    if codeFence != nil {
         flushCode()
     } else {
         flushParagraph()
@@ -291,6 +324,24 @@ private func parseSkillMarkdownBlocks(_ markdown: String) -> [SkillMarkdownBlock
     return blocks.enumerated().map { index, block in
         SkillMarkdownBlock(id: index, kind: block.0, text: block.1)
     }
+}
+
+private func openingMarkdownFence(_ line: String) -> (character: Character, length: Int, info: String)? {
+    guard let character = line.first, character == "`" || character == "~" else { return nil }
+    let length = line.prefix { $0 == character }.count
+    guard length >= 3 else { return nil }
+    let info = String(line.dropFirst(length)).trimmingCharacters(in: .whitespaces)
+    return (character, length, info)
+}
+
+private func isClosingMarkdownFence(
+    _ line: String,
+    matching opening: (character: Character, length: Int)
+) -> Bool {
+    guard line.first == opening.character else { return false }
+    let length = line.prefix { $0 == opening.character }.count
+    return length >= opening.length
+        && line.dropFirst(length).trimmingCharacters(in: .whitespaces).isEmpty
 }
 
 private func orderedListParts(_ line: String) -> (marker: String, text: String)? {

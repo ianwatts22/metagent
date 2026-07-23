@@ -1870,11 +1870,13 @@ private struct InventorySection: View {
     }
 
     private var duplicateReviewGroups: [DuplicateReviewGroup] {
-        Dictionary(grouping: rows.compactMap { row -> SkillTableRow? in
+        let visibleGroupIDs = Set(rows.compactMap { $0.overlap?.groupID })
+        return Dictionary(grouping: allRows.compactMap { row -> SkillTableRow? in
             row.overlap == nil ? nil : row
         }, by: { $0.overlap?.groupID ?? "" })
             .compactMap { id, groupRows -> DuplicateReviewGroup? in
                 guard !id.isEmpty,
+                      visibleGroupIDs.contains(id),
                       !reviewedDuplicateGroupIDs.contains(id),
                       let overlap = groupRows.compactMap(\.overlap).first
                 else { return nil }
@@ -2189,18 +2191,7 @@ private struct InventorySection: View {
                     message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: rows))"),
                     primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
                         if model.uninstallSkills(requests) {
-                            let removedIDs = Set(rows.map(\.id))
-                            let resolvedGroupIDs = Set(cachedRows
-                                .filter { row in
-                                    row.inventory.map { removedIDs.contains($0.id) } ?? false
-                                }
-                                .compactMap(\.overlap?.groupID))
-                            cachedRows.removeAll { row in
-                                row.inventory.map { removedIDs.contains($0.id) } ?? false
-                            }
-                            reviewedDuplicateGroupIDs.formUnion(resolvedGroupIDs)
                             duplicateRemovalIDs.removeAll()
-                            selectedDuplicateGroupID = nil
                             selection.removeAll()
                         }
                     },

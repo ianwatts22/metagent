@@ -164,6 +164,37 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertTrue(updated.rawText.contains("  - Read"))
     }
 
+    func testSkillDocumentRoundTripsQuotedYAMLScalars() throws {
+        let root = try fixtureRoot("quoted-editor")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skill = root.appendingPathComponent("demo")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try """
+        ---
+        name: "demo\\\\tool"
+        description: "Use \\"quoted\\" values and a \\\\ path."
+        ---
+
+        Original body.
+        """.write(to: skill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        let original = try MetagentCore.loadSkillDocument(at: skill.path)
+
+        XCTAssertEqual(original.name, "demo\\tool")
+        XCTAssertEqual(original.description, "Use \"quoted\" values and a \\ path.")
+
+        let updated = try MetagentCore.updateSkillDocument(
+            at: skill.path,
+            expectedRawText: original.rawText,
+            name: original.name,
+            description: original.description ?? "",
+            bodyMarkdown: "Updated body."
+        )
+
+        XCTAssertEqual(updated.name, original.name)
+        XCTAssertEqual(updated.description, original.description)
+        XCTAssertEqual(updated.bodyMarkdown, "Updated body.")
+    }
+
     func testSkillDocumentUpdateRejectsConcurrentChanges() throws {
         let root = try fixtureRoot("editor-conflict")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -211,6 +242,26 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(blocks[3].kind, .unorderedListItem)
         XCTAssertEqual(blocks[4].kind, .code(language: "bash"))
         XCTAssertEqual(blocks[4].text, "echo hello\necho world")
+    }
+
+    func testSkillMarkdownBlocksRespectFenceKindAndLength() {
+        let blocks = MetagentCore.skillMarkdownBlocks("""
+        ~~~swift
+        print("tilde")
+        ~~~
+
+        ````markdown
+        ```nested
+        content
+        ```
+        ````
+        """)
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].kind, .code(language: "swift"))
+        XCTAssertEqual(blocks[0].text, "print(\"tilde\")")
+        XCTAssertEqual(blocks[1].kind, .code(language: "markdown"))
+        XCTAssertEqual(blocks[1].text, "```nested\ncontent\n```")
     }
 
     private func fixtureRoot(_ name: String) throws -> URL {
