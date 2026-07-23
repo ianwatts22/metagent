@@ -113,24 +113,39 @@ source = "path:.agents/skills/other"
 EOF
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-safe" >/dev/null
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-commented" >/dev/null
-"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-no-newline" >/dev/null
+no_newline_output="$fixture_root/dotagents-no-newline.out"
+"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-no-newline" >"$no_newline_output"
+grep -Fq "would trash: $fixture_root/dotagents-no-newline/agents.toml" "$no_newline_output"
+test -f "$fixture_root/dotagents-no-newline/agents.toml"
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-reordered" >/dev/null
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty" >/dev/null 2>&1; then
+empty_output="$fixture_root/dotagents-empty.out"
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty" >"$empty_output" 2>&1; then
   echo "dotagents retirement accepted a manifest without skill declarations" >&2
   exit 1
 fi
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name" >/dev/null 2>&1; then
+grep -Fq "no skill declarations were found" "$empty_output"
+test -f "$fixture_root/dotagents-empty/agents.toml"
+invalid_name_output="$fixture_root/dotagents-invalid-name.out"
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name" >"$invalid_name_output" 2>&1; then
   echo "dotagents retirement accepted an invalid skill name" >&2
   exit 1
 fi
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-missing" >/dev/null 2>&1; then
+grep -Fq "invalid skill name ../external" "$invalid_name_output"
+test -f "$fixture_root/dotagents-invalid-name/agents.toml"
+missing_output="$fixture_root/dotagents-missing.out"
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-missing" >"$missing_output" 2>&1; then
   echo "dotagents retirement accepted a missing skill directory" >&2
   exit 1
 fi
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe" >/dev/null 2>&1; then
+grep -Fq "missing's skill directory is missing on disk" "$missing_output"
+test -f "$fixture_root/dotagents-missing/agents.toml"
+unsafe_output="$fixture_root/dotagents-unsafe.out"
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe" >"$unsafe_output" 2>&1; then
   echo "dotagents retirement accepted a different same-root source" >&2
   exit 1
 fi
+grep -Fq "demo uses independent source path:.agents/skills/other" "$unsafe_output"
+test -f "$fixture_root/dotagents-unsafe/agents.toml"
 
 mkdir -p \
   "$fixture_root/home/.config/metagent" \
