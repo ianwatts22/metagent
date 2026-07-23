@@ -44,6 +44,50 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
     }
 
+    func testSimilarStandaloneCopiesDoNotMakeDissimilarPluginAReplacement() throws {
+        let root = try fixtureRoot("plugin-pair")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let body = "Use the local workflow to inspect the project and verify the local result."
+        let globalOne = try writeSkill(root: root, relativePath: "global-one/demo", body: body)
+        let globalTwo = try writeSkill(root: root, relativePath: "global-two/demo", body: body)
+        let plugin = try writeSkill(
+            root: root,
+            relativePath: "plugin/demo",
+            body: "Translate nautical charts into a compact weather briefing for an ocean crossing."
+        )
+
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: globalOne.path, scope: "global", manager: "local"),
+            makeSkill(path: globalTwo.path, scope: "global", manager: "local"),
+            makeSkill(path: plugin.path, scope: "plugin", manager: "codex-plugin"),
+        ]).first)
+
+        XCTAssertEqual(group.kind, .sameName)
+        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+    }
+
+    func testCaseSensitiveCommandsAreNotExactDuplicates() throws {
+        let root = try fixtureRoot("case-sensitive")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try writeSkill(
+            root: root,
+            relativePath: "one/demo",
+            body: "Run API_TOKEN=secret demo verify."
+        )
+        let second = try writeSkill(
+            root: root,
+            relativePath: "two/demo",
+            body: "Run api_token=secret demo verify."
+        )
+
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "global", manager: "local"),
+        ]).first)
+
+        XCTAssertEqual(group.kind, .sameName)
+    }
+
     func testProjectionOfSameCanonicalBundleIsNotADuplicate() throws {
         let root = try fixtureRoot("projection")
         defer { try? FileManager.default.removeItem(at: root) }

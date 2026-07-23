@@ -47,7 +47,8 @@ extension MetagentCore {
 }
 
 private struct ComparableSkillDocument {
-    let normalizedText: String
+    let exactText: String
+    let comparableText: String
     let words: Set<String>
 }
 
@@ -72,15 +73,32 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
             )
         }
     }
-    let similarity = pairSimilarities.max() ?? 0
     let hasPlugin = skills.contains { $0.manager == "codex-plugin" }
     let hasStandalone = skills.contains { $0.manager != "codex-plugin" }
+    let pluginStandaloneSimilarities = skills
+        .filter { $0.manager == "codex-plugin" }
+        .flatMap { plugin in
+            skills
+                .filter { $0.manager != "codex-plugin" }
+                .map { standalone in
+                    documentSimilarity(
+                        documents[standardizedSkillPath(
+                            plugin.canonicalPath.isEmpty ? plugin.path : plugin.canonicalPath
+                        )] ?? nil,
+                        documents[standardizedSkillPath(
+                            standalone.canonicalPath.isEmpty ? standalone.path : standalone.canonicalPath
+                        )] ?? nil
+                    )
+                }
+        }
+    let pluginStandaloneSimilarity = pluginStandaloneSimilarities.max() ?? 0
+    let allPairSimilarity = pairSimilarities.max() ?? 0
     let scopes = Set(skills.map(\.scope))
-    let allDocumentsMatch = Set(documents.values.compactMap { $0?.normalizedText }).count == 1
+    let allDocumentsMatch = Set(documents.values.compactMap { $0?.exactText }).count == 1
         && documents.values.allSatisfy { $0 != nil }
 
     let kind: SkillOverlapKind
-    if hasPlugin, hasStandalone, similarity >= 0.55 {
+    if hasPlugin, hasStandalone, pluginStandaloneSimilarity >= 0.55 {
         kind = .pluginReplacement
     } else if scopes.contains("global"), scopes.contains("project") {
         kind = .globalProject
@@ -89,6 +107,7 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
     } else {
         kind = .sameName
     }
+    let similarity = kind == .pluginReplacement ? pluginStandaloneSimilarity : allPairSimilarity
 
     let normalizedName = normalizedSkillName(first.name)
     return SkillOverlapGroup(
@@ -125,8 +144,7 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
 private func comparableSkillDocument(at directoryPath: String) -> ComparableSkillDocument? {
     let path = URL(fileURLWithPath: directoryPath).appendingPathComponent("SKILL.md")
     guard let text = try? String(contentsOf: path, encoding: .utf8) else { return nil }
-    let normalized = text
-        .lowercased()
+    let exactText = text
         .replacingOccurrences(
             of: #"\.(agents|claude|codex|cursor|github|gemini|kiro|opencode|pi|qoder|rovodev|trae|trae-cn)/skills/"#,
             with: ".provider/skills/",
@@ -135,13 +153,14 @@ private func comparableSkillDocument(at directoryPath: String) -> ComparableSkil
         .components(separatedBy: .whitespacesAndNewlines)
         .filter { !$0.isEmpty }
         .joined(separator: " ")
-    let words = Set(normalized.split { !$0.isLetter && !$0.isNumber }.map(String.init))
-    return ComparableSkillDocument(normalizedText: normalized, words: words)
+    let comparableText = exactText.lowercased()
+    let words = Set(comparableText.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    return ComparableSkillDocument(exactText: exactText, comparableText: comparableText, words: words)
 }
 
 private func documentSimilarity(_ left: ComparableSkillDocument?, _ right: ComparableSkillDocument?) -> Double {
     guard let left, let right else { return 0 }
-    if left.normalizedText == right.normalizedText { return 1 }
+    if left.comparableText == right.comparableText { return 1 }
     let union = left.words.union(right.words)
     guard !union.isEmpty else { return 0 }
     return Double(left.words.intersection(right.words).count) / Double(union.count)

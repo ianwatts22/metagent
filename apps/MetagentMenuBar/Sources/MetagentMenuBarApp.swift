@@ -1615,7 +1615,9 @@ private struct SkillTableRow: Identifiable, Sendable {
                 usage: usage,
                 historicalProjectRoot: nil,
                 pluginInventoryAvailable: pluginInventoryAvailable,
-                overlap: overlapsByPath[standardizedDirectoryPath(inventory.canonicalPath)]
+                overlap: inventory.skill.representation == "projection"
+                    ? nil
+                    : overlapsByPath[standardizedDirectoryPath(inventory.canonicalPath)]
             )
         }
 
@@ -3252,9 +3254,13 @@ private func pluginCacheIdentity(_ canonicalPath: String) -> (marketplace: Strin
     let marketplace = components[skillsIndex - 3]
     let plugin = components[skillsIndex - 2]
     let skill = url.lastPathComponent
-    // Marketplace aliases and cache versions can change while the plugin and
-    // skill identity stay stable. Usage is aggregated as plugin:<plugin>:<skill>.
-    return (marketplace, plugin, skill, "\(plugin):\(skill)")
+    // OpenAI renamed this marketplace directory without changing plugin
+    // identity. Preserve every other marketplace so unrelated installations
+    // with matching folder names do not share usage.
+    let stableMarketplace = ["openai-curated", "openai-curated-remote"].contains(marketplace)
+        ? "openai-curated"
+        : marketplace
+    return (marketplace, plugin, skill, "\(stableMarketplace):\(plugin):\(skill)")
 }
 
 private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
