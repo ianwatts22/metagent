@@ -903,6 +903,7 @@ struct ProjectStatus: Identifiable, Sendable {
 
 struct SkillStatus: Identifiable, Comparable, Sendable {
     let name: String
+    let description: String?
     let path: String
     let location: String
     let locationLabel: String
@@ -947,6 +948,7 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     var coreSkill: SkillInventoryItem {
         SkillInventoryItem(
             name: name,
+            description: description,
             path: path,
             location: location,
             locationLabel: locationLabel,
@@ -988,6 +990,7 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
 
     fileprivate init(skill: SkillInventoryItem) {
         self.name = skill.name
+        self.description = skill.description
         self.path = skill.path
         self.location = skill.location
         self.locationLabel = skill.locationLabel

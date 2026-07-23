@@ -511,6 +511,7 @@ final class SkillEvaluationTests: XCTestCase {
     private func makeSkill(path: String = "/tmp/project/.agents/skills/demo") -> SkillInventoryItem {
         SkillInventoryItem(
             name: "demo",
+            description: "fixture",
             path: path,
             location: "agents",
             locationLabel: ".agents",

@@ -12,12 +12,35 @@ None of these scores authorizes automatic removal or modification.
 ## Quality
 
 Quality is a stable 0–100 weighted mean. Plugin Eval is the primary signal at
-60%, structural integrity and portfolio clarity contribute 20%, and optional
-Codex review contributes 20%. Missing optional evaluations are excluded rather
-than treated as zero, and the remaining weights are normalized. Usage changes
-do not change Quality.
+60%, management confidence contributes 20%, and optional Codex review
+contributes 20%. Missing optional evaluations are excluded rather than treated
+as zero, and the remaining weights are normalized. Usage changes and simple
+calendar age do not change Quality.
 
-### Operational integrity — 40 points
+The percentages are weights in Metagent's aggregate, not descriptions of each
+evaluator's internal formula. For example, when Plugin Eval is 81, management
+confidence is 100, and no Codex review exists, Quality is
+`(81 × 60 + 100 × 20) / 80 = 86`.
+
+### Plugin Eval — 60% of Quality when available
+
+Plugin Eval is a separate deterministic evaluator. It starts from 100 and
+deducts points for concrete findings. Its skill checks include invalid or
+missing frontmatter, weak trigger descriptions, broken relative links,
+oversized skill instructions, excessive token budgets, and missing progressive
+disclosure. Errors, warnings, and informational findings have different
+penalties. Metagent stores the score Plugin Eval returns; it does not recreate
+or reinterpret that formula.
+
+### Management confidence — 20% of Quality
+
+This is not a judgment of the writing or usefulness of the skill. It asks
+whether Metagent can safely identify and manage it: do we know the canonical
+bundle, its source, owning manager, authority, mutability, and whether
+same-named copies resolve to one identity? A high score means removal, updates,
+and provenance are less ambiguous.
+
+#### Operational integrity — 40 points
 
 - canonical source resolved: 12
 - manager known: 10
@@ -25,7 +48,7 @@ do not change Quality.
 - mutability known: 5
 - origin classified: 5
 
-### Portfolio clarity — 20 points
+#### Portfolio clarity — 20 points
 
 - one canonical identity, including projections that resolve to it: 20
 - unresolved canonical identity: 8
@@ -47,6 +70,11 @@ demonstrated use matter.
 When retained-history coverage is incomplete and no usage is linked, adoption receives a neutral provisional 20/40 and confidence is low. Once coverage is complete, no observed use receives 0/40. This prevents missing telemetry from masquerading as evidence of non-use.
 
 Quality, Utility, and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
+
+`Updated` is shown as lifecycle evidence but does not currently reduce either
+score. A stable skill may remain correct for months. A future freshness penalty
+should require stronger evidence—such as a newer managed version, a broken tool
+or API reference, or detected divergence—not the passage of time alone.
 
 Plugin Eval remains evaluator-owned and may return a different letter for the same numeric score. Its current fixed bands are A ≥93, B ≥85, C ≥70, D ≥55, otherwise F; Metagent preserves that returned grade rather than silently reinterpreting it.
 

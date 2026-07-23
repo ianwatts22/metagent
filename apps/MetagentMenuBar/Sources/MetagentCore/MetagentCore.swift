@@ -85,6 +85,7 @@ public struct SkillProject: Codable, Equatable, Identifiable, Sendable {
 public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, Sendable {
     public var id: String { "\(location):\(path)" }
     public var name: String
+    public var description: String?
     public var path: String
     public var location: String
     public var locationLabel: String
@@ -124,6 +125,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
 
     public init(
         name: String,
+        description: String?,
         path: String,
         location: String,
         locationLabel: String,
@@ -162,6 +164,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
         iconLargePath: String?
     ) {
         self.name = name
+        self.description = description
         self.path = path
         self.location = location
         self.locationLabel = locationLabel
@@ -212,6 +215,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
 
     private enum CodingKeys: String, CodingKey {
         case name
+        case description
         case path
         case location
         case locationLabel = "location_label"
@@ -1313,7 +1317,9 @@ private func canonicalSkillOwnership(
             mutability: isLocalPath ? "editable" : "managed-read-only",
             source: dotagents.source,
             sourceType: dotagents.isLocked ? "dotagents-lock" : "dotagents-config",
-            sourceURL: dotagents.source.contains("://") ? dotagents.source : nil,
+            sourceURL: isLocalPath
+                ? repository?.remoteURL
+                : (dotagents.source.contains("://") ? dotagents.source : nil),
             ref: nil
         )
     }
@@ -1342,6 +1348,8 @@ private func canonicalSkillOwnership(
 }
 
 private struct SkillStats {
+    var description: String?
+    var latestModifiedAt: Date?
     var characterCount = 0
     var wordCount = 0
     var tokenEstimate = 0
@@ -1809,6 +1817,7 @@ private func makeSkillItem(
     let stats = skillStats(path)
     return SkillInventoryItem(
         name: name,
+        description: stats.description,
         path: path.path,
         location: location,
         locationLabel: ".\(location)",
@@ -1824,7 +1833,9 @@ private func makeSkillItem(
         sourceURL: evidence?.sourceURL ?? origin?.sourceUrl ?? inherited?.sourceURL,
         ref: evidence?.ref ?? origin?.ref ?? inherited?.ref,
         installedAt: origin?.installedAt ?? inherited?.installedAt,
-        updatedAt: origin?.updatedAt ?? inherited?.updatedAt,
+        updatedAt: origin?.updatedAt
+            ?? inherited?.updatedAt
+            ?? stats.latestModifiedAt.map { ISO8601DateFormatter().string(from: $0) },
         symlinkedContainer: symlinkedContainer,
         folderKind: folderKind(
             path: path,
@@ -1869,7 +1880,12 @@ private func skillStats(_ skillDir: URL) -> SkillStats {
 private func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolders: inout Set<String>) {
     guard let entries = try? fileManager.contentsOfDirectory(
         at: dir,
-        includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+        includingPropertiesForKeys: [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .contentModificationDateKey,
+        ],
         options: [.skipsPackageDescendants]
     ) else {
         return
@@ -1884,6 +1900,11 @@ private func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, oth
         }
 
         guard isRegularOrSymlinkedFile(entry) else { continue }
+        if let modifiedAt = try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+           stats.latestModifiedAt == nil || modifiedAt > stats.latestModifiedAt!
+        {
+            stats.latestModifiedAt = modifiedAt
+        }
         categorizeSkillFile(root: root, path: entry, stats: &stats, otherFolders: &otherFolders)
         guard isSkillTextFile(entry) else { continue }
         guard let text = try? String(contentsOf: entry, encoding: .utf8) else { continue }
@@ -1894,10 +1915,40 @@ private func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, oth
         stats.wordCount += words
 
         if entry.lastPathComponent == "SKILL.md" {
+            stats.description = skillDescription(from: text)
             stats.skillFileCharacterCount += characters
             stats.skillFileWordCount += words
         }
     }
+}
+
+private func skillDescription(from skillText: String) -> String? {
+    let lines = skillText.components(separatedBy: .newlines)
+    guard lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---" else { return nil }
+    guard let closingIndex = lines.dropFirst().firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines) == "---"
+    }) else { return nil }
+
+    let frontmatter = Array(lines[1..<closingIndex])
+    guard let descriptionIndex = frontmatter.firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespaces).hasPrefix("description:")
+    }) else { return nil }
+
+    let line = frontmatter[descriptionIndex].trimmingCharacters(in: .whitespaces)
+    let rawValue = String(line.dropFirst("description:".count)).trimmingCharacters(in: .whitespaces)
+    if !["|", "|-", "|+", ">", ">-", ">+"].contains(rawValue) {
+        let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return value.isEmpty ? nil : value
+    }
+
+    let continuation = frontmatter.dropFirst(descriptionIndex + 1)
+        .prefix { line in
+            line.first?.isWhitespace == true || line.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+    guard !continuation.isEmpty else { return nil }
+    return continuation.joined(separator: rawValue.hasPrefix(">") ? " " : "\n")
 }
 
 private func categorizeSkillFile(

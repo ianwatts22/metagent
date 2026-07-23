@@ -3,6 +3,70 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillProvenanceTests: XCTestCase {
+    func testInventoryCapturesSkillMetadataAndManagedUpstream() throws {
+        let root = try fixtureRoot("metadata")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skillsDirectory = root.appendingPathComponent(".agents/skills")
+        try writeSkill(named: "demo", under: skillsDirectory)
+        let skillDirectory = skillsDirectory.appendingPathComponent("demo")
+        try FileManager.default.createDirectory(
+            at: skillDirectory.appendingPathComponent("references"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: skillDirectory.appendingPathComponent("scripts"),
+            withIntermediateDirectories: true
+        )
+        try "Details".write(
+            to: skillDirectory.appendingPathComponent("references/details.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\n".write(
+            to: skillDirectory.appendingPathComponent("scripts/check.sh"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        {
+          "skills": {
+            "demo": {
+              "source": "example/skill-pack",
+              "sourceUrl": "https://github.com/example/skill-pack.git",
+              "ref": "v1.2.3",
+              "updatedAt": "2026-07-20T12:00:00.000Z"
+            }
+          }
+        }
+        """.write(
+            to: root.appendingPathComponent("skills-lock.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first)
+
+        XCTAssertEqual(skill.description, "fixture")
+        XCTAssertEqual(skill.manager, "skills-cli")
+        XCTAssertEqual(skill.source, "example/skill-pack")
+        XCTAssertEqual(skill.sourceURL, "https://github.com/example/skill-pack.git")
+        XCTAssertEqual(skill.ref, "v1.2.3")
+        XCTAssertEqual(skill.updatedAt, "2026-07-20T12:00:00.000Z")
+        XCTAssertEqual(skill.referenceFileCount, 1)
+        XCTAssertEqual(skill.scriptFileCount, 1)
+    }
+
+    func testLocalSkillFallsBackToLatestContentModificationDate() throws {
+        let root = try fixtureRoot("modified-date")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+
+        let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first)
+
+        XCTAssertNotNil(skill.updatedAt)
+        XCTAssertNotNil(skill.updatedAt.flatMap { ISO8601DateFormatter().date(from: $0) })
+    }
+
     func testDotagentsLocalPathUsesManifestAndRepositoryEvidence() throws {
         let root = try fixtureRoot("dotagents")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -33,7 +97,7 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertEqual(skill.originKind, "dotagents-local")
         XCTAssertEqual(skill.mutability, "editable")
         XCTAssertEqual(skill.sourceType, "dotagents-lock")
-        XCTAssertEqual(skill.sourceURL, nil)
+        XCTAssertEqual(skill.sourceURL, "https://github.com/example/provenance-fixture.git")
         let removal = try MetagentCore.planSkillRemoval(projectRoot: root.path, skillName: "demo")
         XCTAssertTrue(removal.applySupported)
         XCTAssertEqual(removal.manager, "dotagents")

@@ -52,7 +52,7 @@ private struct MenuBarIcon: View {
     }
 }
 
-private enum AppBrand {
+@MainActor private enum AppBrand {
     static let menuBarIcon: NSImage? = {
         for bundle in [Bundle.main, Bundle.module] {
             guard let url = bundle.url(forResource: "MenuBarIconTemplate", withExtension: "pdf"),
@@ -76,8 +76,19 @@ private enum AppBrand {
         }
     }()
 
+    private static let skillIcons = NSCache<NSString, NSImage>()
+
     static func applicationIcon(bundleIdentifier: String) -> NSImage? {
         applicationIcons[bundleIdentifier]
+    }
+
+    static func skillIcon(path: String?) -> NSImage? {
+        guard let path, !path.isEmpty else { return nil }
+        let key = path as NSString
+        if let cached = skillIcons.object(forKey: key) { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        skillIcons.setObject(image, forKey: key)
+        return image
     }
 }
 
@@ -1360,6 +1371,19 @@ private struct SkillTableRow: Identifiable, Sendable {
     var codexReviewTint: Color? { inventory?.codexReviewTint }
     var codexReviewHelp: String { inventory?.codexReviewHelp ?? "Not available for an uninstalled skill." }
     var tokenEstimate: Int { inventory?.tokenEstimate ?? -1 }
+    var descriptionText: String { inventory?.descriptionText ?? "—" }
+    var descriptionHelp: String { inventory?.descriptionHelp ?? "Not available for an uninstalled skill." }
+    var upstreamText: String { inventory?.upstreamText ?? "—" }
+    var upstreamHelp: String { inventory?.upstreamHelp ?? "No installed source metadata is available." }
+    var versionText: String { inventory?.versionText ?? "—" }
+    var versionHelp: String { inventory?.versionHelp ?? "No installed version metadata is available." }
+    var updatedDate: Date? { inventory?.updatedDate }
+    var updatedSortValue: TimeInterval { inventory?.updatedSortValue ?? 0 }
+    var updatedText: String { inventory?.updatedText ?? "—" }
+    var updatedHelp: String { inventory?.updatedHelp ?? "No installed update metadata is available." }
+    var referenceFileCount: Int { inventory?.referenceFileCount ?? -1 }
+    var scriptFileCount: Int { inventory?.scriptFileCount ?? -1 }
+    var skillIconPath: String? { inventory?.skillIconPath }
     var totalInvocations: Int { usage.totalInvocations }
     var invocations7d: Int { usage.invocations7d }
     var invocations30d: Int { usage.invocations30d }
@@ -1399,7 +1423,19 @@ private struct SkillTableRow: Identifiable, Sendable {
     }
 
     func matches(_ query: String) -> Bool {
-        [skillName, projectName, locationLabel, sourceText, scopeLabel, metagentScoreText, pluginEvalText, codexReviewText]
+        [
+            skillName,
+            projectName,
+            locationLabel,
+            sourceText,
+            scopeLabel,
+            descriptionText,
+            upstreamText,
+            versionText,
+            metagentScoreText,
+            pluginEvalText,
+            codexReviewText,
+        ]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
@@ -1480,10 +1516,11 @@ private struct InventorySection: View {
     @State private var usageFilter = UsageFilter.all
     @State private var scopeFilter = SkillScopeFilter.all
     @State private var pendingConfirmation: InventoryConfirmation?
+    @State private var inspectedSkill: InventorySkillRow?
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
     private var hiddenSourceRaw = "__unmigrated__"
-    @SceneStorage("metagent.skills.inventory.columns.v2")
+    @SceneStorage("metagent.skills.inventory.columns.v3")
     private var inventoryColumnCustomization = TableColumnCustomization<SkillTableRow>()
     @SceneStorage("metagent.skills.summary.columns.v3")
     private var summaryColumnCustomization = TableColumnCustomization<SkillTableRow>()
@@ -1762,10 +1799,16 @@ private struct InventorySection: View {
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
                         TableColumn(column.title, sortUsing: column.comparator) { row in
-                            if column.id == "display-location" {
+                            if column.id == "skill" {
+                                SkillNameCell(row: row)
+                            } else if column.id == "display-location" {
                                 SkillScopeLocationCell(row: row)
                             } else if column.id == "origin" {
                                 SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
+                            } else if column.id == "updated" {
+                                RelativeUpdatedDateCell(date: row.updatedDate)
+                                    .foregroundStyle(row.updatedDate == nil ? .secondary : .primary)
+                                    .help(column.help(row))
                             } else if column.id == "last-used" {
                                 RelativeUsageDateCell(date: row.lastUsedDate)
                                     .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
@@ -1797,6 +1840,12 @@ private struct InventorySection: View {
                     let paths = contextRows.compactMap(\.canonicalPath)
                     let openableURLs = skillDirectoryURLs(for: contextRows)
                     let openWithApplications = applicationsForOpening(openableURLs)
+                    if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+                        Button("Get Info", systemImage: "info.circle") {
+                            inspectedSkill = inventory
+                        }
+                        Divider()
+                    }
                     Button("Open", systemImage: "folder") {
                         openSkillDirectories(openableURLs)
                     }
@@ -1837,6 +1886,15 @@ private struct InventorySection: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .background {
+            Button("") {
+                if let selectedRow { inspectedSkill = selectedRow }
+            }
+            .keyboardShortcut("i", modifiers: .command)
+            .disabled(selectedRow == nil)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         .onAppear {
             migrateSourceVisibilityIfNeeded()
             sortOrder = defaultSortOrder(for: selectedView)
@@ -1859,6 +1917,8 @@ private struct InventorySection: View {
                     title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
                     message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: rows))"),
                     primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
+                        let removedIDs = Set(rows.map(\.id))
+                        cachedRows.removeAll { removedIDs.contains($0.id) }
                         selection.removeAll()
                         model.uninstallSkills(requests)
                     },
@@ -1874,6 +1934,9 @@ private struct InventorySection: View {
                     secondaryButton: .cancel()
                 )
             }
+        }
+        .sheet(item: $inspectedSkill) { row in
+            SkillInfoView(row: row)
         }
     }
 
@@ -2403,7 +2466,39 @@ private struct InventorySkillRow: Identifiable, Sendable {
         .compactMap { $0 }
         .joined(separator: "\n")
     }
+    var descriptionText: String { skill.description ?? "—" }
+    var descriptionHelp: String { skill.description ?? "No description in SKILL.md frontmatter." }
+    var upstreamText: String {
+        githubRepositoryName(url: skill.sourceURL)
+            ?? githubRepositoryName(source: skill.source)
+            ?? (skill.manager == "codex-plugin" ? skill.authority : nil)
+            ?? "—"
+    }
+    var upstreamHelp: String {
+        [
+            upstreamText == "—" ? "No upstream repository is recorded." : "Upstream: \(upstreamText)",
+            skill.sourceURL,
+            skill.source.map { "Recorded source: \($0)" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+    }
+    var versionText: String { skill.ref ?? "—" }
+    var versionHelp: String {
+        skill.ref.map { "Recorded version or Git ref: \($0)" }
+            ?? "No version or Git ref is recorded for this source."
+    }
+    var updatedDate: Date? { skill.updatedAt.flatMap(parseISO8601Date) }
+    var updatedSortValue: TimeInterval { updatedDate?.timeIntervalSince1970 ?? 0 }
+    var updatedText: String {
+        updatedDate?.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)) ?? "—"
+    }
+    var updatedHelp: String {
+        guard let updatedDate else { return "No update timestamp is available." }
+        return "Recorded update or latest local content change: \(updatedDate.formatted(date: .abbreviated, time: .shortened)). Calendar age alone does not lower Quality."
+    }
     var tokenEstimate: Int { skill.tokenEstimate }
+    var referenceFileCount: Int { skill.referenceFileCount }
     var scriptFileCount: Int { skill.scriptFileCount }
     var assetFileCount: Int { skill.assetFileCount }
     var otherFileCount: Int { skill.otherFileCount }
@@ -2415,6 +2510,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
             .compactMap { $0 }
             .joined(separator: "\n")
     }
+    var skillIconPath: String? { skill.iconSmallPath ?? skill.iconLargePath }
     var metagentStaticScore: Int {
         metagentScore.qualityScore(
             pluginEvalScore: pluginEval?.score,
@@ -2434,7 +2530,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
             ?? "Plugin Eval: not run · excluded"
         let codexLine = codexReview.map { "Codex review: \($0.score)/100 · 20% weight" }
             ?? "Codex review: not run · excluded"
-        return "Quality excludes usage. Available inputs are normalized: Plugin Eval 60%, structural integrity 20%, Codex review 20%.\nStructural integrity: \(metagentScore.structuralScore)/100 · 20% weight\n\(pluginLine)\n\(codexLine)\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
+        return "Quality excludes usage and update age. Available inputs are normalized.\nPlugin Eval (skill correctness and efficiency): 60%\nManagement confidence (known source, owner, manager, and canonical identity): 20%\nCodex review (optional judgment): 20%\n\nManagement confidence: \(metagentScore.structuralScore)/100\n\(pluginLine)\n\(codexLine)\nAbsolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(breakdown)"
     }
     var portfolioScoreText: String { "\(utilityScore) \(utilityGrade.rawValue)" }
     var portfolioScoreTint: Color { scoreTint(utilityGrade) }
@@ -2455,7 +2551,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
     }
     var pluginEvalHelp: String {
         guard let pluginEval else { return "Not evaluated. Use Evaluate → Run Plugin Eval." }
-        return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\nThe letter is emitted by Plugin Eval using its stricter absolute bands: A 93+, B 85+, C 70+, D 55+. It is not relative.\n\(pluginEval.riskReasons.joined(separator: "\n"))"
+        return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\nA separate static evaluator that starts at 100 and deducts for concrete findings such as invalid frontmatter, weak trigger descriptions, broken links, excessive token budgets, and missing progressive disclosure. Its number supplies 60% of Quality when present; 60% is not its internal formula.\nThe letter uses Plugin Eval's stricter absolute bands: A 93+, B 85+, C 70+, D 55+. It is not relative.\n\(pluginEval.riskReasons.joined(separator: "\n"))"
     }
     var codexReviewText: String {
         guard let codexReview else { return "—" }
@@ -2511,7 +2607,18 @@ private struct InventorySkillRow: Identifiable, Sendable {
         return nil
     }
     func matches(_ query: String) -> Bool {
-        [skillName, projectName, locationLabel, originText, metagentScoreText, pluginEvalText, codexReviewText]
+        [
+            skillName,
+            projectName,
+            locationLabel,
+            originText,
+            descriptionText,
+            upstreamText,
+            versionText,
+            metagentScoreText,
+            pluginEvalText,
+            codexReviewText,
+        ]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
     private static func standardizedDirectory(_ path: String) -> String {
@@ -2667,6 +2774,84 @@ private struct SkillColumnSpec: Identifiable {
         defaultViews: [.summary, .inventory, .review],
         value: \.sourceText,
         help: \.sourceHelp
+    ),
+    SkillColumnSpec(
+        id: "description",
+        title: "Description",
+        comparator: KeyPathComparator(\SkillTableRow.descriptionText),
+        minWidth: 180,
+        idealWidth: 300,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: \.descriptionText,
+        help: \.descriptionHelp
+    ),
+    SkillColumnSpec(
+        id: "upstream",
+        title: "Upstream",
+        comparator: KeyPathComparator(\SkillTableRow.upstreamText),
+        minWidth: 126,
+        idealWidth: 180,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: \.upstreamText,
+        help: \.upstreamHelp
+    ),
+    SkillColumnSpec(
+        id: "version",
+        title: "Version",
+        comparator: KeyPathComparator(\SkillTableRow.versionText),
+        minWidth: 72,
+        idealWidth: 96,
+        isNumeric: false,
+        isMonospaced: true,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: \.versionText,
+        help: \.versionHelp
+    ),
+    SkillColumnSpec(
+        id: "updated",
+        title: "Updated",
+        comparator: KeyPathComparator(\SkillTableRow.updatedSortValue),
+        minWidth: 86,
+        idealWidth: 108,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: \.updatedText,
+        help: \.updatedHelp
+    ),
+    SkillColumnSpec(
+        id: "references",
+        title: "Refs",
+        comparator: KeyPathComparator(\SkillTableRow.referenceFileCount),
+        minWidth: 48,
+        idealWidth: 58,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: { $0.referenceFileCount < 0 ? "—" : $0.referenceFileCount.formatted() },
+        help: { $0.referenceFileCount < 0 ? "Not available." : "\($0.referenceFileCount.formatted()) files under references/" }
+    ),
+    SkillColumnSpec(
+        id: "scripts",
+        title: "Scripts",
+        comparator: KeyPathComparator(\SkillTableRow.scriptFileCount),
+        minWidth: 56,
+        idealWidth: 68,
+        isNumeric: true,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.inventory],
+        value: { $0.scriptFileCount < 0 ? "—" : $0.scriptFileCount.formatted() },
+        help: { $0.scriptFileCount < 0 ? "Not available." : "\($0.scriptFileCount.formatted()) files under scripts/" }
     ),
     SkillColumnSpec(
         id: "metagent-score",
@@ -2896,6 +3081,41 @@ private struct InventoryTableCell: View {
     }
 }
 
+private struct SkillNameCell: View {
+    let row: SkillTableRow
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Group {
+                if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "sparkles")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.tertiary)
+                        .padding(2)
+                }
+            }
+            .frame(width: 18, height: 18)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .accessibilityHidden(true)
+
+            Text(row.skillName)
+                .font(.body.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(row.skillPath)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.skillName)
+        .accessibilityHint(row.skillPath)
+    }
+}
+
 private struct SkillScopeLocationCell: View {
     let row: SkillTableRow
 
@@ -2946,7 +3166,7 @@ private struct SkillSourceIconCell: View {
         case .skillsCLI:
             VercelSourceMark()
         case .git:
-            Image(systemName: "shippingbox")
+            Image(systemName: "arrow.triangle.branch")
                 .foregroundStyle(.secondary)
         case .local:
             Image(systemName: "person.crop.circle")
@@ -3025,6 +3245,111 @@ private struct RelativeUsageDateCell: View {
     }
 }
 
+private struct RelativeUpdatedDateCell: View {
+    let date: Date?
+
+    var body: some View {
+        if let date {
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))
+                    .font(.callout)
+            }
+        } else {
+            Text("—")
+                .font(.callout)
+        }
+    }
+}
+
+private struct SkillInfoView: View {
+    let row: InventorySkillRow
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Group {
+                    if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        Image(systemName: "sparkles")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(.secondary)
+                            .padding(6)
+                    }
+                }
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.skillName)
+                        .font(.title2.weight(.semibold))
+                    Text(row.locationHelp)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+            }
+
+            if row.descriptionText != "—" {
+                Text(row.descriptionText)
+                    .font(.body)
+                    .textSelection(.enabled)
+            }
+
+            Form {
+                Section("Source") {
+                    LabeledContent("Manager", value: row.skill.tableOriginText)
+                    LabeledContent("Upstream", value: row.upstreamText)
+                    LabeledContent("Version", value: row.versionText)
+                    LabeledContent("Updated", value: row.updatedText)
+                    LabeledContent("Path") {
+                        Text(row.canonicalPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Section("Contents") {
+                    LabeledContent("Tokens", value: row.tokenEstimate.formatted())
+                    LabeledContent("References", value: row.referenceFileCount.formatted())
+                    LabeledContent("Scripts", value: row.scriptFileCount.formatted())
+                    LabeledContent("Assets", value: row.assetFileCount.formatted())
+                    LabeledContent("Other files", value: row.otherFileCount.formatted())
+                }
+
+                Section("Scores") {
+                    LabeledContent("Quality", value: row.metagentScoreText)
+                    LabeledContent("Plugin Eval", value: row.pluginEvalText)
+                    LabeledContent("Utility", value: row.portfolioScoreText)
+                    LabeledContent("Codex", value: row.codexReviewText)
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Button("Open") {
+                    openSkillDirectories([URL(fileURLWithPath: row.canonicalPath)])
+                }
+                Button("Copy Path") {
+                    copyToPasteboard(row.canonicalPath)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 620, height: 620)
+    }
+}
+
 private func formatNumber(_ value: Int) -> String {
     value.formatted()
 }
@@ -3099,6 +3424,31 @@ private func standardizedDirectoryPath(_ path: String) -> String {
         return url.resolvingSymlinksInPath().standardizedFileURL.path
     }
     return url.path
+}
+
+private func parseISO8601Date(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+}
+
+private func githubRepositoryName(url: String?) -> String? {
+    guard let url, !url.isEmpty else { return nil }
+    let normalized = url
+        .replacingOccurrences(of: "git@github.com:", with: "https://github.com/")
+        .replacingOccurrences(of: "ssh://git@github.com/", with: "https://github.com/")
+    guard let components = URL(string: normalized)?.pathComponents.filter({ $0 != "/" }),
+          components.count >= 2
+    else { return nil }
+    return components.prefix(2).joined(separator: "/").replacingOccurrences(of: ".git", with: "")
+}
+
+private func githubRepositoryName(source: String?) -> String? {
+    guard let source, !source.isEmpty, !source.hasPrefix("path:") else { return nil }
+    if source.contains("github.com") { return githubRepositoryName(url: source) }
+    let components = source.split(separator: "/")
+    guard components.count >= 2 else { return nil }
+    return components.prefix(2).joined(separator: "/").replacingOccurrences(of: ".git", with: "")
 }
 
 private func improvementPrompt(paths: [String]) -> String {
