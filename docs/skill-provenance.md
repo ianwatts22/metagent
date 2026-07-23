@@ -24,13 +24,13 @@ An `.agents/skills` bundle found in the applicable lock is `skills-cli` managed 
 
 Physical `.codex/skills/.system` bundles are Codex system skills. Other physical `.codex/skills` bundles are Codex-installed. Symlinks into `.agents/skills` inherit the canonical bundle's manager and authority and are represented as projections.
 
-Dotagents ownership is declaration-based. A `path:` entry in `agents.toml` or
-`agents.lock` means dotagents declares an existing local bundle; it does not
-mean dotagents downloaded that skill from a remote package. Metagent displays
-these as `dotagents · local` and reserves `dotagents · managed` for non-path
-sources. Legacy manifests continue to classify their entries until they are
-explicitly retired, even when dotagents is no longer part of the active install
-workflow.
+Dotagents ownership requires a declaration whose source is distinct from the
+installed skill path. Dotagents may adopt an orphan skill by writing a
+self-referential `path:.agents/skills/<name>` entry during `sync`; that entry is
+bookkeeping, not evidence that dotagents owns the content. Metagent classifies
+those adopted bundles from stronger evidence such as Skills CLI locks, tracked
+Git files, or local ownership. A distinct external `path:` source remains
+`dotagents · local`, while non-path sources remain `dotagents · managed`.
 
 Installed Codex plugins are discovered from `codex plugin list --json`, then their active bundled skills are inventoried from the matching versioned cache when available. They are always `codex-plugin`, `managed-read-only`, and never eligible for content edits or Metagent deletion.
 

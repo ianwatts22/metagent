@@ -79,6 +79,7 @@ final class SkillProvenanceTests: XCTestCase {
           display_name: Demo
         policy:
           allow_implicit_invocation: true
+          icon_small: keep-policy-icon.png
         """.write(to: agents.appendingPathComponent("openai.yaml"), atomically: true, encoding: .utf8)
         let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
 
@@ -88,11 +89,40 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: report.iconPath))
         XCTAssertTrue(metadata.contains("display_name: Demo"))
         XCTAssertTrue(metadata.contains("allow_implicit_invocation: true"))
+        XCTAssertTrue(metadata.contains("icon_small: keep-policy-icon.png"))
         XCTAssertTrue(metadata.contains("icon_small: assets/metagent-icon.png"))
         XCTAssertTrue(metadata.contains("icon_large: assets/metagent-icon.png"))
         let inventoried = try XCTUnwrap(try scan(root).projects.first?.skills.first)
         XCTAssertEqual(inventoried.iconSmallPath, report.iconPath)
         XCTAssertEqual(inventoried.iconLargePath, report.iconPath)
+    }
+
+    func testUpdateSkillIconRejectsMalformedPNG() throws {
+        let root = try fixtureRoot("invalid-icon")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+        let skill = root.appendingPathComponent(".agents/skills/demo")
+        let malformed = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+
+        XCTAssertThrowsError(try MetagentCore.updateSkillIcon(skillPath: skill.path, pngData: malformed))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: skill.appendingPathComponent("assets/metagent-icon.png").path))
+    }
+
+    func testUpdateSkillIconRejectsSymlinkedDestination() throws {
+        let root = try fixtureRoot("symlinked-icon")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+        let skill = root.appendingPathComponent(".agents/skills/demo")
+        let external = root.appendingPathComponent("external-assets")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: skill.appendingPathComponent("assets"),
+            withDestinationURL: external
+        )
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+
+        XCTAssertThrowsError(try MetagentCore.updateSkillIcon(skillPath: skill.path, pngData: png))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: external.appendingPathComponent("metagent-icon.png").path))
     }
 
     func testDotagentsAdoptedLocalPathDoesNotClaimOwnership() throws {
@@ -143,6 +173,32 @@ final class SkillProvenanceTests: XCTestCase {
         let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first { $0.location == "agents" })
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: shared.appendingPathComponent("SKILL.md").path))
+        XCTAssertEqual(skill.manager, "dotagents")
+        XCTAssertEqual(skill.originKind, "dotagents-local")
+        XCTAssertEqual(skill.source, "path:shared/demo")
+    }
+
+    func testDotagentsDistinctSymlinkSourceIsManagerEvidence() throws {
+        let root = try fixtureRoot("dotagents-external-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sharedDirectory = root.appendingPathComponent("shared")
+        try writeSkill(named: "demo", under: sharedDirectory)
+        let installedDirectory = root.appendingPathComponent(".agents/skills")
+        try FileManager.default.createDirectory(at: installedDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: installedDirectory.appendingPathComponent("demo"),
+            withDestinationURL: sharedDirectory.appendingPathComponent("demo")
+        )
+        try """
+        version = 1
+
+        [[skills]]
+        name = "demo"
+        source = "path:shared/demo"
+        """.write(to: root.appendingPathComponent("agents.toml"), atomically: true, encoding: .utf8)
+
+        let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first { $0.location == "agents" })
+
         XCTAssertEqual(skill.manager, "dotagents")
         XCTAssertEqual(skill.originKind, "dotagents-local")
         XCTAssertEqual(skill.source, "path:shared/demo")

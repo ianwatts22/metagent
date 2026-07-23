@@ -2308,6 +2308,7 @@ private struct MCPMenuSection: View {
 private struct ProjectDirectoryRow: Identifiable {
     enum LinkState: String, Comparable {
         case healthy = "Connected"
+        case notApplicable = "Independent"
         case missing = "Not connected"
         case separate = "Separate folder"
         case wrong = "Wrong link"
@@ -2345,10 +2346,13 @@ private struct ProjectDirectoryRow: Identifiable {
             }
         }).count
         mcpCount = mcpHealth.scoped(to: directory.root).inventory.count
-        claudeState = Self.claudeLinkState(root: directory.root)
+        claudeState = directory.root == NSHomeDirectory()
+            ? .notApplicable
+            : Self.claudeLinkState(root: directory.root)
         codexText = Self.codexDiscoveryText(root: directory.root)
         issueCount = groupedDoctorActionCount(doctorIssues.filter {
-            $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
+            $0.severity != .ok
+                && $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
         })
     }
 
@@ -2394,7 +2398,10 @@ private struct ProjectsSection: View {
             mcpHealth: model.mcpHealth,
             doctorIssues: model.doctorIssues
         )
-        .filter { selectedProjectRoot == nil || standardizedDirectoryPath($0.root) == standardizedDirectoryPath(selectedProjectRoot!) }
+        .filter { directory in
+            guard let selectedProjectRoot else { return true }
+            return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
+        }
         .map {
             ProjectDirectoryRow(
                 directory: $0,
@@ -2405,7 +2412,7 @@ private struct ProjectsSection: View {
         }
     }
 
-    private var rows: [ProjectDirectoryRow] {
+    private func filteredRows(from allRows: [ProjectDirectoryRow]) -> [ProjectDirectoryRow] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return allRows
             .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.root.localizedCaseInsensitiveContains(query) }
@@ -2413,6 +2420,8 @@ private struct ProjectsSection: View {
     }
 
     var body: some View {
+        let allRows = allRows
+        let rows = filteredRows(from: allRows)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -2501,11 +2510,15 @@ private struct ProjectsMenuSection: View {
 
     private var rows: [ProjectDirectoryRow] {
         directoryFilterOptions(projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues)
-            .filter { selectedProjectRoot == nil || standardizedDirectoryPath($0.root) == standardizedDirectoryPath(selectedProjectRoot!) }
+            .filter { directory in
+                guard let selectedProjectRoot else { return true }
+                return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
+            }
             .map { ProjectDirectoryRow(directory: $0, projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues) }
     }
 
     var body: some View {
+        let rows = rows
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Projects").font(.headline)
@@ -2514,7 +2527,13 @@ private struct ProjectsMenuSection: View {
             }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 MetricView(title: "Directories", value: rows.count.formatted(), symbol: "folder")
-                MetricView(title: "Link issues", value: rows.filter { $0.claudeState != .healthy }.count.formatted(), symbol: "link")
+                MetricView(
+                    title: "Link issues",
+                    value: rows.filter {
+                        $0.skillCount > 0 && [.missing, .separate, .wrong].contains($0.claudeState)
+                    }.count.formatted(),
+                    symbol: "link"
+                )
             }
             Button(action: openMainWindow) {
                 Label("Open Projects", systemImage: "arrow.up.right.square").frame(maxWidth: .infinity)
@@ -2539,6 +2558,7 @@ private struct ProjectLinkStateCell: View {
     private var symbol: String {
         switch state {
         case .healthy: "checkmark.circle"
+        case .notApplicable: "info.circle"
         case .missing: "minus.circle"
         case .separate: "folder.badge.questionmark"
         case .wrong: "exclamationmark.triangle"
@@ -2548,7 +2568,7 @@ private struct ProjectLinkStateCell: View {
     private var tint: Color {
         switch state {
         case .healthy: .green
-        case .missing: .secondary
+        case .notApplicable, .missing: .secondary
         case .separate, .wrong: .orange
         }
     }
@@ -2556,6 +2576,7 @@ private struct ProjectLinkStateCell: View {
     private var help: String {
         switch state {
         case .healthy: ".claude/skills points to .agents/skills."
+        case .notApplicable: "Global Claude and .agents skill locations are independent by design."
         case .missing: "Claude does not currently see this project's .agents skills."
         case .separate: ".claude/skills is an independent directory, not a shared link."
         case .wrong: ".claude/skills is linked somewhere other than .agents/skills."
@@ -3815,9 +3836,11 @@ private struct SkillIconEditorView: View {
 private func emojiPNG(_ emoji: String) -> Data? {
     let value = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty else { return nil }
+    guard let (bitmap, context) = iconBitmap() else { return nil }
     let size = NSSize(width: 512, height: 512)
-    let image = NSImage(size: size)
-    image.lockFocus()
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    defer { NSGraphicsContext.restoreGraphicsState() }
     NSColor.clear.setFill()
     NSRect(origin: .zero, size: size).fill()
     let attributes: [NSAttributedString.Key: Any] = [
@@ -3826,21 +3849,21 @@ private func emojiPNG(_ emoji: String) -> Data? {
     let attributed = NSAttributedString(string: value, attributes: attributes)
     let textSize = attributed.size()
     attributed.draw(at: NSPoint(x: (size.width - textSize.width) / 2, y: (size.height - textSize.height) / 2))
-    image.unlockFocus()
-    return normalizedPNG(image)
+    context.flushGraphics()
+    return bitmap.representation(using: .png, properties: [:])
 }
 
 private func normalizedPNG(_ source: NSImage) -> Data? {
+    guard source.size.width > 0, source.size.height > 0,
+          let (bitmap, context) = iconBitmap()
+    else { return nil }
     let size = NSSize(width: 512, height: 512)
-    let image = NSImage(size: size)
-    image.lockFocus()
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    defer { NSGraphicsContext.restoreGraphicsState() }
     NSColor.clear.setFill()
     NSRect(origin: .zero, size: size).fill()
     let sourceSize = source.size
-    guard sourceSize.width > 0, sourceSize.height > 0 else {
-        image.unlockFocus()
-        return nil
-    }
     let scale = min(size.width / sourceSize.width, size.height / sourceSize.height)
     let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
     source.draw(
@@ -3854,11 +3877,25 @@ private func normalizedPNG(_ source: NSImage) -> Data? {
         operation: .sourceOver,
         fraction: 1
     )
-    image.unlockFocus()
-    guard let tiff = image.tiffRepresentation,
-          let bitmap = NSBitmapImageRep(data: tiff)
-    else { return nil }
+    context.flushGraphics()
     return bitmap.representation(using: .png, properties: [:])
+}
+
+private func iconBitmap() -> (NSBitmapImageRep, NSGraphicsContext)? {
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: 512,
+        pixelsHigh: 512,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bitmapFormat: [],
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+    return (bitmap, context)
 }
 
 private func formatNumber(_ value: Int) -> String {

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import ImageIO
 import SQLite3
 
 public struct MetagentConfig: Codable, Equatable, Sendable {
@@ -541,8 +542,11 @@ public enum MetagentCore {
                 NSLocalizedDescriptionKey: "Icons can only be changed on a canonical editable skill directory."
             ])
         }
-        let pngSignature = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-        guard pngData.count > pngSignature.count, pngData.prefix(pngSignature.count) == pngSignature else {
+        guard let imageSource = CGImageSourceCreateWithData(pngData as CFData, nil),
+              (CGImageSourceGetType(imageSource) as String?) == "public.png",
+              CGImageSourceGetCount(imageSource) == 1,
+              CGImageSourceCreateImageAtIndex(imageSource, 0, nil) != nil
+        else {
             throw NSError(domain: "MetagentSkillIcon", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "The selected icon could not be converted to PNG."
             ])
@@ -552,6 +556,15 @@ public enum MetagentCore {
         let icon = assets.appendingPathComponent("metagent-icon.png")
         let agents = skill.appendingPathComponent("agents")
         let metadata = agents.appendingPathComponent("openai.yaml")
+        guard safeSkillIconWriteTargets(
+            skill: skill,
+            directories: [assets, agents],
+            files: [icon, metadata]
+        ) else {
+            throw NSError(domain: "MetagentSkillIcon", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "The icon or metadata destination is symlinked outside the skill."
+            ])
+        }
         try fileManager.createDirectory(at: assets, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: agents, withIntermediateDirectories: true)
         try pngData.write(to: icon, options: .atomic)
@@ -2042,19 +2055,31 @@ private func readOpenAIYaml(skillDir: URL, stats: inout SkillStats) {
     let path = skillDir.appendingPathComponent("agents").appendingPathComponent("openai.yaml")
     guard let text = try? String(contentsOf: path, encoding: .utf8) else { return }
     stats.hasOpenAIYaml = true
-    stats.iconSmallPath = yamlValue(key: "icon_small", text: text).map {
+    stats.iconSmallPath = yamlInterfaceValue(key: "icon_small", text: text).map {
         skillDir.appendingPathComponent($0).standardizedFileURL.path
     }
-    stats.iconLargePath = yamlValue(key: "icon_large", text: text).map {
+    stats.iconLargePath = yamlInterfaceValue(key: "icon_large", text: text).map {
         skillDir.appendingPathComponent($0).standardizedFileURL.path
     }
     stats.hasIconSmall = stats.iconSmallPath != nil
     stats.hasIconLarge = stats.iconLargePath != nil
 }
 
-private func yamlValue(key: String, text: String) -> String? {
+private func yamlInterfaceValue(key: String, text: String) -> String? {
+    let lines = text.components(separatedBy: .newlines)
+    guard let interfaceIndex = lines.firstIndex(where: {
+        $0.trimmingCharacters(in: .whitespaces) == "interface:"
+    }) else { return nil }
+    let range = yamlMappingRange(lines: lines, parentIndex: interfaceIndex)
+    let childIndent = range.compactMap { index -> Int? in
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+        return yamlIndent(lines[index])
+    }.min()
+    guard let childIndent else { return nil }
     let prefix = "\(key):"
-    for line in text.components(separatedBy: .newlines) {
+    for index in range where yamlIndent(lines[index]) == childIndent {
+        let line = lines[index]
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix(prefix) else { continue }
         let value = String(trimmed.dropFirst(prefix.count))
@@ -2070,27 +2095,37 @@ private func upsertSkillIconMetadata(_ text: String, iconPath: String) -> String
     if lines.last == "" { lines.removeLast() }
     var foundSmall = false
     var foundLarge = false
-    var interfaceIndex: Int?
+    let interfaceIndex = lines.firstIndex { $0.trimmingCharacters(in: .whitespaces) == "interface:" }
+    let interfaceIndent = interfaceIndex.map { yamlIndent(lines[$0]) } ?? 0
+    let interfaceRange = interfaceIndex.map { yamlMappingRange(lines: lines, parentIndex: $0) }
+    let childIndent = interfaceRange.flatMap { range in
+        range.compactMap { index -> Int? in
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            return yamlIndent(lines[index])
+        }.min()
+    } ?? (interfaceIndent + 2)
 
-    for index in lines.indices {
-        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-        if trimmed == "interface:" { interfaceIndex = index }
-        if trimmed.hasPrefix("icon_small:") {
-            let indent = String(lines[index].prefix { $0 == " " || $0 == "\t" })
-            lines[index] = "\(indent)icon_small: \(iconPath)"
-            foundSmall = true
-        } else if trimmed.hasPrefix("icon_large:") {
-            let indent = String(lines[index].prefix { $0 == " " || $0 == "\t" })
-            lines[index] = "\(indent)icon_large: \(iconPath)"
-            foundLarge = true
+    if let interfaceRange {
+        for index in interfaceRange where yamlIndent(lines[index]) == childIndent {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            let indent = String(repeating: " ", count: childIndent)
+            if trimmed.hasPrefix("icon_small:") {
+                lines[index] = "\(indent)icon_small: \(iconPath)"
+                foundSmall = true
+            } else if trimmed.hasPrefix("icon_large:") {
+                lines[index] = "\(indent)icon_large: \(iconPath)"
+                foundLarge = true
+            }
         }
     }
 
     if !foundSmall || !foundLarge {
         if let interfaceIndex {
+            let indent = String(repeating: " ", count: childIndent)
             var additions: [String] = []
-            if !foundSmall { additions.append("  icon_small: \(iconPath)") }
-            if !foundLarge { additions.append("  icon_large: \(iconPath)") }
+            if !foundSmall { additions.append("\(indent)icon_small: \(iconPath)") }
+            if !foundLarge { additions.append("\(indent)icon_large: \(iconPath)") }
             lines.insert(contentsOf: additions, at: interfaceIndex + 1)
         } else {
             if !lines.isEmpty { lines.append("") }
@@ -2100,6 +2135,42 @@ private func upsertSkillIconMetadata(_ text: String, iconPath: String) -> String
         }
     }
     return lines.joined(separator: "\n") + "\n"
+}
+
+private func yamlMappingRange(lines: [String], parentIndex: Int) -> Range<Int> {
+    let parentIndent = yamlIndent(lines[parentIndex])
+    var end = lines.endIndex
+    for index in lines.index(after: parentIndex)..<lines.endIndex {
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+        if yamlIndent(lines[index]) <= parentIndent {
+            end = index
+            break
+        }
+    }
+    return lines.index(after: parentIndex)..<end
+}
+
+private func yamlIndent(_ line: String) -> Int {
+    line.prefix { $0 == " " }.count
+}
+
+private func safeSkillIconWriteTargets(skill: URL, directories: [URL], files: [URL]) -> Bool {
+    let root = skill.standardizedFileURL.path
+    let descendants = root + "/"
+    for directory in directories {
+        guard !isSymlink(directory) else { return false }
+        let resolvedParent = directory.deletingLastPathComponent()
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolvedParent == root || resolvedParent.hasPrefix(descendants) else { return false }
+    }
+    for file in files {
+        guard !isSymlink(file) else { return false }
+        let resolvedParent = file.deletingLastPathComponent()
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolvedParent == root || resolvedParent.hasPrefix(descendants) else { return false }
+    }
+    return true
 }
 
 private func estimateTokens(_ characterCount: Int) -> Int {
@@ -2256,7 +2327,7 @@ private func dotagentsPathSource(
     let sourceURL = rawPath.hasPrefix("/")
         ? URL(fileURLWithPath: rawPath)
         : base.appendingPathComponent(rawPath)
-    return canonicalProjectPath(sourceURL) == canonicalProjectPath(expectedSkill)
+    return sourceURL.standardizedFileURL.path == expectedSkill.standardizedFileURL.path
 }
 
 private func repositoryEvidence(for projectRoot: URL) -> RepositoryEvidence? {
