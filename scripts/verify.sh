@@ -62,6 +62,8 @@ mkdir -p \
   "$fixture_root/dotagents-commented/.agents/skills/demo" \
   "$fixture_root/dotagents-empty/.agents/skills" \
   "$fixture_root/dotagents-invalid-name/.agents/skills" \
+  "$fixture_root/dotagents-missing/.agents/skills" \
+  "$fixture_root/dotagents-no-newline/.agents/skills/demo" \
   "$fixture_root/dotagents-reordered/.agents/skills/demo" \
   "$fixture_root/dotagents-unsafe/.agents/skills/demo" \
   "$fixture_root/dotagents-unsafe/.agents/skills/other"
@@ -93,6 +95,16 @@ version = 1
 name = "../external"
 source = "path:.agents/skills/../external"
 EOF
+cat >"$fixture_root/dotagents-missing/agents.toml" <<'EOF'
+version = 1
+[[skills]]
+name = "missing"
+source = "path:.agents/skills/missing"
+EOF
+printf '%s' 'version = 1
+[[skills]]
+name = "demo"
+source = "path:.agents/skills/demo"' >"$fixture_root/dotagents-no-newline/agents.toml"
 cat >"$fixture_root/dotagents-unsafe/agents.toml" <<'EOF'
 version = 1
 [[skills]]
@@ -101,6 +113,7 @@ source = "path:.agents/skills/other"
 EOF
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-safe" >/dev/null
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-commented" >/dev/null
+"$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-no-newline" >/dev/null
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-reordered" >/dev/null
 if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty" >/dev/null 2>&1; then
   echo "dotagents retirement accepted a manifest without skill declarations" >&2
@@ -108,6 +121,10 @@ if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty
 fi
 if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name" >/dev/null 2>&1; then
   echo "dotagents retirement accepted an invalid skill name" >&2
+  exit 1
+fi
+if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-missing" >/dev/null 2>&1; then
+  echo "dotagents retirement accepted a missing skill directory" >&2
   exit 1
 fi
 if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe" >/dev/null 2>&1; then

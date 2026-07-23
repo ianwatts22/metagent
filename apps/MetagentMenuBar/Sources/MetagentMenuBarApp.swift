@@ -1688,7 +1688,7 @@ private struct InventorySection: View {
 
     private var displayRows: [SkillTableRow] {
         guard grouping != .none else { return sortedRows }
-        return Dictionary(grouping: rows, by: grouping.key(for:))
+        let groupedRows = Dictionary(grouping: rows, by: grouping.key(for:))
             .map { key, children in
                 SkillTableRow.group(
                     id: "\(grouping.rawValue):\(key)",
@@ -1696,7 +1696,19 @@ private struct InventorySection: View {
                     children: children.sorted(using: sortOrder)
                 )
             }
-            .sorted { $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending }
+        return groupedRows.sorted { left, right in
+            guard let leftChild = left.children?.first, let rightChild = right.children?.first else {
+                return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
+            }
+            for comparator in sortOrder {
+                switch comparator.compare(leftChild, rightChild) {
+                case .orderedAscending: return true
+                case .orderedDescending: return false
+                case .orderedSame: continue
+                }
+            }
+            return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
+        }
     }
 
     private var selectedRow: InventorySkillRow? {

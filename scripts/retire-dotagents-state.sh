@@ -62,10 +62,13 @@ validate_state_file() {
     elif [[ "$current_source" != "$expected_prefix$current_name" ]]; then
       echo "refusing $state_file: $current_name uses independent source $current_source" >&2
       validation_failed=1
+    elif [[ ! -d "${state_file%/*}/${current_source#path:}" ]]; then
+      echo "refusing $state_file: $current_name's skill directory is missing on disk" >&2
+      validation_failed=1
     fi
   }
 
-  while IFS= read -r raw_line; do
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     line="${raw_line#"${raw_line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
 
