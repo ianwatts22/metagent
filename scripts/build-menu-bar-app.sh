@@ -58,6 +58,7 @@ cp "$app_source/.build/release/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
 cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"
+cp "$app_source/Sources/Resources/Lucide/LICENSE" "$resources/Lucide-LICENSE.txt"
 
 chmod +x "$macos/MetagentMenuBar"
 chmod +x "$helpers/metagent"

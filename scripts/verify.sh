@@ -32,6 +32,7 @@ bash -n "$repo_root/scripts/build-menu-bar-app.sh"
 plutil -lint "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist" >/dev/null
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/MacOS/MetagentMenuBar"
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
+test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-LICENSE.txt"
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
 "$swift_helper" skills --help >/dev/null
