@@ -474,6 +474,12 @@ public struct SkillUninstallReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct SkillIconUpdateReport: Codable, Equatable, Sendable {
+    public let skillPath: String
+    public let iconPath: String
+    public let metadataPath: String
+}
+
 public struct SkillRemovalPlan: Codable, Equatable, Sendable {
     public var projectRoot: String
     public var skillName: String
@@ -524,6 +530,40 @@ public enum MetagentCore {
             .appendingPathComponent(".config")
             .appendingPathComponent("metagent")
             .appendingPathComponent("config.toml")
+    }
+
+    public static func updateSkillIcon(skillPath: String, pngData: Data) throws -> SkillIconUpdateReport {
+        let skill = URL(fileURLWithPath: skillPath).standardizedFileURL
+        guard skill.resolvingSymlinksInPath().standardizedFileURL.path == skill.path,
+              isRegularOrSymlinkedFile(skill.appendingPathComponent("SKILL.md"))
+        else {
+            throw NSError(domain: "MetagentSkillIcon", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Icons can only be changed on a canonical editable skill directory."
+            ])
+        }
+        let pngSignature = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        guard pngData.count > pngSignature.count, pngData.prefix(pngSignature.count) == pngSignature else {
+            throw NSError(domain: "MetagentSkillIcon", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "The selected icon could not be converted to PNG."
+            ])
+        }
+
+        let assets = skill.appendingPathComponent("assets")
+        let icon = assets.appendingPathComponent("metagent-icon.png")
+        let agents = skill.appendingPathComponent("agents")
+        let metadata = agents.appendingPathComponent("openai.yaml")
+        try fileManager.createDirectory(at: assets, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: agents, withIntermediateDirectories: true)
+        try pngData.write(to: icon, options: .atomic)
+
+        let existing = (try? String(contentsOf: metadata, encoding: .utf8)) ?? ""
+        let updated = upsertSkillIconMetadata(existing, iconPath: "assets/metagent-icon.png")
+        try updated.write(to: metadata, atomically: true, encoding: .utf8)
+        return SkillIconUpdateReport(
+            skillPath: skill.path,
+            iconPath: icon.path,
+            metadataPath: metadata.path
+        )
     }
 
     public static func loadUserConfig() throws -> MetagentConfig {
@@ -1273,8 +1313,13 @@ private struct RepositoryEvidence {
     var root: String
     var name: String
     var remoteURL: String?
+    var trackedSkillPaths: Set<String>
 
     var authority: String { "repository:\(name)" }
+
+    func tracks(_ skill: URL) -> Bool {
+        trackedSkillPaths.contains(canonicalProjectPath(skill))
+    }
 }
 
 private struct SkillOriginEvidence {
@@ -1689,13 +1734,22 @@ private func readAgentsSkills(
 
         validSkills.append(name)
         let lockEntry = skillLock[name]
-        let dotagentsEntry = dotagentsSkills[name]
+        let recordedDotagentsEntry = dotagentsSkills[name]
+        // dotagents `sync` adopts an existing local skill by recording a path
+        // back to its own install directory. That is reconciliation state, not
+        // lifecycle ownership. Only a distinct source is manager evidence.
+        let dotagentsEntry = recordedDotagentsEntry.flatMap { entryEvidence in
+            dotagentsPathSource(entryEvidence.source, projectRoot: projectRoot(for: skillsDir), resolvesTo: entry)
+                ? nil
+                : entryEvidence
+        }
         let projection = symlinkedContainer || isSymlink(entry)
+        let trackedRepository = repository?.tracks(entry) == true ? repository : nil
         let ownership = canonicalSkillOwnership(
             scope: scope,
             skillLock: lockEntry,
             dotagents: dotagentsEntry,
-            repository: repository
+            repository: trackedRepository
         )
         inventory.append(makeSkillItem(
             name: name,
@@ -2011,6 +2065,43 @@ private func yamlValue(key: String, text: String) -> String? {
     return nil
 }
 
+private func upsertSkillIconMetadata(_ text: String, iconPath: String) -> String {
+    var lines = text.components(separatedBy: .newlines)
+    if lines.last == "" { lines.removeLast() }
+    var foundSmall = false
+    var foundLarge = false
+    var interfaceIndex: Int?
+
+    for index in lines.indices {
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        if trimmed == "interface:" { interfaceIndex = index }
+        if trimmed.hasPrefix("icon_small:") {
+            let indent = String(lines[index].prefix { $0 == " " || $0 == "\t" })
+            lines[index] = "\(indent)icon_small: \(iconPath)"
+            foundSmall = true
+        } else if trimmed.hasPrefix("icon_large:") {
+            let indent = String(lines[index].prefix { $0 == " " || $0 == "\t" })
+            lines[index] = "\(indent)icon_large: \(iconPath)"
+            foundLarge = true
+        }
+    }
+
+    if !foundSmall || !foundLarge {
+        if let interfaceIndex {
+            var additions: [String] = []
+            if !foundSmall { additions.append("  icon_small: \(iconPath)") }
+            if !foundLarge { additions.append("  icon_large: \(iconPath)") }
+            lines.insert(contentsOf: additions, at: interfaceIndex + 1)
+        } else {
+            if !lines.isEmpty { lines.append("") }
+            lines.append("interface:")
+            lines.append("  icon_small: \(iconPath)")
+            lines.append("  icon_large: \(iconPath)")
+        }
+    }
+    return lines.joined(separator: "\n") + "\n"
+}
+
 private func estimateTokens(_ characterCount: Int) -> Int {
     (characterCount + 3) / 4
 }
@@ -2178,12 +2269,63 @@ private func repositoryEvidence(for projectRoot: URL) -> RepositoryEvidence? {
             return RepositoryEvidence(
                 root: candidate.path,
                 name: candidate.lastPathComponent,
-                remoteURL: gitOriginURL(gitPath: gitPath)
+                remoteURL: gitOriginURL(gitPath: gitPath),
+                trackedSkillPaths: gitTrackedSkillPaths(
+                    repositoryRoot: candidate,
+                    projectRoot: projectRoot
+                )
             )
         }
         candidate.deleteLastPathComponent()
     }
     return nil
+}
+
+private func gitTrackedSkillPaths(repositoryRoot: URL, projectRoot: URL) -> Set<String> {
+    let skillsDirectory = projectRoot.appendingPathComponent(".agents/skills")
+    let relativeSkillsPath = relativePath(skillsDirectory, from: repositoryRoot)
+    guard !relativeSkillsPath.hasPrefix("../"), relativeSkillsPath != "..",
+          let result = try? runSubprocess(
+              executable: URL(fileURLWithPath: "/usr/bin/git"),
+              arguments: ["-C", repositoryRoot.path, "ls-files", "-z", "--", relativeSkillsPath],
+              timeout: 5
+          ),
+          result.status == 0,
+          !result.timedOut
+    else { return [] }
+
+    let prefix = relativeSkillsPath.hasSuffix("/") ? relativeSkillsPath : relativeSkillsPath + "/"
+    let paths = String(decoding: result.standardOutput, as: UTF8.self)
+        .split(separator: "\0")
+        .compactMap { trackedFile -> String? in
+            let path = String(trackedFile)
+            guard path.hasPrefix(prefix) else { return nil }
+            let remainder = path.dropFirst(prefix.count)
+            guard let skillName = remainder.split(separator: "/").first else { return nil }
+            return canonicalProjectPath(skillsDirectory.appendingPathComponent(String(skillName)))
+        }
+    return Set(paths)
+}
+
+private func relativePath(_ target: URL, from base: URL) -> String {
+    let targetComponents = target.standardizedFileURL.pathComponents
+    let baseComponents = base.standardizedFileURL.pathComponents
+    var common = 0
+    while common < min(targetComponents.count, baseComponents.count),
+          targetComponents[common] == baseComponents[common]
+    {
+        common += 1
+    }
+    return Array(repeating: "..", count: baseComponents.count - common)
+        .joined(separator: "/")
+        + (baseComponents.count == common ? "" : "/")
+        + targetComponents.dropFirst(common).joined(separator: "/")
+}
+
+private func projectRoot(for skillsDirectory: URL) -> URL {
+    skillsDirectory
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
 }
 
 private func gitOriginURL(gitPath: URL) -> String? {

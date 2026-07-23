@@ -67,15 +67,38 @@ final class SkillProvenanceTests: XCTestCase {
         XCTAssertNotNil(skill.updatedAt.flatMap { ISO8601DateFormatter().date(from: $0) })
     }
 
-    func testDotagentsLocalPathUsesManifestAndRepositoryEvidence() throws {
+    func testUpdateSkillIconWritesPortableAssetAndPreservesMetadata() throws {
+        let root = try fixtureRoot("icon")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+        let skill = root.appendingPathComponent(".agents/skills/demo")
+        let agents = skill.appendingPathComponent("agents")
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try """
+        interface:
+          display_name: Demo
+        policy:
+          allow_implicit_invocation: true
+        """.write(to: agents.appendingPathComponent("openai.yaml"), atomically: true, encoding: .utf8)
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+
+        let report = try MetagentCore.updateSkillIcon(skillPath: skill.path, pngData: png)
+        let metadata = try String(contentsOfFile: report.metadataPath, encoding: .utf8)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: report.iconPath))
+        XCTAssertTrue(metadata.contains("display_name: Demo"))
+        XCTAssertTrue(metadata.contains("allow_implicit_invocation: true"))
+        XCTAssertTrue(metadata.contains("icon_small: assets/metagent-icon.png"))
+        XCTAssertTrue(metadata.contains("icon_large: assets/metagent-icon.png"))
+        let inventoried = try XCTUnwrap(try scan(root).projects.first?.skills.first)
+        XCTAssertEqual(inventoried.iconSmallPath, report.iconPath)
+        XCTAssertEqual(inventoried.iconLargePath, report.iconPath)
+    }
+
+    func testDotagentsAdoptedLocalPathDoesNotClaimOwnership() throws {
         let root = try fixtureRoot("dotagents")
         defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
-        try """
-        [remote "origin"]
-          url = https://github.com/example/provenance-fixture.git
-        """.write(to: root.appendingPathComponent(".git/config"), atomically: true, encoding: .utf8)
         try """
         version = 1
 
@@ -92,16 +115,37 @@ final class SkillProvenanceTests: XCTestCase {
 
         let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first { $0.location == "agents" })
 
-        XCTAssertEqual(skill.manager, "dotagents")
-        XCTAssertEqual(skill.authority, "repository:\(root.lastPathComponent)")
-        XCTAssertEqual(skill.originKind, "dotagents-local")
+        XCTAssertEqual(skill.manager, "local")
+        XCTAssertEqual(skill.authority, "project-owned")
+        XCTAssertEqual(skill.originKind, "project-local")
         XCTAssertEqual(skill.mutability, "editable")
-        XCTAssertEqual(skill.sourceType, "dotagents-lock")
-        XCTAssertEqual(skill.sourceURL, "https://github.com/example/provenance-fixture.git")
+        XCTAssertEqual(skill.sourceType, "local")
         let removal = try MetagentCore.planSkillRemoval(projectRoot: root.path, skillName: "demo")
         XCTAssertTrue(removal.applySupported)
-        XCTAssertEqual(removal.manager, "dotagents")
-        XCTAssertEqual(removal.command, "npx --yes @sentry/dotagents remove demo --yes")
+        XCTAssertEqual(removal.manager, "local")
+        XCTAssertNil(removal.command)
+    }
+
+    func testDotagentsDistinctPathSourceIsManagerEvidence() throws {
+        let root = try fixtureRoot("dotagents-external")
+        let shared = root.appendingPathComponent("shared/demo")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+        try writeSkill(named: "demo", under: root.appendingPathComponent("shared"))
+        try """
+        version = 1
+
+        [[skills]]
+        name = "demo"
+        source = "path:shared/demo"
+        """.write(to: root.appendingPathComponent("agents.toml"), atomically: true, encoding: .utf8)
+
+        let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first { $0.location == "agents" })
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shared.appendingPathComponent("SKILL.md").path))
+        XCTAssertEqual(skill.manager, "dotagents")
+        XCTAssertEqual(skill.originKind, "dotagents-local")
+        XCTAssertEqual(skill.source, "path:shared/demo")
     }
 
     func testRepositoryAndProjectLocalSkillsKeepExplicitOwnership() throws {
@@ -112,15 +156,21 @@ final class SkillProvenanceTests: XCTestCase {
             try? FileManager.default.removeItem(at: local)
         }
         try writeSkill(named: "repo-skill", under: repository.appendingPathComponent(".agents/skills"))
-        try FileManager.default.createDirectory(at: repository.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try runGit(["init"], at: repository)
+        try runGit(["add", ".agents/skills/repo-skill/SKILL.md"], at: repository)
         try writeSkill(named: "local-skill", under: local.appendingPathComponent(".agents/skills"))
+        try writeSkill(named: "untracked-skill", under: repository.appendingPathComponent(".agents/skills"))
 
-        let repositorySkill = try XCTUnwrap(try scan(repository).projects.first?.skills.first)
+        let repositorySkills = try XCTUnwrap(try scan(repository).projects.first).skills
+        let repositorySkill = try XCTUnwrap(repositorySkills.first { $0.name == "repo-skill" })
+        let untrackedSkill = try XCTUnwrap(repositorySkills.first { $0.name == "untracked-skill" })
         let localSkill = try XCTUnwrap(try scan(local).projects.first?.skills.first)
 
         XCTAssertEqual(repositorySkill.manager, "git")
         XCTAssertEqual(repositorySkill.authority, "repository:\(repository.lastPathComponent)")
         XCTAssertEqual(repositorySkill.originKind, "git-repository")
+        XCTAssertEqual(untrackedSkill.manager, "local")
+        XCTAssertEqual(untrackedSkill.originKind, "project-local")
         XCTAssertEqual(localSkill.manager, "local")
         XCTAssertEqual(localSkill.authority, "project-owned")
         XCTAssertEqual(localSkill.originKind, "project-local")
@@ -223,5 +273,14 @@ final class SkillProvenanceTests: XCTestCase {
 
     private func scan(_ root: URL) throws -> SkillScanReport {
         try MetagentCore.scanSkills(options: SkillScanOptions(roots: [root.path], maxDepth: 0))
+    }
+
+    private func runGit(_ arguments: [String], at directory: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory.path] + arguments
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
     }
 }

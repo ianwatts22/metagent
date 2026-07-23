@@ -71,7 +71,7 @@ When retained-history coverage is incomplete and no usage is linked, adoption re
 
 Quality, Utility, and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
 
-`Updated` is shown as lifecycle evidence but does not currently reduce either
+`Weeks old` is shown as lifecycle evidence but does not currently reduce either
 score. A stable skill may remain correct for months. A future freshness penalty
 should require stronger evidence—such as a newer managed version, a broken tool
 or API reference, or detected divergence—not the passage of time alone.

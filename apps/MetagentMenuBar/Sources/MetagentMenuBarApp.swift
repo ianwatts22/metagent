@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import MetagentCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct MetagentMenuBarApp: App {
@@ -216,6 +217,15 @@ private struct MetagentPanel: View {
             } else {
                 MCPInventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
+        case .projects:
+            if showsOpenWindowButton {
+                ProjectsMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            } else {
+                ProjectsSection(model: model, selectedProjectRoot: selectedProjectRoot)
+            }
         }
     }
 
@@ -298,6 +308,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case skills
     case mcps
+    case projects
 
     var id: String { rawValue }
 
@@ -306,6 +317,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         case .overview: "Overview"
         case .skills: "Skills"
         case .mcps: "MCPs"
+        case .projects: "Projects"
         }
     }
 
@@ -314,6 +326,7 @@ private enum PanelSection: String, CaseIterable, Identifiable {
         case .overview: "gauge"
         case .skills: "sparkles"
         case .mcps: "server.rack"
+        case .projects: "folder"
         }
     }
 }
@@ -1245,7 +1258,7 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
         switch self {
         case .plugin: "Codex plugins"
         case .skillsCLI: "Skills CLI"
-        case .dotagentsLocal: "dotagents · path declaration"
+        case .dotagentsLocal: "dotagents · external path"
         case .dotagentsManaged: "dotagents · package"
         case .git: "Git repository"
         case .codexSystem: "Codex system"
@@ -1259,7 +1272,7 @@ private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .dotagentsLocal:
-            "A local skill path is still declared in a legacy agents.toml or agents.lock file. dotagents did not download the skill."
+            "dotagents manages this installation from a distinct local source path. Self-referential orphan-adoption records are classified as local instead."
         case .dotagentsManaged:
             "The skill is declared as a package managed by dotagents rather than as a local path."
         case .notInstalled:
@@ -1382,7 +1395,7 @@ private struct SkillTableRow: Identifiable, Sendable {
     var versionText: String { inventory?.versionText ?? "—" }
     var versionHelp: String { inventory?.versionHelp ?? "No installed version metadata is available." }
     var updatedDate: Date? { inventory?.updatedDate }
-    var updatedSortValue: TimeInterval { inventory?.updatedSortValue ?? 0 }
+    var updatedSortValue: Int { inventory?.weeksOld ?? Int.max }
     var updatedText: String { inventory?.updatedText ?? "—" }
     var updatedHelp: String { inventory?.updatedHelp ?? "No installed update metadata is available." }
     var referenceFileCount: Int { inventory?.referenceFileCount ?? -1 }
@@ -1521,6 +1534,8 @@ private struct InventorySection: View {
     @State private var scopeFilter = SkillScopeFilter.all
     @State private var pendingConfirmation: InventoryConfirmation?
     @State private var inspectedSkill: InventorySkillRow?
+    @State private var iconTarget: InventorySkillRow?
+    @State private var showsScoreExplanation = false
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
     private var hiddenSourceRaw = "__unmigrated__"
@@ -1672,6 +1687,15 @@ private struct InventorySection: View {
                 .pickerStyle(.segmented)
                 .frame(width: 340)
 
+                Button {
+                    showsScoreExplanation = true
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                }
+                .buttonStyle(.glass)
+                .help("How Quality, Plugin Eval, and Utility are calculated")
+                .accessibilityLabel("How scores work")
+
                 Menu {
                     Button("Run Plugin Eval") {
                         if let selectedRow {
@@ -1809,10 +1833,6 @@ private struct InventorySection: View {
                                 SkillScopeLocationCell(row: row)
                             } else if column.id == "origin" {
                                 SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
-                            } else if column.id == "updated" {
-                                RelativeUpdatedDateCell(date: row.updatedDate)
-                                    .foregroundStyle(row.updatedDate == nil ? .secondary : .primary)
-                                    .help(column.help(row))
                             } else if column.id == "last-used" {
                                 RelativeUsageDateCell(date: row.lastUsedDate)
                                     .foregroundStyle(row.totalInvocations == 0 ? .secondary : .primary)
@@ -1848,6 +1868,13 @@ private struct InventorySection: View {
                         Button("Get Info", systemImage: "info.circle") {
                             inspectedSkill = inventory
                         }
+                        Button(
+                            inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
+                            systemImage: "photo.badge.plus"
+                        ) {
+                            iconTarget = inventory
+                        }
+                        .disabled(!inventory.canEditIcon)
                         Divider()
                     }
                     Button("Open", systemImage: "folder") {
@@ -1941,7 +1968,13 @@ private struct InventorySection: View {
             }
         }
         .sheet(item: $inspectedSkill) { row in
-            SkillInfoView(row: row)
+            SkillInfoView(model: model, row: row)
+        }
+        .sheet(item: $iconTarget) { row in
+            SkillIconEditorView(model: model, row: row)
+        }
+        .sheet(isPresented: $showsScoreExplanation) {
+            ScoreExplanationView()
         }
     }
 
@@ -2272,6 +2305,268 @@ private struct MCPMenuSection: View {
     }
 }
 
+private struct ProjectDirectoryRow: Identifiable {
+    enum LinkState: String, Comparable {
+        case healthy = "Connected"
+        case missing = "Not connected"
+        case separate = "Separate folder"
+        case wrong = "Wrong link"
+
+        static func < (lhs: LinkState, rhs: LinkState) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+    }
+
+    let root: String
+    let name: String
+    let skillCount: Int
+    let mcpCount: Int
+    let claudeState: LinkState
+    let codexText: String
+    let issueCount: Int
+
+    var id: String { root }
+    var claudeText: String { claudeState.rawValue }
+
+    init(
+        directory: DirectoryFilterOption,
+        projects: [ProjectStatus],
+        mcpHealth: MCPHealthSnapshot,
+        doctorIssues: [DoctorIssue]
+    ) {
+        root = directory.root
+        name = directory.root == NSHomeDirectory() ? "Global" : directory.name
+        let matchingProjects = projects.filter {
+            standardizedDirectoryPath($0.root) == standardizedDirectoryPath(directory.root)
+        }
+        skillCount = Set(matchingProjects.flatMap { project in
+            project.skills.map { skill in
+                skill.canonicalPath.isEmpty ? "\(skill.name):\(skill.location)" : standardizedDirectoryPath(skill.canonicalPath)
+            }
+        }).count
+        mcpCount = mcpHealth.scoped(to: directory.root).inventory.count
+        claudeState = Self.claudeLinkState(root: directory.root)
+        codexText = Self.codexDiscoveryText(root: directory.root)
+        issueCount = groupedDoctorActionCount(doctorIssues.filter {
+            $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
+        })
+    }
+
+    private static func claudeLinkState(root: String) -> LinkState {
+        let project = URL(fileURLWithPath: root)
+        let link = project.appendingPathComponent(".claude/skills")
+        let expected = project.appendingPathComponent(".agents/skills")
+        if isSymbolicLink(link) {
+            return link.resolvingSymlinksInPath().standardizedFileURL.path
+                == expected.resolvingSymlinksInPath().standardizedFileURL.path ? .healthy : .wrong
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: link.path, isDirectory: &isDirectory) else {
+            return .missing
+        }
+        return isDirectory.boolValue ? .separate : .wrong
+    }
+
+    private static func codexDiscoveryText(root: String) -> String {
+        let project = URL(fileURLWithPath: root)
+        let legacy = project.appendingPathComponent(".codex/skills")
+        if isSymbolicLink(legacy) {
+            return "Native + legacy link"
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: legacy.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            let count = (try? FileManager.default.contentsOfDirectory(atPath: legacy.path).count) ?? 0
+            return count > 0 ? "Native + \(count) local" : "Native"
+        }
+        return "Native"
+    }
+}
+
+private struct ProjectsSection: View {
+    @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
+    @State private var searchText = ""
+    @State private var sortOrder = [KeyPathComparator(\ProjectDirectoryRow.name)]
+
+    private var allRows: [ProjectDirectoryRow] {
+        directoryFilterOptions(
+            projects: model.projects,
+            mcpHealth: model.mcpHealth,
+            doctorIssues: model.doctorIssues
+        )
+        .filter { selectedProjectRoot == nil || standardizedDirectoryPath($0.root) == standardizedDirectoryPath(selectedProjectRoot!) }
+        .map {
+            ProjectDirectoryRow(
+                directory: $0,
+                projects: model.projects,
+                mcpHealth: model.mcpHealth,
+                doctorIssues: model.doctorIssues
+            )
+        }
+    }
+
+    private var rows: [ProjectDirectoryRow] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return allRows
+            .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.root.localizedCaseInsensitiveContains(query) }
+            .sorted(using: sortOrder)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Projects")
+                        .font(.title2.weight(.semibold))
+                    Text("\(allRows.count) directories · shared skill and MCP setup")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                TextField("Search projects", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                Button {
+                    model.refreshStatus()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.glass)
+                .help("Refresh projects")
+                .disabled(model.isRunning)
+            }
+
+            if rows.isEmpty {
+                EmptyStateView(
+                    title: allRows.isEmpty ? "No projects found" : "No matching projects",
+                    message: allRows.isEmpty ? "Add a configured skill or MCP directory, then refresh." : "Clear the search.",
+                    symbol: "folder"
+                )
+            } else {
+                Table(rows, sortOrder: $sortOrder) {
+                    TableColumn("Project", value: \.name) { row in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.name).font(.callout.weight(.medium))
+                            Text(row.root).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        .help(row.root)
+                    }
+                    .width(min: 260, ideal: 360)
+                    TableColumn("Skills", value: \.skillCount) { row in
+                        Text(row.skillCount.formatted()).monospacedDigit()
+                    }
+                    .width(min: 64, ideal: 76)
+                    TableColumn("MCPs", value: \.mcpCount) { row in
+                        Text(row.mcpCount.formatted()).monospacedDigit()
+                    }
+                    .width(min: 60, ideal: 72)
+                    TableColumn("Claude skills", value: \.claudeText) { row in
+                        ProjectLinkStateCell(state: row.claudeState)
+                    }
+                    .width(min: 132, ideal: 154)
+                    TableColumn("Codex skills", value: \.codexText) { row in
+                        Text(row.codexText)
+                            .font(.callout)
+                            .help("Codex discovers .agents/skills natively; legacy .codex/skills content is reported separately.")
+                    }
+                    .width(min: 132, ideal: 160)
+                    TableColumn("Issues", value: \.issueCount) { row in
+                        let value = row.issueCount == 0 ? "—" : row.issueCount.formatted()
+                        let tint: Color = row.issueCount == 0 ? .secondary : .orange
+                        Text(value)
+                            .monospacedDigit()
+                            .foregroundStyle(tint)
+                    }
+                    .width(min: 54, ideal: 66)
+                }
+                .tableStyle(.inset)
+                .alternatingRowBackgrounds(.enabled)
+                .contextMenu(forSelectionType: ProjectDirectoryRow.ID.self) { selection in
+                    if let root = selection.first {
+                        Button("Open", systemImage: "folder") {
+                            model.openProjectRoot(root)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct ProjectsMenuSection: View {
+    @ObservedObject var model: MetagentModel
+    let selectedProjectRoot: String?
+    let openMainWindow: () -> Void
+
+    private var rows: [ProjectDirectoryRow] {
+        directoryFilterOptions(projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues)
+            .filter { selectedProjectRoot == nil || standardizedDirectoryPath($0.root) == standardizedDirectoryPath(selectedProjectRoot!) }
+            .map { ProjectDirectoryRow(directory: $0, projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Projects").font(.headline)
+                Spacer()
+                Button(action: openMainWindow) { Label("Window", systemImage: "macwindow") }
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                MetricView(title: "Directories", value: rows.count.formatted(), symbol: "folder")
+                MetricView(title: "Link issues", value: rows.filter { $0.claudeState != .healthy }.count.formatted(), symbol: "link")
+            }
+            Button(action: openMainWindow) {
+                Label("Open Projects", systemImage: "arrow.up.right.square").frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            Spacer()
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct ProjectLinkStateCell: View {
+    let state: ProjectDirectoryRow.LinkState
+
+    var body: some View {
+        Label(state.rawValue, systemImage: symbol)
+            .font(.callout)
+            .foregroundStyle(tint)
+            .help(help)
+    }
+
+    private var symbol: String {
+        switch state {
+        case .healthy: "checkmark.circle"
+        case .missing: "minus.circle"
+        case .separate: "folder.badge.questionmark"
+        case .wrong: "exclamationmark.triangle"
+        }
+    }
+
+    private var tint: Color {
+        switch state {
+        case .healthy: .green
+        case .missing: .secondary
+        case .separate, .wrong: .orange
+        }
+    }
+
+    private var help: String {
+        switch state {
+        case .healthy: ".claude/skills points to .agents/skills."
+        case .missing: "Claude does not currently see this project's .agents skills."
+        case .separate: ".claude/skills is an independent directory, not a shared link."
+        case .wrong: ".claude/skills is linked somewhere other than .agents/skills."
+        }
+    }
+}
+
+private func isSymbolicLink(_ url: URL) -> Bool {
+    (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
+}
+
 private struct MCPClientIcons: View {
     let clients: [MCPClient]
 
@@ -2495,9 +2790,11 @@ private struct InventorySkillRow: Identifiable, Sendable {
             ?? "No version or Git ref is recorded for this source."
     }
     var updatedDate: Date? { skill.updatedAt.flatMap(parseISO8601Date) }
-    var updatedSortValue: TimeInterval { updatedDate?.timeIntervalSince1970 ?? 0 }
+    var weeksOld: Int? {
+        updatedDate.map { max(0, Calendar.current.dateComponents([.day], from: $0, to: Date()).day ?? 0) / 7 }
+    }
     var updatedText: String {
-        updatedDate?.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)) ?? "—"
+        weeksOld?.formatted() ?? "—"
     }
     var updatedHelp: String {
         guard let updatedDate else { return "No update timestamp is available." }
@@ -2517,6 +2814,11 @@ private struct InventorySkillRow: Identifiable, Sendable {
             .joined(separator: "\n")
     }
     var skillIconPath: String? { skill.iconSmallPath ?? skill.iconLargePath }
+    var canEditIcon: Bool {
+        skill.representation == "canonical"
+            && skill.mutability == "editable"
+            && skill.manager != "codex-plugin"
+    }
     var metagentStaticScore: Int {
         metagentScore.qualityScore(
             pluginEvalScore: pluginEval?.score,
@@ -2822,11 +3124,11 @@ private struct SkillColumnSpec: Identifiable {
     ),
     SkillColumnSpec(
         id: "updated",
-        title: "Updated",
+        title: "Weeks old",
         comparator: KeyPathComparator(\SkillTableRow.updatedSortValue),
-        minWidth: 86,
-        idealWidth: 108,
-        isNumeric: false,
+        minWidth: 74,
+        idealWidth: 88,
+        isNumeric: true,
         isMonospaced: false,
         isPrimary: false,
         defaultViews: [.inventory],
@@ -3251,25 +3553,12 @@ private struct RelativeUsageDateCell: View {
     }
 }
 
-private struct RelativeUpdatedDateCell: View {
-    let date: Date?
-
-    var body: some View {
-        if let date {
-            TimelineView(.periodic(from: .now, by: 60)) { _ in
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated)))
-                    .font(.callout)
-            }
-        } else {
-            Text("—")
-                .font(.callout)
-        }
-    }
-}
-
 private struct SkillInfoView: View {
+    @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
     @Environment(\.dismiss) private var dismiss
+    @State private var showsIconEditor = false
+    @State private var showsScoreExplanation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -3335,6 +3624,9 @@ private struct SkillInfoView: View {
                     LabeledContent("Plugin Eval", value: row.pluginEvalText)
                     LabeledContent("Utility", value: row.portfolioScoreText)
                     LabeledContent("Codex", value: row.codexReviewText)
+                    Button("How scores work…") {
+                        showsScoreExplanation = true
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -3346,6 +3638,10 @@ private struct SkillInfoView: View {
                 Button("Copy Path") {
                     copyToPasteboard(row.canonicalPath)
                 }
+                Button(row.skillIconPath == nil ? "Add Icon…" : "Change Icon…") {
+                    showsIconEditor = true
+                }
+                .disabled(!row.canEditIcon)
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
@@ -3353,7 +3649,216 @@ private struct SkillInfoView: View {
         }
         .padding(22)
         .frame(width: 620, height: 620)
+        .sheet(isPresented: $showsIconEditor) {
+            SkillIconEditorView(model: model, row: row)
+        }
+        .sheet(isPresented: $showsScoreExplanation) {
+            ScoreExplanationView()
+        }
     }
+}
+
+private struct ScoreExplanationView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("How skill scores work")
+                        .font(.title2.weight(.semibold))
+                    Text("Every input, weight, and missing-data rule is shown here.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            Form {
+                Section("Quality") {
+                    Text("A stable 0–100 content and operational score. It deliberately excludes usage and calendar age.")
+                    LabeledContent("Plugin Eval", value: "60%")
+                    LabeledContent("Management confidence", value: "20%")
+                    LabeledContent("Codex review", value: "20% · optional")
+                    Text("Missing inputs are excluded, then the remaining weights are normalized to 100. Example: Plugin Eval 81 and management confidence 100, with no Codex review, becomes (81 × 60 + 100 × 20) ÷ 80 = 86.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Plugin Eval") {
+                    Text("The official Plugin Eval analyzer starts at 100 and deducts for concrete findings such as invalid metadata, weak trigger descriptions, broken references, excessive token budgets, and poor progressive disclosure. The 60% above is its weight inside Quality—not Plugin Eval's own formula.")
+                }
+
+                Section("Management confidence") {
+                    Text("Measures whether Metagent can resolve one canonical skill, its lifecycle manager, authority, mutability, and provenance. It does not judge whether the instructions are good.")
+                }
+
+                Section("Utility") {
+                    LabeledContent("Quality", value: "70%")
+                    LabeledContent("Observed adoption", value: "30%")
+                    Text("Adoption uses recency, distinct Codex threads, repeat reads in a turn, and total reads. Incomplete usage coverage receives a neutral provisional value; complete coverage with no reads receives zero adoption credit.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Grades") {
+                    Text("Quality, Utility, and Codex: A 90+, B 80+, C 70+, D 60+, F below 60. Plugin Eval uses its evaluator-owned stricter bands: A 93+, B 85+, C 70+, D 55+. Grades are absolute, never relative to the other skills in your table.")
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .padding(22)
+        .frame(width: 680, height: 690)
+    }
+}
+
+private struct SkillIconEditorView: View {
+    @ObservedObject var model: MetagentModel
+    let row: InventorySkillRow
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedEmoji = "✨"
+
+    private let presets = ["✨", "🔎", "🧭", "🛠️", "🧪", "📊", "🧠", "🎨", "🔐", "🚀", "📝", "🧹"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.skillIconPath == nil ? "Add an icon" : "Change icon")
+                        .font(.title2.weight(.semibold))
+                    Text(row.skillName)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+            }
+
+            HStack(alignment: .top, spacing: 20) {
+                emojiPreview
+                    .frame(width: 96, height: 96)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Choose an emoji")
+                        .font(.headline)
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(42)), count: 6), spacing: 8) {
+                        ForEach(presets, id: \.self) { emoji in
+                            Button {
+                                selectedEmoji = emoji
+                            } label: {
+                                Text(emoji)
+                                    .font(.title2)
+                                    .frame(width: 38, height: 38)
+                                    .background(selectedEmoji == emoji ? Color.accentColor.opacity(0.18) : Color.clear)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    TextField("Or type an emoji", text: $selectedEmoji)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 190)
+                }
+            }
+
+            Text("Metagent writes a portable PNG to assets/metagent-icon.png and records it in agents/openai.yaml. You can also import an existing PNG, JPEG, or HEIC icon.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Choose Image…") {
+                    chooseImage()
+                }
+                Spacer()
+                Button("Use Emoji") {
+                    guard let data = emojiPNG(selectedEmoji), model.updateSkillIcon(path: row.canonicalPath, pngData: data) else {
+                        NSSound.beep()
+                        return
+                    }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedEmoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isRunning)
+            }
+        }
+        .padding(22)
+        .frame(width: 520, height: 455)
+    }
+
+    private var emojiPreview: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+            Text(selectedEmoji)
+                .font(.system(size: 54))
+                .lineLimit(1)
+        }
+    }
+
+    private func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png, .jpeg, .heic]
+        panel.prompt = "Use Icon"
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let image = NSImage(contentsOf: url),
+              let data = normalizedPNG(image),
+              model.updateSkillIcon(path: row.canonicalPath, pngData: data)
+        else { return }
+        dismiss()
+    }
+}
+
+private func emojiPNG(_ emoji: String) -> Data? {
+    let value = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return nil }
+    let size = NSSize(width: 512, height: 512)
+    let image = NSImage(size: size)
+    image.lockFocus()
+    NSColor.clear.setFill()
+    NSRect(origin: .zero, size: size).fill()
+    let attributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 340)
+    ]
+    let attributed = NSAttributedString(string: value, attributes: attributes)
+    let textSize = attributed.size()
+    attributed.draw(at: NSPoint(x: (size.width - textSize.width) / 2, y: (size.height - textSize.height) / 2))
+    image.unlockFocus()
+    return normalizedPNG(image)
+}
+
+private func normalizedPNG(_ source: NSImage) -> Data? {
+    let size = NSSize(width: 512, height: 512)
+    let image = NSImage(size: size)
+    image.lockFocus()
+    NSColor.clear.setFill()
+    NSRect(origin: .zero, size: size).fill()
+    let sourceSize = source.size
+    guard sourceSize.width > 0, sourceSize.height > 0 else {
+        image.unlockFocus()
+        return nil
+    }
+    let scale = min(size.width / sourceSize.width, size.height / sourceSize.height)
+    let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+    source.draw(
+        in: NSRect(
+            x: (size.width - drawSize.width) / 2,
+            y: (size.height - drawSize.height) / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        ),
+        from: .zero,
+        operation: .sourceOver,
+        fraction: 1
+    )
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff)
+    else { return nil }
+    return bitmap.representation(using: .png, properties: [:])
 }
 
 private func formatNumber(_ value: Int) -> String {

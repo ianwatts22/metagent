@@ -373,6 +373,28 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func updateSkillIcon(path: String, pngData: Data) -> Bool {
+        runOperation(
+            title: "Update skill icon",
+            runningText: "Updating skill icon..."
+        ) {
+            let report = try MetagentCore.updateSkillIcon(skillPath: path, pngData: pngData)
+            return CommandOutcome(
+                succeeded: true,
+                lines: [
+                    "updated \(report.iconPath)",
+                    "updated \(report.metadataPath)"
+                ],
+                repairPreview: nil
+            )
+        } completion: { [weak self] result in
+            if result.succeeded {
+                self?.refreshStatus()
+            }
+        }
+    }
+
     func repairNow() {
         guard !isRunning, let repairPreview, repairPreview.canApply else { return }
         let roots = repairPreview.projects.map(\.root)
