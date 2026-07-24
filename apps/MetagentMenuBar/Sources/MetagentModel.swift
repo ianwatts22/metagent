@@ -51,6 +51,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var skillTableRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
+    @Published private(set) var isRemovingSkills = false
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
@@ -502,18 +503,19 @@ final class MetagentModel: ObservableObject {
 
     @discardableResult
     func uninstallSkills(_ requests: [SkillRemovalRequest]) -> Bool {
+        guard !isRunning || isRemovingSkills else { return false }
         let uniqueRequests = Dictionary(requests.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             .values
             .filter { !pendingSkillRemovalIDs.contains($0.id) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         guard !uniqueRequests.isEmpty else { return false }
 
-        if pendingSkillRemovalIDs.isEmpty {
+        if !isRemovingSkills {
             accumulatedSkillRemovalLines = []
             accumulatedSkillRemovalFailedIDs = []
+            isRemovingSkills = true
+            isRunning = true
         }
-        statusRefreshGeneration += 1
-        isRunning = false
         pendingSkillRemovalIDs.formUnion(uniqueRequests.map(\.id))
         skillTableRevision += 1
         statusText = uniqueRequests.count == 1
@@ -641,6 +643,10 @@ final class MetagentModel: ObservableObject {
         systemImage = hadFailures ? "exclamationmark.triangle" : "checkmark.circle"
         accumulatedSkillRemovalLines = []
         accumulatedSkillRemovalFailedIDs = []
+        if completedSkillRemovalIDs.isEmpty {
+            isRemovingSkills = false
+            isRunning = false
+        }
         reconcileCompletedSkillRemovalsIfIdle()
     }
 
@@ -652,8 +658,8 @@ final class MetagentModel: ObservableObject {
         else { return }
 
         isReconcilingSkillRemovals = true
+        isRemovingSkills = false
         statusRefreshGeneration += 1
-        isRunning = false
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
             async let scanResult = Task.detached { Result { try MetagentCore.scanSkills() } }.value
@@ -684,6 +690,7 @@ final class MetagentModel: ObservableObject {
                 systemImage = "exclamationmark.triangle"
             }
             isReconcilingSkillRemovals = false
+            isRunning = false
             skillTableRevision += 1
             if didRefreshInventory {
                 reconcileCompletedSkillRemovalsIfIdle()

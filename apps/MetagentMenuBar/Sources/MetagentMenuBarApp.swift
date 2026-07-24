@@ -2274,7 +2274,7 @@ private struct InventorySection: View {
                     hasDetectedGroups: hasDetectedOverlapGroups,
                     selectedGroupID: $selectedDuplicateGroupID,
                     removalIDs: $duplicateRemovalIDs,
-                    isRunning: model.isRunning,
+                    isRunning: model.isRunning && !model.isRemovingSkills,
                     onView: { row in viewedSkill = row.inventory },
                     onInfo: { row in inspectedSkill = row.inventory },
                     onReviewRemoval: { candidateRows in

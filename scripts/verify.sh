@@ -445,6 +445,10 @@ for skill_name in "${@:4}"; do
   if [[ "${METAGENT_NPX_FAIL_AFTER_FIRST:-}" == "1" ]]; then
     exit 42
   fi
+  if [[ "${METAGENT_NPX_CORRUPT_AFTER_FIRST:-}" == "1" ]]; then
+    printf '{not-json' >"$lock_path"
+    exit 42
+  fi
 done
 SH
 chmod +x "$npx_stub"
@@ -505,6 +509,31 @@ jq -e '.skills["partial-one"] == null and .skills["partial-two"] != null' "$part
 grep -q 'partial-one' "$partial_output"
 partial_recovery_metadata="$(rg -l '^skill=partial-one$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
 test -f "$(dirname "$partial_recovery_metadata")/after.json"
+
+corrupt_root="$fixture_root/corrupt-batch-uninstall-project"
+mkdir -p "$corrupt_root/.agents/skills/corrupt-one" "$corrupt_root/.agents/skills/corrupt-two"
+printf -- "---\nname: corrupt-one\ndescription: first\n---\n" >"$corrupt_root/.agents/skills/corrupt-one/SKILL.md"
+printf -- "---\nname: corrupt-two\ndescription: second\n---\n" >"$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
+cat >"$corrupt_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "corrupt-one": {"source": "example/skills", "sourceType": "github"},
+    "corrupt-two": {"source": "example/skills", "sourceType": "github"}
+  }
+}
+EOF
+corrupt_output="$fixture_root/corrupt-batch.out"
+if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_CORRUPT_AFTER_FIRST=1 \
+  "$fixture_root/uninstall-probe" "$corrupt_root" corrupt-one,corrupt-two batch >"$corrupt_output" 2>&1
+then
+  echo "corrupted Skills CLI lock state reported complete success" >&2
+  exit 1
+fi
+grep -q 'Could not verify Skills CLI lock state' "$corrupt_output"
+grep -q 'Recovery state:' "$corrupt_output"
+test ! -e "$corrupt_root/.agents/skills/corrupt-one"
+test -f "$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
 
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \

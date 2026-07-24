@@ -1353,16 +1353,28 @@ public enum MetagentCore {
             commandError = error
         }
 
-        let remainingLocks = readProjectSkillLocks(root: root)
+        let remainingLocks: [String: SkillLockEntry]
+        do {
+            remainingLocks = try readProjectSkillLocksValidated(root: root)
+        } catch {
+            failures += removals.map {
+                SkillUninstallFailure(
+                    skillName: $0.skillName,
+                    message: "\(error.localizedDescription)\nRecovery state: \($0.recovery.path)"
+                )
+            }
+            return SkillUninstallBatchReport(reports: [], failures: failures)
+        }
         var reports: [SkillUninstallReport] = []
         for removal in removals {
             guard !fileManager.fileExists(atPath: removal.skillURL.path),
                   remainingLocks[removal.skillName] == nil
             else {
+                let reason = commandError?.localizedDescription
+                    ?? "skills-cli reported success but the bundle or its lock entry remains."
                 failures.append(SkillUninstallFailure(
                     skillName: removal.skillName,
-                    message: commandError?.localizedDescription
-                        ?? "skills-cli reported success but the bundle or its lock entry remains. Recovery state: \(removal.recovery.path)"
+                    message: "\(reason)\nRecovery state: \(removal.recovery.path)"
                 ))
                 continue
             }
@@ -2634,10 +2646,27 @@ private func projectRoot(for skillsDirectory: URL) -> URL {
 }
 
 private func readProjectSkillLocks(root: URL) -> [String: SkillLockEntry] {
-    if canonicalProjectPath(root) == canonicalProjectPath(homeURL()) {
-        return readSkillLock(globalSkillLockPath())
+    readSkillLock(projectSkillLockPath(root))
+}
+
+private func readProjectSkillLocksValidated(root: URL) throws -> [String: SkillLockEntry] {
+    let path = projectSkillLockPath(root)
+    guard fileManager.fileExists(atPath: path.path) else { return [:] }
+    do {
+        let data = try Data(contentsOf: path)
+        return try JSONDecoder().decode(SkillLock.self, from: data).skills
+    } catch {
+        throw NSError(domain: "MetagentSkillsCLI", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Could not verify Skills CLI lock state at \(path.path): \(error.localizedDescription)"
+        ])
     }
-    return readSkillLock(root.appendingPathComponent("skills-lock.json"))
+}
+
+private func projectSkillLockPath(_ root: URL) -> URL {
+    if canonicalProjectPath(root) == canonicalProjectPath(homeURL()) {
+        return globalSkillLockPath()
+    }
+    return root.appendingPathComponent("skills-lock.json")
 }
 
 private func globalSkillLockPath() -> URL {
