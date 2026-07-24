@@ -2890,10 +2890,12 @@ private func moveDanglingSkillProjections(
         let rollbackFailures = rollbackMovedSkillProjections(moved)
         guard rollbackFailures.isEmpty else {
             throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
-                NSLocalizedDescriptionKey: "Projection cleanup failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))"
+                NSLocalizedDescriptionKey: "Projection cleanup failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
             ])
         }
-        throw error
+        throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
+            NSLocalizedDescriptionKey: "Projection cleanup failed: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
+        ])
     }
     return moved
 }
