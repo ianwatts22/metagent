@@ -392,7 +392,12 @@ struct Probe {
                 )
                 print(batch.reports.flatMap(\.lines).joined(separator: "\n"))
                 if !batch.failures.isEmpty {
-                    FileHandle.standardError.write(Data(batch.failures.map(\.message).joined(separator: "\n").utf8))
+                    FileHandle.standardError.write(Data(
+                        batch.failures
+                            .map { "\($0.skillName): \($0.message)" }
+                            .joined(separator: "\n")
+                            .utf8
+                    ))
                     exit(1)
                 }
                 return
@@ -450,6 +455,10 @@ for skill_name in "${@:4}"; do
   if [[ "${METAGENT_NPX_CORRUPT_AFTER_FIRST:-}" == "1" ]]; then
     printf '{not-json' >"$lock_path"
     exit 42
+  fi
+  if [[ "${METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT:-}" == "1" ]]; then
+    printf '{not-json' >"$lock_path"
+    exit 0
   fi
 done
 SH
@@ -521,11 +530,15 @@ cat >"$stale_lock_root/skills-lock.json" <<'EOF'
   "futureRootMetadata": {"preserve": true}
 }
 EOF
+mkdir -p "$stale_lock_root/.codex/skills"
+ln -s ../../.agents/skills/stale-lock "$stale_lock_root/.codex/skills/stale-lock"
 stale_lock_retry_output="$fixture_root/stale-lock-retry.out"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" \
   "$fixture_root/uninstall-probe" "$stale_lock_root" stale-lock apply >"$stale_lock_retry_output"
 jq -e '.skills == {} and .futureRootMetadata.preserve == true' "$stale_lock_root/skills-lock.json" >/dev/null
+test ! -L "$stale_lock_root/.codex/skills/stale-lock"
 grep -q 'removed a stale project lock entry for an already-absent Skills CLI bundle' "$stale_lock_retry_output"
+grep -q 'removed 1 dangling per-skill projection link' "$stale_lock_retry_output"
 
 partial_root="$fixture_root/partial-batch-uninstall-project"
 mkdir -p "$partial_root/.agents/skills/partial-one" "$partial_root/.agents/skills/partial-two"
@@ -580,6 +593,31 @@ test ! -e "$corrupt_root/.agents/skills/corrupt-one"
 test -f "$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
 corrupt_recovery_metadata="$(rg -l '^skill=corrupt-one$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
 test -f "$(dirname "$corrupt_recovery_metadata")/after.json"
+
+partial_success_root="$fixture_root/partial-success-corrupt-lock-project"
+mkdir -p "$partial_success_root/.agents/skills/partial-success-one" "$partial_success_root/.agents/skills/partial-success-two"
+printf -- "---\nname: partial-success-one\ndescription: first\n---\n" >"$partial_success_root/.agents/skills/partial-success-one/SKILL.md"
+printf -- "---\nname: partial-success-two\ndescription: second\n---\n" >"$partial_success_root/.agents/skills/partial-success-two/SKILL.md"
+cat >"$partial_success_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "partial-success-one": {"source": "example/skills", "sourceType": "github"},
+    "partial-success-two": {"source": "example/skills", "sourceType": "github"}
+  }
+}
+EOF
+partial_success_output="$fixture_root/partial-success-corrupt-lock.out"
+if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT=1 \
+  "$fixture_root/uninstall-probe" "$partial_success_root" partial-success-one,partial-success-two batch >"$partial_success_output" 2>&1
+then
+  echo "partial success with a corrupt lock reported complete success" >&2
+  exit 1
+fi
+test ! -e "$partial_success_root/.agents/skills/partial-success-one"
+test -f "$partial_success_root/.agents/skills/partial-success-two/SKILL.md"
+grep -q 'partial-success-one' "$partial_success_output"
+grep -q 'partial-success-two' "$partial_success_output"
 
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \
