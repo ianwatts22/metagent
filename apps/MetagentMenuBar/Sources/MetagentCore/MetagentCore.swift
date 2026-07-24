@@ -1006,29 +1006,39 @@ public enum MetagentCore {
                 projectRoot: requestedRoot,
                 skillName: skillName
             )
-            let removedNames = try removeProjectSkillLockEntries(
-                root: requestedRoot,
-                skillNames: [skillName]
-            )
-            guard removedNames.contains(skillName),
-                  try readProjectSkillLocksValidated(root: requestedRoot)[skillName] == nil
-            else {
-                throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
-                    NSLocalizedDescriptionKey: "Could not reconcile the stale Skills CLI lock entry for \(skillName). Recovery state: \(recovery.path)"
-                ])
-            }
-            let removedProjectionCount = try removeDanglingSkillProjections(
+            let movedProjections = try moveDanglingSkillProjections(
                 projectRoot: requestedRoot,
                 skillURL: expectedSkillURL,
                 skillName: skillName,
                 recovery: recovery
             )
+            do {
+                let removedNames = try removeProjectSkillLockEntries(
+                    root: requestedRoot,
+                    skillNames: [skillName]
+                )
+                guard removedNames.contains(skillName),
+                      try readProjectSkillLocksValidated(root: requestedRoot)[skillName] == nil
+                else {
+                    throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
+                        NSLocalizedDescriptionKey: "Could not reconcile the stale Skills CLI lock entry for \(skillName). Recovery state: \(recovery.path)"
+                    ])
+                }
+            } catch {
+                let rollbackFailures = rollbackMovedSkillProjections(movedProjections)
+                let rollbackSuffix = rollbackFailures.isEmpty
+                    ? ""
+                    : "\nProjection rollback failures:\n\(rollbackFailures.joined(separator: "\n"))"
+                throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
+                    NSLocalizedDescriptionKey: "\(error.localizedDescription)\(rollbackSuffix)"
+                ])
+            }
             var lines = [
                 "saved recovery state to \(recovery.path)",
                 "removed a stale project lock entry for an already-absent Skills CLI bundle",
             ]
-            if removedProjectionCount > 0 {
-                lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
+            if !movedProjections.isEmpty {
+                lines.append("removed \(movedProjections.count) dangling per-skill projection link(s)")
             }
             lines.append(finalizeRemovalRecovery(
                 recovery,
@@ -2843,34 +2853,67 @@ private func removeProjectSkillLockEntries(
     return removedNames
 }
 
-private func removeDanglingSkillProjections(
+private func moveDanglingSkillProjections(
     projectRoot: URL,
     skillURL: URL,
     skillName: String,
     recovery: URL
-) throws -> Int {
+) throws -> [(original: URL, recovery: URL)] {
     let candidates = [
-        ("codex", projectRoot.appendingPathComponent(".codex").appendingPathComponent("skills").appendingPathComponent(skillName)),
-        ("claude", projectRoot.appendingPathComponent(".claude").appendingPathComponent("skills").appendingPathComponent(skillName)),
+        ("codex", projectRoot.appendingPathComponent(".codex").appendingPathComponent("skills")),
+        ("claude", projectRoot.appendingPathComponent(".claude").appendingPathComponent("skills")),
     ]
-    var removedCount = 0
-    for (index, candidate) in candidates.enumerated() {
-        let (location, projectionURL) = candidate
-        guard isSymlink(projectionURL),
-              symlink(projectionURL, resolvesTo: skillURL)
-        else { continue }
-        let destination = recovery
-            .appendingPathComponent("projections")
-            .appendingPathComponent("\(index)-\(location)")
-            .appendingPathComponent(skillName)
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try fileManager.moveItem(at: projectionURL, to: destination)
-        removedCount += 1
+    var moved: [(original: URL, recovery: URL)] = []
+    do {
+        for (index, candidate) in candidates.enumerated() {
+            let (location, container) = candidate
+            guard !isSymlink(container),
+                  !isSymlink(container.deletingLastPathComponent()),
+                  container.resolvingSymlinksInPath().standardizedFileURL.path == container.standardizedFileURL.path
+            else { continue }
+            let projectionURL = container.appendingPathComponent(skillName)
+            guard isSymlink(projectionURL),
+                  symlink(projectionURL, resolvesTo: skillURL)
+            else { continue }
+            let destination = recovery
+                .appendingPathComponent("projections")
+                .appendingPathComponent("\(index)-\(location)")
+                .appendingPathComponent(skillName)
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.moveItem(at: projectionURL, to: destination)
+            moved.append((projectionURL, destination))
+        }
+    } catch {
+        let rollbackFailures = rollbackMovedSkillProjections(moved)
+        guard rollbackFailures.isEmpty else {
+            throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "Projection cleanup failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))"
+            ])
+        }
+        throw error
     }
-    return removedCount
+    return moved
+}
+
+private func rollbackMovedSkillProjections(
+    _ moved: [(original: URL, recovery: URL)]
+) -> [String] {
+    var failures: [String] = []
+    for projection in moved.reversed() {
+        do {
+            try fileManager.createDirectory(
+                at: projection.original.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.moveItem(at: projection.recovery, to: projection.original)
+        } catch {
+            failures.append("\(projection.original.path): \(error.localizedDescription)")
+        }
+    }
+    return failures
 }
 
 private func globalSkillLockPath() -> URL {

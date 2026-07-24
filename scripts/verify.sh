@@ -532,11 +532,15 @@ cat >"$stale_lock_root/skills-lock.json" <<'EOF'
 EOF
 mkdir -p "$stale_lock_root/.codex/skills"
 ln -s ../../.agents/skills/stale-lock "$stale_lock_root/.codex/skills/stale-lock"
+mkdir -p "$stale_lock_root/.claude/shared-skills"
+ln -s ../../.agents/skills/stale-lock "$stale_lock_root/.claude/shared-skills/stale-lock"
+ln -s shared-skills "$stale_lock_root/.claude/skills"
 stale_lock_retry_output="$fixture_root/stale-lock-retry.out"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" \
   "$fixture_root/uninstall-probe" "$stale_lock_root" stale-lock apply >"$stale_lock_retry_output"
 jq -e '.skills == {} and .futureRootMetadata.preserve == true' "$stale_lock_root/skills-lock.json" >/dev/null
 test ! -L "$stale_lock_root/.codex/skills/stale-lock"
+test -L "$stale_lock_root/.claude/shared-skills/stale-lock"
 grep -q 'removed a stale project lock entry for an already-absent Skills CLI bundle' "$stale_lock_retry_output"
 grep -q 'removed 1 dangling per-skill projection link' "$stale_lock_retry_output"
 
