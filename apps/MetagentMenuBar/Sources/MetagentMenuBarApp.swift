@@ -2047,6 +2047,7 @@ private struct InventorySection: View {
     @State private var selectedDuplicateGroupID: String?
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
     @State private var reviewedDuplicateGroupIDs = Set<String>()
+    @State private var hiddenSourceRawBeforeDuplicateReview: String?
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.grouping.v1") private var groupingRaw = SkillGrouping.none.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
@@ -2278,6 +2279,18 @@ private struct InventorySection: View {
         }
     }
 
+    private func beginDuplicateReview() {
+        guard hiddenSourceRawBeforeDuplicateReview == nil else { return }
+        hiddenSourceRawBeforeDuplicateReview = hiddenSourceRaw
+        hiddenSourceRaw = ""
+    }
+
+    private func endDuplicateReview() {
+        guard let previousValue = hiddenSourceRawBeforeDuplicateReview else { return }
+        hiddenSourceRaw = previousValue
+        hiddenSourceRawBeforeDuplicateReview = nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -2494,13 +2507,25 @@ private struct InventorySection: View {
         }
         .onAppear {
             migrateSourceVisibilityIfNeeded()
+            if selectedView == .duplicates {
+                beginDuplicateReview()
+            }
             sortOrder = defaultSortOrder(for: selectedView)
+        }
+        .onDisappear {
+            endDuplicateReview()
         }
         .task(id: model.skillTableRevision) {
             await rebuildRows()
         }
-        .onChange(of: selectedViewRaw) { _, rawValue in
+        .onChange(of: selectedViewRaw) { oldRawValue, rawValue in
+            let oldView = SkillTableView(rawValue: oldRawValue) ?? .summary
             let view = SkillTableView(rawValue: rawValue) ?? .summary
+            if oldView != .duplicates, view == .duplicates {
+                beginDuplicateReview()
+            } else if oldView == .duplicates, view != .duplicates {
+                endDuplicateReview()
+            }
             selection.formIntersection(Set(rows.map(\.id)))
             duplicateRemovalIDs.removeAll()
             sortOrder = defaultSortOrder(for: view)
