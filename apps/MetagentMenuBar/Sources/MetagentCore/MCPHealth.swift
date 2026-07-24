@@ -78,6 +78,20 @@ public struct MCPServerHealth: Codable, Equatable, Identifiable, Sendable {
             projectStates: matchingProjectStates
         )
     }
+
+    public func projectOnly(at projectPath: String) -> MCPServerHealth? {
+        let matchingProjectStates = projectStates.filter { $0.path == projectPath }
+        guard !matchingProjectStates.isEmpty else { return nil }
+        let scopedState = aggregateMCPState(matchingProjectStates.map(\.state))
+        return MCPServerHealth(
+            client: client,
+            name: name,
+            state: scopedState,
+            detail: mcpStateDetail(scopedState, projectStates: matchingProjectStates),
+            globalState: nil,
+            projectStates: matchingProjectStates
+        )
+    }
 }
 
 public struct MCPHealthSnapshot: Codable, Equatable, Sendable {
@@ -111,6 +125,13 @@ public struct MCPHealthSnapshot: Codable, Equatable, Sendable {
         guard let projectPath else { return self }
         return MCPHealthSnapshot(
             servers: servers.compactMap { $0.scoped(to: projectPath) },
+            observedAt: observedAt
+        )
+    }
+
+    public func projectOnly(at projectPath: String) -> MCPHealthSnapshot {
+        MCPHealthSnapshot(
+            servers: servers.compactMap { $0.projectOnly(at: projectPath) },
             observedAt: observedAt
         )
     }

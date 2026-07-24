@@ -770,7 +770,7 @@ private struct OverviewSection: View {
         model.usageSnapshot.summaries
             .filter { summary in
                 guard let selectedProjectRoot else { return true }
-                if ["global", "system", "plugin"].contains(summary.scope) { return true }
+                guard summary.scope == "project" else { return false }
                 guard let path = summary.canonicalPath else { return false }
                 return path == selectedProjectRoot
                     || path.hasPrefix(selectedProjectRoot + "/")
@@ -792,7 +792,7 @@ private struct OverviewSection: View {
     }
 
     private var scopedMCPHealth: MCPHealthSnapshot {
-        model.mcpHealth.scoped(to: selectedProjectRoot)
+        projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
     }
 
     private var doctorFindings: [DoctorIssue] {
@@ -1944,9 +1944,8 @@ private struct InventorySection: View {
         .filter { selectedView == .usage || $0.isInstalled }
         .filter { selectedView != .duplicates || $0.overlap != nil }
         .filter {
-            selectedProjectRoot == nil
-                || $0.scope != "project"
-                || $0.projectRoot == selectedProjectRoot
+            guard let selectedProjectRoot else { return true }
+            return $0.scope == "project" && $0.projectRoot == selectedProjectRoot
         }
         .filter { !hiddenSources.contains($0.sourceCategory) }
         .filter { scopeFilter.includes($0) }
@@ -3042,7 +3041,9 @@ private struct MCPInventorySection: View {
     @State private var sortOrder = [KeyPathComparator(\MCPInventoryRow.name)]
 
     private var allRows: [MCPInventoryRow] {
-        model.mcpHealth.scoped(to: selectedProjectRoot).inventory.map(MCPInventoryRow.init)
+        projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
+            .inventory
+            .map(MCPInventoryRow.init)
     }
 
     private var rows: [MCPInventoryRow] {
@@ -3136,7 +3137,9 @@ private struct MCPMenuSection: View {
     let openMainWindow: () -> Void
 
     private var rows: [MCPInventoryRow] {
-        model.mcpHealth.scoped(to: selectedProjectRoot).inventory.map(MCPInventoryRow.init)
+        projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
+            .inventory
+            .map(MCPInventoryRow.init)
     }
 
     var body: some View {
@@ -3212,7 +3215,7 @@ private struct ProjectDirectoryRow: Identifiable {
                 skill.canonicalPath.isEmpty ? "\(skill.name):\(skill.location)" : standardizedDirectoryPath(skill.canonicalPath)
             }
         }).count
-        mcpCount = mcpHealth.scoped(to: directory.root).inventory.count
+        mcpCount = mcpHealth.projectOnly(at: directory.root).inventory.count
         claudeState = Self.claudeLinkState(
             root: directory.root,
             isGlobal: standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(NSHomeDirectory())
@@ -5878,10 +5881,18 @@ private func directoryFilterLabel(_ directory: DirectoryFilterOption, options: [
 private func logicalSkillCount(projects: [ProjectStatus], selectedProjectRoot: String) -> Int {
     Set<String>(projects.flatMap { project in
         project.skills.compactMap { skill in
-            guard skill.scope != "project" || project.root == selectedProjectRoot else { return nil }
+            guard skill.scope == "project", project.root == selectedProjectRoot else { return nil }
             return "\(project.root)\u{0}\(skill.name)"
         }
     }).count
+}
+
+private func projectFilteredMCPHealth(
+    _ snapshot: MCPHealthSnapshot,
+    selectedProjectRoot: String?
+) -> MCPHealthSnapshot {
+    guard let selectedProjectRoot else { return snapshot }
+    return snapshot.projectOnly(at: selectedProjectRoot)
 }
 
 private func groupedDoctorActionCount(_ findings: [DoctorIssue]) -> Int {
