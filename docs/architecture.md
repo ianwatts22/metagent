@@ -98,11 +98,11 @@ The helper is intentionally subordinate to `MetagentCore`. It should stay a thin
 
 MCP should be an access layer over `MetagentCore`, not a second implementation.
 
-`metagent analyze` emits the versioned, read-only project contract used by the
-CLI and MCP. Schema version 1 combines project instruction/configuration files,
-project skills, installed plugin skills, Doctor findings, passive relevant MCP
-state, and retained usage summaries for matching project skills. It reports
-paths and metadata but does not copy instruction contents into the report.
+`metagent analyze` emits the detailed schema-version-1 CLI report. It combines
+project instruction/configuration files, project skills, installed plugin
+skills, Doctor findings, passive relevant MCP state, and retained usage
+summaries for matching project skills. It reports paths and metadata but does
+not copy instruction contents into the report.
 
 The stdio server is:
 
@@ -110,8 +110,14 @@ The stdio server is:
 metagent mcp --stdio
 ```
 
-It uses the pinned official MCP Swift SDK and exposes three read-only tools:
-`analyze_project`, `list_skills`, and `doctor_project`. All three call
+It uses the pinned official MCP Swift SDK and exposes four read-only tools:
+`analyze_project`, `get_project_analysis_details`, `list_skills`, and
+`doctor_project`. `analyze_project` defaults to a compact schema-version-2
+project-only summary: counts, usage coverage, and at most five prioritized
+findings. It deliberately excludes global plugin inventories and global MCP
+servers. `get_project_analysis_details` retrieves one project-only section at a
+time (`instructions`, `skills`, `doctor`, `mcp`, or `usage`), caps pages at 100
+records, and returns an opaque cursor when another page exists. All tools call
 `MetagentCore`; the server owns no parallel scanner or cache. Add Rust or Python
 workers only for measured hot paths or exploratory analysis that Swift plus
 SQLite cannot handle cleanly.

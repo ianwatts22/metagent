@@ -303,6 +303,7 @@ struct MetagentCLI {
     private static func runAnalyze(_ args: [String]) throws {
         var root = FileManager.default.currentDirectoryPath
         var json = false
+        var details = false
         var index = 0
         while index < args.count {
             switch args[index] {
@@ -310,8 +311,10 @@ struct MetagentCLI {
                 root = try readFlagValue("--root", args: args, index: &index)
             case "--json":
                 json = true
+            case "--details", "--verbose":
+                details = true
             case "--help", "-h":
-                print("metagent analyze\n\nUsage:\n  metagent analyze [--root PATH] [--json]")
+                print("metagent analyze\n\nUsage:\n  metagent analyze [--root PATH] [--json] [--details]")
                 return
             default:
                 throw CLIError.message("unknown analyze flag: \(args[index])")
@@ -319,39 +322,205 @@ struct MetagentCLI {
             index += 1
         }
 
-        let report = try MetagentCore.analyzeProject(root: root)
-        if json {
-            try printJSON(report)
+        if details {
+            let report = try MetagentCore.analyzeProject(root: root)
+            if json {
+                try printJSON(report)
+                return
+            }
+            let projectSkills = report.skills.projects.flatMap(\.skills).count
+            let pluginSkills = report.pluginSkills.projects.flatMap(\.skills).count
+            print("project: \(report.root)")
+            print("instructions: \(report.instructions.count)")
+            print("skills: \(projectSkills) project, \(pluginSkills) plugin")
+            print("usage: \(report.usage.summaries.count) observed project skills")
+            print("MCP: \(report.mcp.servers.count) relevant configured entries, \(report.mcp.attention.count) need attention")
+            print("Doctor: \(report.doctor.warningCount) warnings, \(report.doctor.failureCount) failures")
             return
         }
-        let projectSkills = report.skills.projects.flatMap(\.skills).count
-        let pluginSkills = report.pluginSkills.projects.flatMap(\.skills).count
-        print("project: \(report.root)")
-        print("instructions: \(report.instructions.count)")
-        print("skills: \(projectSkills) project, \(pluginSkills) plugin")
-        print("usage: \(report.usage.summaries.count) observed project skills")
-        print("MCP: \(report.mcp.servers.count) relevant configured entries, \(report.mcp.attention.count) need attention")
-        print("Doctor: \(report.doctor.warningCount) warnings, \(report.doctor.failureCount) failures")
+
+        let summary = try MetagentCore.analyzeProjectSummary(root: root)
+        if json {
+            try printJSON(summary)
+            return
+        }
+        print("project: \(summary.root)")
+        print("scope: \(summary.scope) · schema v\(summary.schemaVersion)")
+        print("instructions: \(summary.counts.instructionFiles)")
+        print("skills: \(summary.counts.projectSkills) project")
+        print("usage: \(summary.counts.observedSkills) observed skills · \(summary.counts.skillInvocations30d) invocations in 30d")
+        print("MCP: \(summary.counts.projectMCPServers) project entries · \(summary.counts.mcpServersNeedingAttention) need attention")
+        print("Doctor: \(summary.counts.doctorWarnings) warnings · \(summary.counts.doctorFailures) failures")
+        if !summary.findings.isEmpty {
+            print("Top findings:")
+            for finding in summary.findings {
+                print("  \(finding.severity.rawValue): \(finding.title)")
+            }
+        }
     }
 
     private static func runMCP(_ args: [String]) throws {
-        guard args == ["--stdio"] else {
-            print("metagent mcp")
-            print("")
-            print("Usage:")
-            print("  metagent mcp --stdio")
+        if args == ["--stdio"] {
+            Task {
+                do {
+                    try await MetagentMCPServer.run()
+                    Foundation.exit(0)
+                } catch {
+                    FileHandle.standardError.writeLine(error.localizedDescription)
+                    Foundation.exit(1)
+                }
+            }
+            dispatchMain()
+        }
+
+        guard let command = args.first else {
+            printMCPHelp()
             return
         }
-        Task {
-            do {
-                try await MetagentMCPServer.run()
-                Foundation.exit(0)
-            } catch {
-                FileHandle.standardError.writeLine(error.localizedDescription)
-                Foundation.exit(1)
+
+        switch command {
+        case "install", "remove":
+            let operation: MCPSetupOperation = command == "install" ? .install : .remove
+            let parsed = try parseMCPSetupFlags(
+                Array(args.dropFirst()),
+                command: "mcp \(command)",
+                requireClient: true,
+                allowApply: true
+            )
+            let report = try runMCPSetup(
+                operation: operation,
+                client: parsed.client!,
+                apply: parsed.apply
+            )
+            try printMCPSetupReport(report, json: parsed.json)
+            if report.outcome == .blocked {
+                throw CLIError.message(report.detail)
             }
+        case "status":
+            let parsed = try parseMCPSetupFlags(
+                Array(args.dropFirst()),
+                command: "mcp status",
+                requireClient: false,
+                allowApply: false
+            )
+            let clients = parsed.client.map { [$0] } ?? MCPClient.allCases
+            let reports = try clients.map {
+                try runMCPSetup(operation: .status, client: $0, apply: false)
+            }
+            if parsed.json {
+                try printJSON(reports)
+            } else {
+                reports.forEach(printMCPSetupReportText)
+            }
+        case "help", "--help", "-h":
+            printMCPHelp()
+        default:
+            throw CLIError.message("unknown mcp command: \(command)")
         }
-        dispatchMain()
+    }
+
+    private static func runMCPSetup(
+        operation: MCPSetupOperation,
+        client: MCPClient,
+        apply: Bool
+    ) throws -> MCPSetupReport {
+        let metagentExecutable = MetagentCore.currentExecutableURL()
+        let clientExecutable: URL
+        do {
+            clientExecutable = try MetagentCore.commandLineExecutable(
+                named: client.rawValue,
+                environmentOverride: client == .codex ? "METAGENT_CODEX" : "METAGENT_CLAUDE"
+            )
+        } catch {
+            guard operation == .status else { throw error }
+            let directVerification = MCPSystemStdioVerifier().verify(executable: metagentExecutable)
+            return MCPSetupReport(
+                client: client,
+                operation: .status,
+                outcome: .unchanged,
+                serverName: MetagentCore.managedMCPServerName,
+                applyRequested: false,
+                changed: false,
+                configurationState: .unavailable,
+                expectedCommand: metagentExecutable.path,
+                expectedArguments: ["mcp", "--stdio"],
+                managementCommand: nil,
+                directVerification: directVerification,
+                detail: "\(client.displayName) CLI is not installed, so its MCP configuration cannot be inspected.",
+                clientRestartRequired: false,
+                runtimeCaveat: MetagentCore.mcpRuntimeCaveat
+            )
+        }
+        return try MetagentCore.manageMCPSetup(
+            client: client,
+            operation: operation,
+            apply: apply,
+            metagentExecutable: metagentExecutable,
+            clientExecutable: clientExecutable,
+            executor: MCPSystemCommandExecutor()
+        )
+    }
+
+    private static func parseMCPSetupFlags(
+        _ args: [String],
+        command: String,
+        requireClient: Bool,
+        allowApply: Bool
+    ) throws -> (client: MCPClient?, apply: Bool, json: Bool) {
+        var client: MCPClient?
+        var apply = false
+        var json = false
+        var index = 0
+        while index < args.count {
+            switch args[index] {
+            case "--client":
+                let value = try readFlagValue("--client", args: args, index: &index)
+                guard let parsed = MCPClient(rawValue: value) else {
+                    throw CLIError.message("--client must be codex or claude")
+                }
+                client = parsed
+            case "--apply":
+                guard allowApply else {
+                    throw CLIError.message("unknown \(command) flag: --apply")
+                }
+                apply = true
+            case "--json":
+                json = true
+            case "--help", "-h":
+                printMCPHelp()
+                Foundation.exit(0)
+            default:
+                throw CLIError.message("unknown \(command) flag: \(args[index])")
+            }
+            index += 1
+        }
+        if requireClient && client == nil {
+            throw CLIError.message("\(command) requires --client codex|claude")
+        }
+        return (client, apply, json)
+    }
+
+    private static func printMCPSetupReport(_ report: MCPSetupReport, json: Bool) throws {
+        if json {
+            try printJSON(report)
+        } else {
+            printMCPSetupReportText(report)
+        }
+    }
+
+    private static func printMCPSetupReportText(_ report: MCPSetupReport) {
+        print("\(report.client.displayName): \(report.detail)")
+        print("  configuration: \(report.configurationState.rawValue)")
+        print("  direct stdio: \(report.directVerification.rawValue)")
+        if let command = report.managementCommand {
+            print("  command: \(command.map(shellQuoted).joined(separator: " "))")
+        }
+        print("  \(report.runtimeCaveat)")
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        guard value.contains(where: \.isWhitespace) || value.contains("'") else { return value }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func parseScan(_ args: [String]) throws -> (options: SkillScanOptions, json: Bool) {
@@ -490,7 +659,8 @@ struct MetagentCLI {
           metagent skills <scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
-          metagent analyze [--root PATH] [--json]
+          metagent analyze [--root PATH] [--json] [--details]
+          metagent mcp <install|status|remove> [flags]
           metagent mcp --stdio
         """)
     }
@@ -519,6 +689,22 @@ struct MetagentCLI {
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills remove NAME [--root PATH] [--apply] [--json]
           metagent skills evaluate PATH [--provider plugin-eval|codex|all] [--json]
+        """)
+    }
+
+    private static func printMCPHelp() {
+        print("""
+        metagent mcp
+
+        Usage:
+          metagent mcp install --client codex|claude [--apply] [--json]
+          metagent mcp status [--client codex|claude] [--json]
+          metagent mcp remove --client codex|claude [--apply] [--json]
+          metagent mcp --stdio
+
+        Install and remove are previews unless --apply is supplied. Status verifies
+        the absolute running metagent executable over stdio, but a restarted client
+        or new session is still required to prove loaded, connected, or invoked state.
         """)
     }
 

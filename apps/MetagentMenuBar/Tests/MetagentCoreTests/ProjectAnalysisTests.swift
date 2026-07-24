@@ -94,6 +94,106 @@ final class ProjectAnalysisTests: XCTestCase {
         ))
     }
 
+    func testCompactSummaryIsProjectOnlyAndOmitsFullInventories() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home")
+        let project = root.appendingPathComponent("project")
+        let skill = project.appendingPathComponent(".agents/skills/demo")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try Data("# Project instructions\n".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
+        try Data("---\nname: demo\ndescription: Demo skill\n---\n".utf8)
+            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try Data("""
+        {
+          "mcpServers":{"global-only":{}},
+          "projects":{
+            "\(project.path)":{"mcpServers":{"project-only":{}}}
+          }
+        }
+        """.utf8).write(to: home.appendingPathComponent(".claude.json"))
+
+        let codex = root.appendingPathComponent("codex")
+        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+
+        let summary = try MetagentCore.analyzeProjectSummary(
+            root: project.path,
+            homeDirectory: home,
+            codexExecutableOverride: codex,
+            generatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let encoded = try MetagentCore.encodeJSON(summary)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+
+        XCTAssertEqual(summary.schemaVersion, 2)
+        XCTAssertEqual(summary.scope, "project_only")
+        XCTAssertEqual(summary.counts.instructionFiles, 1)
+        XCTAssertEqual(summary.counts.projectSkills, 1)
+        XCTAssertEqual(summary.counts.projectMCPServers, 1)
+        XCTAssertLessThanOrEqual(summary.findings.count, 5)
+        XCTAssertEqual(json["schema_version"] as? Int, 2)
+        XCTAssertNil(json["skills"])
+        XCTAssertNil(json["plugin_skills"])
+        XCTAssertNil(json["doctor"])
+        XCTAssertNil(json["mcp"])
+        XCTAssertNil(json["usage"])
+    }
+
+    func testProjectDetailPagesAreBoundedAndCursorIsSectionSpecific() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home")
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: project.appendingPathComponent("Sources/Feature"),
+            withIntermediateDirectories: true
+        )
+        try Data("# Project instructions\n".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
+        try Data("# Feature instructions\n".utf8)
+            .write(to: project.appendingPathComponent("Sources/Feature/AGENTS.md"))
+        try Data("{}".utf8).write(to: home.appendingPathComponent(".claude.json"))
+
+        let codex = root.appendingPathComponent("codex")
+        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+
+        let firstPage = try MetagentCore.analyzeProjectDetails(
+            root: project.path,
+            section: .instructions,
+            limit: 1,
+            homeDirectory: home,
+            codexExecutableOverride: codex
+        )
+        let cursor = try XCTUnwrap(firstPage.nextCursor)
+        let secondPage = try MetagentCore.analyzeProjectDetails(
+            root: project.path,
+            section: .instructions,
+            cursor: cursor,
+            limit: 1,
+            homeDirectory: home,
+            codexExecutableOverride: codex
+        )
+
+        XCTAssertEqual(firstPage.scope, "project_only")
+        XCTAssertEqual(firstPage.items.count, 1)
+        XCTAssertEqual(secondPage.items.count, 1)
+        XCTAssertNil(secondPage.nextCursor)
+        XCTAssertThrowsError(try MetagentCore.analyzeProjectDetails(
+            root: project.path,
+            section: .skills,
+            cursor: cursor,
+            homeDirectory: home,
+            codexExecutableOverride: codex
+        ))
+    }
+
     func testAnalysisIsolatesProjectMCPStatesAndCanonicalizesSymlinkRoots() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")

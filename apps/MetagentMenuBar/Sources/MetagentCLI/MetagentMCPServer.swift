@@ -14,8 +14,13 @@ enum MetagentMCPServer {
             .init(tools: [
                 Tool(
                     name: "analyze_project",
-                    description: "Analyze a project folder's agent instructions, skills, plugin skills, Doctor findings, passive MCP configuration, and observed skill usage.",
+                    description: "Return a compact, project-only summary of agent instructions, skills, Doctor findings, project MCP configuration, observed skill usage, and up to five prioritized actions. Use get_project_analysis_details for bounded records.",
                     inputSchema: rootInputSchema
+                ),
+                Tool(
+                    name: "get_project_analysis_details",
+                    description: "Page through one project-analysis section. Results are project-only, capped at 100 records per call, and provide an opaque next_cursor when more records remain.",
+                    inputSchema: projectAnalysisDetailInputSchema
                 ),
                 Tool(
                     name: "list_skills",
@@ -37,7 +42,23 @@ enum MetagentMCPServer {
                 let text: String
                 switch params.name {
                 case "analyze_project":
-                    text = try encodeJSON(MetagentCore.analyzeProject(root: root))
+                    text = try encodeJSON(MetagentCore.analyzeProjectSummary(root: root))
+                case "get_project_analysis_details":
+                    guard let sectionName = params.arguments?["section"]?.stringValue,
+                          let section = ProjectAnalysisSection(rawValue: sectionName)
+                    else {
+                        throw NSError(
+                            domain: "MetagentMCP",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "section is required"]
+                        )
+                    }
+                    text = try encodeJSON(MetagentCore.analyzeProjectDetails(
+                        root: root,
+                        section: section,
+                        cursor: params.arguments?["cursor"]?.stringValue,
+                        limit: params.arguments?["limit"]?.intValue ?? 25
+                    ))
                 case "list_skills":
                     text = try encodeJSON(MetagentCore.scanSkills(options: .init(
                         roots: [root],
@@ -89,6 +110,33 @@ enum MetagentMCPServer {
                 "description": .string("Absolute or working-directory-relative project folder. Defaults to the MCP server working directory.")
             ])
         ]),
+        "additionalProperties": .bool(false)
+    ])
+
+    private static let projectAnalysisDetailInputSchema = Value.object([
+        "type": .string("object"),
+        "properties": .object([
+            "root": .object([
+                "type": .string("string"),
+                "description": .string("Absolute or working-directory-relative project folder. Defaults to the MCP server working directory.")
+            ]),
+            "section": .object([
+                "type": .string("string"),
+                "enum": .array(ProjectAnalysisSection.allCases.map { .string($0.rawValue) }),
+                "description": .string("Project-only detail section to retrieve.")
+            ]),
+            "cursor": .object([
+                "type": .string("string"),
+                "description": .string("Opaque next_cursor returned by the previous page for the same section.")
+            ]),
+            "limit": .object([
+                "type": .string("integer"),
+                "minimum": .int(1),
+                "maximum": .int(100),
+                "default": .int(25)
+            ])
+        ]),
+        "required": .array([.string("section")]),
         "additionalProperties": .bool(false)
     ])
 

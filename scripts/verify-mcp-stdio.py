@@ -38,6 +38,25 @@ def main() -> int:
             "method": "tools/call",
             "params": {"name": "list_skills", "arguments": {"root": sys.argv[2]}},
         },
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "analyze_project", "arguments": {"root": sys.argv[2]}},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "get_project_analysis_details",
+                "arguments": {
+                    "root": sys.argv[2],
+                    "section": "skills",
+                    "limit": 1,
+                },
+            },
+        },
     ]
     assert process.stdin is not None
     assert process.stdout is not None
@@ -47,8 +66,9 @@ def main() -> int:
 
     responses = {}
     try:
-        deadline = time.time() + 15
-        while time.time() < deadline and not {1, 2, 3}.issubset(responses):
+        expected_response_ids = {1, 2, 3, 4, 5}
+        deadline = time.time() + 30
+        while time.time() < deadline and not expected_response_ids.issubset(responses):
             ready, _, _ = select.select([process.stdout], [], [], 0.5)
             if not ready:
                 continue
@@ -59,14 +79,35 @@ def main() -> int:
             if "id" in response:
                 responses[response["id"]] = response
 
+        missing_response_ids = expected_response_ids - responses.keys()
+        if missing_response_ids:
+            raise RuntimeError(
+                f"MCP verifier timed out waiting for response IDs: {sorted(missing_response_ids)}"
+            )
+
         tools = [tool["name"] for tool in responses[2]["result"]["tools"]]
-        expected = ["analyze_project", "list_skills", "doctor_project"]
+        expected = [
+            "analyze_project",
+            "get_project_analysis_details",
+            "list_skills",
+            "doctor_project",
+        ]
         if tools != expected:
             raise RuntimeError(f"unexpected MCP tools: {tools}")
 
         payload = json.loads(responses[3]["result"]["content"][0]["text"])
         if not payload.get("projects"):
             raise RuntimeError("MCP list_skills returned no project inventory")
+        analysis = json.loads(responses[4]["result"]["content"][0]["text"])
+        if analysis.get("schema_version") != 2:
+            raise RuntimeError("MCP analyze_project did not return schema version 2")
+        if analysis.get("scope") != "project_only":
+            raise RuntimeError("MCP analyze_project was not project-only")
+        if "plugin_skills" in analysis:
+            raise RuntimeError("MCP analyze_project included global plugin inventory")
+        details = json.loads(responses[5]["result"]["content"][0]["text"])
+        if details.get("section") != "skills" or len(details.get("items", [])) > 1:
+            raise RuntimeError("MCP project details did not honor the requested page")
         process.stdin.close()
         process.wait(timeout=5)
         if process.returncode != 0:

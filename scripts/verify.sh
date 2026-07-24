@@ -43,6 +43,13 @@ test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.t
 "$swift_helper" usage --help >/dev/null
 "$swift_helper" config show --json >/dev/null
 "$swift_helper" analyze --root "$repo_root" --json \
+  | jq -e '
+      .schema_version == 2 and
+      .scope == "project_only" and
+      .counts.project_skills > 0 and
+      .detail_tool == "get_project_analysis_details"
+    ' >/dev/null
+"$swift_helper" analyze --root "$repo_root" --json --details \
   | jq -e '.schema_version == 1 and (.skills.projects | length) > 0' >/dev/null
 python3 "$repo_root/scripts/verify-mcp-stdio.py" "$swift_helper" "$repo_root"
 
