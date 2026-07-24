@@ -384,6 +384,15 @@ import Foundation
 struct Probe {
     static func main() {
         do {
+            if CommandLine.arguments.dropFirst(3).first == "batch" {
+                let reports = try MetagentCore.uninstallSkills(
+                    projectRoot: CommandLine.arguments[1],
+                    skillNames: CommandLine.arguments[2].split(separator: ",").map(String.init),
+                    allowManagedRemoval: true
+                )
+                print(reports.flatMap(\.lines).joined(separator: "\n"))
+                return
+            }
             let report = try MetagentCore.uninstallSkill(
                 projectRoot: CommandLine.arguments[1],
                 skillName: CommandLine.arguments[2],
@@ -414,19 +423,22 @@ npx_stub="$fixture_root/npx-stub"
 cat >"$npx_stub" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-skill_name="$4"
 target_root="$PWD"
 lock_path="$target_root/skills-lock.json"
 if [[ " ${*} " == *" --global "* ]]; then
   target_root="$HOME"
   lock_path="${XDG_STATE_HOME:-$HOME/.agents}/skills/.skill-lock.json"
 fi
-mv "$target_root/.agents/skills/$skill_name" "$target_root/.agents/skills/.removed-$skill_name"
-if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
-  mv "$target_root/.codex/skills/$skill_name" "$target_root/.codex/skills/.removed-$skill_name"
-fi
-jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
-mv "$lock_path.next" "$lock_path"
+[[ -z "${METAGENT_NPX_LOG:-}" ]] || printf '%s\n' "$*" >>"$METAGENT_NPX_LOG"
+for skill_name in "${@:4}"; do
+  [[ "$skill_name" == "--yes" || "$skill_name" == "--global" ]] && continue
+  mv "$target_root/.agents/skills/$skill_name" "$target_root/.agents/skills/.removed-$skill_name"
+  if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
+    mv "$target_root/.codex/skills/$skill_name" "$target_root/.codex/skills/.removed-$skill_name"
+  fi
+  jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
+  mv "$lock_path.next" "$lock_path"
+done
 SH
 chmod +x "$npx_stub"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me apply >/dev/null
@@ -437,6 +449,28 @@ if grep -q '"remove-me"' "$uninstall_root/skills-lock.json"; then
   echo "managed removal left its project lock entry" >&2
   exit 1
 fi
+
+batch_root="$fixture_root/batch-uninstall-project"
+mkdir -p "$batch_root/.agents/skills/batch-one" "$batch_root/.agents/skills/batch-two"
+printf -- "---\nname: batch-one\ndescription: first\n---\n" >"$batch_root/.agents/skills/batch-one/SKILL.md"
+printf -- "---\nname: batch-two\ndescription: second\n---\n" >"$batch_root/.agents/skills/batch-two/SKILL.md"
+cat >"$batch_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "batch-one": {"source": "example/skills", "sourceType": "github"},
+    "batch-two": {"source": "example/skills", "sourceType": "github"}
+  }
+}
+EOF
+batch_npx_log="$fixture_root/batch-npx.log"
+HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_LOG="$batch_npx_log" \
+  "$fixture_root/uninstall-probe" "$batch_root" batch-one,batch-two batch >/dev/null
+test ! -e "$batch_root/.agents/skills/batch-one"
+test ! -e "$batch_root/.agents/skills/batch-two"
+jq -e '.skills == {}' "$batch_root/skills-lock.json" >/dev/null
+test "$(wc -l <"$batch_npx_log" | tr -d ' ')" = "1"
+grep -q 'skills remove batch-one batch-two --yes' "$batch_npx_log"
 
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \

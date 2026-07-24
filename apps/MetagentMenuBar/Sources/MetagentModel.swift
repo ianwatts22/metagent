@@ -15,6 +15,12 @@ struct SkillRemovalRequest: Sendable {
     let kind: Kind
 }
 
+private struct SkillRemovalOutcome: Sendable {
+    let succeededIDs: Set<String>
+    let failedIDs: Set<String>
+    let lines: [String]
+}
+
 @MainActor
 final class MetagentModel: ObservableObject {
     @Published private(set) var isRunning = false
@@ -44,9 +50,14 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var skillTableRevision = 0
+    @Published private(set) var pendingSkillRemovalIDs = Set<String>()
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
+    private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
+    private var activeSkillRemovalKeys = Set<String>()
+    private var completedSkillRemovalIDs = Set<String>()
+    private var isReconcilingSkillRemovals = false
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -487,43 +498,164 @@ final class MetagentModel: ObservableObject {
     func uninstallSkills(_ requests: [SkillRemovalRequest]) -> Bool {
         let uniqueRequests = Dictionary(requests.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             .values
+            .filter { !pendingSkillRemovalIDs.contains($0.id) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         guard !uniqueRequests.isEmpty else { return false }
-        let title = uniqueRequests.count == 1
-            ? "Remove \(uniqueRequests[0].displayName)"
-            : "Remove \(uniqueRequests.count) items"
-        return runOperation(title: title, runningText: "Removing selected skills...") {
-            var lines: [String] = []
-            for request in uniqueRequests {
-                do {
-                    let report: SkillUninstallReport
-                    switch request.kind {
-                    case let .canonical(projectRoot, skillName):
-                        report = try MetagentCore.uninstallSkill(
-                            projectRoot: projectRoot,
-                            skillName: skillName,
-                            allowManagedRemoval: true
-                        )
-                    case let .standalone(projectRoot, skillPath, skillName):
-                        report = try MetagentCore.uninstallStandaloneSkill(
-                            projectRoot: projectRoot,
-                            skillPath: skillPath,
-                            skillName: skillName
-                        )
-                    case let .plugin(pluginID):
-                        report = try MetagentCore.uninstallCodexPlugin(pluginID: pluginID)
-                    }
-                    lines.append("\(request.displayName):")
+
+        pendingSkillRemovalIDs.formUnion(uniqueRequests.map(\.id))
+        skillTableRevision += 1
+        statusText = uniqueRequests.count == 1
+            ? "Removing \(uniqueRequests[0].displayName)…"
+            : "Removing \(uniqueRequests.count) skills…"
+        systemImage = "arrow.triangle.2.circlepath"
+
+        let groups = Dictionary(grouping: uniqueRequests, by: Self.skillRemovalQueueKey)
+        for (key, group) in groups {
+            skillRemovalQueues[key, default: []].append(group)
+            startNextSkillRemoval(for: key)
+        }
+        return true
+    }
+
+    private static func skillRemovalQueueKey(_ request: SkillRemovalRequest) -> String {
+        switch request.kind {
+        case let .canonical(projectRoot, _), let .standalone(projectRoot, _, _):
+            return "root:\(projectRoot)"
+        case let .plugin(pluginID):
+            return "plugin:\(pluginID)"
+        }
+    }
+
+    private func startNextSkillRemoval(for key: String) {
+        guard !activeSkillRemovalKeys.contains(key),
+              var queue = skillRemovalQueues[key],
+              !queue.isEmpty
+        else { return }
+
+        let requests = queue.removeFirst()
+        skillRemovalQueues[key] = queue.isEmpty ? nil : queue
+        activeSkillRemovalKeys.insert(key)
+
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Self.performSkillRemovals(requests)
+            }.value
+            finishSkillRemoval(outcome, key: key)
+        }
+    }
+
+    nonisolated private static func performSkillRemovals(
+        _ requests: [SkillRemovalRequest]
+    ) -> SkillRemovalOutcome {
+        var succeededIDs = Set<String>()
+        var failedIDs = Set<String>()
+        var lines: [String] = []
+
+        let canonical = requests.compactMap { request -> (SkillRemovalRequest, String, String)? in
+            guard case let .canonical(projectRoot, skillName) = request.kind else { return nil }
+            return (request, projectRoot, skillName)
+        }
+        if let projectRoot = canonical.first?.1 {
+            do {
+                let reports = try MetagentCore.uninstallSkills(
+                    projectRoot: projectRoot,
+                    skillNames: canonical.map(\.2),
+                    allowManagedRemoval: true
+                )
+                succeededIDs.formUnion(canonical.map(\.0.id))
+                for report in reports {
+                    lines.append("\(report.skillName):")
                     lines.append(contentsOf: report.lines.map { "  \($0)" })
-                } catch {
-                    lines.append("\(request.displayName): failed")
-                    lines.append("  \(error.localizedDescription)")
-                    return CommandOutcome(succeeded: false, lines: lines, repairPreview: nil)
                 }
+            } catch {
+                failedIDs.formUnion(canonical.map(\.0.id))
+                lines.append("Skills CLI batch failed:")
+                lines.append("  \(error.localizedDescription)")
             }
-            return CommandOutcome(succeeded: true, lines: lines, repairPreview: nil)
-        } completion: { [weak self] result in
-            self?.refreshStatus()
+        }
+
+        for request in requests where !canonical.contains(where: { $0.0.id == request.id }) {
+            do {
+                let report: SkillUninstallReport
+                switch request.kind {
+                case .canonical:
+                    continue
+                case let .standalone(projectRoot, skillPath, skillName):
+                    report = try MetagentCore.uninstallStandaloneSkill(
+                        projectRoot: projectRoot,
+                        skillPath: skillPath,
+                        skillName: skillName
+                    )
+                case let .plugin(pluginID):
+                    report = try MetagentCore.uninstallCodexPlugin(pluginID: pluginID)
+                }
+                succeededIDs.insert(request.id)
+                lines.append("\(request.displayName):")
+                lines.append(contentsOf: report.lines.map { "  \($0)" })
+            } catch {
+                failedIDs.insert(request.id)
+                lines.append("\(request.displayName): failed")
+                lines.append("  \(error.localizedDescription)")
+            }
+        }
+        return SkillRemovalOutcome(
+            succeededIDs: succeededIDs,
+            failedIDs: failedIDs,
+            lines: lines
+        )
+    }
+
+    private func finishSkillRemoval(_ outcome: SkillRemovalOutcome, key: String) {
+        activeSkillRemovalKeys.remove(key)
+        pendingSkillRemovalIDs.subtract(outcome.failedIDs)
+        completedSkillRemovalIDs.formUnion(outcome.succeededIDs)
+        skillTableRevision += 1
+        lastRunText = Self.timestamp()
+        lastOutputTitle = outcome.failedIDs.isEmpty ? "Remove skills" : "Some skills could not be removed"
+        lastOutputLines = outcome.lines
+        statusText = outcome.failedIDs.isEmpty ? "Skill removal finished" : "Some skill removals failed"
+        systemImage = outcome.failedIDs.isEmpty ? "checkmark.circle" : "exclamationmark.triangle"
+
+        startNextSkillRemoval(for: key)
+        reconcileCompletedSkillRemovalsIfIdle()
+    }
+
+    private func reconcileCompletedSkillRemovalsIfIdle() {
+        guard activeSkillRemovalKeys.isEmpty,
+              skillRemovalQueues.values.allSatisfy(\.isEmpty),
+              !completedSkillRemovalIDs.isEmpty,
+              !isReconcilingSkillRemovals
+        else { return }
+
+        isReconcilingSkillRemovals = true
+        let reconcilingIDs = completedSkillRemovalIDs
+        Task {
+            async let scanResult = Task.detached { Result { try MetagentCore.scanSkills() } }.value
+            async let homeScanResult = Task.detached { Result { try MetagentCore.scanHomeSkills(maxDepth: 2) } }.value
+            async let pluginScanResult = Task.detached { Result { try MetagentCore.scanCodexPlugins() } }.value
+            let (scan, homeScan, pluginScan) = await (scanResult, homeScanResult, pluginScanResult)
+
+            let refreshedProjects = [
+                scan.value?.projects,
+                homeScan.value?.projects,
+                pluginScan.value?.projects
+            ]
+            .compactMap { $0 }
+            .flatMap { $0 }
+            .map(ProjectStatus.init(project:))
+
+            if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
+                projects = Self.mergeProjects(refreshedProjects)
+                repoCount = projects.count
+                skillCount = Self.logicalSkillCount(projects: projects)
+                locationSummaryText = Self.locationSummary(projects: projects)
+                MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: []))
+            }
+            completedSkillRemovalIDs.subtract(reconcilingIDs)
+            pendingSkillRemovalIDs.subtract(reconcilingIDs)
+            isReconcilingSkillRemovals = false
+            skillTableRevision += 1
+            reconcileCompletedSkillRemovalsIfIdle()
         }
     }
 

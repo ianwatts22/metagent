@@ -1937,6 +1937,10 @@ private struct InventorySection: View {
     private var rows: [SkillTableRow] {
         let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return allRows
+        .filter {
+            guard let removalID = $0.inventory?.removalRequest?.id else { return true }
+            return !model.pendingSkillRemovalIDs.contains(removalID)
+        }
         .filter { selectedView == .usage || $0.isInstalled }
         .filter { selectedView != .duplicates || $0.overlap != nil }
         .filter {
@@ -2157,7 +2161,7 @@ private struct InventorySection: View {
                         )
                     }
                     .buttonStyle(.glass)
-                    .disabled(selectedRemovalRows.isEmpty || model.isRunning)
+                    .disabled(selectedRemovalRows.isEmpty)
                 }
 
                 Button {
@@ -2453,7 +2457,7 @@ private struct InventorySection: View {
         ) {
             pendingConfirmation = .removal(removableRows)
         }
-        .disabled(removableRows.isEmpty || model.isRunning)
+        .disabled(removableRows.isEmpty)
     }
 
     private func defaultSortOrder(for view: SkillTableView) -> [KeyPathComparator<SkillTableRow>] {
@@ -3894,10 +3898,10 @@ private func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
         parts.append("Removing a plugin skill uninstalls its entire Codex plugin, including its other skills; duplicate selections from one plugin are collapsed into one action.")
     }
     if managedCount > 0 {
-        parts.append("Managed skills are removed through their owning CLI after recovery state is saved.")
+        parts.append("Managed skills are removed through their owning CLI after recovery state is saved; skills sharing one project are sent in a single batch.")
     }
     if requests.count > 1 {
-        parts.append("Items are removed sequentially; processing stops and reports details if one fails.")
+        parts.append("Independent projects can finish in parallel. A failed item returns to the table with details while successful removals stay removed.")
     }
     return parts.joined(separator: " ")
 }

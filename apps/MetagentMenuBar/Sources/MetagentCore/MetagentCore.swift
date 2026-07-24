@@ -506,6 +506,14 @@ public struct SkillRemovalPlan: Codable, Equatable, Sendable {
     }
 }
 
+private struct SkillsCLIManagedRemoval {
+    let skillName: String
+    let skillURL: URL
+    let recovery: URL
+    let projections: [SkillInventoryItem]
+    let retainedBackups: [(original: URL, backup: URL)]
+}
+
 private struct CodexPluginList: Decodable {
     var installed: [CodexPlugin]
 }
@@ -1171,6 +1179,190 @@ public enum MetagentCore {
             backupPath: backupPath,
             lines: lines
         )
+    }
+
+    public static func uninstallSkills(
+        projectRoot: String,
+        skillNames: [String],
+        allowManagedRemoval: Bool = false
+    ) throws -> [SkillUninstallReport] {
+        let names = Array(Set(skillNames)).sorted()
+        guard !names.isEmpty else { return [] }
+        guard names.count > 1 else {
+            return [
+                try uninstallSkill(
+                    projectRoot: projectRoot,
+                    skillName: names[0],
+                    allowManagedRemoval: allowManagedRemoval
+                )
+            ]
+        }
+
+        let plans = try names.map {
+            try planSkillRemoval(projectRoot: projectRoot, skillName: $0)
+        }
+        let skillsCLINames = plans.filter { $0.manager == "skills-cli" }.map(\.skillName)
+        var reports: [SkillUninstallReport] = []
+
+        if !skillsCLINames.isEmpty {
+            guard allowManagedRemoval else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 5, userInfo: [
+                    NSLocalizedDescriptionKey: "These skills are managed by skills-cli. Explicitly apply the Metagent removal plan to remove them."
+                ])
+            }
+            reports += try uninstallSkillsCLIManagedSkills(
+                projectRoot: projectRoot,
+                skillNames: skillsCLINames
+            )
+        }
+
+        for plan in plans where plan.manager != "skills-cli" {
+            reports.append(try uninstallSkill(
+                projectRoot: projectRoot,
+                skillName: plan.skillName,
+                allowManagedRemoval: allowManagedRemoval
+            ))
+        }
+        return reports.sorted { $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending }
+    }
+
+    private static func uninstallSkillsCLIManagedSkills(
+        projectRoot: String,
+        skillNames: [String]
+    ) throws -> [SkillUninstallReport] {
+        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL
+        let project = try readProjectSkills(root: root)
+        let removals = try skillNames.map { skillName -> SkillsCLIManagedRemoval in
+            guard let skill = project.skills.first(where: {
+                $0.location == "agents"
+                    && $0.name == skillName
+                    && $0.manager == "skills-cli"
+                    && $0.representation == "canonical"
+            }) else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "\(skillName) is not a canonical Skills CLI bundle in \(root.path)."
+                ])
+            }
+
+            let skillURL = URL(fileURLWithPath: skill.path)
+            let projections = project.skills.filter {
+                guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                    return false
+                }
+                let url = URL(fileURLWithPath: $0.path)
+                return isSymlink(url) && symlink(url, resolvesTo: skillURL)
+            }
+            let retained = project.skills.filter {
+                guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                    return false
+                }
+                let url = URL(fileURLWithPath: $0.path)
+                return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
+            }
+            let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
+            try fileManager.copyItem(at: skillURL, to: recovery.appendingPathComponent(skillName))
+
+            var retainedBackups: [(original: URL, backup: URL)] = []
+            for (index, retainedSkill) in retained.enumerated() {
+                let original = URL(fileURLWithPath: retainedSkill.path)
+                let backup = recovery
+                    .appendingPathComponent("retained")
+                    .appendingPathComponent("\(index)-\(retainedSkill.location)")
+                    .appendingPathComponent(skillName)
+                try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fileManager.copyItem(at: original, to: backup)
+                retainedBackups.append((original, backup))
+            }
+            return SkillsCLIManagedRemoval(
+                skillName: skillName,
+                skillURL: skillURL,
+                recovery: recovery,
+                projections: projections,
+                retainedBackups: retainedBackups
+            )
+        }
+
+        do {
+            _ = try runSkillsCLIRemoval(root: root, skillNames: skillNames)
+        } catch {
+            let recoveryPaths = removals.map(\.recovery.path).joined(separator: "\n")
+            throw NSError(domain: "MetagentSkillUninstall", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "skills-cli removal failed: \(error.localizedDescription)\nRecovery states:\n\(recoveryPaths)"
+            ])
+        }
+
+        let remainingLocks = readProjectSkillLocks(root: root)
+        return try removals.map { removal in
+            guard !fileManager.fileExists(atPath: removal.skillURL.path),
+                  remainingLocks[removal.skillName] == nil
+            else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
+                    NSLocalizedDescriptionKey: "skills-cli reported success but \(removal.skillName) or its lock entry remains. Recovery state: \(removal.recovery.path)"
+                ])
+            }
+
+            var lines = [
+                "saved recovery state to \(removal.recovery.path)",
+                "copied managed skill into recovery: \(removal.recovery.appendingPathComponent(removal.skillName).path)"
+            ]
+            if !removal.retainedBackups.isEmpty {
+                lines.append("snapshotted \(removal.retainedBackups.count) independent same-name location(s)")
+            }
+            var restoredRetainedCount = 0
+            for retained in removal.retainedBackups {
+                guard !isSymlink(retained.original),
+                      !fileManager.fileExists(atPath: retained.original.path)
+                else { continue }
+                do {
+                    try fileManager.createDirectory(
+                        at: retained.original.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try fileManager.copyItem(at: retained.backup, to: retained.original)
+                    restoredRetainedCount += 1
+                } catch {
+                    lines.append("warning: managed package was removed, but restoring \(retained.original.path) failed: \(error.localizedDescription)")
+                }
+            }
+            if restoredRetainedCount > 0 {
+                lines.append("restored \(restoredRetainedCount) independent same-name location(s)")
+            }
+
+            var removedProjectionCount = 0
+            for (index, projection) in removal.projections.enumerated() {
+                let projectionURL = URL(fileURLWithPath: projection.path)
+                guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
+                let projectionRecovery = removal.recovery
+                    .appendingPathComponent("projections")
+                    .appendingPathComponent("\(index)-\(projection.location)")
+                    .appendingPathComponent(removal.skillName)
+                do {
+                    try fileManager.createDirectory(
+                        at: projectionRecovery.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+                    removedProjectionCount += 1
+                } catch {
+                    lines.append("warning: managed skill was removed, but projection cleanup failed at \(projectionURL.path): \(error.localizedDescription)")
+                }
+            }
+            lines.append("removed managed skill through skills-cli and verified its manager entry is absent")
+            if removedProjectionCount > 0 {
+                lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
+            }
+            lines.append(finalizeRemovalRecovery(
+                removal.recovery,
+                projectRoot: root,
+                skillName: removal.skillName
+            ))
+            return SkillUninstallReport(
+                projectRoot: root.path,
+                skillName: removal.skillName,
+                backupPath: removal.recovery.path,
+                lines: lines
+            )
+        }
     }
 
     public static func uninstallStandaloneSkill(
@@ -2401,7 +2593,11 @@ private func dotagentsRemovalCommand(root: URL, skillName: String) -> String {
 }
 
 private func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
-    let arguments = ["--yes", "skills", "remove", skillName, "--yes"]
+    try runSkillsCLIRemoval(root: root, skillNames: [skillName])
+}
+
+private func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
+    let arguments = ["--yes", "skills", "remove"] + skillNames + ["--yes"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--global"] : [])
     let result = try runSubprocess(
         executable: try npxExecutable(),
