@@ -57,6 +57,24 @@ def main() -> int:
                 },
             },
         },
+        {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "get_project_analysis_details",
+                "arguments": {"root": sys.argv[2]},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "get_project_analysis_details",
+                "arguments": {"root": sys.argv[2], "section": "unknown"},
+            },
+        },
     ]
     assert process.stdin is not None
     assert process.stdout is not None
@@ -66,7 +84,7 @@ def main() -> int:
 
     responses = {}
     try:
-        expected_response_ids = {1, 2, 3, 4, 5}
+        expected_response_ids = {1, 2, 3, 4, 5, 6, 7}
         deadline = time.time() + 30
         while time.time() < deadline and not expected_response_ids.issubset(responses):
             ready, _, _ = select.select([process.stdout], [], [], 0.5)
@@ -108,6 +126,23 @@ def main() -> int:
         details = json.loads(responses[5]["result"]["content"][0]["text"])
         if details.get("section") != "skills" or len(details.get("items", [])) > 1:
             raise RuntimeError("MCP project details did not honor the requested page")
+        accepted_sections = "instructions, skills, doctor, mcp, usage"
+        missing_section = responses[6]["result"]
+        missing_section_text = missing_section["content"][0]["text"]
+        if not missing_section.get("isError") or missing_section_text != (
+            f"section is required; accepted values: {accepted_sections}"
+        ):
+            raise RuntimeError(
+                f"MCP project details returned an unclear missing-section error: {missing_section_text}"
+            )
+        invalid_section = responses[7]["result"]
+        invalid_section_text = invalid_section["content"][0]["text"]
+        if not invalid_section.get("isError") or invalid_section_text != (
+            f'invalid section "unknown"; accepted values: {accepted_sections}'
+        ):
+            raise RuntimeError(
+                f"MCP project details returned an unclear invalid-section error: {invalid_section_text}"
+            )
         process.stdin.close()
         process.wait(timeout=5)
         if process.returncode != 0:

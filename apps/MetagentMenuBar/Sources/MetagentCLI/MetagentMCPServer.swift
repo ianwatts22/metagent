@@ -44,13 +44,28 @@ enum MetagentMCPServer {
                 case "analyze_project":
                     text = try encodeJSON(MetagentCore.analyzeProjectSummary(root: root))
                 case "get_project_analysis_details":
-                    guard let sectionName = params.arguments?["section"]?.stringValue,
-                          let section = ProjectAnalysisSection(rawValue: sectionName)
-                    else {
+                    guard let sectionValue = params.arguments?["section"] else {
                         throw NSError(
                             domain: "MetagentMCP",
                             code: 1,
-                            userInfo: [NSLocalizedDescriptionKey: "section is required"]
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "section is required; accepted values: \(projectAnalysisSectionList)"
+                            ]
+                        )
+                    }
+                    guard let sectionName = sectionValue.stringValue,
+                          let section = ProjectAnalysisSection(rawValue: sectionName)
+                    else {
+                        let invalidValue = sectionValue.stringValue.map { "\"\($0)\"" }
+                            ?? "non-string value"
+                        throw NSError(
+                            domain: "MetagentMCP",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "invalid section \(invalidValue); accepted values: \(projectAnalysisSectionList)"
+                            ]
                         )
                     }
                     text = try encodeJSON(MetagentCore.analyzeProjectDetails(
@@ -139,6 +154,10 @@ enum MetagentMCPServer {
         "required": .array([.string("section")]),
         "additionalProperties": .bool(false)
     ])
+
+    private static let projectAnalysisSectionList = ProjectAnalysisSection.allCases
+        .map(\.rawValue)
+        .joined(separator: ", ")
 
     private static func encodeJSON<T: Encodable>(_ value: T) throws -> String {
         String(decoding: try MetagentCore.encodeJSON(value), as: UTF8.self)

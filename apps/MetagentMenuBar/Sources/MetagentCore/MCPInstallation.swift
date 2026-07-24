@@ -18,6 +18,8 @@ public enum MCPSetupConfigurationState: String, Codable, Sendable {
     case missing
     case matches
     case differs
+    case disabled
+    case differentScope = "different_scope"
     case unavailable
 }
 
@@ -167,12 +169,15 @@ public extension MetagentCore {
         var candidates: [String] = []
         if let environmentOverride,
            let override = environment[environmentOverride],
-           !override.isEmpty {
+           !override.isEmpty,
+           (override as NSString).isAbsolutePath {
             candidates.append(override)
         }
         if let path = environment["PATH"] {
-            candidates += path.split(separator: ":").map {
-                URL(fileURLWithPath: String($0)).appendingPathComponent(name).path
+            candidates += path.split(separator: ":").compactMap {
+                let directory = String($0)
+                guard (directory as NSString).isAbsolutePath else { return nil }
+                return URL(fileURLWithPath: directory).appendingPathComponent(name).path
             }
         }
         candidates += [
@@ -209,6 +214,7 @@ public extension MetagentCore {
         )
         let initialState = configurationState(
             existing,
+            client: client,
             expectedExecutable: expectedExecutable,
             expectedArguments: expectedArguments
         )
@@ -252,7 +258,7 @@ public extension MetagentCore {
                     detail: installPreviewDetail(initialState)
                 )
             }
-            if initialState == .differs {
+            if [.differs, .disabled, .differentScope].contains(initialState) {
                 return setupReport(
                     client: client,
                     operation: operation,
@@ -263,7 +269,7 @@ public extension MetagentCore {
                     expectedExecutable: expectedExecutable,
                     managementCommand: command.display,
                     verification: .notRun,
-                    detail: "A different metagent configuration already exists. Remove it explicitly before installing this executable."
+                    detail: installBlockedDetail(initialState, client: client)
                 )
             }
 
@@ -287,6 +293,7 @@ public extension MetagentCore {
             )
             let finalState = configurationState(
                 verifiedConfiguration,
+                client: client,
                 expectedExecutable: expectedExecutable,
                 expectedArguments: expectedArguments
             )
@@ -322,9 +329,21 @@ public extension MetagentCore {
                     expectedExecutable: expectedExecutable,
                     managementCommand: command.display,
                     verification: .notRun,
-                    detail: initialState == .missing
-                        ? "No metagent configuration exists; applying this operation would be a no-op."
-                        : "Preview only. Apply to remove only the MCP entry named metagent."
+                    detail: removePreviewDetail(initialState, client: client)
+                )
+            }
+            if initialState == .differentScope {
+                return setupReport(
+                    client: client,
+                    operation: operation,
+                    outcome: .blocked,
+                    apply: true,
+                    changed: false,
+                    configurationState: initialState,
+                    expectedExecutable: expectedExecutable,
+                    managementCommand: command.display,
+                    verification: .notRun,
+                    detail: "Claude resolved metagent from a local or project scope. Guided removal only owns the user-scoped entry and will not mutate this entry."
                 )
             }
             guard initialState != .missing else {
@@ -355,20 +374,30 @@ public extension MetagentCore {
                 clientExecutable: clientExecutable,
                 executor: executor
             )
-            guard finalConfiguration == nil else {
-                throw MCPSetupError("\(client.displayName) still reports a metagent configuration after removal")
+            if client == .claude {
+                guard finalConfiguration?.scope != .user else {
+                    throw MCPSetupError("Claude still reports a user-scoped metagent configuration after removal")
+                }
+            } else {
+                guard finalConfiguration == nil else {
+                    throw MCPSetupError("Codex still reports a metagent configuration after removal")
+                }
             }
+            let finalState: MCPSetupConfigurationState =
+                finalConfiguration == nil ? .missing : .differentScope
             return setupReport(
                 client: client,
                 operation: operation,
                 outcome: .changed,
                 apply: true,
                 changed: true,
-                configurationState: .missing,
+                configurationState: finalState,
                 expectedExecutable: expectedExecutable,
                 managementCommand: command.display,
                 verification: .notRun,
-                detail: "Removed only the MCP entry named metagent through \(client.displayName)'s supported MCP CLI."
+                detail: finalState == .missing
+                    ? "Removed only the MCP entry named metagent through \(client.displayName)'s supported MCP CLI."
+                    : "Removed the user-scoped metagent entry. A separate local or project-scoped Claude entry remains unchanged."
             )
         }
     }
@@ -377,6 +406,16 @@ public extension MetagentCore {
 private struct MCPConfiguredCommand: Equatable {
     let executable: String
     let arguments: [String]
+    let enabled: Bool
+    let scope: MCPConfiguredScope
+}
+
+private enum MCPConfiguredScope: Equatable {
+    case user
+    case local
+    case project
+    case unspecified
+    case unknown
 }
 
 private struct MCPManagementCommand {
@@ -395,6 +434,7 @@ private struct CodexMCPGetResponse: Decodable {
         let args: [String]?
     }
 
+    let enabled: Bool?
     let transport: Transport
 }
 
@@ -428,30 +468,50 @@ private func inspectMCPConfiguration(
     case .codex:
         let response = try JSONDecoder().decode(CodexMCPGetResponse.self, from: result.standardOutput)
         guard response.transport.type == "stdio", let command = response.transport.command else {
-            return MCPConfiguredCommand(executable: "", arguments: [])
+            return MCPConfiguredCommand(
+                executable: "",
+                arguments: [],
+                enabled: response.enabled ?? true,
+                scope: .unspecified
+            )
         }
         return MCPConfiguredCommand(
             executable: command,
-            arguments: response.transport.args ?? []
+            arguments: response.transport.args ?? [],
+            enabled: response.enabled ?? true,
+            scope: .unspecified
         )
     case .claude:
         let text = outputText(result.standardOutput)
         guard let command = value(after: "Command:", in: text) else {
             throw MCPSetupError("Claude returned an unreadable metagent MCP configuration")
         }
+        guard let scopeValue = value(after: "Scope:", in: text) else {
+            throw MCPSetupError("Claude did not identify the scope of the metagent MCP configuration")
+        }
         let arguments = value(after: "Args:", in: text)?
             .split(whereSeparator: \.isWhitespace)
             .map(String.init) ?? []
-        return MCPConfiguredCommand(executable: command, arguments: arguments)
+        return MCPConfiguredCommand(
+            executable: command,
+            arguments: arguments,
+            enabled: true,
+            scope: claudeScope(scopeValue)
+        )
     }
 }
 
 private func configurationState(
     _ configured: MCPConfiguredCommand?,
+    client: MCPClient,
     expectedExecutable: URL,
     expectedArguments: [String]
 ) -> MCPSetupConfigurationState {
     guard let configured else { return .missing }
+    if client == .claude && configured.scope != .user {
+        return .differentScope
+    }
+    guard configured.enabled else { return .disabled }
     let configuredURL = URL(fileURLWithPath: configured.executable)
         .resolvingSymlinksInPath()
         .standardizedFileURL
@@ -459,6 +519,14 @@ private func configurationState(
         && configured.arguments == expectedArguments
         ? .matches
         : .differs
+}
+
+private func claudeScope(_ value: String) -> MCPConfiguredScope {
+    let normalized = value.lowercased()
+    if normalized.contains("user config") { return .user }
+    if normalized.contains("local config") { return .local }
+    if normalized.contains("project config") { return .project }
+    return .unknown
 }
 
 private func installCommand(
@@ -538,13 +606,26 @@ private func verifyMetagentStdioInteractively(
         var pending = Data()
         var initialized = false
         var listedTools = false
-        let descriptor = outputPipe.fileHandleForReading.fileDescriptor
+        let outputDescriptor = outputPipe.fileHandleForReading.fileDescriptor
+        let errorDescriptor = errorPipe.fileHandleForReading.fileDescriptor
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline && !(initialized && listedTools) {
-            var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-            let pollResult = Darwin.poll(&pollDescriptor, 1, 250)
+            var pollDescriptors = [
+                pollfd(fd: outputDescriptor, events: Int16(POLLIN), revents: 0),
+                pollfd(fd: errorDescriptor, events: Int16(POLLIN), revents: 0)
+            ]
+            let pollResult = pollDescriptors.withUnsafeMutableBufferPointer {
+                Darwin.poll($0.baseAddress, nfds_t($0.count), 250)
+            }
             guard pollResult >= 0 else { break }
-            guard pollResult > 0, pollDescriptor.revents & Int16(POLLIN) != 0 else {
+            guard pollResult > 0 else {
+                if !process.isRunning { break }
+                continue
+            }
+            if pollDescriptors[1].revents & Int16(POLLIN) != 0 {
+                _ = errorPipe.fileHandleForReading.availableData
+            }
+            guard pollDescriptors[0].revents & Int16(POLLIN) != 0 else {
                 if !process.isRunning { break }
                 continue
             }
@@ -568,18 +649,27 @@ private func verifyMetagentStdioInteractively(
             }
         }
         try? inputPipe.fileHandleForWriting.close()
-        if process.isRunning {
-            process.terminate()
-        }
-        process.waitUntilExit()
+        stopMCPVerificationProcess(process)
         return initialized && listedTools ? .verified : .failed
     } catch {
         try? inputPipe.fileHandleForWriting.close()
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-        }
+        stopMCPVerificationProcess(process)
         return .failed
+    }
+}
+
+private func stopMCPVerificationProcess(_ process: Process) {
+    guard process.isRunning else { return }
+    process.terminate()
+    let terminationDeadline = Date().addingTimeInterval(2)
+    while process.isRunning && Date() < terminationDeadline {
+        usleep(20_000)
+    }
+    guard process.isRunning else { return }
+    Darwin.kill(process.processIdentifier, SIGKILL)
+    let killDeadline = Date().addingTimeInterval(1)
+    while process.isRunning && Date() < killDeadline {
+        usleep(20_000)
     }
 }
 
@@ -608,7 +698,7 @@ private func setupReport(
         managementCommand: managementCommand,
         directVerification: verification,
         detail: detail,
-        clientRestartRequired: operation != .remove,
+        clientRestartRequired: apply && changed,
         runtimeCaveat: MetagentCore.mcpRuntimeCaveat
     )
 }
@@ -621,8 +711,40 @@ private func installPreviewDetail(_ state: MCPSetupConfigurationState) -> String
         "The expected metagent MCP configuration is already installed; applying would be idempotent."
     case .differs:
         "A different metagent configuration exists. Apply will not overwrite it."
+    case .disabled:
+        "The expected Codex entry exists but is disabled. Apply will not treat it as installed or silently replace it."
+    case .differentScope:
+        "Claude resolved metagent from a local or project scope. Guided installation will not overwrite or shadow it."
     case .unavailable:
         "The client CLI is unavailable, so no configuration change can be planned."
+    }
+}
+
+private func installBlockedDetail(
+    _ state: MCPSetupConfigurationState,
+    client: MCPClient
+) -> String {
+    switch state {
+    case .disabled:
+        "The Codex metagent entry is disabled. Codex has no supported enable command, so remove it explicitly and rerun guided installation."
+    case .differentScope:
+        "Claude resolved metagent from a local or project scope. Guided installation only owns the user scope and will not overwrite or shadow this entry."
+    default:
+        "A different metagent configuration already exists. Remove it explicitly before installing this executable through \(client.displayName)."
+    }
+}
+
+private func removePreviewDetail(
+    _ state: MCPSetupConfigurationState,
+    client: MCPClient
+) -> String {
+    switch state {
+    case .missing:
+        "No metagent configuration exists; applying this operation would be a no-op."
+    case .differentScope:
+        "Claude resolved a local or project-scoped metagent entry. Guided removal will not mutate it because it only owns user scope."
+    default:
+        "Preview only. Apply to remove only the \(client == .claude ? "user-scoped " : "")MCP entry named metagent."
     }
 }
 
@@ -634,6 +756,8 @@ private func statusDetail(
     case .missing: "Not configured"
     case .matches: "Configured with this executable"
     case .differs: "Configured with a different command"
+    case .disabled: "Configured but disabled"
+    case .differentScope: "Configured in a local or project scope, not the guided user scope"
     case .unavailable: "Client CLI unavailable"
     }
     let stdio = verification == .verified
