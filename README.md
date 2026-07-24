@@ -135,7 +135,8 @@ Swift is the source of truth:
 Machine-local roots, secrets, account mappings, logs, and generated state stay
 outside the repository. See [architecture](docs/architecture.md),
 [skill provenance](docs/skill-provenance.md), [skill scoring](docs/skill-scoring.md),
-and [macOS app behavior](docs/menu-bar.md) for details.
+[macOS app behavior](docs/menu-bar.md), and
+[adjacent tools and product inspiration](docs/adjacent-tools.md) for details.
 
 ## Verify
 
