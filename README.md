@@ -67,6 +67,27 @@ metagent mcp --stdio
 The MCP layer is intentionally thin: scanning, health, usage, and analysis remain
 in `MetagentCore` rather than being reimplemented for each interface.
 
+After installing the CLI, register the local server with either client:
+
+```bash
+codex mcp add metagent -- "$(command -v metagent)" mcp --stdio
+claude mcp add --scope user metagent -- "$(command -v metagent)" mcp --stdio
+```
+
+Verify the saved configuration:
+
+```bash
+codex mcp get metagent
+claude mcp get metagent
+```
+
+Existing agent sessions may need to be restarted before the newly registered
+server appears. The server exposes `analyze_project`, `list_skills`, and
+`doctor_project`; all are read-only. For example, ask an agent:
+
+> Use Metagent to analyze this project’s instructions, skills, MCP setup,
+> provenance, usage evidence, and Doctor findings.
+
 ### Agent skill
 
 The publishable Metagent skill lives at
