@@ -2124,6 +2124,10 @@ private struct InventorySection: View {
         .filter { selectedView != .duplicates || $0.overlap != nil }
         .filter {
             guard let selectedProjectRoot else { return true }
+            if standardizedDirectoryPath(selectedProjectRoot)
+                == standardizedDirectoryPath(NSHomeDirectory()) {
+                return $0.scope != "project"
+            }
             return $0.scope == "project" && $0.projectRoot == selectedProjectRoot
         }
         .filter { !hiddenSources.contains($0.sourceCategory) }
