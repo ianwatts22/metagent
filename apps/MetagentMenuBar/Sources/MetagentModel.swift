@@ -1108,6 +1108,15 @@ struct ProjectStatus: Identifiable, Sendable {
     }
 }
 
+#if DEBUG
+extension ProjectStatus {
+    /// Fixture builder for SwiftUI previews; production rows are always derived from scans.
+    static func previewFixture(project: SkillProject) -> ProjectStatus {
+        ProjectStatus(project: project)
+    }
+}
+#endif
+
 struct SkillStatus: Identifiable, Comparable, Sendable {
     let name: String
     let description: String?

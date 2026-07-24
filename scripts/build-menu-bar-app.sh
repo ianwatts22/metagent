@@ -9,6 +9,15 @@ macos="$contents/MacOS"
 helpers="$contents/Helpers"
 resources="$contents/Resources"
 signing_identity="${METAGENT_CODE_SIGN_IDENTITY:-}"
+configuration="${METAGENT_BUILD_CONFIGURATION:-release}"
+
+case "$configuration" in
+  release|debug) ;;
+  *)
+    echo "Invalid METAGENT_BUILD_CONFIGURATION: $configuration (expected debug or release)" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -z "$signing_identity" ]]; then
   detected_identities="$(
@@ -42,8 +51,8 @@ fi
 
 (
   cd "$app_source"
-  swift build --disable-sandbox -c release --product MetagentMenuBar
-  swift build --disable-sandbox -c release --product metagent
+  swift build --disable-sandbox -c "$configuration" --product MetagentMenuBar
+  swift build --disable-sandbox -c "$configuration" --product metagent
 )
 
 previous_bundle=""
@@ -53,8 +62,8 @@ if [[ -e "$app_bundle" ]]; then
 fi
 
 mkdir -p "$macos" "$helpers" "$resources"
-cp "$app_source/.build/release/MetagentMenuBar" "$macos/MetagentMenuBar"
-cp "$app_source/.build/release/metagent" "$helpers/metagent"
+cp "$app_source/.build/$configuration/MetagentMenuBar" "$macos/MetagentMenuBar"
+cp "$app_source/.build/$configuration/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
 cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"

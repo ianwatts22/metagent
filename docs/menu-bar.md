@@ -152,5 +152,13 @@ assets. Each change rebuilds the app, installs it to `~/Applications`, and
 restarts the real menu-bar process. This is reliable live reload rather than
 in-process hot reload, so transient UI state resets after each change.
 
+The dev loop builds the debug configuration by default so a warm reload takes
+seconds; pass `--release` to iterate against the optimized build. Installer
+builds outside the dev loop (`install-menu-bar-app.sh`, `verify.sh`) remain
+release builds. For pixel-level iteration without restarting the app, open the
+package in Xcode and use the `#Preview` canvases (for example the duplicate
+review previews at the end of `MetagentMenuBarApp.swift`), which render the
+views with mock data.
+
 The local app uses a persistent development signature. Distribution signing
 and notarization remain separate future packaging work.
