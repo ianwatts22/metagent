@@ -54,9 +54,12 @@ final class MetagentModel: ObservableObject {
 
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
+    private var statusRefreshGeneration = 0
     private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
     private var activeSkillRemovalKeys = Set<String>()
     private var completedSkillRemovalIDs = Set<String>()
+    private var accumulatedSkillRemovalLines: [String] = []
+    private var accumulatedSkillRemovalFailedIDs = Set<String>()
     private var isReconcilingSkillRemovals = false
 
     init() {
@@ -162,6 +165,8 @@ final class MetagentModel: ObservableObject {
 
     func refreshStatus() {
         guard !isRunning else { return }
+        statusRefreshGeneration += 1
+        let generation = statusRefreshGeneration
         isRunning = true
         refreshMCPHealth()
         statusText = "Checking status..."
@@ -192,7 +197,8 @@ final class MetagentModel: ObservableObject {
                 scan: scan,
                 homeScan: homeScan,
                 pluginScan: pluginScan,
-                doctor: doctor
+                doctor: doctor,
+                generation: generation
             )
         }
     }
@@ -502,6 +508,12 @@ final class MetagentModel: ObservableObject {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         guard !uniqueRequests.isEmpty else { return false }
 
+        if pendingSkillRemovalIDs.isEmpty {
+            accumulatedSkillRemovalLines = []
+            accumulatedSkillRemovalFailedIDs = []
+        }
+        statusRefreshGeneration += 1
+        isRunning = false
         pendingSkillRemovalIDs.formUnion(uniqueRequests.map(\.id))
         skillTableRevision += 1
         statusText = uniqueRequests.count == 1
@@ -556,21 +568,22 @@ final class MetagentModel: ObservableObject {
             return (request, projectRoot, skillName)
         }
         if let projectRoot = canonical.first?.1 {
-            do {
-                let reports = try MetagentCore.uninstallSkills(
-                    projectRoot: projectRoot,
-                    skillNames: canonical.map(\.2),
-                    allowManagedRemoval: true
-                )
-                succeededIDs.formUnion(canonical.map(\.0.id))
-                for report in reports {
-                    lines.append("\(report.skillName):")
-                    lines.append(contentsOf: report.lines.map { "  \($0)" })
-                }
-            } catch {
-                failedIDs.formUnion(canonical.map(\.0.id))
-                lines.append("Skills CLI batch failed:")
-                lines.append("  \(error.localizedDescription)")
+            let batch = MetagentCore.uninstallSkills(
+                projectRoot: projectRoot,
+                skillNames: canonical.map(\.2),
+                allowManagedRemoval: true
+            )
+            let succeededNames = Set(batch.reports.map(\.skillName))
+            let failedNames = Set(batch.failures.map(\.skillName))
+            succeededIDs.formUnion(canonical.filter { succeededNames.contains($0.2) }.map(\.0.id))
+            failedIDs.formUnion(canonical.filter { failedNames.contains($0.2) }.map(\.0.id))
+            for report in batch.reports {
+                lines.append("\(report.skillName):")
+                lines.append(contentsOf: report.lines.map { "  \($0)" })
+            }
+            for failure in batch.failures {
+                lines.append("\(failure.skillName): failed")
+                lines.append("  \(failure.message)")
             }
         }
 
@@ -609,14 +622,25 @@ final class MetagentModel: ObservableObject {
         activeSkillRemovalKeys.remove(key)
         pendingSkillRemovalIDs.subtract(outcome.failedIDs)
         completedSkillRemovalIDs.formUnion(outcome.succeededIDs)
+        accumulatedSkillRemovalLines += outcome.lines
+        accumulatedSkillRemovalFailedIDs.formUnion(outcome.failedIDs)
         skillTableRevision += 1
         lastRunText = Self.timestamp()
-        lastOutputTitle = outcome.failedIDs.isEmpty ? "Remove skills" : "Some skills could not be removed"
-        lastOutputLines = outcome.lines
-        statusText = outcome.failedIDs.isEmpty ? "Skill removal finished" : "Some skill removals failed"
-        systemImage = outcome.failedIDs.isEmpty ? "checkmark.circle" : "exclamationmark.triangle"
 
         startNextSkillRemoval(for: key)
+        guard activeSkillRemovalKeys.isEmpty, skillRemovalQueues.values.allSatisfy(\.isEmpty) else {
+            statusText = "Removing \(pendingSkillRemovalIDs.count) skills…"
+            systemImage = "arrow.triangle.2.circlepath"
+            return
+        }
+
+        let hadFailures = !accumulatedSkillRemovalFailedIDs.isEmpty
+        lastOutputTitle = hadFailures ? "Some skills could not be removed" : "Remove skills"
+        lastOutputLines = accumulatedSkillRemovalLines
+        statusText = hadFailures ? "Some skill removals failed" : "Skill removal finished"
+        systemImage = hadFailures ? "exclamationmark.triangle" : "checkmark.circle"
+        accumulatedSkillRemovalLines = []
+        accumulatedSkillRemovalFailedIDs = []
         reconcileCompletedSkillRemovalsIfIdle()
     }
 
@@ -628,6 +652,8 @@ final class MetagentModel: ObservableObject {
         else { return }
 
         isReconcilingSkillRemovals = true
+        statusRefreshGeneration += 1
+        isRunning = false
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
             async let scanResult = Task.detached { Result { try MetagentCore.scanSkills() } }.value
@@ -644,18 +670,24 @@ final class MetagentModel: ObservableObject {
             .flatMap { $0 }
             .map(ProjectStatus.init(project:))
 
-            if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
+            let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
+            if didRefreshInventory {
                 projects = Self.mergeProjects(refreshedProjects)
                 repoCount = projects.count
                 skillCount = Self.logicalSkillCount(projects: projects)
                 locationSummaryText = Self.locationSummary(projects: projects)
                 MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: []))
+                completedSkillRemovalIDs.subtract(reconcilingIDs)
+                pendingSkillRemovalIDs.subtract(reconcilingIDs)
+            } else {
+                statusText = "Removed skills; inventory refresh failed"
+                systemImage = "exclamationmark.triangle"
             }
-            completedSkillRemovalIDs.subtract(reconcilingIDs)
-            pendingSkillRemovalIDs.subtract(reconcilingIDs)
             isReconcilingSkillRemovals = false
             skillTableRevision += 1
-            reconcileCompletedSkillRemovalsIfIdle()
+            if didRefreshInventory {
+                reconcileCompletedSkillRemovalsIfIdle()
+            }
         }
     }
 
@@ -718,8 +750,10 @@ final class MetagentModel: ObservableObject {
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
         pluginScan: Result<SkillScanReport, Error>,
-        doctor: Result<DoctorReport, Error>
+        doctor: Result<DoctorReport, Error>,
+        generation: Int
     ) {
+        guard generation == statusRefreshGeneration else { return }
         refreshSkillEvaluations()
         isRunning = false
         lastRunText = Self.timestamp()
@@ -731,6 +765,8 @@ final class MetagentModel: ObservableObject {
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
+            pendingSkillRemovalIDs.subtract(completedSkillRemovalIDs)
+            completedSkillRemovalIDs.removeAll()
             skillTableRevision += 1
             let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))

@@ -475,6 +475,16 @@ public struct SkillUninstallReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct SkillUninstallFailure: Codable, Equatable, Sendable {
+    public let skillName: String
+    public let message: String
+}
+
+public struct SkillUninstallBatchReport: Codable, Equatable, Sendable {
+    public let reports: [SkillUninstallReport]
+    public let failures: [SkillUninstallFailure]
+}
+
 public struct SkillIconUpdateReport: Codable, Equatable, Sendable {
     public let skillPath: String
     public let iconPath: String
@@ -1185,120 +1195,176 @@ public enum MetagentCore {
         projectRoot: String,
         skillNames: [String],
         allowManagedRemoval: Bool = false
-    ) throws -> [SkillUninstallReport] {
+    ) -> SkillUninstallBatchReport {
         let names = Array(Set(skillNames)).sorted()
-        guard !names.isEmpty else { return [] }
+        guard !names.isEmpty else {
+            return SkillUninstallBatchReport(reports: [], failures: [])
+        }
         guard names.count > 1 else {
-            return [
-                try uninstallSkill(
-                    projectRoot: projectRoot,
-                    skillName: names[0],
-                    allowManagedRemoval: allowManagedRemoval
-                )
-            ]
+            do {
+                return SkillUninstallBatchReport(reports: [
+                    try uninstallSkill(
+                        projectRoot: projectRoot,
+                        skillName: names[0],
+                        allowManagedRemoval: allowManagedRemoval
+                    )
+                ], failures: [])
+            } catch {
+                return SkillUninstallBatchReport(reports: [], failures: [
+                    SkillUninstallFailure(skillName: names[0], message: error.localizedDescription)
+                ])
+            }
         }
 
-        let plans = try names.map {
-            try planSkillRemoval(projectRoot: projectRoot, skillName: $0)
+        var plans: [SkillRemovalPlan] = []
+        var failures: [SkillUninstallFailure] = []
+        for name in names {
+            do {
+                plans.append(try planSkillRemoval(projectRoot: projectRoot, skillName: name))
+            } catch {
+                failures.append(SkillUninstallFailure(skillName: name, message: error.localizedDescription))
+            }
         }
         let skillsCLINames = plans.filter { $0.manager == "skills-cli" }.map(\.skillName)
         var reports: [SkillUninstallReport] = []
 
-        if !skillsCLINames.isEmpty {
-            guard allowManagedRemoval else {
-                throw NSError(domain: "MetagentSkillUninstall", code: 5, userInfo: [
-                    NSLocalizedDescriptionKey: "These skills are managed by skills-cli. Explicitly apply the Metagent removal plan to remove them."
-                ])
+        if !skillsCLINames.isEmpty, !allowManagedRemoval {
+            failures += skillsCLINames.map {
+                SkillUninstallFailure(
+                    skillName: $0,
+                    message: "This skill is managed by skills-cli. Explicitly apply the Metagent removal plan to remove it."
+                )
             }
-            reports += try uninstallSkillsCLIManagedSkills(
+        } else if !skillsCLINames.isEmpty {
+            let batch = uninstallSkillsCLIManagedSkills(
                 projectRoot: projectRoot,
                 skillNames: skillsCLINames
             )
+            reports += batch.reports
+            failures += batch.failures
         }
 
         for plan in plans where plan.manager != "skills-cli" {
-            reports.append(try uninstallSkill(
-                projectRoot: projectRoot,
-                skillName: plan.skillName,
-                allowManagedRemoval: allowManagedRemoval
-            ))
+            do {
+                reports.append(try uninstallSkill(
+                    projectRoot: projectRoot,
+                    skillName: plan.skillName,
+                    allowManagedRemoval: allowManagedRemoval
+                ))
+            } catch {
+                failures.append(SkillUninstallFailure(
+                    skillName: plan.skillName,
+                    message: error.localizedDescription
+                ))
+            }
         }
-        return reports.sorted { $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending }
+        return SkillUninstallBatchReport(
+            reports: reports.sorted {
+                $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
+            },
+            failures: failures.sorted {
+                $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
+            }
+        )
     }
 
     private static func uninstallSkillsCLIManagedSkills(
         projectRoot: String,
         skillNames: [String]
-    ) throws -> [SkillUninstallReport] {
+    ) -> SkillUninstallBatchReport {
         let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL
-        let project = try readProjectSkills(root: root)
-        let removals = try skillNames.map { skillName -> SkillsCLIManagedRemoval in
-            guard let skill = project.skills.first(where: {
-                $0.location == "agents"
-                    && $0.name == skillName
-                    && $0.manager == "skills-cli"
-                    && $0.representation == "canonical"
-            }) else {
-                throw NSError(domain: "MetagentSkillUninstall", code: 4, userInfo: [
-                    NSLocalizedDescriptionKey: "\(skillName) is not a canonical Skills CLI bundle in \(root.path)."
-                ])
-            }
-
-            let skillURL = URL(fileURLWithPath: skill.path)
-            let projections = project.skills.filter {
-                guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                    return false
-                }
-                let url = URL(fileURLWithPath: $0.path)
-                return isSymlink(url) && symlink(url, resolvesTo: skillURL)
-            }
-            let retained = project.skills.filter {
-                guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                    return false
-                }
-                let url = URL(fileURLWithPath: $0.path)
-                return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
-            }
-            let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
-            try fileManager.copyItem(at: skillURL, to: recovery.appendingPathComponent(skillName))
-
-            var retainedBackups: [(original: URL, backup: URL)] = []
-            for (index, retainedSkill) in retained.enumerated() {
-                let original = URL(fileURLWithPath: retainedSkill.path)
-                let backup = recovery
-                    .appendingPathComponent("retained")
-                    .appendingPathComponent("\(index)-\(retainedSkill.location)")
-                    .appendingPathComponent(skillName)
-                try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fileManager.copyItem(at: original, to: backup)
-                retainedBackups.append((original, backup))
-            }
-            return SkillsCLIManagedRemoval(
-                skillName: skillName,
-                skillURL: skillURL,
-                recovery: recovery,
-                projections: projections,
-                retainedBackups: retainedBackups
-            )
+        let project: SkillProject
+        do {
+            project = try readProjectSkills(root: root)
+        } catch {
+            return SkillUninstallBatchReport(reports: [], failures: skillNames.map {
+                SkillUninstallFailure(skillName: $0, message: error.localizedDescription)
+            })
         }
 
+        var removals: [SkillsCLIManagedRemoval] = []
+        var failures: [SkillUninstallFailure] = []
+        for skillName in skillNames {
+            do {
+                guard let skill = project.skills.first(where: {
+                    $0.location == "agents"
+                        && $0.name == skillName
+                        && $0.manager == "skills-cli"
+                        && $0.representation == "canonical"
+                }) else {
+                    throw NSError(domain: "MetagentSkillUninstall", code: 4, userInfo: [
+                        NSLocalizedDescriptionKey: "\(skillName) is not a canonical Skills CLI bundle in \(root.path)."
+                    ])
+                }
+
+                let skillURL = URL(fileURLWithPath: skill.path)
+                let projections = project.skills.filter {
+                    guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                        return false
+                    }
+                    let url = URL(fileURLWithPath: $0.path)
+                    return isSymlink(url) && symlink(url, resolvesTo: skillURL)
+                }
+                let retained = project.skills.filter {
+                    guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
+                        return false
+                    }
+                    let url = URL(fileURLWithPath: $0.path)
+                    return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
+                }
+                let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
+                try fileManager.copyItem(at: skillURL, to: recovery.appendingPathComponent(skillName))
+
+                var retainedBackups: [(original: URL, backup: URL)] = []
+                for (index, retainedSkill) in retained.enumerated() {
+                    let original = URL(fileURLWithPath: retainedSkill.path)
+                    let backup = recovery
+                        .appendingPathComponent("retained")
+                        .appendingPathComponent("\(index)-\(retainedSkill.location)")
+                        .appendingPathComponent(skillName)
+                    try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try fileManager.copyItem(at: original, to: backup)
+                    retainedBackups.append((original, backup))
+                }
+                removals.append(SkillsCLIManagedRemoval(
+                    skillName: skillName,
+                    skillURL: skillURL,
+                    recovery: recovery,
+                    projections: projections,
+                    retainedBackups: retainedBackups
+                ))
+            } catch {
+                failures.append(SkillUninstallFailure(
+                    skillName: skillName,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+
+        guard !removals.isEmpty else {
+            return SkillUninstallBatchReport(reports: [], failures: failures)
+        }
+
+        let commandError: Error?
         do {
-            _ = try runSkillsCLIRemoval(root: root, skillNames: skillNames)
+            _ = try runSkillsCLIRemoval(root: root, skillNames: removals.map(\.skillName))
+            commandError = nil
         } catch {
-            let recoveryPaths = removals.map(\.recovery.path).joined(separator: "\n")
-            throw NSError(domain: "MetagentSkillUninstall", code: 7, userInfo: [
-                NSLocalizedDescriptionKey: "skills-cli removal failed: \(error.localizedDescription)\nRecovery states:\n\(recoveryPaths)"
-            ])
+            commandError = error
         }
 
         let remainingLocks = readProjectSkillLocks(root: root)
-        return try removals.map { removal in
+        var reports: [SkillUninstallReport] = []
+        for removal in removals {
             guard !fileManager.fileExists(atPath: removal.skillURL.path),
                   remainingLocks[removal.skillName] == nil
             else {
-                throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
-                    NSLocalizedDescriptionKey: "skills-cli reported success but \(removal.skillName) or its lock entry remains. Recovery state: \(removal.recovery.path)"
-                ])
+                failures.append(SkillUninstallFailure(
+                    skillName: removal.skillName,
+                    message: commandError?.localizedDescription
+                        ?? "skills-cli reported success but the bundle or its lock entry remains. Recovery state: \(removal.recovery.path)"
+                ))
+                continue
             }
 
             var lines = [
@@ -1356,13 +1422,14 @@ public enum MetagentCore {
                 projectRoot: root,
                 skillName: removal.skillName
             ))
-            return SkillUninstallReport(
+            reports.append(SkillUninstallReport(
                 projectRoot: root.path,
                 skillName: removal.skillName,
                 backupPath: removal.recovery.path,
                 lines: lines
-            )
+            ))
         }
+        return SkillUninstallBatchReport(reports: reports, failures: failures)
     }
 
     public static func uninstallStandaloneSkill(

@@ -385,12 +385,16 @@ struct Probe {
     static func main() {
         do {
             if CommandLine.arguments.dropFirst(3).first == "batch" {
-                let reports = try MetagentCore.uninstallSkills(
+                let batch = MetagentCore.uninstallSkills(
                     projectRoot: CommandLine.arguments[1],
                     skillNames: CommandLine.arguments[2].split(separator: ",").map(String.init),
                     allowManagedRemoval: true
                 )
-                print(reports.flatMap(\.lines).joined(separator: "\n"))
+                print(batch.reports.flatMap(\.lines).joined(separator: "\n"))
+                if !batch.failures.isEmpty {
+                    FileHandle.standardError.write(Data(batch.failures.map(\.message).joined(separator: "\n").utf8))
+                    exit(1)
+                }
                 return
             }
             let report = try MetagentCore.uninstallSkill(
@@ -438,6 +442,9 @@ for skill_name in "${@:4}"; do
   fi
   jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
   mv "$lock_path.next" "$lock_path"
+  if [[ "${METAGENT_NPX_FAIL_AFTER_FIRST:-}" == "1" ]]; then
+    exit 42
+  fi
 done
 SH
 chmod +x "$npx_stub"
@@ -471,6 +478,33 @@ test ! -e "$batch_root/.agents/skills/batch-two"
 jq -e '.skills == {}' "$batch_root/skills-lock.json" >/dev/null
 test "$(wc -l <"$batch_npx_log" | tr -d ' ')" = "1"
 grep -q 'skills remove batch-one batch-two --yes' "$batch_npx_log"
+
+partial_root="$fixture_root/partial-batch-uninstall-project"
+mkdir -p "$partial_root/.agents/skills/partial-one" "$partial_root/.agents/skills/partial-two"
+printf -- "---\nname: partial-one\ndescription: first\n---\n" >"$partial_root/.agents/skills/partial-one/SKILL.md"
+printf -- "---\nname: partial-two\ndescription: second\n---\n" >"$partial_root/.agents/skills/partial-two/SKILL.md"
+cat >"$partial_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "partial-one": {"source": "example/skills", "sourceType": "github"},
+    "partial-two": {"source": "example/skills", "sourceType": "github"}
+  }
+}
+EOF
+partial_output="$fixture_root/partial-batch.out"
+if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_FAIL_AFTER_FIRST=1 \
+  "$fixture_root/uninstall-probe" "$partial_root" partial-one,partial-two batch >"$partial_output" 2>&1
+then
+  echo "partially failed Skills CLI batch reported complete success" >&2
+  exit 1
+fi
+test ! -e "$partial_root/.agents/skills/partial-one"
+test -f "$partial_root/.agents/skills/partial-two/SKILL.md"
+jq -e '.skills["partial-one"] == null and .skills["partial-two"] != null' "$partial_root/skills-lock.json" >/dev/null
+grep -q 'partial-one' "$partial_output"
+partial_recovery_metadata="$(rg -l '^skill=partial-one$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
+test -f "$(dirname "$partial_recovery_metadata")/after.json"
 
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \
