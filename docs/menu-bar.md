@@ -8,6 +8,7 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 Current surface:
 
 - four destinations: `Overview`, `Skills`, `MCPs`, and `Projects`, all scoped by one top-level directory menu; the default is all directories. The backgroundless combomark, enlarged directory scope, glass navigation capsules, and settings/diagnostics menu form one compact top control line without a shared enclosing card. Portfolio counts live in the Overview content instead of the application identity area.
+- a scope-aware skill-system health summary reports retained-history adoption and coverage confidence, 30-day active skills, P50/P75/P95 reads per installed skill, SKILL.md body tokens, estimated name-and-description catalog tokens, and P50/P75 update age. The catalog number is explicitly an estimate rather than a claim that every client injects every description on every turn. Duplicate groups appear only when there is something to review and link directly to the guided decision queue.
 - actionable health summary with Doctor findings grouped into project-level cleanups
 - contextual repair preview shown only when a fix is available
 - one native inset `Skills` table with persisted `Summary`, `Review`, `Inventory`, and `Usage` presets, plus a guided `Duplicates` decision queue; every surface shares search and source/location/usage filters
@@ -124,8 +125,8 @@ removal. The MCP card and MCP tab also provide an MCP-only refresh action.
 
 The MCPs tab groups the same server name across Codex and Claude into one row and
 shows its clients, passive configuration state, and global/project location. The
-top-level directory scope keeps globally applicable servers plus servers declared
-for the selected project. This
+all-directories scope includes both levels; choosing a project shows only servers
+declared for that project. This
 inventory does not report tool, invocation, or token counts yet: tool discovery
 requires connecting to each server, and the current session index does not
 attribute calls or turn-wide token totals to individual MCP servers. Those fields

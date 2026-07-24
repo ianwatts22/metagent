@@ -280,7 +280,21 @@ private struct MetagentPanel: View {
     private var panelContent: some View {
         switch selectedSection {
         case .overview:
-            OverviewSection(model: model, isCompact: showsOpenWindowButton, selectedProjectRoot: selectedProjectRoot)
+            OverviewSection(
+                model: model,
+                isCompact: showsOpenWindowButton,
+                selectedProjectRoot: selectedProjectRoot
+            ) {
+                UserDefaults.standard.set(
+                    SkillTableView.duplicates.rawValue,
+                    forKey: "metagent.skills.view.v2"
+                )
+                selectedSection = .skills
+                if showsOpenWindowButton {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            }
         case .skills:
             if showsOpenWindowButton {
                 SkillsMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
@@ -450,21 +464,27 @@ private struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
     let isCompact: Bool
     let selectedProjectRoot: String?
+    let openDuplicateReview: () -> Void
     @State private var showsDoctorFindings = false
     @State private var showsRepair = false
     @State private var showsMCPDetails = false
     @State private var repairProjectRoot: String?
+    @State private var skillHealth = SkillSystemHealth.empty
+    @State private var isSkillHealthLoading = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
+            skillHealthSummary
             mcpConnections
             if doctorActionCount > 0 {
                 cleanupStatus
             }
-            summary
             Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .task(id: skillHealthRefreshID) {
+            await refreshSkillHealth()
+        }
         .sheet(isPresented: $showsDoctorFindings) {
             DoctorFindingsView(model: model, findings: doctorFindings) { projectRoot in
                 repairProjectRoot = projectRoot
@@ -492,6 +512,191 @@ private struct OverviewSection: View {
         } message: {
             Text(model.lastOutputLines.first ?? "Open the project in Terminal and run Claude manually.")
         }
+    }
+
+    private var skillHealthSummary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Skill system")
+                        .font(.headline)
+                    Text(skillHealthScopeDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                if skillHealth.duplicateGroupCount > 0 {
+                    Button(action: openDuplicateReview) {
+                        Label(
+                            "Review \(skillHealth.duplicateGroupCount)",
+                            systemImage: "square.on.square"
+                        )
+                    }
+                    .buttonStyle(.glass)
+                    .help("Review duplicate and overlapping skill installations")
+                }
+            }
+
+            if isSkillHealthLoading, skillHealth.skillCount == 0 {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Calculating skill health…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+            } else if skillHealth.skillCount > 0 {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(), spacing: 8),
+                        count: isCompact ? 2 : 3
+                    ),
+                    spacing: 8
+                ) {
+                    SkillHealthMetric(
+                        title: "Ever observed",
+                        value: skillHealth.observedFraction.formatted(
+                            .percent.precision(.fractionLength(0))
+                        ),
+                        detail: "\(skillHealth.observedSkillCount) of \(skillHealth.skillCount) · \(usageCoverageLabel)",
+                        symbol: "eye",
+                        help: usageCoverageHelp
+                    )
+                    SkillHealthMetric(
+                        title: "30d active",
+                        value: "\(skillHealth.active30dSkillCount) / \(skillHealth.skillCount)",
+                        detail: "\(skillHealth.neverObservedSkillCount) never observed",
+                        symbol: "clock.arrow.circlepath",
+                        help: "Installed skills with at least one observed read in the last 30 days. Never observed means no read in retained, currently indexed session history."
+                    )
+                    SkillHealthMetric(
+                        title: "Reads per skill",
+                        value: invocationDistributionText,
+                        detail: "P50 / P75 / P95",
+                        symbol: "chart.bar.xaxis",
+                        help: "Lifetime reads per installed skill in retained session history, including zero-read skills. Percentiles show the median, upper quartile, and 95th percentile."
+                    )
+                    SkillHealthMetric(
+                        title: "Skill body",
+                        value: formatNumber(skillHealth.skillBodyTokenEstimate),
+                        detail: "estimated SKILL.md tokens",
+                        symbol: "doc.text",
+                        help: "Estimated tokens across installed SKILL.md files in the selected scope. References, scripts, and assets are excluded."
+                    )
+                    SkillHealthMetric(
+                        title: "Catalog metadata",
+                        value: formatNumber(skillHealth.catalogTokenEstimate),
+                        detail: "estimated name + description tokens",
+                        symbol: "text.badge.checkmark",
+                        help: "A four-characters-per-token estimate for skill names and descriptions. This is a useful discovery-catalog size, not a claim that every client injects all of it on every turn."
+                    )
+                    SkillHealthMetric(
+                        title: "Skill age",
+                        value: skillAgeText,
+                        detail: skillAgeDetail,
+                        symbol: "calendar",
+                        help: "Weeks since the recorded upstream update or latest local content change. P50 is the median; P75 shows the older upper quartile. Missing timestamps are excluded and reported separately."
+                    )
+                }
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+        }
+    }
+
+    private var skillHealthRefreshID: String {
+        "\(model.skillTableRevision):\(selectedProjectRoot ?? "all")"
+    }
+
+    private var skillHealthScope: SkillSystemHealthScope {
+        guard let selectedProjectRoot else { return .all }
+        return standardizedDirectoryPath(selectedProjectRoot) == standardizedDirectoryPath(NSHomeDirectory())
+            ? .global(root: selectedProjectRoot)
+            : .project(root: selectedProjectRoot)
+    }
+
+    private var skillHealthScopeDetail: String {
+        if isSkillHealthLoading, skillHealth.skillCount == 0 {
+            return "Calculating installed-skill health"
+        }
+        guard let selectedProjectRoot else {
+            return "\(skillHealth.skillCount) installed skills across global and project scopes"
+        }
+        if standardizedDirectoryPath(selectedProjectRoot) == standardizedDirectoryPath(NSHomeDirectory()) {
+            return "\(skillHealth.skillCount) installed skills in the global scope only"
+        }
+        return "\(skillHealth.skillCount) installed skills in this directory only"
+    }
+
+    private var usageCoverageLabel: String {
+        switch skillHealth.usageCoverage {
+        case .complete:
+            return "coverage complete"
+        case let .updating(progress):
+            return "updating \(progress.formatted(.percent.precision(.fractionLength(0))))"
+        case let .partial(progress):
+            return "coverage \(progress.formatted(.percent.precision(.fractionLength(0))))"
+        case .unavailable:
+            return "coverage unavailable"
+        }
+    }
+
+    private var usageCoverageHelp: String {
+        let prefix = "\(skillHealth.observedSkillCount) of \(skillHealth.skillCount) installed skills have at least one read in retained, currently indexed session history."
+        switch skillHealth.usageCoverage {
+        case .complete:
+            return "\(prefix) The retained history backfill is complete."
+        case let .updating(progress):
+            return "\(prefix) A parser upgrade is rebuilding history and is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this percentage may change."
+        case let .partial(progress):
+            return "\(prefix) Initial history coverage is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this percentage is provisional."
+        case .unavailable:
+            return "\(prefix) No retained session corpus was found, so absence of observed reads is not evidence that a skill was never used."
+        }
+    }
+
+    private var invocationDistributionText: String {
+        let distribution = skillHealth.invocationDistribution
+        return "\(formatNumber(distribution.p50)) / \(formatNumber(distribution.p75)) / \(formatNumber(distribution.p95))"
+    }
+
+    private var skillAgeText: String {
+        guard let median = skillHealth.ageDistribution.medianWeeks,
+              let p75 = skillHealth.ageDistribution.p75Weeks
+        else { return "—" }
+        return "\(median)w / \(p75)w"
+    }
+
+    private var skillAgeDetail: String {
+        let unknown = skillHealth.ageDistribution.unknownCount
+        return unknown == 0
+            ? "P50 / P75 weeks old"
+            : "P50 / P75 · \(unknown) unknown"
+    }
+
+    @MainActor
+    private func refreshSkillHealth() async {
+        isSkillHealthLoading = true
+        let projects = model.projects.map(\.coreProject)
+        let usage = model.usageSnapshot
+        let scope = skillHealthScope
+        let health = await Task.detached(priority: .utility) {
+            MetagentCore.skillSystemHealth(
+                projects: projects,
+                usage: usage,
+                scope: scope
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        skillHealth = health
+        isSkillHealthLoading = false
     }
 
     private var mcpConnections: some View {
@@ -745,39 +950,6 @@ private struct OverviewSection: View {
         }
     }
 
-    private var summary: some View {
-        HStack(spacing: 0) {
-            SummaryMetric(
-                title: "Skills",
-                value: "\(scopedSkillCount)",
-                detail: selectedProjectRoot == nil ? "across \(model.repoCount) projects" : "in this directory",
-                symbol: "sparkles"
-            )
-            Divider()
-                .padding(.vertical, 4)
-            SummaryMetric(
-                title: "30-day reads",
-                value: "\(recentInvocationCount)",
-                detail: "in the last 30 days",
-                symbol: "clock.arrow.circlepath"
-            )
-        }
-        .frame(height: 76, alignment: .top)
-        .padding(.vertical, 4)
-    }
-
-    private var recentInvocationCount: Int {
-        model.usageSnapshot.summaries
-            .filter { summary in
-                guard let selectedProjectRoot else { return true }
-                guard summary.scope == "project" else { return false }
-                guard let path = summary.canonicalPath else { return false }
-                return path == selectedProjectRoot
-                    || path.hasPrefix(selectedProjectRoot + "/")
-            }
-            .reduce(0) { $0 + $1.invocations30d }
-    }
-
     private var healthMessage: String {
         if doctorActionCount == 1,
            let issue = doctorFindings.first
@@ -804,11 +976,6 @@ private struct OverviewSection: View {
 
     private var doctorActionCount: Int {
         groupedDoctorActionCount(doctorFindings)
-    }
-
-    private var scopedSkillCount: Int {
-        guard let selectedProjectRoot else { return model.skillCount }
-        return logicalSkillCount(projects: model.projects, selectedProjectRoot: selectedProjectRoot)
     }
 
 }
@@ -933,14 +1100,15 @@ private struct MCPHealthRow: View {
     }
 }
 
-private struct SummaryMetric: View {
+private struct SkillHealthMetric: View {
     let title: String
     let value: String
     let detail: String
     let symbol: String
+    let help: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
@@ -954,16 +1122,20 @@ private struct SummaryMetric: View {
                 Text(value)
                     .font(.headline)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .minimumScaleFactor(0.8)
                 Text(detail)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
+        .padding(10)
+        .background(Color.primary.opacity(0.028), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .help(help)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(help)
     }
 }
 
