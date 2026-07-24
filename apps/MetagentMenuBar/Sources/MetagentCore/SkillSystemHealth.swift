@@ -166,9 +166,8 @@ private func canonicalHealthSkills(
             switch scope {
             case .all:
                 return true
-            case let .global(root):
-                return standardizedHealthPath(project.root) == standardizedHealthPath(root)
-                    && skill.scope != "project"
+            case .global:
+                return skill.scope != "project"
             case let .project(root):
                 return standardizedHealthPath(project.root) == standardizedHealthPath(root)
                     && skill.scope == "project"

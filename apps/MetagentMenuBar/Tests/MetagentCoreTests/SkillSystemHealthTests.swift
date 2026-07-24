@@ -118,6 +118,8 @@ struct SkillSystemHealthTests {
     func globalScopeExcludesProjects() {
         let globalRoot = "/Users/tester"
         let projectRoot = "/Users/tester/code/sample"
+        let pluginRoot = "/Users/tester/.codex/plugins/cache/openai-curated/linear/1.0.0"
+        let pluginPath = "\(pluginRoot)/skills/global"
         let projects = [
             project(root: globalRoot, skills: [
                 skill(name: "global", root: globalRoot, scope: "global"),
@@ -125,12 +127,33 @@ struct SkillSystemHealthTests {
             project(root: projectRoot, skills: [
                 skill(name: "local", root: projectRoot, scope: "project"),
             ]),
+            SkillProject(
+                root: pluginRoot,
+                skillsDir: "\(pluginRoot)/skills",
+                validSkills: ["global"],
+                skills: [
+                    pluginSkill(
+                        name: "global",
+                        path: pluginPath,
+                        bodyTokens: 250
+                    ),
+                ]
+            ),
         ]
 
         let health = MetagentCore.skillSystemHealth(
             projects: projects,
             usage: snapshot(
-                summaries: [],
+                summaries: [
+                    usageSummary(
+                        id: "plugin:openai-curated/linear:global",
+                        name: "global",
+                        path: pluginPath,
+                        scope: "plugin",
+                        total: 7,
+                        last30d: 3
+                    ),
+                ],
                 complete: false,
                 totalBytes: 100,
                 processedBytes: 40
@@ -138,7 +161,12 @@ struct SkillSystemHealthTests {
             scope: .global(root: globalRoot)
         )
 
-        #expect(health.skillCount == 1)
+        #expect(health.skillCount == 2)
+        #expect(health.observedSkillCount == 1)
+        #expect(health.active30dSkillCount == 1)
+        #expect(health.invocationDistribution.p95 == 7)
+        #expect(health.skillBodyTokenEstimate == 350)
+        #expect(health.duplicateGroupCount == 1)
         #expect(health.usageCoverage == .partial(progress: 0.4))
     }
 
@@ -204,6 +232,7 @@ struct SkillSystemHealthTests {
     }
 
     private func usageSummary(
+        id: String? = nil,
         name: String,
         path: String,
         scope: String,
@@ -211,7 +240,7 @@ struct SkillSystemHealthTests {
         last30d: Int
     ) -> SkillUsageSummary {
         SkillUsageSummary(
-            id: "\(scope):\(name)",
+            id: id ?? "\(scope):\(name)",
             skillName: name,
             canonicalPath: path,
             scope: scope,
@@ -225,6 +254,53 @@ struct SkillSystemHealthTests {
             inferredInvocations: 0,
             firstUsedAt: "2026-01-01T00:00:00Z",
             lastUsedAt: "2026-07-24T00:00:00Z"
+        )
+    }
+
+    private func pluginSkill(
+        name: String,
+        path: String,
+        bodyTokens: Int
+    ) -> SkillInventoryItem {
+        SkillInventoryItem(
+            name: name,
+            description: "Plugin-provided helper",
+            path: path,
+            location: "plugin",
+            locationLabel: "Codex plugin",
+            originKind: "codex-plugin",
+            scope: "plugin",
+            manager: "codex-plugin",
+            authority: "openai-curated/linear",
+            mutability: "managed-read-only",
+            representation: "versioned-cache",
+            canonicalPath: path,
+            source: "openai-curated/linear",
+            sourceType: "codex-marketplace",
+            sourceURL: nil,
+            ref: "1.0.0",
+            installedAt: nil,
+            updatedAt: "2026-07-17T12:00:00Z",
+            symlinkedContainer: false,
+            folderKind: "managed",
+            characterCount: bodyTokens * 4,
+            wordCount: bodyTokens,
+            tokenEstimate: bodyTokens,
+            skillFileCharacterCount: bodyTokens * 4,
+            skillFileWordCount: bodyTokens,
+            skillFileTokenEstimate: bodyTokens,
+            textFileCount: 1,
+            referenceFileCount: 0,
+            scriptFileCount: 0,
+            assetFileCount: 0,
+            otherFileCount: 0,
+            otherFolderCount: 0,
+            hasOpenAIYaml: false,
+            hasIconSmall: false,
+            hasIconLarge: false,
+            hasIconAndLogo: false,
+            iconSmallPath: nil,
+            iconLargePath: nil
         )
     }
 

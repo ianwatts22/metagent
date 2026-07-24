@@ -471,6 +471,7 @@ private struct OverviewSection: View {
     @State private var repairProjectRoot: String?
     @State private var skillHealth = SkillSystemHealth.empty
     @State private var isSkillHealthLoading = true
+    @State private var loadedSkillHealthRefreshID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -527,7 +528,7 @@ private struct OverviewSection: View {
 
                 Spacer(minLength: 12)
 
-                if skillHealth.duplicateGroupCount > 0 {
+                if !isSkillHealthStale, skillHealth.duplicateGroupCount > 0 {
                     Button(action: openDuplicateReview) {
                         Label(
                             "Review \(skillHealth.duplicateGroupCount)",
@@ -539,7 +540,7 @@ private struct OverviewSection: View {
                 }
             }
 
-            if isSkillHealthLoading, skillHealth.skillCount == 0 {
+            if isSkillHealthStale {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -615,6 +616,10 @@ private struct OverviewSection: View {
         "\(model.skillTableRevision):\(selectedProjectRoot ?? "all")"
     }
 
+    private var isSkillHealthStale: Bool {
+        isSkillHealthLoading || loadedSkillHealthRefreshID != skillHealthRefreshID
+    }
+
     private var skillHealthScope: SkillSystemHealthScope {
         guard let selectedProjectRoot else { return .all }
         return standardizedDirectoryPath(selectedProjectRoot) == standardizedDirectoryPath(NSHomeDirectory())
@@ -623,7 +628,7 @@ private struct OverviewSection: View {
     }
 
     private var skillHealthScopeDetail: String {
-        if isSkillHealthLoading, skillHealth.skillCount == 0 {
+        if isSkillHealthStale {
             return "Calculating installed-skill health"
         }
         guard let selectedProjectRoot else {
@@ -683,6 +688,7 @@ private struct OverviewSection: View {
 
     @MainActor
     private func refreshSkillHealth() async {
+        let refreshID = skillHealthRefreshID
         isSkillHealthLoading = true
         let projects = model.projects.map(\.coreProject)
         let usage = model.usageSnapshot
@@ -694,8 +700,9 @@ private struct OverviewSection: View {
                 scope: scope
             )
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
         skillHealth = health
+        loadedSkillHealthRefreshID = refreshID
         isSkillHealthLoading = false
     }
 
