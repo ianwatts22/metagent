@@ -985,6 +985,49 @@ public enum MetagentCore {
         skillName: String,
         allowManagedRemoval: Bool = false
     ) throws -> SkillUninstallReport {
+        let requestedRoot = URL(fileURLWithPath: projectRoot)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let expectedSkillURL = requestedRoot
+            .appendingPathComponent(".agents")
+            .appendingPathComponent("skills")
+            .appendingPathComponent(skillName)
+        if allowManagedRemoval,
+           canonicalProjectPath(requestedRoot) != canonicalProjectPath(homeURL()),
+           !fileManager.fileExists(atPath: expectedSkillURL.path),
+           try readProjectSkillLocksValidated(root: requestedRoot)[skillName] != nil
+        {
+            let recovery = try prepareRemovalRecovery(
+                projectRoot: requestedRoot,
+                skillName: skillName
+            )
+            let removedNames = try removeProjectSkillLockEntries(
+                root: requestedRoot,
+                skillNames: [skillName]
+            )
+            guard removedNames.contains(skillName),
+                  try readProjectSkillLocksValidated(root: requestedRoot)[skillName] == nil
+            else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
+                    NSLocalizedDescriptionKey: "Could not reconcile the stale Skills CLI lock entry for \(skillName). Recovery state: \(recovery.path)"
+                ])
+            }
+            return SkillUninstallReport(
+                projectRoot: requestedRoot.path,
+                skillName: skillName,
+                backupPath: recovery.path,
+                lines: [
+                    "saved recovery state to \(recovery.path)",
+                    "removed a stale project lock entry for an already-absent Skills CLI bundle",
+                    finalizeRemovalRecovery(
+                        recovery,
+                        projectRoot: requestedRoot,
+                        skillName: skillName
+                    ),
+                ]
+            )
+        }
+
         let plan = try planSkillRemoval(projectRoot: projectRoot, skillName: skillName)
         let root = URL(fileURLWithPath: plan.projectRoot)
         let project = try readProjectSkills(root: root)
@@ -1064,9 +1107,29 @@ public enum MetagentCore {
                     NSLocalizedDescriptionKey: "\(agentsSkill.manager) removal failed: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
                 ])
             }
-            let managerEntryRemains = agentsSkill.manager == "skills-cli"
+            var managerEntryRemains = agentsSkill.manager == "skills-cli"
                 ? readProjectSkillLocks(root: root)[skillName] != nil
                 : readDotagentsSkills(root: root)[skillName] != nil
+            if agentsSkill.manager == "skills-cli",
+               canonicalProjectPath(root) != canonicalProjectPath(homeURL()),
+               !fileManager.fileExists(atPath: skillURL.path),
+               managerEntryRemains
+            {
+                do {
+                    let removedNames = try removeProjectSkillLockEntries(
+                        root: root,
+                        skillNames: [skillName]
+                    )
+                    if removedNames.contains(skillName) {
+                        lines.append("removed a stale project lock entry left by skills-cli")
+                    }
+                    managerEntryRemains = try readProjectSkillLocksValidated(root: root)[skillName] != nil
+                } catch {
+                    throw NSError(domain: "MetagentSkillUninstall", code: 8, userInfo: [
+                        NSLocalizedDescriptionKey: "Skills CLI removed the bundle, but Metagent could not reconcile its stale project lock entry: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
+                    ])
+                }
+            }
             if isPathBackedDotagentsSkill,
                !managerEntryRemains,
                fileManager.fileExists(atPath: skillURL.path)
@@ -1360,6 +1423,45 @@ public enum MetagentCore {
             commandError = error
         }
 
+        var reconciledProjectLockNames = Set<String>()
+        if commandError == nil,
+           canonicalProjectPath(root) != canonicalProjectPath(homeURL())
+        {
+            do {
+                let locks = try readProjectSkillLocksValidated(root: root)
+                let staleNames: [String] = removals.compactMap { removal in
+                    guard !fileManager.fileExists(atPath: removal.skillURL.path),
+                          locks[removal.skillName] != nil
+                    else { return nil }
+                    return removal.skillName
+                }
+                if !staleNames.isEmpty {
+                    reconciledProjectLockNames = try removeProjectSkillLockEntries(
+                        root: root,
+                        skillNames: staleNames
+                    )
+                }
+            } catch {
+                failures += removals.compactMap { removal in
+                    guard !fileManager.fileExists(atPath: removal.skillURL.path) else { return nil }
+                    return SkillUninstallFailure(
+                        skillName: removal.skillName,
+                        message: [
+                            "Skills CLI removed the bundle, but Metagent could not reconcile its stale project lock entry: \(error.localizedDescription)",
+                            "Recovery state: \(removal.recovery.path)",
+                            finalizeRemovalRecovery(
+                                removal.recovery,
+                                projectRoot: root,
+                                skillName: removal.skillName
+                            ),
+                        ].joined(separator: "\n"),
+                        needsReconciliation: true
+                    )
+                }
+                return SkillUninstallBatchReport(reports: [], failures: failures)
+            }
+        }
+
         let remainingLocks: [String: SkillLockEntry]
         do {
             remainingLocks = try readProjectSkillLocksValidated(root: root)
@@ -1424,6 +1526,9 @@ public enum MetagentCore {
             }
             if restoredRetainedCount > 0 {
                 lines.append("restored \(restoredRetainedCount) independent same-name location(s)")
+            }
+            if reconciledProjectLockNames.contains(removal.skillName) {
+                lines.append("removed a stale project lock entry left by skills-cli")
             }
 
             var removedProjectionCount = 0
@@ -2687,6 +2792,36 @@ private func projectSkillLockPath(_ root: URL) -> URL {
         return globalSkillLockPath()
     }
     return root.appendingPathComponent("skills-lock.json")
+}
+
+private func removeProjectSkillLockEntries(
+    root: URL,
+    skillNames: [String]
+) throws -> Set<String> {
+    let path = projectSkillLockPath(root)
+    let data = try Data(contentsOf: path)
+    guard var document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          var skills = document["skills"] as? [String: Any]
+    else {
+        throw NSError(domain: "MetagentSkillsCLI", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "Unexpected Skills CLI lock structure at \(path.path)"
+        ])
+    }
+
+    var removedNames = Set<String>()
+    for skillName in skillNames where skills.removeValue(forKey: skillName) != nil {
+        removedNames.insert(skillName)
+    }
+    guard !removedNames.isEmpty else { return [] }
+
+    document["skills"] = skills
+    var output = try JSONSerialization.data(
+        withJSONObject: document,
+        options: [.prettyPrinted, .sortedKeys]
+    )
+    output.append(0x0A)
+    try output.write(to: path, options: .atomic)
+    return removedNames
 }
 
 private func globalSkillLockPath() -> URL {

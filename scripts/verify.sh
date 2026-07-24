@@ -440,8 +440,10 @@ for skill_name in "${@:4}"; do
   if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
     mv "$target_root/.codex/skills/$skill_name" "$target_root/.codex/skills/.removed-$skill_name"
   fi
-  jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
-  mv "$lock_path.next" "$lock_path"
+  if [[ "${METAGENT_NPX_LEAVE_LOCK:-}" != "1" ]]; then
+    jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
+    mv "$lock_path.next" "$lock_path"
+  fi
   if [[ "${METAGENT_NPX_FAIL_AFTER_FIRST:-}" == "1" ]]; then
     exit 42
   fi
@@ -482,6 +484,48 @@ test ! -e "$batch_root/.agents/skills/batch-two"
 jq -e '.skills == {}' "$batch_root/skills-lock.json" >/dev/null
 test "$(wc -l <"$batch_npx_log" | tr -d ' ')" = "1"
 grep -q 'skills remove batch-one batch-two --yes' "$batch_npx_log"
+
+stale_lock_root="$fixture_root/stale-lock-uninstall-project"
+mkdir -p "$stale_lock_root/.agents/skills/stale-lock"
+printf -- "---\nname: stale-lock\ndescription: stale lock fixture\n---\n" >"$stale_lock_root/.agents/skills/stale-lock/SKILL.md"
+cat >"$stale_lock_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "stale-lock": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "futureMetadata": {"preserve": true}
+    }
+  },
+  "futureRootMetadata": {"preserve": true}
+}
+EOF
+stale_lock_output="$fixture_root/stale-lock.out"
+HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_LEAVE_LOCK=1 \
+  "$fixture_root/uninstall-probe" "$stale_lock_root" stale-lock apply >"$stale_lock_output"
+test ! -e "$stale_lock_root/.agents/skills/stale-lock"
+jq -e '.skills == {} and .futureRootMetadata.preserve == true' "$stale_lock_root/skills-lock.json" >/dev/null
+grep -q 'removed a stale project lock entry left by skills-cli' "$stale_lock_output"
+
+cat >"$stale_lock_root/skills-lock.json" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "stale-lock": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "futureMetadata": {"preserve": true}
+    }
+  },
+  "futureRootMetadata": {"preserve": true}
+}
+EOF
+stale_lock_retry_output="$fixture_root/stale-lock-retry.out"
+HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" \
+  "$fixture_root/uninstall-probe" "$stale_lock_root" stale-lock apply >"$stale_lock_retry_output"
+jq -e '.skills == {} and .futureRootMetadata.preserve == true' "$stale_lock_root/skills-lock.json" >/dev/null
+grep -q 'removed a stale project lock entry for an already-absent Skills CLI bundle' "$stale_lock_retry_output"
 
 partial_root="$fixture_root/partial-batch-uninstall-project"
 mkdir -p "$partial_root/.agents/skills/partial-one" "$partial_root/.agents/skills/partial-two"
