@@ -534,6 +534,8 @@ grep -q 'Could not verify Skills CLI lock state' "$corrupt_output"
 grep -q 'Recovery state:' "$corrupt_output"
 test ! -e "$corrupt_root/.agents/skills/corrupt-one"
 test -f "$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
+corrupt_recovery_metadata="$(rg -l '^skill=corrupt-one$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
+test -f "$(dirname "$corrupt_recovery_metadata")/after.json"
 
 native_root="$fixture_root/native-uninstall-project"
 mkdir -p \

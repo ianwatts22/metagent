@@ -18,6 +18,7 @@ struct SkillRemovalRequest: Sendable {
 private struct SkillRemovalOutcome: Sendable {
     let succeededIDs: Set<String>
     let failedIDs: Set<String>
+    let reconciliationIDs: Set<String>
     let lines: [String]
 }
 
@@ -563,6 +564,7 @@ final class MetagentModel: ObservableObject {
     ) -> SkillRemovalOutcome {
         var succeededIDs = Set<String>()
         var failedIDs = Set<String>()
+        var reconciliationIDs = Set<String>()
         var lines: [String] = []
 
         let canonical = requests.compactMap { request -> (SkillRemovalRequest, String, String)? in
@@ -579,6 +581,12 @@ final class MetagentModel: ObservableObject {
             let failedNames = Set(batch.failures.map(\.skillName))
             succeededIDs.formUnion(canonical.filter { succeededNames.contains($0.2) }.map(\.0.id))
             failedIDs.formUnion(canonical.filter { failedNames.contains($0.2) }.map(\.0.id))
+            let reconciliationNames = Set(
+                batch.failures.filter(\.needsReconciliation).map(\.skillName)
+            )
+            reconciliationIDs.formUnion(
+                canonical.filter { reconciliationNames.contains($0.2) }.map(\.0.id)
+            )
             for report in batch.reports {
                 lines.append("\(report.skillName):")
                 lines.append(contentsOf: report.lines.map { "  \($0)" })
@@ -616,14 +624,15 @@ final class MetagentModel: ObservableObject {
         return SkillRemovalOutcome(
             succeededIDs: succeededIDs,
             failedIDs: failedIDs,
+            reconciliationIDs: reconciliationIDs,
             lines: lines
         )
     }
 
     private func finishSkillRemoval(_ outcome: SkillRemovalOutcome, key: String) {
         activeSkillRemovalKeys.remove(key)
-        pendingSkillRemovalIDs.subtract(outcome.failedIDs)
-        completedSkillRemovalIDs.formUnion(outcome.succeededIDs)
+        pendingSkillRemovalIDs.subtract(outcome.failedIDs.subtracting(outcome.reconciliationIDs))
+        completedSkillRemovalIDs.formUnion(outcome.succeededIDs.union(outcome.reconciliationIDs))
         accumulatedSkillRemovalLines += outcome.lines
         accumulatedSkillRemovalFailedIDs.formUnion(outcome.failedIDs)
         skillTableRevision += 1

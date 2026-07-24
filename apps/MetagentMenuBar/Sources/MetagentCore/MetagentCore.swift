@@ -478,6 +478,13 @@ public struct SkillUninstallReport: Codable, Equatable, Sendable {
 public struct SkillUninstallFailure: Codable, Equatable, Sendable {
     public let skillName: String
     public let message: String
+    public let needsReconciliation: Bool
+
+    public init(skillName: String, message: String, needsReconciliation: Bool = false) {
+        self.skillName = skillName
+        self.message = message
+        self.needsReconciliation = needsReconciliation
+    }
 }
 
 public struct SkillUninstallBatchReport: Codable, Equatable, Sendable {
@@ -1230,7 +1237,7 @@ public enum MetagentCore {
 
         if !skillsCLINames.isEmpty, !allowManagedRemoval {
             failures += skillsCLINames.map {
-                SkillUninstallFailure(
+                return SkillUninstallFailure(
                     skillName: $0,
                     message: "This skill is managed by skills-cli. Explicitly apply the Metagent removal plan to remove it."
                 )
@@ -1357,10 +1364,23 @@ public enum MetagentCore {
         do {
             remainingLocks = try readProjectSkillLocksValidated(root: root)
         } catch {
-            failures += removals.map {
-                SkillUninstallFailure(
-                    skillName: $0.skillName,
-                    message: "\(error.localizedDescription)\nRecovery state: \($0.recovery.path)"
+            failures += removals.map { removal in
+                let changedOnDisk = !fileManager.fileExists(atPath: removal.skillURL.path)
+                let snapshotLine = changedOnDisk
+                    ? finalizeRemovalRecovery(
+                        removal.recovery,
+                        projectRoot: root,
+                        skillName: removal.skillName
+                    )
+                    : nil
+                return SkillUninstallFailure(
+                    skillName: removal.skillName,
+                    message: [
+                        error.localizedDescription,
+                        "Recovery state: \(removal.recovery.path)",
+                        snapshotLine,
+                    ].compactMap { $0 }.joined(separator: "\n"),
+                    needsReconciliation: changedOnDisk
                 )
             }
             return SkillUninstallBatchReport(reports: [], failures: failures)
