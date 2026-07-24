@@ -139,107 +139,116 @@ private struct MetagentPanel: View {
     @ViewBuilder
     private var topBar: some View {
         if showsOpenWindowButton {
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    brand
-                    Spacer(minLength: 8)
-                    headerControls
+                    brandMark
+                    directoryScopeControl
+                    Spacer(minLength: 0)
+                    statusFailureControl
+                    settingsControl
                 }
                 navigation
             }
-            .padding(8)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         } else {
-            HStack(spacing: 12) {
-                brand
-                    .frame(minWidth: 150, alignment: .leading)
-
-                Divider()
-                    .frame(height: 30)
-
+            HStack(spacing: 10) {
+                brandMark
+                directoryScopeControl
                 navigation
-
-                Divider()
-                    .frame(height: 30)
-
-                headerControls
+                statusFailureControl
+                settingsControl
             }
-            .padding(8)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
     }
 
-    private var brand: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("Metagent")
-                .font(.title2.weight(.semibold))
-            Text(model.statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    private var brandMark: some View {
+        MenuBarIcon()
+            .frame(width: 36, height: 36)
+            .padding(3)
+            .help("Metagent")
+            .accessibilityLabel("Metagent")
+    }
+
+    @ViewBuilder
+    private var statusFailureControl: some View {
+        if !model.isRunning,
+           model.statusText.localizedCaseInsensitiveContains("failed")
+        {
+            Button {
+                model.openLogs()
+            } label: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .frame(width: 20)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .frame(width: 46, height: 42)
+            .help("\(model.statusText). Open logs.")
+            .accessibilityLabel("\(model.statusText). Open logs.")
         }
     }
 
-    private var headerControls: some View {
-        HStack(spacing: 8) {
-            Menu {
+    private var directoryScopeControl: some View {
+        Menu {
+            Button {
+                selectedProjectRoot = nil
+            } label: {
+                if selectedProjectRoot == nil {
+                    Label("All directories", systemImage: "checkmark")
+                } else {
+                    Text("All directories")
+                }
+            }
+            Divider()
+            ForEach(directoryOptions) { directory in
                 Button {
-                    selectedProjectRoot = nil
+                    selectedProjectRoot = directory.root
                 } label: {
-                    if selectedProjectRoot == nil {
-                        Label("All directories", systemImage: "checkmark")
+                    if selectedProjectRoot == directory.root {
+                        Label(
+                            directoryFilterLabel(directory, options: directoryOptions),
+                            systemImage: "checkmark"
+                        )
                     } else {
-                        Text("All directories")
+                        Text(directoryFilterLabel(directory, options: directoryOptions))
                     }
                 }
-                Divider()
-                ForEach(directoryOptions) { directory in
-                    Button {
-                        selectedProjectRoot = directory.root
-                    } label: {
-                        if selectedProjectRoot == directory.root {
-                            Label(
-                                directoryFilterLabel(directory, options: directoryOptions),
-                                systemImage: "checkmark"
-                            )
-                        } else {
-                            Text(directoryFilterLabel(directory, options: directoryOptions))
-                        }
-                    }
-                }
-            } label: {
-                Label(selectedDirectoryLabel, systemImage: "scope")
-                    .lineLimit(1)
-                    .frame(
-                        minWidth: showsOpenWindowButton ? 125 : 150,
-                        idealWidth: showsOpenWindowButton ? 150 : 180,
-                        maxWidth: showsOpenWindowButton ? 165 : 210,
-                        alignment: .leading
-                    )
             }
-            .buttonStyle(.glass)
-            .controlSize(.regular)
-            .frame(height: 34)
-            .help(selectedProjectRoot.map(displayUserPath) ?? "Show all directories")
-            .accessibilityLabel("Directory")
-
-            Menu {
-                Button("Open Config", systemImage: "gearshape") {
-                    model.openConfig()
-                }
-                Button("Open Logs", systemImage: "doc.text") {
-                    model.openLogs()
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 18)
-            }
-            .buttonStyle(.glass)
-            .controlSize(.regular)
-            .frame(width: 42, height: 34)
-            .help("More")
-            .accessibilityLabel("More options")
+        } label: {
+            Label(selectedDirectoryLabel, systemImage: "scope")
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .frame(
+                    minWidth: showsOpenWindowButton ? 180 : 205,
+                    idealWidth: showsOpenWindowButton ? 205 : 240,
+                    maxWidth: showsOpenWindowButton ? 240 : 285,
+                    alignment: .leading
+                )
         }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(height: 42)
+        .help(selectedProjectRoot.map(displayUserPath) ?? "Show all directories")
+        .accessibilityLabel("Directory")
+    }
+
+    private var settingsControl: some View {
+        Menu {
+            Button("Open Configuration", systemImage: "slider.horizontal.3") {
+                model.openConfig()
+            }
+            Button("Open Logs", systemImage: "doc.text") {
+                model.openLogs()
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .frame(width: 20)
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(width: 46, height: 42)
+        .help("Settings and diagnostics")
+        .accessibilityLabel("Settings and diagnostics")
     }
 
     private var selectedDirectoryLabel: String {
@@ -361,7 +370,7 @@ private struct SectionNavigationButton: View {
                 .buttonStyle(.glassProminent)
         } else {
             button
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
         }
     }
 
@@ -371,10 +380,42 @@ private struct SectionNavigationButton: View {
                 .font(.callout.weight(isSelected ? .semibold : .medium))
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
+                .frame(height: 42)
                 .contentShape(Capsule())
         }
+        .controlSize(.large)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct GlassSearchField: View {
+    let placeholder: String
+    @Binding var text: String
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(width: width, height: 34)
+        .glassEffect(.regular, in: Capsule())
     }
 }
 
@@ -1358,6 +1399,22 @@ private enum SkillTableView: String, CaseIterable, Identifiable {
     }
 }
 
+private struct SkillViewSelector: View {
+    @Binding var selection: SkillTableView
+
+    var body: some View {
+        Picker("View", selection: $selection) {
+            ForEach(SkillTableView.allCases) { view in
+                Text(view.title).tag(view)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .accessibilityLabel("Skills view")
+    }
+}
+
 private enum SkillSourceCategory: String, CaseIterable, Identifiable {
     case plugin
     case skillsCLI
@@ -2054,12 +2111,7 @@ private struct InventorySection: View {
 
                 Spacer()
 
-                Picker("View", selection: selectedViewBinding) {
-                    ForEach(SkillTableView.allCases) { view in
-                        Text(view.title).tag(view)
-                    }
-                }
-                .pickerStyle(.segmented)
+                SkillViewSelector(selection: selectedViewBinding)
                 .frame(width: 430)
 
                 Button {
@@ -2120,9 +2172,7 @@ private struct InventorySection: View {
             }
 
             HStack(spacing: 10) {
-                TextField("Filter skills", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 190)
+                GlassSearchField(placeholder: "Filter skills", text: $query, width: 190)
 
                 Menu {
                     Button("Show All Sources") {
@@ -2174,6 +2224,7 @@ private struct InventorySection: View {
                         }
                     }
                     .frame(width: 145)
+                    .buttonStyle(.glass)
                     .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
                 }
 
@@ -2799,16 +2850,16 @@ private struct DuplicateCandidateCard: View {
                 .help("Get Info")
                 Spacer()
                 if canRemove {
-                    Picker(
-                        "Decision",
-                        selection: $isMarkedForRemoval
-                    ) {
+                    Picker("Decision", selection: $isMarkedForRemoval) {
                         Text("Keep").tag(false)
                         Text(removalLabel).tag(true)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
+                    .glassEffect(.regular.interactive(), in: Capsule())
+                    .tint(isMarkedForRemoval ? .red : .accentColor)
                     .frame(width: removalLabel == "Remove plugin" ? 190 : 155)
+                    .accessibilityLabel("Duplicate decision")
                     .help(removalLabel == "Remove plugin"
                         ? "Removing this copy uninstalls its entire plugin."
                         : "The final removal still requires approval.")
@@ -3009,9 +3060,7 @@ private struct MCPInventorySection: View {
 
                 Spacer()
 
-                TextField("Search MCPs", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
+                GlassSearchField(placeholder: "Search MCPs", text: $searchText, width: 220)
 
                 Picker("Status", selection: $filter) {
                     ForEach(MCPInventoryFilter.allCases) { option in
@@ -3019,6 +3068,7 @@ private struct MCPInventorySection: View {
                     }
                 }
                 .frame(width: 155)
+                .buttonStyle(.glass)
 
                 Button {
                     model.refreshMCPHealth()
@@ -3253,9 +3303,7 @@ private struct ProjectsSection: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                TextField("Search projects", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
+                GlassSearchField(placeholder: "Search projects", text: $searchText, width: 220)
                 Button {
                     model.refreshStatus()
                 } label: {
@@ -4564,7 +4612,7 @@ private struct SkillInfoView: View {
                 Button("Open Skill") {
                     showsReader = true
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 Menu("Actions") {
                     Button("Open Folder") {
                         openSkillDirectories([URL(fileURLWithPath: currentSkillPath)])
@@ -5131,6 +5179,22 @@ private enum SkillIconSource: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private struct SkillIconSourceSelector: View {
+    @Binding var selection: SkillIconSource
+
+    var body: some View {
+        Picker("Icon source", selection: $selection) {
+            ForEach(SkillIconSource.allCases) { source in
+                Text(source.rawValue).tag(source)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .accessibilityLabel("Icon source")
+    }
+}
+
 private struct LucideSkillIcon: Identifiable {
     let id: String
     let name: String
@@ -5325,12 +5389,7 @@ private struct SkillIconEditorView: View {
                 Button("Cancel") { dismiss() }
             }
 
-            Picker("Icon source", selection: $selectedSource) {
-                ForEach(SkillIconSource.allCases) { source in
-                    Text(source.rawValue).tag(source)
-                }
-            }
-            .pickerStyle(.segmented)
+            SkillIconSourceSelector(selection: $selectedSource)
 
             Group {
                 switch selectedSource {
@@ -5349,7 +5408,7 @@ private struct SkillIconEditorView: View {
             HStack {
                 Spacer()
                 Button(primaryActionTitle) { saveSelectedIcon() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .disabled(
                     model.isRunning
                         || (selectedSource == .emoji && selectedEmoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -5389,8 +5448,7 @@ private struct SkillIconEditorView: View {
         HStack(alignment: .top, spacing: 20) {
             lucidePreview.frame(width: 96, height: 96)
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Search Lucide icons", text: $lucideQuery)
-                    .textFieldStyle(.roundedBorder)
+                GlassSearchField(placeholder: "Search Lucide icons", text: $lucideQuery, width: 430)
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(54)), count: 7), spacing: 8) {
                         ForEach(visibleLucideIcons) { icon in
