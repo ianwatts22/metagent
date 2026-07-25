@@ -1,6 +1,5 @@
 ---
 import SiteLayout from "../layouts/SiteLayout.astro";
-import CommandBlock from "../components/CommandBlock.astro";
 import GitHubMark from "../components/GitHubMark.astro";
 import Icon from "../components/Icon.astro";
 import AppWindowMacIcon from "@hugeicons/core-free-icons/AppWindowMacIcon";
@@ -47,7 +46,6 @@ const surfaces = [
         <GitHubMark size={15} /> GitHub
       </a>
     </div>
-    <p class="requirement">macOS 26+ · Local-first</p>
     <img
       class="hero-shot"
       src="/app-skills.webp"
@@ -116,11 +114,4 @@ const surfaces = [
     </p>
   </section>
 
-  <section class="section cta-section">
-    <header class="sheet-head"><b>05</b> Install</header>
-    <h2>Make the invisible system visible.</h2>
-    <p>Build the native app and local CLI from source in a few commands.</p>
-    <CommandBlock command="git clone https://github.com/ianwatts22/metagent.git" label="clone command" />
-    <a class="primary-button" href="/install/">Read the install guide</a>
-  </section>
 </SiteLayout>
