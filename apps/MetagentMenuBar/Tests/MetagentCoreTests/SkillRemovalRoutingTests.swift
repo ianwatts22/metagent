@@ -215,11 +215,99 @@ final class SkillRemovalRoutingTests: XCTestCase {
         XCTAssertTrue(report.lines.contains("absent: failed"))
     }
 
+    /// The entrance must land exactly where the old direct `uninstallSkill`
+    /// call landed: same on-disk result, same report text.
+    func testEntranceMatchesDirectCanonicalRemoval() throws {
+        let home = try fixtureRoot("equivalence-home")
+        let originalHome = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", home.path, 1)
+        defer { restoreEnvironment("HOME", originalHome) }
+
+        let direct = try canonicalFixture("equivalence-direct")
+        let entrance = try canonicalFixture("equivalence-entrance")
+
+        let directReport = try MetagentCore.uninstallSkill(
+            projectRoot: direct.path,
+            skillName: "demo"
+        )
+        let target = try XCTUnwrap(MetagentCore.resolveSkillRemovalTarget(
+            projectRoot: entrance.path,
+            skillName: "demo"
+        ))
+        let batch = MetagentCore.removeSkills(targets: [target], apply: true)
+
+        let outcome = try XCTUnwrap(batch.outcomes.first)
+        XCTAssertTrue(outcome.succeeded)
+        let entranceReport = try XCTUnwrap(outcome.report)
+        XCTAssertEqual(outcome.lines, entranceReport.lines)
+        XCTAssertEqual(outcome.backupPath, entranceReport.backupPath)
+        XCTAssertEqual(entranceReport.skillName, directReport.skillName)
+        XCTAssertEqual(entranceReport.projectRoot, entrance.resolvingSymlinksInPath().path)
+        XCTAssertEqual(
+            try recoveryNeutralLines(entranceReport),
+            try recoveryNeutralLines(directReport)
+        )
+        XCTAssertTrue(entranceReport.lines.contains("removed 1 per-skill projection link(s)"))
+        XCTAssertTrue(entranceReport.lines.contains(
+            "kept 1 independent same-name legacy location(s); review them separately"
+        ))
+        XCTAssertTrue(entranceReport.lines.contains("verified canonical local skill is absent"))
+
+        let fileManager = FileManager.default
+        for root in [direct, entrance] {
+            XCTAssertFalse(fileManager.fileExists(
+                atPath: root.appendingPathComponent(".agents/skills/demo").path
+            ))
+            XCTAssertNil(try? fileManager.attributesOfItem(
+                atPath: root.appendingPathComponent(".claude/skills/demo").path
+            ))
+            XCTAssertTrue(fileManager.fileExists(
+                atPath: root.appendingPathComponent(".codex/skills/demo/SKILL.md").path
+            ))
+        }
+        for report in [directReport, entranceReport] {
+            let recovery = URL(fileURLWithPath: try XCTUnwrap(report.backupPath))
+            XCTAssertTrue(fileManager.fileExists(
+                atPath: recovery.appendingPathComponent("demo/SKILL.md").path
+            ))
+            XCTAssertNotNil(try? fileManager.attributesOfItem(
+                atPath: recovery.appendingPathComponent("projections/0-claude/demo").path
+            ))
+            for snapshot in ["before.json", "after.json", "REMOVAL.txt"] {
+                XCTAssertTrue(fileManager.fileExists(
+                    atPath: recovery.appendingPathComponent(snapshot).path
+                ))
+            }
+        }
+    }
+
     private func fixtureRoot(_ label: String) throws -> URL {
         try makeTemporaryRoot(prefix: "metagent-removal-\(label)")
     }
 
     private func writeSkill(named name: String, under directory: URL) throws {
         try writeSkillFixture(at: directory.appendingPathComponent(name), name: name)
+    }
+
+    /// A canonical local skill with one projection link and one independent
+    /// same-name copy, so a removal exercises every report line.
+    private func canonicalFixture(_ label: String) throws -> URL {
+        let root = try fixtureRoot(label)
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
+        try writeSkill(named: "demo", under: root.appendingPathComponent(".codex/skills"))
+        let projections = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: projections, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: projections.appendingPathComponent("demo").path,
+            withDestinationPath: "../../.agents/skills/demo"
+        )
+        return root
+    }
+
+    /// Report lines with the per-removal recovery folder folded away, so two
+    /// removals of identical fixtures compare equal.
+    private func recoveryNeutralLines(_ report: SkillUninstallReport) throws -> [String] {
+        let recovery = try XCTUnwrap(report.backupPath)
+        return report.lines.map { $0.replacingOccurrences(of: recovery, with: "<recovery>") }
     }
 }

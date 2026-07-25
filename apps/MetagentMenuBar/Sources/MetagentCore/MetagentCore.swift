@@ -427,7 +427,7 @@ public enum MetagentCore {
         try? SkillInventoryCache().load()
     }
 
-    public static func planSkillRemoval(projectRoot: String, skillName: String) throws -> SkillRemovalPlan {
+    static func planSkillRemoval(projectRoot: String, skillName: String) throws -> SkillRemovalPlan {
         guard isValidSkillName(skillName) else {
             throw NSError(domain: "MetagentSkillUninstall", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "invalid skill name: \(skillName)"
@@ -463,7 +463,9 @@ public enum MetagentCore {
         )
     }
 
-    public static func uninstallSkill(
+    /// Removal mechanism: one canonical `.agents` bundle, through its owning
+    /// package manager when it has one. Reached through `removeSkills`.
+    static func uninstallSkill(
         projectRoot: String,
         skillName: String,
         allowManagedRemoval: Bool = false
@@ -697,7 +699,9 @@ public enum MetagentCore {
         )
     }
 
-    public static func uninstallSkills(
+    /// Removal mechanism: several canonical bundles in one root, keeping a
+    /// single `skills` CLI invocation for the managed ones.
+    static func uninstallSkills(
         projectRoot: String,
         skillNames: [String],
         allowManagedRemoval: Bool = false
@@ -954,7 +958,9 @@ public enum MetagentCore {
         return SkillUninstallBatchReport(reports: reports, failures: failures)
     }
 
-    public static func uninstallStandaloneSkill(
+    /// Removal mechanism: a standalone `.codex`/`.claude` bundle moved into the
+    /// recovery folder.
+    static func uninstallStandaloneSkill(
         projectRoot: String,
         skillPath: String,
         skillName: String
@@ -1011,7 +1017,7 @@ public enum MetagentCore {
         )
     }
 
-    public static func canUninstallStandaloneSkill(
+    static func canUninstallStandaloneSkill(
         projectRoot: String,
         skillPath: String,
         skillName: String
@@ -1023,7 +1029,9 @@ public enum MetagentCore {
         ) != nil
     }
 
-    public static func uninstallCodexPlugin(pluginID: String) throws -> SkillUninstallReport {
+    /// Removal mechanism: `codex plugin remove`, verified against the installed
+    /// plugin list.
+    static func uninstallCodexPlugin(pluginID: String) throws -> SkillUninstallReport {
         guard pluginID.contains("@") else {
             throw NSError(domain: "MetagentCodexPlugins", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: "invalid Codex plugin identifier: \(pluginID)"

@@ -78,7 +78,7 @@ extension MetagentCore {
 
     /// Read-only plan for a resolved target, including the owning manager and
     /// the package-manager command when one applies.
-    public static func planSkillRemoval(for target: SkillRemovalTarget) throws -> SkillRemovalPlan {
+    static func planSkillRemoval(for target: SkillRemovalTarget) throws -> SkillRemovalPlan {
         switch target.method {
         case .canonical:
             guard let projectRoot = target.projectRoot, let skillName = target.skillName else {
@@ -126,9 +126,12 @@ extension MetagentCore {
 
     /// The single removal entrance. `apply` defaults to a dry run: nothing is
     /// mutated and each target reports the plan that would run.
+    /// Set `allowManagedRemoval` to false to refuse skills owned by a package
+    /// manager instead of removing them through that manager.
     public static func removeSkills(
         targets: [SkillRemovalTarget],
-        apply: Bool = false
+        apply: Bool = false,
+        allowManagedRemoval: Bool = true
     ) -> SkillRemovalBatchReport {
         var seen = Set<String>()
         let unique = targets.filter { seen.insert($0.id).inserted }
@@ -148,7 +151,8 @@ extension MetagentCore {
         for projectRoot in groups.keys.sorted() {
             outcomes += applyCanonicalSkillRemovals(
                 projectRoot: projectRoot,
-                targets: groups[projectRoot] ?? []
+                targets: groups[projectRoot] ?? [],
+                allowManagedRemoval: allowManagedRemoval
             )
         }
         for target in unique where target.method != .canonical {
@@ -191,7 +195,8 @@ extension MetagentCore {
     /// removal keeps its single `skills` CLI invocation.
     private static func applyCanonicalSkillRemovals(
         projectRoot: String,
-        targets: [SkillRemovalTarget]
+        targets: [SkillRemovalTarget],
+        allowManagedRemoval: Bool
     ) -> [SkillRemovalTargetOutcome] {
         var outcomes: [SkillRemovalTargetOutcome] = []
         let resolvable = targets.filter { $0.skillName != nil && !projectRoot.isEmpty }
@@ -207,7 +212,7 @@ extension MetagentCore {
         let batch = uninstallSkills(
             projectRoot: projectRoot,
             skillNames: resolvable.compactMap(\.skillName),
-            allowManagedRemoval: true
+            allowManagedRemoval: allowManagedRemoval
         )
         var handled = Set<String>()
         for report in batch.reports {

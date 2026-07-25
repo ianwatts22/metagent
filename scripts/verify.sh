@@ -427,36 +427,30 @@ cat >"$uninstall_probe" <<'SWIFT'
 import Darwin
 import Foundation
 
+// Drives the single public removal entrance:
+//   <root> <skill[,skill]> apply|plan|refuse
+// `refuse` applies with manager-owned removal disallowed.
 @main
 struct Probe {
     static func main() {
-        do {
-            if CommandLine.arguments.dropFirst(3).first == "batch" {
-                let batch = MetagentCore.uninstallSkills(
-                    projectRoot: CommandLine.arguments[1],
-                    skillNames: CommandLine.arguments[2].split(separator: ",").map(String.init),
-                    allowManagedRemoval: true
-                )
-                print(batch.reports.flatMap(\.lines).joined(separator: "\n"))
-                if !batch.failures.isEmpty {
-                    FileHandle.standardError.write(Data(
-                        batch.failures
-                            .map { "\($0.skillName): \($0.message)" }
-                            .joined(separator: "\n")
-                            .utf8
-                    ))
-                    exit(1)
-                }
-                return
-            }
-            let report = try MetagentCore.uninstallSkill(
-                projectRoot: CommandLine.arguments[1],
-                skillName: CommandLine.arguments[2],
-                allowManagedRemoval: CommandLine.arguments.dropFirst(3).first == "apply"
-            )
-            print(report.lines.joined(separator: "\n"))
-        } catch {
-            FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+        let projectRoot = CommandLine.arguments[1]
+        let targets = CommandLine.arguments[2]
+            .split(separator: ",")
+            .map { SkillRemovalTarget.canonical(projectRoot: projectRoot, skillName: String($0)) }
+        let mode = CommandLine.arguments.dropFirst(3).first
+        let report = MetagentCore.removeSkills(
+            targets: targets,
+            apply: mode == "apply" || mode == "refuse",
+            allowManagedRemoval: mode != "refuse"
+        )
+        print(report.outcomes.flatMap(\.lines).joined(separator: "\n"))
+        guard report.failures.isEmpty else {
+            FileHandle.standardError.write(Data(
+                report.failures
+                    .map { "\($0.skillName): \($0.message)" }
+                    .joined(separator: "\n")
+                    .utf8
+            ))
             exit(1)
         }
     }
@@ -465,7 +459,11 @@ SWIFT
 swiftc "$app_source"/Sources/MetagentCore/*.swift "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
 managed_uninstall_output="$fixture_root/managed-uninstall.out"
 expect_failure 'npx --yes skills remove remove-me --yes' "$managed_uninstall_output" -- \
-  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me
+  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me refuse
+env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me plan \
+  >"$fixture_root/managed-uninstall-plan.out" 2>&1
+grep -Fq -- 'would remove remove-me through the canonical path managed by skills-cli' \
+  "$fixture_root/managed-uninstall-plan.out"
 test -f "$uninstall_root/.agents/skills/remove-me/SKILL.md"
 test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
 test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
@@ -523,7 +521,7 @@ make_skill "$batch_root/.agents/skills/batch-two" "batch-two" "second"
 write_pair_lock "$batch_root/skills-lock.json" batch-one batch-two
 batch_npx_log="$fixture_root/batch-npx.log"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_LOG="$batch_npx_log" \
-  "$fixture_root/uninstall-probe" "$batch_root" batch-one,batch-two batch >/dev/null
+  "$fixture_root/uninstall-probe" "$batch_root" batch-one,batch-two apply >/dev/null
 test ! -e "$batch_root/.agents/skills/batch-one"
 test ! -e "$batch_root/.agents/skills/batch-two"
 jq -e '.skills == {}' "$batch_root/skills-lock.json" >/dev/null
@@ -564,7 +562,7 @@ write_pair_lock "$partial_root/skills-lock.json" partial-one partial-two
 partial_output="$fixture_root/partial-batch.out"
 expect_failure 'partial-one' "$partial_output" -- \
   env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_FAIL_AFTER_FIRST=1 \
-  "$fixture_root/uninstall-probe" "$partial_root" partial-one,partial-two batch
+  "$fixture_root/uninstall-probe" "$partial_root" partial-one,partial-two apply
 test ! -e "$partial_root/.agents/skills/partial-one"
 test -f "$partial_root/.agents/skills/partial-two/SKILL.md"
 jq -e '.skills["partial-one"] == null and .skills["partial-two"] != null' "$partial_root/skills-lock.json" >/dev/null
@@ -579,7 +577,7 @@ write_pair_lock "$corrupt_root/skills-lock.json" corrupt-one corrupt-two
 corrupt_output="$fixture_root/corrupt-batch.out"
 expect_failure 'Could not verify Skills CLI lock state' "$corrupt_output" -- \
   env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_CORRUPT_AFTER_FIRST=1 \
-  "$fixture_root/uninstall-probe" "$corrupt_root" corrupt-one,corrupt-two batch
+  "$fixture_root/uninstall-probe" "$corrupt_root" corrupt-one,corrupt-two apply
 grep -q 'Recovery state:' "$corrupt_output"
 test ! -e "$corrupt_root/.agents/skills/corrupt-one"
 test -f "$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
@@ -594,7 +592,7 @@ write_pair_lock "$partial_success_root/skills-lock.json" partial-success-one par
 partial_success_output="$fixture_root/partial-success-corrupt-lock.out"
 expect_failure 'partial-success-one' "$partial_success_output" -- \
   env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT=1 \
-  "$fixture_root/uninstall-probe" "$partial_success_root" partial-success-one,partial-success-two batch
+  "$fixture_root/uninstall-probe" "$partial_success_root" partial-success-one,partial-success-two apply
 test ! -e "$partial_success_root/.agents/skills/partial-success-one"
 test -f "$partial_success_root/.agents/skills/partial-success-two/SKILL.md"
 grep -q 'partial-success-two' "$partial_success_output"
@@ -607,7 +605,7 @@ mkdir -p \
 make_skill "$native_root/.agents/skills/native-remove" "native-remove" "native"
 make_skill "$native_root/.codex/skills/native-remove" "native-remove" "independent"
 ln -s ../../.agents/skills/native-remove "$native_root/.claude/skills/native-remove"
-HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$native_root" native-remove >/dev/null
+HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$native_root" native-remove apply >/dev/null
 test ! -e "$native_root/.agents/skills/native-remove"
 test ! -L "$native_root/.claude/skills/native-remove"
 test -f "$native_root/.codex/skills/native-remove/SKILL.md"
@@ -623,7 +621,7 @@ ln -s ../../.agents/skills/native-rollback "$rollback_root/.claude/skills/native
 chmod 555 "$rollback_root/.claude/skills"
 rollback_output="$fixture_root/native-rollback.out"
 expect_failure "" "$rollback_output" -- \
-  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$rollback_root" native-rollback
+  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$rollback_root" native-rollback apply
 test -f "$rollback_root/.agents/skills/native-rollback/SKILL.md"
 test -L "$rollback_root/.claude/skills/native-rollback"
 chmod 755 "$rollback_root/.claude/skills"
@@ -653,7 +651,13 @@ global_doctor="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper
 jq -e '([.issues[] | select(.severity != "OK")] | length) == 0' <<<"$global_doctor" >/dev/null
 global_uninstall_output="$fixture_root/global-uninstall.out"
 expect_failure 'npx --yes skills remove global-managed --yes --global' "$global_uninstall_output" -- \
-  env HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed
+  env HOME="$global_home" XDG_STATE_HOME="$global_xdg" \
+  "$fixture_root/uninstall-probe" "$global_home" global-managed refuse
+env HOME="$global_home" XDG_STATE_HOME="$global_xdg" \
+  "$fixture_root/uninstall-probe" "$global_home" global-managed plan \
+  >"$fixture_root/global-uninstall-plan.out" 2>&1
+grep -Fq -- 'would remove global-managed through the canonical path managed by skills-cli' \
+  "$fixture_root/global-uninstall-plan.out"
 test -f "$global_home/.agents/skills/global-managed/SKILL.md"
 grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"
 HOME="$global_home" XDG_STATE_HOME="$global_xdg" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$global_home" global-managed apply >/dev/null
