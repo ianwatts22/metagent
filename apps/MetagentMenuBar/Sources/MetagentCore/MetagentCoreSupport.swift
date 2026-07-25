@@ -14,6 +14,16 @@ func homeURL() -> URL {
     return fileManager.homeDirectoryForCurrentUser
 }
 
+// ISO8601DateFormatter is documented as thread-safe; these are never mutated
+// after creation.
+nonisolated(unsafe) let iso8601Formatter = ISO8601DateFormatter()
+
+nonisolated(unsafe) let iso8601FractionalFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
 func defaultRootPaths() -> [String] {
     let home = homeURL()
     return [
@@ -191,28 +201,80 @@ func subprocessExitStatus(_ waitStatus: Int32) -> Int32 {
     return signal == 0 ? (waitStatus >> 8) & 0xff : 128 + signal
 }
 
-func npxExecutable() throws -> URL {
-    let environment = ProcessInfo.processInfo.environment
+/// Shared executable lookup: override variable first, then every PATH entry,
+/// then caller-provided fallback candidates, preserving that order exactly.
+func firstExecutableCandidate(
+    named name: String,
+    environmentOverride: String?,
+    extraCandidates: [String],
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    requireAbsolutePaths: Bool = false
+) -> String? {
     var candidates: [String] = []
-    if let override = environment["METAGENT_NPX"], !override.isEmpty {
+    if let environmentOverride,
+       let override = environment[environmentOverride],
+       !override.isEmpty,
+       !requireAbsolutePaths || (override as NSString).isAbsolutePath
+    {
         candidates.append(override)
     }
     if let path = environment["PATH"] {
-        candidates += path.split(separator: ":").map { URL(fileURLWithPath: String($0)).appendingPathComponent("npx").path }
+        candidates += path.split(separator: ":").compactMap {
+            let directory = String($0)
+            guard !requireAbsolutePaths || (directory as NSString).isAbsolutePath else { return nil }
+            return URL(fileURLWithPath: directory).appendingPathComponent(name).path
+        }
     }
+    candidates += extraCandidates
+    return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+}
+
+func npxExecutable() throws -> URL {
+    var extraCandidates: [String] = []
     let fnmVersions = homeURL().appendingPathComponent(".local/share/fnm/node-versions")
     if let versions = try? fileManager.contentsOfDirectory(at: fnmVersions, includingPropertiesForKeys: nil) {
-        candidates += versions.sorted { $0.lastPathComponent > $1.lastPathComponent }.map {
+        extraCandidates += versions.sorted { $0.lastPathComponent > $1.lastPathComponent }.map {
             $0.appendingPathComponent("installation/bin/npx").path
         }
     }
-    candidates += ["/opt/homebrew/bin/npx", "/usr/local/bin/npx"]
-    if let path = candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) {
-        return URL(fileURLWithPath: path)
+    extraCandidates += ["/opt/homebrew/bin/npx", "/usr/local/bin/npx"]
+    guard let path = firstExecutableCandidate(
+        named: "npx",
+        environmentOverride: "METAGENT_NPX",
+        extraCandidates: extraCandidates
+    ) else {
+        throw NSError(domain: "MetagentSkillsCLI", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "npx executable not found; set METAGENT_NPX to enable managed removal"
+        ])
     }
-    throw NSError(domain: "MetagentSkillsCLI", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: "npx executable not found; set METAGENT_NPX to enable managed removal"
-    ])
+    return URL(fileURLWithPath: path)
+}
+
+func combinedSubprocessOutput(_ result: SubprocessResult) -> String {
+    String(data: result.standardOutput + result.standardError, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+/// Shared timeout/nonzero-status check for subprocess results. `output` is
+/// used verbatim as the failure description when it is non-empty.
+func requireSubprocessSuccess(
+    _ result: SubprocessResult,
+    output: String,
+    domain: String,
+    timeoutCode: Int,
+    timeoutMessage: String,
+    failureMessage: String
+) throws {
+    if result.timedOut {
+        throw NSError(domain: domain, code: timeoutCode, userInfo: [
+            NSLocalizedDescriptionKey: timeoutMessage
+        ])
+    }
+    guard result.status == 0 else {
+        throw NSError(domain: domain, code: Int(result.status), userInfo: [
+            NSLocalizedDescriptionKey: output.isEmpty ? failureMessage : output
+        ])
+    }
 }
 
 func hasSymlinkedAncestor(of url: URL, below root: URL) -> Bool {

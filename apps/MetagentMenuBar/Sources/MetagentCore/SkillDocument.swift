@@ -115,7 +115,7 @@ extension MetagentCore {
         guard !cleanName.contains(where: \.isNewline) else {
             throw skillDocumentError(code: 4, message: "The skill name must fit on one line.")
         }
-        guard isValidEditableSkillName(cleanName) else {
+        guard isValidSkillName(cleanName) else {
             throw skillDocumentError(
                 code: 5,
                 message: "Use letters, numbers, periods, underscores, or hyphens; the name must start with a letter or number."
@@ -417,15 +417,6 @@ private func skillProjectionLinks(resolvingTo directory: URL) -> [SkillProjectio
 private func renamedSymlinkDestination(_ destination: String, newName: String) -> String {
     let parent = (destination as NSString).deletingLastPathComponent
     return (parent as NSString).appendingPathComponent(newName)
-}
-
-private func isValidEditableSkillName(_ name: String) -> Bool {
-    guard let first = name.unicodeScalars.first, isASCIIAlphanumeric(first) else {
-        return false
-    }
-    return name.unicodeScalars.dropFirst().allSatisfy {
-        isASCIIAlphanumeric($0) || $0 == "." || $0 == "_" || $0 == "-"
-    }
 }
 
 private func splitSkillDocument(_ text: String) -> (frontmatter: [String], body: String) {

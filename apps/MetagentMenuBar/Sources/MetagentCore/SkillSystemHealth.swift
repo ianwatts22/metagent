@@ -124,7 +124,7 @@ public extension MetagentCore {
         let invocationCounts = matchedUsage.map { $0?.totalInvocations ?? 0 }
         let knownAges = scopedSkills.compactMap { skill -> Int? in
             guard let updatedAt = skill.updatedAt,
-                  let updatedDate = parseHealthDate(updatedAt)
+                  let updatedDate = parseSkillUsageTimestamp(updatedAt)
             else { return nil }
             let days = Calendar.current.dateComponents([.day], from: updatedDate, to: now).day ?? 0
             return max(0, days) / 7
@@ -227,17 +227,11 @@ private func estimatedCatalogTokens(name: String, description: String?) -> Int {
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
     guard !text.isEmpty else { return 0 }
-    return max(1, Int(ceil(Double(text.count) / 4)))
+    return max(1, estimateTokens(text.count))
 }
 
 private func standardizedHealthPath(_ path: String) -> String {
     URL(fileURLWithPath: path).standardizedFileURL.path
-}
-
-private func parseHealthDate(_ value: String) -> Date? {
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
 }
 
 private func pluginHealthIdentity(skill: SkillInventoryItem) -> String? {

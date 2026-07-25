@@ -166,29 +166,18 @@ public extension MetagentCore {
         environmentOverride: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> URL {
-        var candidates: [String] = []
-        if let environmentOverride,
-           let override = environment[environmentOverride],
-           !override.isEmpty,
-           (override as NSString).isAbsolutePath {
-            candidates.append(override)
-        }
-        if let path = environment["PATH"] {
-            candidates += path.split(separator: ":").compactMap {
-                let directory = String($0)
-                guard (directory as NSString).isAbsolutePath else { return nil }
-                return URL(fileURLWithPath: directory).appendingPathComponent(name).path
-            }
-        }
-        candidates += [
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".local/bin/\(name)").path,
-            "/opt/homebrew/bin/\(name)",
-            "/usr/local/bin/\(name)"
-        ]
-        guard let candidate = candidates.first(where: {
-            FileManager.default.isExecutableFile(atPath: $0)
-        }) else {
+        guard let candidate = firstExecutableCandidate(
+            named: name,
+            environmentOverride: environmentOverride,
+            extraCandidates: [
+                FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".local/bin/\(name)").path,
+                "/opt/homebrew/bin/\(name)",
+                "/usr/local/bin/\(name)"
+            ],
+            environment: environment,
+            requireAbsolutePaths: true
+        ) else {
             throw MCPSetupError("\(name) executable not found")
         }
         return URL(fileURLWithPath: candidate).resolvingSymlinksInPath().standardizedFileURL

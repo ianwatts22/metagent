@@ -237,8 +237,6 @@ public extension MetagentCore {
         let confidence: SkillScoreConfidence
         if usageCoverageComplete, resolvedProvenance, clarity.score == clarity.maximum {
             confidence = .medium
-        } else if usageCoverageComplete || resolvedProvenance {
-            confidence = .low
         } else {
             confidence = .low
         }
@@ -381,7 +379,7 @@ public extension MetagentCore {
             strengths: response.strengths,
             risks: response.risks,
             recommendation: response.recommendation,
-            evaluatedAt: ISO8601DateFormatter().string(from: Date()),
+            evaluatedAt: iso8601Formatter.string(from: Date()),
             contentHash: contentHash
         )
         return try SkillEvaluationStore(path: storePath).update(
@@ -446,7 +444,7 @@ func computeSkillEvaluationContentHash(_ skillDir: URL) throws -> String {
             $0.lastPathComponent.utf8.lexicographicallyPrecedes($1.lastPathComponent.utf8)
         }
 
-        for child in children where ![".git", "node_modules"].contains(child.lastPathComponent) {
+        for child in children where !skillReviewSkippedNames.contains(child.lastPathComponent) {
             let relativePath = relativePrefix.isEmpty
                 ? child.lastPathComponent
                 : "\(relativePrefix)/\(child.lastPathComponent)"
@@ -486,7 +484,7 @@ private final class SkillEvaluationStore {
     private let path: URL
 
     init(path: URL? = nil) throws {
-        self.path = path ?? skillEvaluationHomeURL()
+        self.path = path ?? homeURL()
             .appendingPathComponent("Library/Application Support/Metagent/skill-evaluations-v1.json")
         try FileManager.default.createDirectory(at: self.path.deletingLastPathComponent(), withIntermediateDirectories: true)
     }
@@ -714,18 +712,11 @@ private func evaluatorExecutable(
     overrideVariable: String,
     fallbackPaths: [String]
 ) throws -> URL {
-    let environment = ProcessInfo.processInfo.environment
-    var candidates: [String] = []
-    if let override = environment[overrideVariable], !override.isEmpty {
-        candidates.append(override)
-    }
-    if let path = environment["PATH"] {
-        candidates += path.split(separator: ":").map {
-            URL(fileURLWithPath: String($0)).appendingPathComponent(name).path
-        }
-    }
-    candidates += fallbackPaths
-    guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+    guard let path = firstExecutableCandidate(
+        named: name,
+        environmentOverride: overrideVariable,
+        extraCandidates: fallbackPaths
+    ) else {
         throw skillEvaluationError("\(name) executable not found; set \(overrideVariable) or install it on PATH")
     }
     return URL(fileURLWithPath: path)
@@ -740,7 +731,7 @@ private func pluginEvalInvocation() throws -> SkillEvaluatorInvocation {
     let pluginEval = try evaluatorExecutable(
         name: "plugin-eval",
         overrideVariable: "METAGENT_PLUGIN_EVAL",
-        fallbackPaths: [skillEvaluationHomeURL().appendingPathComponent(".local/bin/plugin-eval").path]
+        fallbackPaths: [homeURL().appendingPathComponent(".local/bin/plugin-eval").path]
     )
     let header = executableHeader(at: pluginEval)
     let firstLine = String(decoding: header, as: UTF8.self).components(separatedBy: .newlines).first ?? ""
@@ -760,31 +751,25 @@ private func executableHeader(at path: URL) -> Data {
 }
 
 private func nodeExecutable() throws -> URL {
-    let environment = ProcessInfo.processInfo.environment
-    let home = skillEvaluationHomeURL()
-    var candidates: [String] = []
-    if let override = environment["METAGENT_NODE"], !override.isEmpty {
-        candidates.append(override)
-    }
-    if let path = environment["PATH"] {
-        candidates += path.split(separator: ":").map {
-            URL(fileURLWithPath: String($0)).appendingPathComponent("node").path
-        }
-    }
-    candidates += [
+    let home = homeURL()
+    var extraCandidates = [
         "/opt/homebrew/bin/node",
         "/usr/local/bin/node",
         home.appendingPathComponent(".local/bin/node").path
     ]
-    candidates += versionedNodeCandidates(
+    extraCandidates += versionedNodeCandidates(
         at: home.appendingPathComponent(".local/share/fnm/node-versions"),
         suffix: "installation/bin/node"
     )
-    candidates += versionedNodeCandidates(
+    extraCandidates += versionedNodeCandidates(
         at: home.appendingPathComponent(".nvm/versions/node"),
         suffix: "bin/node"
     )
-    guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+    guard let path = firstExecutableCandidate(
+        named: "node",
+        environmentOverride: "METAGENT_NODE",
+        extraCandidates: extraCandidates
+    ) else {
         throw skillEvaluationError(
             "Plugin Eval requires Node.js; install Node or set METAGENT_NODE to its executable"
         )
@@ -953,7 +938,7 @@ private func codexReviewSandboxProfile(
 ) -> String {
     let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap { value in
         value.isEmpty ? nil : URL(fileURLWithPath: value).standardizedFileURL
-    } ?? skillEvaluationHomeURL().appendingPathComponent(".codex")
+    } ?? homeURL().appendingPathComponent(".codex")
     var readablePaths = Set<String>()
     let readableFiles = [
         codexHome.appendingPathComponent("auth.json"),
@@ -997,13 +982,6 @@ private func sandboxEscaped(_ value: String) -> String {
     value
         .replacingOccurrences(of: "\\", with: "\\\\")
         .replacingOccurrences(of: "\"", with: "\\\"")
-}
-
-private func skillEvaluationHomeURL() -> URL {
-    if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty {
-        return URL(fileURLWithPath: home)
-    }
-    return FileManager.default.homeDirectoryForCurrentUser
 }
 
 private func skillEvaluationError(_ message: String, code: Int = 1) -> NSError {

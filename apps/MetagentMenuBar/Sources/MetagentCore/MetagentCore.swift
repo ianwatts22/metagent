@@ -203,13 +203,8 @@ public enum MetagentCore {
     public static func doctor(options: SkillScanOptions = SkillScanOptions()) throws -> DoctorReport {
         let report = try scanSkills(options: options)
         var projects = report.projects
-        if options.roots.isEmpty,
-           let homeProject = try scanHomeSkills(maxDepth: 0).projects.first(where: {
-               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalProjectPath(homeURL())
-           }),
-           !projects.contains(where: { canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalProjectPath(homeURL()) })
-        {
-            projects.append(homeProject)
+        if options.roots.isEmpty {
+            try appendHomeProjectIfMissing(&projects)
         }
         var issues: [DoctorIssue] = []
 
@@ -375,15 +370,8 @@ public enum MetagentCore {
         let scan = try scanSkills(options: options.scanOptions)
         let canonicalHome = canonicalProjectPath(homeURL())
         var inventoryProjects = scan.projects
-        if options.scanOptions.roots.isEmpty,
-           let homeProject = try scanHomeSkills(maxDepth: 0).projects.first(where: {
-               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
-           }),
-           !inventoryProjects.contains(where: {
-               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
-           })
-        {
-            inventoryProjects.append(homeProject)
+        if options.scanOptions.roots.isEmpty {
+            try appendHomeProjectIfMissing(&inventoryProjects)
         }
         var repairProjects: [SkillsRepairProject] = []
 
@@ -414,6 +402,21 @@ public enum MetagentCore {
         }
 
         return SkillsRepairReport(apply: options.apply, projects: repairProjects)
+    }
+
+    /// Adds the home inventory project when a default-roots scan did not
+    /// already discover it.
+    private static func appendHomeProjectIfMissing(_ projects: inout [SkillProject]) throws {
+        let canonicalHome = canonicalProjectPath(homeURL())
+        if let homeProject = try scanHomeSkills(maxDepth: 0).projects.first(where: {
+               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
+           }),
+           !projects.contains(where: {
+               canonicalProjectPath(URL(fileURLWithPath: $0.root)) == canonicalHome
+           })
+        {
+            projects.append(homeProject)
+        }
     }
 
     public static func saveInventorySnapshot(_ report: SkillScanReport) {
@@ -555,26 +558,16 @@ public enum MetagentCore {
 
         let skillURL = URL(fileURLWithPath: agentsSkill.path)
         var lines: [String] = []
-        let projections = project.skills.filter {
-            guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                return false
-            }
-            let url = URL(fileURLWithPath: $0.path)
-            return isSymlink(url) && symlink(url, resolvesTo: skillURL)
-        }
-        let retained = project.skills.filter {
-            guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                return false
-            }
-            let url = URL(fileURLWithPath: $0.path)
-            return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
-        }
+        let (projections, retained) = partitionSameNameSkills(
+            in: project,
+            skillName: skillName,
+            canonicalSkillURL: skillURL
+        )
         let recovery = try prepareRemovalRecovery(
             projectRoot: root,
             skillName: skillName
         )
         let backupPath: String? = recovery.path
-        lines.append("saved recovery state to \(recovery.path)")
 
         let recoveredSkill = recovery.appendingPathComponent(skillName)
         if ["skills-cli", "dotagents"].contains(agentsSkill.manager) {
@@ -585,15 +578,16 @@ public enum MetagentCore {
                     resolvesTo: skillURL
                 )
             try fileManager.copyItem(at: skillURL, to: recoveredSkill)
-            lines.append("copied managed skill into recovery: \(recoveredSkill.path)")
             let retainedBackups = try snapshotRetainedSkills(
                 retained,
                 into: recovery,
                 skillName: skillName
             )
-            if !retainedBackups.isEmpty {
-                lines.append("snapshotted \(retainedBackups.count) independent same-name location(s)")
-            }
+            lines = managedRemovalIntroLines(
+                recovery: recovery,
+                skillName: skillName,
+                retainedBackupCount: retainedBackups.count
+            )
             do {
                 let output = agentsSkill.manager == "skills-cli"
                     ? try runSkillsCLIRemoval(root: root, skillName: skillName)
@@ -648,50 +642,15 @@ public enum MetagentCore {
                     NSLocalizedDescriptionKey: "\(agentsSkill.manager) reported success but the bundle or manager entry remains. Recovery state: \(recovery.path)"
                 ])
             }
-            var restoredRetainedCount = 0
-            for retainedBackup in retainedBackups {
-                guard !isSymlink(retainedBackup.original),
-                      !fileManager.fileExists(atPath: retainedBackup.original.path)
-                else { continue }
-                do {
-                    try fileManager.createDirectory(
-                        at: retainedBackup.original.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try fileManager.copyItem(at: retainedBackup.backup, to: retainedBackup.original)
-                    restoredRetainedCount += 1
-                } catch {
-                    lines.append("warning: managed package was removed, but restoring \(retainedBackup.original.path) failed: \(error.localizedDescription)")
-                }
-            }
-            if restoredRetainedCount > 0 {
-                lines.append("restored \(restoredRetainedCount) independent same-name location(s)")
-            }
-            var removedProjectionCount = 0
-            for (index, projection) in projections.enumerated() {
-                let projectionURL = URL(fileURLWithPath: projection.path)
-                guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
-                let projectionRecovery = recovery
-                    .appendingPathComponent("projections")
-                    .appendingPathComponent("\(index)-\(projection.location)")
-                    .appendingPathComponent(skillName)
-                do {
-                    try fileManager.createDirectory(at: projectionRecovery.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
-                    removedProjectionCount += 1
-                } catch {
-                    lines.append("warning: managed skill was removed, but projection cleanup failed at \(projectionURL.path): \(error.localizedDescription)")
-                }
-            }
-            lines.append("removed managed skill through \(agentsSkill.manager) and verified its manager entry is absent")
-            if removedProjectionCount > 0 {
-                lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
-            }
-            lines.append(finalizeRemovalRecovery(
-                recovery,
+            restoreRetainedSkillBackups(retainedBackups, lines: &lines)
+            finishManagedSkillRemoval(
+                manager: agentsSkill.manager,
+                projections: projections,
+                recovery: recovery,
                 projectRoot: root,
-                skillName: skillName
-            ))
+                skillName: skillName,
+                lines: &lines
+            )
             return SkillUninstallReport(
                 projectRoot: root.path,
                 skillName: skillName,
@@ -700,6 +659,7 @@ public enum MetagentCore {
             )
         }
 
+        lines.append("saved recovery state to \(recovery.path)")
         try moveSkillAndProjectionsToRecovery(
             skill: skillURL,
             to: recoveredSkill,
@@ -844,20 +804,11 @@ public enum MetagentCore {
                 }
 
                 let skillURL = URL(fileURLWithPath: skill.path)
-                let projections = project.skills.filter {
-                    guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                        return false
-                    }
-                    let url = URL(fileURLWithPath: $0.path)
-                    return isSymlink(url) && symlink(url, resolvesTo: skillURL)
-                }
-                let retained = project.skills.filter {
-                    guard $0.name == skillName && $0.location != "agents" && !$0.symlinkedContainer else {
-                        return false
-                    }
-                    let url = URL(fileURLWithPath: $0.path)
-                    return !isSymlink(url) || !symlink(url, resolvesTo: skillURL)
-                }
+                let (projections, retained) = partitionSameNameSkills(
+                    in: project,
+                    skillName: skillName,
+                    canonicalSkillURL: skillURL
+                )
                 let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
                 try fileManager.copyItem(at: skillURL, to: recovery.appendingPathComponent(skillName))
 
@@ -975,64 +926,24 @@ public enum MetagentCore {
                 continue
             }
 
-            var lines = [
-                "saved recovery state to \(removal.recovery.path)",
-                "copied managed skill into recovery: \(removal.recovery.appendingPathComponent(removal.skillName).path)"
-            ]
-            if !removal.retainedBackups.isEmpty {
-                lines.append("snapshotted \(removal.retainedBackups.count) independent same-name location(s)")
-            }
-            var restoredRetainedCount = 0
-            for retained in removal.retainedBackups {
-                guard !isSymlink(retained.original),
-                      !fileManager.fileExists(atPath: retained.original.path)
-                else { continue }
-                do {
-                    try fileManager.createDirectory(
-                        at: retained.original.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try fileManager.copyItem(at: retained.backup, to: retained.original)
-                    restoredRetainedCount += 1
-                } catch {
-                    lines.append("warning: managed package was removed, but restoring \(retained.original.path) failed: \(error.localizedDescription)")
-                }
-            }
-            if restoredRetainedCount > 0 {
-                lines.append("restored \(restoredRetainedCount) independent same-name location(s)")
-            }
+            var lines = managedRemovalIntroLines(
+                recovery: removal.recovery,
+                skillName: removal.skillName,
+                retainedBackupCount: removal.retainedBackups.count
+            )
+            restoreRetainedSkillBackups(removal.retainedBackups, lines: &lines)
             if reconciledProjectLockNames.contains(removal.skillName) {
                 lines.append("removed a stale project lock entry left by skills-cli")
             }
 
-            var removedProjectionCount = 0
-            for (index, projection) in removal.projections.enumerated() {
-                let projectionURL = URL(fileURLWithPath: projection.path)
-                guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
-                let projectionRecovery = removal.recovery
-                    .appendingPathComponent("projections")
-                    .appendingPathComponent("\(index)-\(projection.location)")
-                    .appendingPathComponent(removal.skillName)
-                do {
-                    try fileManager.createDirectory(
-                        at: projectionRecovery.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
-                    removedProjectionCount += 1
-                } catch {
-                    lines.append("warning: managed skill was removed, but projection cleanup failed at \(projectionURL.path): \(error.localizedDescription)")
-                }
-            }
-            lines.append("removed managed skill through skills-cli and verified its manager entry is absent")
-            if removedProjectionCount > 0 {
-                lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
-            }
-            lines.append(finalizeRemovalRecovery(
-                removal.recovery,
+            finishManagedSkillRemoval(
+                manager: "skills-cli",
+                projections: removal.projections,
+                recovery: removal.recovery,
                 projectRoot: root,
-                skillName: removal.skillName
-            ))
+                skillName: removal.skillName,
+                lines: &lines
+            )
             reports.append(SkillUninstallReport(
                 projectRoot: root.path,
                 skillName: removal.skillName,
@@ -1123,18 +1034,15 @@ public enum MetagentCore {
             arguments: ["plugin", "remove", pluginID, "--json"],
             timeout: 120
         )
-        let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if result.timedOut {
-            throw NSError(domain: "MetagentCodexPlugins", code: 124, userInfo: [
-                NSLocalizedDescriptionKey: "Codex plugin removal timed out after 120 seconds"
-            ])
-        }
-        guard result.status == 0 else {
-            throw NSError(domain: "MetagentCodexPlugins", code: Int(result.status), userInfo: [
-                NSLocalizedDescriptionKey: combined.isEmpty ? "Codex plugin removal failed" : combined
-            ])
-        }
+        let combined = combinedSubprocessOutput(result)
+        try requireSubprocessSuccess(
+            result,
+            output: combined,
+            domain: "MetagentCodexPlugins",
+            timeoutCode: 124,
+            timeoutMessage: "Codex plugin removal timed out after 120 seconds",
+            failureMessage: "Codex plugin removal failed"
+        )
         guard !(try installedCodexPlugins()).contains(where: { $0.pluginId == pluginID }) else {
             throw NSError(domain: "MetagentCodexPlugins", code: 12, userInfo: [
                 NSLocalizedDescriptionKey: "Codex reported success but \(pluginID) remains installed"

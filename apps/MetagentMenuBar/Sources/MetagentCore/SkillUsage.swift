@@ -96,12 +96,10 @@ public extension MetagentCore {
     }
 
     static func parseSkillUsageTimestamp(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) {
+        if let date = iso8601FractionalFormatter.date(from: value) {
             return date
         }
-        return ISO8601DateFormatter().date(from: value)
+        return iso8601Formatter.date(from: value)
     }
 
     static func normalizedPluginMarketplace(_ marketplace: String) -> String {
@@ -112,7 +110,6 @@ public extension MetagentCore {
 }
 
 private let skillUsageParserVersion = 15
-private let skillUsageSQLiteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let skillUsageEventsTable = "skill_usage_events"
 private let skillUsageSourcesTable = "skill_usage_sources"
 private let skillUsageMetadataTable = "skill_usage_metadata"
@@ -120,18 +117,11 @@ private let previousSkillUsageEventsTable = "skill_usage_events_previous"
 private let previousSkillUsageSourcesTable = "skill_usage_sources_previous"
 private let previousSkillUsageMetadataTable = "skill_usage_metadata_previous"
 
-private func skillUsageHomeURL() -> URL {
-    if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty {
-        return URL(fileURLWithPath: home).standardizedFileURL
-    }
-    return FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
-}
-
 private func skillUsageCodexHomeURL() -> URL {
     if let configured = ProcessInfo.processInfo.environment["CODEX_HOME"], !configured.isEmpty {
         return URL(fileURLWithPath: configured).standardizedFileURL
     }
-    return skillUsageHomeURL().appendingPathComponent(".codex").standardizedFileURL
+    return homeURL().standardizedFileURL.appendingPathComponent(".codex").standardizedFileURL
 }
 
 private struct UsageSource: Sendable {
@@ -195,7 +185,7 @@ private final class SkillUsageStore {
         if let path {
             self.path = URL(fileURLWithPath: path)
         } else {
-            self.path = skillUsageHomeURL()
+            self.path = homeURL().standardizedFileURL
                 .appendingPathComponent("Library/Application Support/Metagent/usage.sqlite")
         }
         try fileManager.createDirectory(
@@ -1174,7 +1164,7 @@ private final class SkillUsageStore {
     private func resolve(path: String, cwd: String) -> String {
         let expanded: String
         if path.hasPrefix("~/") {
-            expanded = skillUsageHomeURL()
+            expanded = homeURL().standardizedFileURL
                 .appendingPathComponent(String(path.dropFirst(2))).path
         } else if path.hasPrefix("/") {
             expanded = path
@@ -1246,7 +1236,7 @@ private final class SkillUsageStore {
                 ? frontmatterName
                 : "\(container.dropFirst()):\(frontmatterName)"
             if URL(fileURLWithPath: root).standardizedFileURL.path
-                == skillUsageHomeURL().path
+                == homeURL().standardizedFileURL.path
             {
                 return ParsedSkillIdentity(
                     id: "global:\(identityName)",
@@ -1516,7 +1506,7 @@ private final class SkillUsageStore {
             "total_bytes": String(progress.totalBytes),
             "processed_bytes": String(progress.processedBytes),
             "is_complete": progress.isComplete ? "1" : "0",
-            "last_updated_at": ISO8601DateFormatter().string(from: Date())
+            "last_updated_at": iso8601Formatter.string(from: Date())
         ]
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -1729,7 +1719,7 @@ private final class SkillUsageStore {
     }
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
-        sqlite3_bind_text(statement, index, value, -1, skillUsageSQLiteTransient)
+        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
     }
 
     private func text(_ statement: OpaquePointer?, _ index: Int32) -> String {

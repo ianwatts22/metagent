@@ -160,20 +160,17 @@ func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
         currentDirectory: root,
         timeout: 120
     )
-    let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if result.timedOut {
-        throw NSError(domain: "MetagentSkillsCLI", code: 124, userInfo: [
-            NSLocalizedDescriptionKey: combined.isEmpty
-                ? "npx skills remove timed out after 120 seconds"
-                : "npx skills remove timed out after 120 seconds:\n\(combined)"
-        ])
-    }
-    guard result.status == 0 else {
-        throw NSError(domain: "MetagentSkillsCLI", code: Int(result.status), userInfo: [
-            NSLocalizedDescriptionKey: combined.isEmpty ? "npx skills remove failed" : combined
-        ])
-    }
+    let combined = combinedSubprocessOutput(result)
+    try requireSubprocessSuccess(
+        result,
+        output: combined,
+        domain: "MetagentSkillsCLI",
+        timeoutCode: 124,
+        timeoutMessage: combined.isEmpty
+            ? "npx skills remove timed out after 120 seconds"
+            : "npx skills remove timed out after 120 seconds:\n\(combined)",
+        failureMessage: "npx skills remove failed"
+    )
     return combined
 }
 
@@ -187,20 +184,17 @@ func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
         currentDirectory: root,
         timeout: 120
     )
-    let combined = String(data: result.standardOutput + result.standardError, encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if result.timedOut {
-        throw NSError(domain: "MetagentDotagents", code: 124, userInfo: [
-            NSLocalizedDescriptionKey: combined.isEmpty
-                ? "dotagents remove timed out after 120 seconds"
-                : "dotagents remove timed out after 120 seconds:\n\(combined)"
-        ])
-    }
-    guard result.status == 0 else {
-        throw NSError(domain: "MetagentDotagents", code: Int(result.status), userInfo: [
-            NSLocalizedDescriptionKey: combined.isEmpty ? "dotagents remove failed" : combined
-        ])
-    }
+    let combined = combinedSubprocessOutput(result)
+    try requireSubprocessSuccess(
+        result,
+        output: combined,
+        domain: "MetagentDotagents",
+        timeoutCode: 124,
+        timeoutMessage: combined.isEmpty
+            ? "dotagents remove timed out after 120 seconds"
+            : "dotagents remove timed out after 120 seconds:\n\(combined)",
+        failureMessage: "dotagents remove failed"
+    )
     return combined
 }
 
@@ -227,6 +221,115 @@ func standaloneSkillRemovalTarget(
             && parent.resolvingSymlinksInPath().standardizedFileURL.path == parent.path
     }) else { return nil }
     return (root, skill)
+}
+
+/// Splits the non-canonical same-name inventory copies into per-skill
+/// projection links that resolve to the canonical bundle and independent
+/// retained locations that do not.
+func partitionSameNameSkills(
+    in project: SkillProject,
+    skillName: String,
+    canonicalSkillURL skillURL: URL
+) -> (projections: [SkillInventoryItem], retained: [SkillInventoryItem]) {
+    var projections: [SkillInventoryItem] = []
+    var retained: [SkillInventoryItem] = []
+    for candidate in project.skills {
+        guard candidate.name == skillName,
+              candidate.location != "agents",
+              !candidate.symlinkedContainer
+        else { continue }
+        let url = URL(fileURLWithPath: candidate.path)
+        if isSymlink(url), symlink(url, resolvesTo: skillURL) {
+            projections.append(candidate)
+        } else {
+            retained.append(candidate)
+        }
+    }
+    return (projections, retained)
+}
+
+/// Opening report lines shared by every managed (skills-cli/dotagents) removal.
+func managedRemovalIntroLines(
+    recovery: URL,
+    skillName: String,
+    retainedBackupCount: Int
+) -> [String] {
+    var lines = [
+        "saved recovery state to \(recovery.path)",
+        "copied managed skill into recovery: \(recovery.appendingPathComponent(skillName).path)"
+    ]
+    if retainedBackupCount > 0 {
+        lines.append("snapshotted \(retainedBackupCount) independent same-name location(s)")
+    }
+    return lines
+}
+
+/// Puts back independent same-name copies that a manager removal deleted
+/// alongside the canonical bundle, reporting per-location failures as
+/// warnings rather than errors.
+func restoreRetainedSkillBackups(
+    _ retainedBackups: [(original: URL, backup: URL)],
+    lines: inout [String]
+) {
+    var restoredRetainedCount = 0
+    for retainedBackup in retainedBackups {
+        guard !isSymlink(retainedBackup.original),
+              !fileManager.fileExists(atPath: retainedBackup.original.path)
+        else { continue }
+        do {
+            try fileManager.createDirectory(
+                at: retainedBackup.original.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.copyItem(at: retainedBackup.backup, to: retainedBackup.original)
+            restoredRetainedCount += 1
+        } catch {
+            lines.append("warning: managed package was removed, but restoring \(retainedBackup.original.path) failed: \(error.localizedDescription)")
+        }
+    }
+    if restoredRetainedCount > 0 {
+        lines.append("restored \(restoredRetainedCount) independent same-name location(s)")
+    }
+}
+
+/// Moves the dangling per-skill projection links of a verified managed removal
+/// into recovery and appends the shared completion report lines.
+func finishManagedSkillRemoval(
+    manager: String,
+    projections: [SkillInventoryItem],
+    recovery: URL,
+    projectRoot: URL,
+    skillName: String,
+    lines: inout [String]
+) {
+    var removedProjectionCount = 0
+    for (index, projection) in projections.enumerated() {
+        let projectionURL = URL(fileURLWithPath: projection.path)
+        guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
+        let projectionRecovery = recovery
+            .appendingPathComponent("projections")
+            .appendingPathComponent("\(index)-\(projection.location)")
+            .appendingPathComponent(skillName)
+        do {
+            try fileManager.createDirectory(
+                at: projectionRecovery.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+            removedProjectionCount += 1
+        } catch {
+            lines.append("warning: managed skill was removed, but projection cleanup failed at \(projectionURL.path): \(error.localizedDescription)")
+        }
+    }
+    lines.append("removed managed skill through \(manager) and verified its manager entry is absent")
+    if removedProjectionCount > 0 {
+        lines.append("removed \(removedProjectionCount) dangling per-skill projection link(s)")
+    }
+    lines.append(finalizeRemovalRecovery(
+        recovery,
+        projectRoot: projectRoot,
+        skillName: skillName
+    ))
 }
 
 /// Copies every independent same-name skill location into the recovery folder
@@ -331,7 +434,7 @@ func prepareRemovalRecovery(
         try fileManager.copyItem(at: source, to: stateRoot.appendingPathComponent(backupName))
     }
 
-    let metadata = "project=\(projectRoot.path)\nskill=\(skillName)\nremoved_at=\(ISO8601DateFormatter().string(from: Date()))\n"
+    let metadata = "project=\(projectRoot.path)\nskill=\(skillName)\nremoved_at=\(iso8601Formatter.string(from: Date()))\n"
     try metadata.write(
         to: recoveryRoot.appendingPathComponent("REMOVAL.txt"),
         atomically: true,
@@ -375,7 +478,7 @@ func writeRemovalInventorySnapshot(
     }).count
     let snapshot = RemovalInventorySnapshot(
         phase: phase,
-        capturedAt: ISO8601DateFormatter().string(from: Date()),
+        capturedAt: iso8601Formatter.string(from: Date()),
         projectRoot: projectRoot.path,
         skillName: skillName,
         canonicalSkillCount: canonicalSkillCount,

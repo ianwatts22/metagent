@@ -216,44 +216,37 @@ func installedCodexPlugins() throws -> [CodexPlugin] {
         arguments: ["plugin", "list", "--json"],
         timeout: 30
     )
-    if result.timedOut {
-        let detail = String(data: result.standardError, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw NSError(domain: "MetagentCodexPlugins", code: 2, userInfo: [
-            NSLocalizedDescriptionKey: detail?.isEmpty == false
-                ? "codex plugin list timed out: \(detail!)"
-                : "codex plugin list timed out after 30 seconds"
-        ])
-    }
-    guard result.status == 0 else {
-        let detail = String(data: result.standardError, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw NSError(domain: "MetagentCodexPlugins", code: Int(result.status), userInfo: [
-            NSLocalizedDescriptionKey: detail?.isEmpty == false ? detail! : "codex plugin list failed"
-        ])
-    }
+    let detail = String(data: result.standardError, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    try requireSubprocessSuccess(
+        result,
+        output: detail,
+        domain: "MetagentCodexPlugins",
+        timeoutCode: 2,
+        timeoutMessage: detail.isEmpty
+            ? "codex plugin list timed out after 30 seconds"
+            : "codex plugin list timed out: \(detail)",
+        failureMessage: "codex plugin list failed"
+    )
     return try JSONDecoder().decode(CodexPluginList.self, from: result.standardOutput).installed
         .filter { $0.installed && $0.enabled }
 }
 
 func codexExecutable() throws -> URL {
-    let environment = ProcessInfo.processInfo.environment
-    var candidates: [String] = []
-    if let override = environment["METAGENT_CODEX"], !override.isEmpty {
-        candidates.append(override)
+    guard let path = firstExecutableCandidate(
+        named: "codex",
+        environmentOverride: "METAGENT_CODEX",
+        extraCandidates: [
+            homeURL().appendingPathComponent(".local/bin/codex").path,
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex"
+        ]
+    ) else {
+        throw NSError(domain: "MetagentCodexPlugins", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "codex executable not found; set METAGENT_CODEX to enable plugin inventory"
+        ])
     }
-    if let path = environment["PATH"] {
-        candidates += path.split(separator: ":").map { URL(fileURLWithPath: String($0)).appendingPathComponent("codex").path }
-    }
-    candidates += [
-        homeURL().appendingPathComponent(".local/bin/codex").path,
-        "/opt/homebrew/bin/codex",
-        "/usr/local/bin/codex"
-    ]
-    if let path = candidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) {
-        return URL(fileURLWithPath: path)
-    }
-    throw NSError(domain: "MetagentCodexPlugins", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: "codex executable not found; set METAGENT_CODEX to enable plugin inventory"
-    ])
+    return URL(fileURLWithPath: path)
 }
 
 func readCodexPluginSkills(_ plugin: CodexPlugin) -> SkillProject? {
@@ -560,7 +553,7 @@ func makeSkillItem(
         installedAt: origin?.installedAt ?? inherited?.installedAt,
         updatedAt: origin?.updatedAt
             ?? inherited?.updatedAt
-            ?? stats.latestModifiedAt.map { ISO8601DateFormatter().string(from: $0) },
+            ?? stats.latestModifiedAt.map { iso8601Formatter.string(from: $0) },
         symlinkedContainer: symlinkedContainer,
         folderKind: folderKind(
             path: path,

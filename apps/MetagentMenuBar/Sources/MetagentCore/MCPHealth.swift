@@ -117,7 +117,7 @@ public struct MCPHealthSnapshot: Codable, Equatable, Sendable {
         }.count
     }
 
-    public func disabledCount(for client: MCPClient) -> Int {
+    func disabledCount(for client: MCPClient) -> Int {
         servers.filter { $0.client == client && $0.state == .disabled }.count
     }
 
@@ -170,7 +170,7 @@ public struct MCPInventoryEntry: Equatable, Identifiable, Sendable {
 
     public var id: String { name }
 
-    public func state(for client: MCPClient) -> MCPConnectionState? {
+    func state(for client: MCPClient) -> MCPConnectionState? {
         clientStates[client]
     }
 }
@@ -229,7 +229,7 @@ public extension MetagentCore {
         return MCPHealthSnapshot(servers: servers.sorted(by: mcpHealthSort), observedAt: observedAt)
     }
 
-    static func parseCodexMCPInventory(_ data: Data) throws -> [MCPServerHealth] {
+    internal static func parseCodexMCPInventory(_ data: Data) throws -> [MCPServerHealth] {
         try JSONDecoder().decode([CodexMCPEntry].self, from: data).map { entry in
             if !entry.enabled {
                 return MCPServerHealth(
@@ -256,7 +256,7 @@ public extension MetagentCore {
         }
     }
 
-    static func scanClaudeMCPConfiguration(
+    internal static func scanClaudeMCPConfiguration(
         homeDirectory: URL,
         additionalProjectPaths: [String] = []
     ) -> [MCPServerHealth] {
@@ -265,7 +265,6 @@ public extension MetagentCore {
             homeDirectory.appendingPathComponent(".claude.json"),
             claudeRoot.appendingPathComponent("settings.json")
         ]
-        let legacyConfigURL = homeDirectory.appendingPathComponent(".claude.json")
         var globalNames = Set<String>()
         var globalDisabledNames = Set<String>()
         var userApprovedManifestNames = Set<String>()
@@ -273,18 +272,16 @@ public extension MetagentCore {
         var userApprovesAllManifestNames: Bool?
         var projectScopes: [ClaudeProjectMCPScope] = []
         var pluginStates: [String: Bool] = [:]
-        var disabledPluginSelectors = Set<String>()
         var configurationUnavailable = false
 
         for url in configURLs {
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
                 let object = try loadJSONObject(at: url)
-                if url == legacyConfigURL {
+                if url == configURLs[0] {
                     globalNames.formUnion(dictionaryKeys(object["mcpServers"]))
                 }
                 globalDisabledNames.formUnion(disabledServerNames(in: object))
-                disabledPluginSelectors.formUnion(disabledServerNames(in: object))
                 userApprovedManifestNames.formUnion(stringArray(object["enabledMcpjsonServers"]))
                 userRejectedManifestNames.formUnion(rejectedManifestNames(in: object))
                 if object["enableAllProjectMcpServers"] as? Bool == true {
@@ -366,7 +363,7 @@ public extension MetagentCore {
                 identifier: entry.key,
                 scope: "user",
                 projectPath: nil,
-                disabledNames: disabledPluginSelectors
+                disabledNames: globalDisabledNames
             ) : nil
         }
         for scope in projectScopes {
@@ -375,7 +372,7 @@ public extension MetagentCore {
                     identifier: entry.key,
                     scope: entry.value.scope,
                     projectPath: entry.value.projectPath,
-                    disabledNames: scope.disabledServerNames.union(disabledPluginSelectors)
+                    disabledNames: scope.disabledServerNames.union(globalDisabledNames)
                 ) : nil
             }
         }
@@ -439,7 +436,7 @@ private func loadJSONObject(at url: URL) throws -> [String: Any] {
 }
 
 private func dictionaryKeys(_ value: Any?) -> Set<String> {
-    Set((value as? [String: Any])?.keys ?? Dictionary<String, Any>().keys)
+    (value as? [String: Any]).map { Set($0.keys) } ?? []
 }
 
 private func stringArray(_ value: Any?) -> Set<String> {
