@@ -109,13 +109,13 @@ img {
 
 .brand img {
   width: auto;
-  height: 2.25rem;
+  height: 2.7rem;
 }.header-github {
   display: grid;
   place-items: center;
   justify-self: end;
-  width: 2.1rem;
-  height: 2.1rem;
+  width: 2.6rem;
+  height: 2.6rem;
   border-radius: var(--radius);
   color: var(--steel);
 }
@@ -272,9 +272,9 @@ img {
   align-items: center;
   justify-content: center;
   /* Fixed height means hovering can only ever widen a card, never grow it. */
-  min-height: 16.5rem;
+  min-height: 15rem;
   min-width: 0;
-  padding: 1.4rem 1.2rem;
+  padding: 1.1rem 1.2rem;
   border-left: 1px solid var(--hairline);
   cursor: default;
   outline: none;
@@ -320,8 +320,8 @@ img {
   width: 0;
   margin: 0;
   color: var(--steel);
-  font-size: 1.28rem;
-  line-height: 1.55;
+  font-size: 1.6rem;
+  line-height: 1.45;
   text-align: left;
   opacity: 0;
   transition: width 640ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -331,12 +331,12 @@ img {
 
 .surface-detail span {
   display: block;
-  width: 21rem;
+  width: 24rem;
 }
 
 .surface-card:hover .surface-detail,
 .surface-card:focus-visible .surface-detail {
-  width: 21rem;
+  width: 24rem;
   margin-left: 2rem;
   opacity: 1;
 }
