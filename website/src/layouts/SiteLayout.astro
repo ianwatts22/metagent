@@ -16,8 +16,6 @@ const pathname = Astro.url.pathname;
 const nav = [
   { href: "/install/", label: "Install" },
   { href: "/cli-mcp/", label: "CLI + MCP" },
-  { href: "/privacy/", label: "Privacy" },
-  { href: "/contributing/", label: "Contributing" },
 ];
 ---
 
@@ -49,7 +47,7 @@ const nav = [
         <span>Metagent</span>
       </a>
 
-      <nav class="desktop-nav" aria-label="Primary navigation">
+      <nav class="site-nav" aria-label="Primary navigation">
         {nav.map((item) => (
           <a href={item.href} aria-current={pathname === item.href ? "page" : undefined}>
             {item.label}
@@ -64,41 +62,10 @@ const nav = [
       >
         <GitHubMark size={17} />
       </a>
-
-      <details class="mobile-menu">
-        <summary aria-label="Open navigation menu">
-          <span>Menu</span>
-          <span aria-hidden="true">⌄</span>
-        </summary>
-        <nav aria-label="Mobile navigation">
-          {nav.map((item) => (
-            <a href={item.href} aria-current={pathname === item.href ? "page" : undefined}>
-              {item.label}
-            </a>
-          ))}
-        </nav>
-      </details>
     </header>
 
     <main id="main">
       <slot />
     </main>
-
-    <footer class="site-footer">
-      <div class="footer-brand">
-        <img src="/brand/logo.svg" alt="" width="28" height="28" />
-        <div>
-          <strong>Metagent</strong>
-          <span>Local clarity for agent systems.</span>
-        </div>
-      </div>
-      <div class="footer-links">
-        <a href="/install/">Install</a>
-        <a href="/privacy/">Privacy</a>
-        <a href="https://github.com/ianwatts22/metagent/issues">Issues</a>
-        <a href="https://github.com/ianwatts22/metagent">Source</a>
-      </div>
-      <p>Early developer preview · macOS 26+</p>
-    </footer>
   </body>
 </html>

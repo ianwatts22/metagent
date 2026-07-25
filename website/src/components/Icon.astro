@@ -1,0 +1,36 @@
+---
+// Renders a Hugeicons icon. Icon data is an array of [tag, attributes] pairs
+// using camelCase attribute names, which SVG needs as kebab-case.
+type IconNode = readonly (readonly [string, { readonly [key: string]: string | number }])[];
+
+interface Props {
+  icon: IconNode;
+  size?: number;
+  stroke?: number;
+}
+
+const { icon, size = 22, stroke = 1.5 } = Astro.props;
+
+const kebab = (key: string) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+---
+
+<svg
+  class="icon"
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke-width={stroke}
+  aria-hidden="true"
+  focusable="false"
+>
+  {icon.map(([tag, attrs]) => {
+    const props = Object.fromEntries(
+      Object.entries(attrs)
+        .filter(([key]) => key !== "key")
+        .map(([key, value]) => [kebab(key), value])
+    );
+    const Tag = tag as any;
+    return <Tag {...props} />;
+  })}
+</svg>
