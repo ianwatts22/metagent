@@ -272,8 +272,8 @@ img {
   border-left: 1px solid var(--hairline);
   cursor: default;
   outline: none;
-  transition: flex-grow 420ms cubic-bezier(0.2, 0.7, 0.2, 1),
-    background-color 300ms ease;
+  transition: flex-grow 640ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 520ms ease;
 }
 
 .surface-card:first-child {
@@ -318,8 +318,9 @@ img {
   line-height: 1.65;
   text-align: left;
   opacity: 0;
-  transition: width 420ms cubic-bezier(0.2, 0.7, 0.2, 1), opacity 260ms ease,
-    margin-left 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition: width 640ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 420ms ease 120ms,
+    margin-left 640ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .surface-detail span {
@@ -338,7 +339,7 @@ img {
 
 .matrix-wrap {
   overflow-x: auto;
-  width: 100%;
+  width: min(100%, 34rem);
 }
 
 .matrix {
@@ -349,8 +350,13 @@ img {
 
 .matrix th,
 .matrix td {
-  padding: 1rem;
+  padding: 0.85rem 0.5rem;
   border-bottom: 1px solid var(--hairline);
+}
+
+/* Capability column takes the slack; the three surface columns stay tight. */
+.matrix thead th:not(:first-child) {
+  width: 4.2rem;
 }
 
 .matrix thead th {
@@ -440,27 +446,49 @@ img {
     flex-direction: column;
   }
 
+  /* Stacked: cards must size to their content. Leaving flex-basis at 0 would
+     apply it to height and collapse each card behind its own icon. */
   .surface-card {
+    flex: 0 0 auto;
+    flex-direction: row;
+    justify-content: flex-start;
+    min-height: 0;
+    padding: 1.9rem 1.6rem;
     border-top: 1px solid var(--hairline);
     border-left: 0;
-    padding: 2.4rem 1.5rem;
   }
 
   .surface-card:first-child {
     border-top: 0;
   }
 
-  /* No hover on touch: show every detail up front, stacked. */
-  .surface-card {
-    flex-direction: column;
-    min-height: 0;
+  .surface-card:hover,
+  .surface-card:focus-visible {
+    flex-grow: 0;
+    background: transparent;
   }
 
-  .surface-detail {
+  .surface-id {
+    flex: 0 0 5.5rem;
+  }
+
+  .surface-card .icon {
+    width: 3.4rem;
+    height: 3.4rem;
+  }
+
+  .surface-card .card-label {
+    font-size: 1rem;
+  }
+
+  /* No hover on touch: every detail is shown up front, beside the mark. */
+  .surface-detail,
+  .surface-card:hover .surface-detail,
+  .surface-card:focus-visible .surface-detail {
     width: auto;
-    margin-top: 1.1rem;
+    margin-left: 1.4rem;
     opacity: 1;
-    text-align: center;
+    text-align: left;
   }
 
   .surface-detail span {
@@ -511,10 +539,11 @@ img {
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  /* .surface-card is deliberately absent: it defines its own longer
+     flex-grow transition and this shorthand would overwrite it. */
   .primary-button,
   .secondary-button,
-  .header-github,
-  .surface-card {
+  .header-github {
     transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
   }
 }
