@@ -4,13 +4,8 @@ import XCTest
 
 final class ProjectAnalysisTests: XCTestCase {
     func testExplicitScanCanBypassConfiguredDiscoveryIgnores() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let skill = root.appendingPathComponent(".agents/skills/demo")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo skill\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/demo"), description: "Demo skill")
 
         let config = MetagentConfig(roots: [root.path], ignoreProjects: [root.path])
         let excluded = try MetagentCore.scanSkills(
@@ -31,14 +26,12 @@ final class ProjectAnalysisTests: XCTestCase {
     }
 
     func testAnalysisCombinesProjectInstructionsSkillsDoctorAndScopedMCP() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
         let home = root.appendingPathComponent("home")
         let project = root.appendingPathComponent("project")
         let skill = project.appendingPathComponent(".agents/skills/demo")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try writeSkillFixture(at: skill, description: "Demo skill")
         try Data("# Project instructions\n".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
         try FileManager.default.createDirectory(
             at: project.appendingPathComponent("Sources/Feature"),
@@ -52,16 +45,12 @@ final class ProjectAnalysisTests: XCTestCase {
         )
         try Data("# Dependency instructions\n".utf8)
             .write(to: project.appendingPathComponent("vendor/dependency/AGENTS.md"))
-        try Data("---\nname: demo\ndescription: Demo skill\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
         try Data("""
         {"mcpServers":{"project-server":{}}}
         """.utf8).write(to: project.appendingPathComponent(".mcp.json"))
         try Data("{}".utf8).write(to: home.appendingPathComponent(".claude.json"))
 
-        let codex = root.appendingPathComponent("codex")
-        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+        let codex = try makeCodexStub(in: root)
 
         let report = try MetagentCore.analyzeProject(
             root: project.path,
@@ -95,17 +84,13 @@ final class ProjectAnalysisTests: XCTestCase {
     }
 
     func testCompactSummaryIsProjectOnlyAndOmitsFullInventories() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
         let home = root.appendingPathComponent("home")
         let project = root.appendingPathComponent("project")
         let skill = project.appendingPathComponent(".agents/skills/demo")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try writeSkillFixture(at: skill, description: "Demo skill")
         try Data("# Project instructions\n".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
-        try Data("---\nname: demo\ndescription: Demo skill\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
         try Data("""
         {
           "mcpServers":{"global-only":{}},
@@ -115,9 +100,7 @@ final class ProjectAnalysisTests: XCTestCase {
         }
         """.utf8).write(to: home.appendingPathComponent(".claude.json"))
 
-        let codex = root.appendingPathComponent("codex")
-        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+        let codex = try makeCodexStub(in: root)
 
         let summary = try MetagentCore.analyzeProjectSummary(
             root: project.path,
@@ -145,9 +128,7 @@ final class ProjectAnalysisTests: XCTestCase {
     }
 
     func testProjectDetailPagesAreBoundedAndCursorIsSectionSpecific() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
         let home = root.appendingPathComponent("home")
         let project = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -160,9 +141,7 @@ final class ProjectAnalysisTests: XCTestCase {
             .write(to: project.appendingPathComponent("Sources/Feature/AGENTS.md"))
         try Data("{}".utf8).write(to: home.appendingPathComponent(".claude.json"))
 
-        let codex = root.appendingPathComponent("codex")
-        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+        let codex = try makeCodexStub(in: root)
 
         let firstPage = try MetagentCore.analyzeProjectDetails(
             root: project.path,
@@ -195,9 +174,7 @@ final class ProjectAnalysisTests: XCTestCase {
     }
 
     func testAnalysisIsolatesProjectMCPStatesAndCanonicalizesSymlinkRoots() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-analysis-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
         let home = root.appendingPathComponent("home")
         let first = root.appendingPathComponent("first")
         let firstAlias = root.appendingPathComponent("first-alias")
@@ -228,9 +205,7 @@ final class ProjectAnalysisTests: XCTestCase {
         {"mcpServers":{"second-pending":{}}}
         """.utf8).write(to: second.appendingPathComponent(".mcp.json"))
 
-        let codex = root.appendingPathComponent("codex")
-        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+        let codex = try makeCodexStub(in: root)
 
         let firstReport = try MetagentCore.analyzeProject(
             root: firstAlias.path,
@@ -259,5 +234,12 @@ final class ProjectAnalysisTests: XCTestCase {
             "second-pending": .pendingApproval,
             "shared": .disabled
         ])
+    }
+
+    private func makeCodexStub(in root: URL) throws -> URL {
+        let codex = root.appendingPathComponent("codex")
+        try Data("#!/bin/sh\nprintf '[]'\n".utf8).write(to: codex)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+        return codex
     }
 }

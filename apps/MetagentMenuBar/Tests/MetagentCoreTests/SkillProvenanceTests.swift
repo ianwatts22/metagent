@@ -5,7 +5,6 @@ import XCTest
 final class SkillProvenanceTests: XCTestCase {
     func testInventoryCapturesSkillMetadataAndManagedUpstream() throws {
         let root = try fixtureRoot("metadata")
-        defer { try? FileManager.default.removeItem(at: root) }
         let skillsDirectory = root.appendingPathComponent(".agents/skills")
         try writeSkill(named: "demo", under: skillsDirectory)
         let skillDirectory = skillsDirectory.appendingPathComponent("demo")
@@ -63,7 +62,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testLocalSkillFallsBackToLatestContentModificationDate() throws {
         let root = try fixtureRoot("modified-date")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
 
         let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first)
@@ -74,7 +72,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testKnownExternalCLIBundleUsesSpecificManagerEvidence() throws {
         let root = try fixtureRoot("external-cli")
-        defer { try? FileManager.default.removeItem(at: root) }
         let skill = root.appendingPathComponent(".agents/skills/impeccable")
         try FileManager.default.createDirectory(
             at: skill.appendingPathComponent("scripts"),
@@ -108,7 +105,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testUpdateSkillIconWritesPortableAssetAndPreservesMetadata() throws {
         let root = try fixtureRoot("icon")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let agents = skill.appendingPathComponent("agents")
@@ -138,7 +134,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testUpdateSkillIconRejectsMalformedPNG() throws {
         let root = try fixtureRoot("invalid-icon")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let malformed = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
@@ -149,7 +144,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testUpdateSkillIconRejectsSymlinkedDestination() throws {
         let root = try fixtureRoot("symlinked-icon")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let external = root.appendingPathComponent("external-assets")
@@ -166,7 +160,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testDotagentsAdoptedLocalPathDoesNotClaimOwnership() throws {
         let root = try fixtureRoot("dotagents")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
         try """
         version = 1
@@ -198,7 +191,6 @@ final class SkillProvenanceTests: XCTestCase {
     func testDotagentsDistinctPathSourceIsManagerEvidence() throws {
         let root = try fixtureRoot("dotagents-external")
         let shared = root.appendingPathComponent("shared/demo")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".agents/skills"))
         try writeSkill(named: "demo", under: root.appendingPathComponent("shared"))
         try """
@@ -219,7 +211,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testDotagentsDistinctSymlinkSourceIsManagerEvidence() throws {
         let root = try fixtureRoot("dotagents-external-symlink")
-        defer { try? FileManager.default.removeItem(at: root) }
         let sharedDirectory = root.appendingPathComponent("shared")
         try writeSkill(named: "demo", under: sharedDirectory)
         let installedDirectory = root.appendingPathComponent(".agents/skills")
@@ -246,10 +237,6 @@ final class SkillProvenanceTests: XCTestCase {
     func testGitTrackingDoesNotInventUpstreamOwnership() throws {
         let repository = try fixtureRoot("repository")
         let local = try fixtureRoot("local")
-        defer {
-            try? FileManager.default.removeItem(at: repository)
-            try? FileManager.default.removeItem(at: local)
-        }
         try writeSkill(named: "repo-skill", under: repository.appendingPathComponent(".agents/skills"))
         try runGit(["init"], at: repository)
         try runGit(["add", ".agents/skills/repo-skill/SKILL.md"], at: repository)
@@ -275,7 +262,6 @@ final class SkillProvenanceTests: XCTestCase {
 
     func testIndependentClaudeSkillHasNamedManagerAndAuthority() throws {
         let root = try fixtureRoot("claude")
-        defer { try? FileManager.default.removeItem(at: root) }
         try writeSkill(named: "demo", under: root.appendingPathComponent(".claude/skills"))
 
         let skill = try XCTUnwrap(try scan(root).projects.first?.skills.first)
@@ -288,10 +274,6 @@ final class SkillProvenanceTests: XCTestCase {
     func testStandaloneRemovalRejectsSymlinkedAgentContainer() throws {
         let root = try fixtureRoot("standalone-removal")
         let external = try fixtureRoot("standalone-external")
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: external)
-        }
         let externalSkills = external.appendingPathComponent("skills")
         try writeSkill(named: "demo", under: externalSkills)
         try FileManager.default.createSymbolicLink(
@@ -320,15 +302,7 @@ final class SkillProvenanceTests: XCTestCase {
         let recoveryHome = try fixtureRoot("standalone-recovery-home")
         let originalHome = ProcessInfo.processInfo.environment["HOME"]
         setenv("HOME", recoveryHome.path, 1)
-        defer {
-            if let originalHome {
-                setenv("HOME", originalHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: recoveryHome)
-        }
+        defer { restoreEnvironment("HOME", originalHome) }
         let codexSkills = root.appendingPathComponent(".codex/skills")
         let claudeSkills = root.appendingPathComponent(".claude/skills")
         try writeSkill(named: "demo", under: codexSkills)
@@ -354,20 +328,11 @@ final class SkillProvenanceTests: XCTestCase {
     }
 
     private func fixtureRoot(_ label: String) throws -> URL {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-provenance-\(label)-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return root
+        try makeTemporaryRoot(prefix: "metagent-provenance-\(label)")
     }
 
     private func writeSkill(named name: String, under directory: URL) throws {
-        let skill = directory.appendingPathComponent(name)
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        try "---\nname: \(name)\ndescription: fixture\n---\n".write(
-            to: skill.appendingPathComponent("SKILL.md"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try writeSkillFixture(at: directory.appendingPathComponent(name), name: name)
     }
 
     private func scan(_ root: URL) throws -> SkillScanReport {

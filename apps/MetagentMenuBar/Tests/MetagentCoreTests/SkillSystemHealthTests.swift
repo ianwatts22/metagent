@@ -188,46 +188,20 @@ struct SkillSystemHealthTests {
         updatedAt: String? = "2026-07-17T12:00:00Z",
         representation: String = "canonical"
     ) -> SkillInventoryItem {
-        let path = "\(root)/.agents/skills/\(name)"
-        return SkillInventoryItem(
+        let kind = scope == "global" ? "user-local" : "project-local"
+        return .fixture(
             name: name,
             description: description,
-            path: path,
-            location: "agents",
-            locationLabel: ".agents",
-            originKind: scope == "global" ? "user-local" : "project-local",
+            path: "\(root)/.agents/skills/\(name)",
+            originKind: kind,
             scope: scope,
-            manager: "local",
             authority: "local",
-            mutability: "editable",
             representation: representation,
-            canonicalPath: path,
-            source: nil,
-            sourceType: nil,
-            sourceURL: nil,
-            ref: nil,
-            installedAt: nil,
             updatedAt: updatedAt,
-            symlinkedContainer: false,
-            folderKind: scope == "global" ? "user-local" : "project-local",
+            folderKind: kind,
             characterCount: bodyTokens * 4,
             wordCount: bodyTokens,
-            tokenEstimate: bodyTokens,
-            skillFileCharacterCount: bodyTokens * 4,
-            skillFileWordCount: bodyTokens,
-            skillFileTokenEstimate: bodyTokens,
-            textFileCount: 1,
-            referenceFileCount: 0,
-            scriptFileCount: 0,
-            assetFileCount: 0,
-            otherFileCount: 0,
-            otherFolderCount: 0,
-            hasOpenAIYaml: false,
-            hasIconSmall: false,
-            hasIconLarge: false,
-            hasIconAndLogo: false,
-            iconSmallPath: nil,
-            iconLargePath: nil
+            tokenEstimate: bodyTokens
         )
     }
 
@@ -262,7 +236,7 @@ struct SkillSystemHealthTests {
         path: String,
         bodyTokens: Int
     ) -> SkillInventoryItem {
-        SkillInventoryItem(
+        .fixture(
             name: name,
             description: "Plugin-provided helper",
             path: path,
@@ -274,33 +248,14 @@ struct SkillSystemHealthTests {
             authority: "openai-curated/linear",
             mutability: "managed-read-only",
             representation: "versioned-cache",
-            canonicalPath: path,
             source: "openai-curated/linear",
             sourceType: "codex-marketplace",
-            sourceURL: nil,
             ref: "1.0.0",
-            installedAt: nil,
             updatedAt: "2026-07-17T12:00:00Z",
-            symlinkedContainer: false,
             folderKind: "managed",
             characterCount: bodyTokens * 4,
             wordCount: bodyTokens,
-            tokenEstimate: bodyTokens,
-            skillFileCharacterCount: bodyTokens * 4,
-            skillFileWordCount: bodyTokens,
-            skillFileTokenEstimate: bodyTokens,
-            textFileCount: 1,
-            referenceFileCount: 0,
-            scriptFileCount: 0,
-            assetFileCount: 0,
-            otherFileCount: 0,
-            otherFolderCount: 0,
-            hasOpenAIYaml: false,
-            hasIconSmall: false,
-            hasIconLarge: false,
-            hasIconAndLogo: false,
-            iconSmallPath: nil,
-            iconLargePath: nil
+            tokenEstimate: bodyTokens
         )
     }
 

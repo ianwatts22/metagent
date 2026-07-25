@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import SQLite3
 import XCTest
@@ -590,8 +589,8 @@ final class SkillUsageTests: XCTestCase {
         setenv("HOME", fixture.root.path, 1)
         unsetenv("CODEX_HOME")
         defer {
-            restoreEnvironment("HOME", value: previousHome)
-            restoreEnvironment("CODEX_HOME", value: previousCodexHome)
+            restoreEnvironment("HOME", previousHome)
+            restoreEnvironment("CODEX_HOME", previousCodexHome)
         }
 
         let skill = try fixture.makeSkill(at: ".agents/skills/global-skill", name: "global-skill")
@@ -619,7 +618,7 @@ final class SkillUsageTests: XCTestCase {
         let previousCodexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
         let relocatedCodexHome = fixture.root.appendingPathComponent("relocated-codex-home")
         setenv("CODEX_HOME", relocatedCodexHome.path, 1)
-        defer { restoreEnvironment("CODEX_HOME", value: previousCodexHome) }
+        defer { restoreEnvironment("CODEX_HOME", previousCodexHome) }
 
         let skill = try fixture.makeSkill(
             at: "relocated-codex-home/skills/relocated",
@@ -646,7 +645,7 @@ final class SkillUsageTests: XCTestCase {
         defer { fixture.remove() }
         let previousHome = ProcessInfo.processInfo.environment["HOME"]
         setenv("HOME", fixture.root.path, 1)
-        defer { restoreEnvironment("HOME", value: previousHome) }
+        defer { restoreEnvironment("HOME", previousHome) }
         let systemSkill = try fixture.makeSkill(at: ".codex/skills/.system/demo", name: "demo")
         let userSkill = try fixture.makeSkill(at: ".codex/skills/demo", name: "demo")
         let rollout = fixture.sessions.appendingPathComponent("rollout-system.jsonl")
@@ -980,14 +979,6 @@ final class SkillUsageTests: XCTestCase {
     }
 }
 
-private func restoreEnvironment(_ name: String, value: String?) {
-    if let value {
-        setenv(name, value, 1)
-    } else {
-        unsetenv(name)
-    }
-}
-
 private final class Fixture {
     let root: URL
     let sessions: URL
@@ -1011,11 +1002,8 @@ private final class Fixture {
     }
 
     func makeSkill(at relativePath: String, name: String) throws -> URL {
-        let directory = root.appendingPathComponent(relativePath)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appendingPathComponent("SKILL.md")
-        try "---\nname: \(name)\ndescription: fixture\n---\n".write(to: file, atomically: true, encoding: .utf8)
-        return file
+        try writeSkillFixture(at: root.appendingPathComponent(relativePath), name: name)
+            .appendingPathComponent("SKILL.md")
     }
 
     func line(

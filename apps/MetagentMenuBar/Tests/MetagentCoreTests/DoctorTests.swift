@@ -4,24 +4,15 @@ import XCTest
 
 final class DoctorTests: XCTestCase {
     func testProjectionRepairRemovesOnlyObsoleteCodexSymlinks() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexSkills = root.appendingPathComponent(".codex/skills")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexSkills, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         let projection = codexSkills.appendingPathComponent("demo")
         try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: skill)
 
-        let scan = try MetagentCore.scanSkills(options: SkillScanOptions(
-            roots: [root.path],
-            maxDepth: 0,
-            respectConfiguredIgnores: false
-        ))
-        let project = try XCTUnwrap(scan.projects.first)
+        let project = try XCTUnwrap(try scan(root).projects.first)
         let preview = try repairProjectProjection(project, apply: false)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: projection.path))
@@ -39,30 +30,20 @@ final class DoctorTests: XCTestCase {
     }
 
     func testRepairApplyRemovesOnlyPathsApprovedByPreview() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
         let firstSkill = root.appendingPathComponent(".agents/skills/first")
         let codexSkills = root.appendingPathComponent(".codex/skills")
-        try FileManager.default.createDirectory(at: firstSkill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexSkills, withIntermediateDirectories: true)
-        try Data("---\nname: first\ndescription: First\n---\n".utf8)
-            .write(to: firstSkill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: firstSkill, name: "first", description: "First")
         let firstProjection = codexSkills.appendingPathComponent("first")
         try FileManager.default.createSymbolicLink(at: firstProjection, withDestinationURL: firstSkill)
 
-        let scanOptions = SkillScanOptions(
-            roots: [root.path],
-            maxDepth: 0,
-            respectConfiguredIgnores: false
-        )
+        let scanOptions = makeScanOptions(root)
         let preview = try MetagentCore.repairSkills(options: SkillsRepairOptions(scanOptions: scanOptions))
         XCTAssertEqual(preview.projects.flatMap(\.plannedCodexProjectionPaths), [firstProjection.path])
 
         let secondSkill = root.appendingPathComponent(".agents/skills/second")
-        try FileManager.default.createDirectory(at: secondSkill, withIntermediateDirectories: true)
-        try Data("---\nname: second\ndescription: Second\n---\n".utf8)
-            .write(to: secondSkill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: secondSkill, name: "second", description: "Second")
         let secondProjection = codexSkills.appendingPathComponent("second")
         try FileManager.default.createSymbolicLink(at: secondProjection, withDestinationURL: secondSkill)
 
@@ -77,22 +58,18 @@ final class DoctorTests: XCTestCase {
     }
 
     func testRepairApplyScopesApprovedPathsToExactNestedProject() throws {
-        let parent = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-parent-\(UUID().uuidString)")
+        let parent = try makeTemporaryRoot(prefix: "metagent-doctor-parent")
         let child = parent.appendingPathComponent("child")
-        defer { try? FileManager.default.removeItem(at: parent) }
 
         let parentSkill = parent.appendingPathComponent(".agents/skills/parent-skill")
         let childSkill = child.appendingPathComponent(".agents/skills/child-skill")
         let parentCodexSkills = parent.appendingPathComponent(".codex/skills")
         let childCodexSkills = child.appendingPathComponent(".codex/skills")
-        for directory in [parentSkill, childSkill, parentCodexSkills, childCodexSkills] {
+        for directory in [parentCodexSkills, childCodexSkills] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
-        try Data("---\nname: parent-skill\ndescription: Parent\n---\n".utf8)
-            .write(to: parentSkill.appendingPathComponent("SKILL.md"))
-        try Data("---\nname: child-skill\ndescription: Child\n---\n".utf8)
-            .write(to: childSkill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: parentSkill, name: "parent-skill", description: "Parent")
+        try writeSkillFixture(at: childSkill, name: "child-skill", description: "Child")
 
         let parentProjection = parentCodexSkills.appendingPathComponent("parent-skill")
         let childProjection = childCodexSkills.appendingPathComponent("child-skill")
@@ -114,23 +91,15 @@ final class DoctorTests: XCTestCase {
     }
 
     func testRepairApplyKeepsNestedProjectionInExactProjectPlan() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-nested-link-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-nested-link")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexGroup = root.appendingPathComponent(".codex/skills/group")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexGroup, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         let projection = codexGroup.appendingPathComponent("demo")
         try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: skill)
 
-        let scanOptions = SkillScanOptions(
-            roots: [root.path],
-            maxDepth: 0,
-            respectConfiguredIgnores: false
-        )
+        let scanOptions = makeScanOptions(root)
         let preview = try MetagentCore.repairSkills(options: SkillsRepairOptions(scanOptions: scanOptions))
         XCTAssertEqual(preview.projects.flatMap(\.plannedCodexProjectionPaths), [projection.path])
 
@@ -146,18 +115,14 @@ final class DoctorTests: XCTestCase {
     }
 
     func testRepairApplyRejectsClaudeChangesAfterPreviewBeforeRemovingCodexLinks() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-plan-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-plan")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexSkills = root.appendingPathComponent(".codex/skills")
         let claudeDirectory = root.appendingPathComponent(".claude")
         let claudeSkills = claudeDirectory.appendingPathComponent("skills")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexSkills, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: claudeDirectory, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         let projection = codexSkills.appendingPathComponent("demo")
         try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: skill)
         try FileManager.default.createSymbolicLink(
@@ -165,11 +130,7 @@ final class DoctorTests: XCTestCase {
             withDestinationPath: "../.agents/skills"
         )
 
-        let scanOptions = SkillScanOptions(
-            roots: [root.path],
-            maxDepth: 0,
-            respectConfiguredIgnores: false
-        )
+        let scanOptions = makeScanOptions(root)
         let preview = try MetagentCore.repairSkills(options: SkillsRepairOptions(scanOptions: scanOptions))
         try FileManager.default.removeItem(at: claudeSkills)
         try FileManager.default.createSymbolicLink(
@@ -191,20 +152,12 @@ final class DoctorTests: XCTestCase {
     }
 
     func testProjectionRepairPreservesExternalCodexSymlink() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        let external = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-external-\(UUID().uuidString)")
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: external)
-        }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
+        let external = try makeTemporaryRoot(prefix: "metagent-doctor-external")
         let externalSkill = external.appendingPathComponent("demo")
         let codexSkills = root.appendingPathComponent(".codex/skills")
-        try FileManager.default.createDirectory(at: externalSkill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexSkills, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: externalSkill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: externalSkill, description: "Demo")
         let projection = codexSkills.appendingPathComponent("demo")
         try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: externalSkill)
 
@@ -216,15 +169,11 @@ final class DoctorTests: XCTestCase {
     }
 
     func testProjectionRepairDoesNotRemoveCodexLinksWhenClaudeRepairFails() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexSkills = root.appendingPathComponent(".codex/skills")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexSkills, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         let projection = codexSkills.appendingPathComponent("demo")
         try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: skill)
         try Data("not a directory".utf8).write(to: root.appendingPathComponent(".claude"))
@@ -236,15 +185,11 @@ final class DoctorTests: XCTestCase {
     }
 
     func testProjectionRepairIgnoresSymlinkedCodexSkillsContainer() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexRoot = root.appendingPathComponent(".codex")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         let codexSkills = codexRoot.appendingPathComponent("skills")
         try FileManager.default.createSymbolicLink(
             at: codexSkills,
@@ -259,20 +204,12 @@ final class DoctorTests: XCTestCase {
     }
 
     func testProjectionRepairIgnoresSymlinkedCodexDirectory() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-tests-\(UUID().uuidString)")
-        let externalCodex = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-external-codex-\(UUID().uuidString)")
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: externalCodex)
-        }
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-tests")
+        let externalCodex = try makeTemporaryRoot(prefix: "metagent-doctor-external-codex")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let externalSkills = externalCodex.appendingPathComponent("skills")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: externalSkills, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        try writeSkillFixture(at: skill, description: "Demo")
         try FileManager.default.createSymbolicLink(
             at: root.appendingPathComponent(".codex"),
             withDestinationURL: externalCodex
@@ -288,33 +225,26 @@ final class DoctorTests: XCTestCase {
     }
 
     func testRepairPreviewExcludesNoOpHomeInventory() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-doctor-home-\(UUID().uuidString)")
+        let root = try makeTemporaryRoot(prefix: "metagent-doctor-home")
         let originalHome = ProcessInfo.processInfo.environment["HOME"]
         setenv("HOME", root.path, 1)
-        defer {
-            if let originalHome {
-                setenv("HOME", originalHome, 1)
-            } else {
-                unsetenv("HOME")
-            }
-            try? FileManager.default.removeItem(at: root)
-        }
-        let skill = root.appendingPathComponent(".agents/skills/demo")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        try Data("---\nname: demo\ndescription: Demo\n---\n".utf8)
-            .write(to: skill.appendingPathComponent("SKILL.md"))
+        defer { restoreEnvironment("HOME", originalHome) }
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/demo"), description: "Demo")
 
         let preview = try MetagentCore.repairSkills()
 
         XCTAssertFalse(preview.projects.contains { $0.root == root.path })
     }
 
-    private func scan(_ root: URL) throws -> SkillScanReport {
-        try MetagentCore.scanSkills(options: SkillScanOptions(
+    private func makeScanOptions(_ root: URL) -> SkillScanOptions {
+        SkillScanOptions(
             roots: [root.path],
             maxDepth: 0,
             respectConfiguredIgnores: false
-        ))
+        )
+    }
+
+    private func scan(_ root: URL) throws -> SkillScanReport {
+        try MetagentCore.scanSkills(options: makeScanOptions(root))
     }
 }

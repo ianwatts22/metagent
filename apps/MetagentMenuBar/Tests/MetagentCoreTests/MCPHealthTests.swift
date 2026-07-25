@@ -1,5 +1,4 @@
 import Foundation
-import Darwin
 import XCTest
 @testable import MetagentCore
 
@@ -20,9 +19,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryCombinesDirectAndEnabledPluginConfiguration() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let activePlugin = root.appendingPathComponent(".claude/plugins/cache/vendor/demo/1.10.0")
         let stalePlugin = root.appendingPathComponent(".claude/plugins/cache/vendor/demo/1.9.0")
         let projectRoot = root.appendingPathComponent("project")
@@ -77,9 +74,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryReadsInlineAndCustomPluginMCPDeclarations() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let inlineRoot = root.appendingPathComponent(".claude/plugins/cache/vendor/inline/1.0.0")
         let customRoot = root.appendingPathComponent(".claude/plugins/cache/vendor/custom/1.0.0")
         for pluginRoot in [inlineRoot, customRoot] {
@@ -124,9 +119,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventorySurfacesMalformedExistingConfiguration() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude"),
             withIntermediateDirectories: true
@@ -141,9 +134,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryIgnoresUnsupportedRootLocalSettings() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude"),
             withIntermediateDirectories: true
@@ -162,9 +153,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryIgnoresDirectServersInUserSettings() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude"),
             withIntermediateDirectories: true
@@ -179,9 +168,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryPreservesPerProjectDisabledState() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let firstProject = root.appendingPathComponent("one")
         let secondProject = root.appendingPathComponent("two")
         try FileManager.default.createDirectory(
@@ -209,9 +196,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryKeepsPluginServerNamespacesDistinct() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let firstPlugin = root.appendingPathComponent(".claude/plugins/cache/vendor/first/1.0.0")
         let secondPlugin = root.appendingPathComponent(".claude/plugins/cache/vendor/second/1.0.0")
         try FileManager.default.createDirectory(at: firstPlugin, withIntermediateDirectories: true)
@@ -244,9 +229,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventorySurfacesPendingManifestAndProjectPlugin() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         let pluginRoot = root.appendingPathComponent(".claude/plugins/cache/vendor/project-plugin/1.0.0")
         let userPluginRoot = root.appendingPathComponent(".claude/plugins/cache/vendor/project-plugin/2.0.0")
@@ -311,9 +294,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryDoesNotLetSharedSettingsApproveManifest() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(
             at: projectRoot.appendingPathComponent(".claude"),
@@ -336,9 +317,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryFindsAncestorManifestFromNestedProjectPath() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("repo")
         let nestedRoot = projectRoot.appendingPathComponent("nested/deeper")
         try FileManager.default.createDirectory(at: nestedRoot, withIntermediateDirectories: true)
@@ -356,9 +335,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryKeepsManifestRejectionSeparateFromDirectDisable() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
@@ -385,9 +362,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryHonorsUserProjectManifestApprovals() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(".claude"),
@@ -414,9 +389,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryKeepsPendingWhenSameNameIsApprovedElsewhere() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let firstProject = root.appendingPathComponent("first")
         let secondProject = root.appendingPathComponent("second")
         for project in [firstProject, secondProject] {
@@ -446,9 +419,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryLetsProjectApprovalOverrideUserDefault() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(
             at: projectRoot.appendingPathComponent(".claude"),
@@ -478,9 +449,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryPreservesUserApproveAllWhenProjectSetsFalse() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(
             at: projectRoot.appendingPathComponent(".claude"),
@@ -510,9 +479,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryNormalizesManifestSelectors() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(
             at: projectRoot.appendingPathComponent(".claude"),
@@ -538,9 +505,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryAppliesUserDisableToProjectPlugin() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let projectRoot = root.appendingPathComponent("project")
         let pluginRoot = root.appendingPathComponent(".claude/plugins/cache/vendor/demo/1.0.0")
         try FileManager.default.createDirectory(
@@ -594,7 +559,7 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertEqual(snapshot.disabledCount(for: .codex), 1)
     }
 
-    func testSnapshotInventoryMergesClientsAndScopesByServerName() {
+    func testSnapshotInventoryMergesClientsAndScopesByServerName() throws {
         let snapshot = MCPHealthSnapshot(servers: [
             MCPServerHealth(
                 client: .codex,
@@ -617,7 +582,7 @@ final class MCPHealthTests: XCTestCase {
         ])
 
         XCTAssertEqual(snapshot.inventory.map(\.name), ["other", "shared"])
-        let shared = try! XCTUnwrap(snapshot.inventory.first { $0.name == "shared" })
+        let shared = try XCTUnwrap(snapshot.inventory.first { $0.name == "shared" })
         XCTAssertEqual(shared.clients, [.claude, .codex])
         XCTAssertEqual(shared.globalClients, [.codex])
         XCTAssertEqual(shared.projectPaths, ["/projects/one", "/projects/two"])
@@ -697,10 +662,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryIgnoresDeletedProjectHistory() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let deletedProject = root.appendingPathComponent("deleted-worktree")
         try Data("""
         {"projects":{"\(deletedProject.path)":{"mcpServers":{"stale":{}}}}}
@@ -712,9 +674,7 @@ final class MCPHealthTests: XCTestCase {
     }
 
     func testClaudeInventoryReportsUnreadableProjectHistory() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("metagent-mcp-tests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let unreadableProject = root.appendingPathComponent("unreadable-project")
         try FileManager.default.createDirectory(at: unreadableProject, withIntermediateDirectories: true)
         try Data("""
