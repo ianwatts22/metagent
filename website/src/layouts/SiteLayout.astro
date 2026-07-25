@@ -1,5 +1,6 @@
 ---
 import "../styles/global.css";
+import Analytics from "@vercel/analytics/astro";
 import GitHubMark from "../components/GitHubMark.astro";
 
 interface Props {
@@ -12,8 +13,6 @@ const {
   description = "A native control center and local analysis toolkit for coding-agent skills, MCP servers, and project instructions.",
 } = Astro.props;
 
-const pathname = Astro.url.pathname;
-const nav = [{ href: "/cli-mcp/", label: "CLI + MCP" }];
 ---
 
 <!doctype html>
@@ -22,16 +21,22 @@ const nav = [{ href: "/cli-mcp/", label: "CLI + MCP" }];
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#f0efec" />
+    <meta name="theme-color" content="#f4f4f4" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary" />
-    <link rel="icon" type="image/svg+xml" href="/brand/logo.svg" />
+    <link rel="icon" type="image/svg+xml" href="/brand/icon-light.svg" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="/brand/icon-dark.svg"
+      media="(prefers-color-scheme: dark)"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,300..700;1,300..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,300..700;1,300..700&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
     <title>{title}</title>
@@ -40,17 +45,8 @@ const nav = [{ href: "/cli-mcp/", label: "CLI + MCP" }];
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <a class="brand" href="/" aria-label="Metagent home">
-        <img src="/brand/logo.svg" alt="" width="32" height="32" />
-        <span>Metagent</span>
+        <img src="/brand/combomark.svg" alt="Metagent" width="1984" height="500" />
       </a>
-
-      <nav class="site-nav" aria-label="Primary navigation">
-        {nav.map((item) => (
-          <a href={item.href} aria-current={pathname === item.href ? "page" : undefined}>
-            {item.label}
-          </a>
-        ))}
-      </nav>
 
       <a
         class="header-github"
@@ -64,5 +60,6 @@ const nav = [{ href: "/cli-mcp/", label: "CLI + MCP" }];
     <main id="main">
       <slot />
     </main>
+    <Analytics />
   </body>
 </html>

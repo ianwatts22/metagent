@@ -78,6 +78,9 @@ cp "$app_source/.build/$configuration/MetagentMenuBar" "$macos/MetagentMenuBar"
 cp "$app_source/.build/$configuration/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
 cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
+# Assets.car carries the macOS 26 icon appearance variants; CFBundleIconName
+# in Info.plist is what makes the system read them.
+cp "$app_source/Sources/Resources/Assets.car" "$resources/Assets.car"
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"
 cp "$app_source/Sources/Resources/Lucide/LICENSE" "$resources/Lucide-LICENSE.txt"
 cp "$app_source/Sources/Resources/Lucide/sprite.svg" "$resources/Lucide-sprite.svg"

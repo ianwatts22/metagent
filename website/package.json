@@ -14,5 +14,8 @@
     "@hugeicons/core-free-icons": "4.2.3",
     "astro": "^5.18.2",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^2.0.1"
   }
 }

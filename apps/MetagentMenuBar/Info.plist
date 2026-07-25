@@ -8,6 +8,8 @@
   <string>MetagentMenuBar</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.ianwatts.metagent.menu-bar</string>
   <key>CFBundleInfoDictionaryVersion</key>

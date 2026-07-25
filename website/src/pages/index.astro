@@ -9,22 +9,40 @@ import McpServerIcon from "@hugeicons/core-free-icons/McpServerIcon";
 const surfaces = [
   {
     icon: AppWindowMacIcon,
-    label: "Mac app",
-    title: "See the whole system.",
-    copy: "Explore and clean up your skills and MCP servers—global and per project—in one quiet interface.",
+    label: "App",
+    detail: "Browse every skill and server you have, see what's actually earning its place, and clear out the rest.",
   },
   {
     icon: CommandLineIcon,
-    label: "Command line",
-    title: "Inspect any folder.",
-    copy: "Produce project reports from the same Swift core that powers the app. Useful in terminals, scripts, and CI.",
+    label: "CLI",
+    detail: "The same report as JSON, for any folder. Drop it in a script, a hook, or CI.",
   },
   {
     icon: McpServerIcon,
-    label: "Local MCP",
-    title: "Give agents context.",
-    copy: "Let Codex and Claude read a project's skills, MCP setup, usage, and Doctor findings.",
+    label: "MCP",
+    detail: "Your agent reads its own setup before it starts guessing. Read-only, always.",
   },
+];
+
+// Rows reflect what each surface actually ships today: app views from
+// PanelSection/SkillTableView, CLI from its usage block, MCP from its tool list.
+const matrix = [
+  { name: "Browse skills and servers", app: true, cli: true, mcp: true },
+  { name: "Full project report", app: true, cli: true, mcp: true },
+  { name: "Health findings", app: true, cli: true, mcp: true },
+  { name: "Real usage evidence", app: true, cli: true, mcp: true },
+  { name: "Utility scores", app: true, cli: true, mcp: false },
+  { name: "Duplicate detection", app: true, cli: false, mcp: false },
+  { name: "Repair and remove", app: true, cli: true, mcp: false },
+  { name: "Connect an agent", app: false, cli: true, mcp: false },
+];
+
+const sees = [
+  { name: "Instructions", copy: "Which instruction files actually apply here." },
+  { name: "Skills", copy: "What's in scope, and where it came from." },
+  { name: "Servers", copy: "Which MCP servers this project is wired to." },
+  { name: "Usage", copy: "What your agent has really been reaching for." },
+  { name: "Health", copy: "What's worth fixing, without invented urgency." },
 ];
 ---
 
@@ -55,65 +73,88 @@ const surfaces = [
     />
   </section>
 
-  <section class="section feature-intro">
-    <header class="sheet-head"><b>01</b> Principle</header>
+  <section class="section centered">
+    <p class="section-tag">Principle</p>
     <h2>Agent setup should be inspectable, not archaeological.</h2>
-    <p>
-      Metagent resolves the difference between configured, installed, observed,
-      and healthy—without flattening them into one misleading status.
+    <p class="section-lede">
+      Configured, installed, observed, and healthy are four different things.
+      Metagent keeps them apart instead of flattening them into one status.
     </p>
   </section>
 
-  <section class="section">
-    <header class="sheet-head"><b>02</b> Surfaces</header>
+  <section class="section centered">
+    <p class="section-tag">Surfaces</p>
+    <h2>One core. Three ways in.</h2>
+    <p class="section-lede">Hover to see what each one is for.</p>
     <div class="surface-grid">
       {surfaces.map((surface) => (
-        <article class="surface-card">
-          <p class="card-label">
-            <Icon icon={surface.icon} size={20} />
-            {surface.label}
-          </p>
-          <h3>{surface.title}</h3>
-          <p>{surface.copy}</p>
+        <article class="surface-card" tabindex="0">
+          <Icon icon={surface.icon} size={56} stroke={1.1} />
+          <p class="card-label">{surface.label}</p>
+          <p class="surface-detail">{surface.detail}</p>
         </article>
       ))}
     </div>
   </section>
 
-  <section class="section split-section">
-    <div>
-      <header class="sheet-head"><b>03</b> Project analysis</header>
-      <h2>Point it at a folder. Get the operating picture.</h2>
-      <p>
-        The compact report combines project instructions, project skills,
-        provenance, relevant MCP configuration, observed usage, and Doctor findings.
-        It reports metadata—not instruction contents.
-      </p>
-      <a class="text-link" href="/cli-mcp/">Explore the CLI and MCP <span aria-hidden="true">→</span></a>
-    </div>
-    <div class="terminal-panel">
-      <pre><code><span class="prompt">❯</span> metagent analyze --root . --json
-
-<span class="dim">{'{'}</span>
-  <span class="key">"schema_version"</span>: <span class="number">2</span>,
-  <span class="key">"root"</span>: <span class="string">"/path/to/social-glass"</span>,
-  <span class="key">"counts"</span>: <span class="dim">{'{'}</span>
-    <span class="key">"project_skills"</span>: <span class="number">18</span>,
-    <span class="key">"project_mcp_servers"</span>: <span class="number">12</span>,
-    <span class="key">"findings"</span>: <span class="number">2</span>
-  <span class="dim">{'}'}</span>,
-  <span class="key">"findings"</span>: <span class="dim">[ … ]</span>
-<span class="dim">{'}'}</span></code></pre>
-    </div>
-  </section>
-
-  <section class="section feature-intro">
-    <header class="sheet-head"><b>04</b> Local by design</header>
-    <h2>Nothing leaves your Mac.</h2>
-    <p>
-      Metagent reads your agent logs and writes its analysis to a SQLite file on
-      your own disk. There is no account, no server, and nothing to upload.
+  <section class="section centered">
+    <p class="section-tag">Capabilities</p>
+    <h2>What lives where.</h2>
+    <p class="section-lede">
+      The app and CLI can change things. The MCP only ever reads.
     </p>
+    <div class="matrix-wrap">
+      <table class="matrix">
+        <thead>
+          <tr><th>Capability</th><th>App</th><th>CLI</th><th>MCP</th></tr>
+        </thead>
+        <tbody>
+          {matrix.map((row) => (
+            <tr>
+              <th scope="row">{row.name}</th>
+              {[row.app, row.cli, row.mcp].map((has) => (
+                <td>
+                  {has
+                    ? <span class="yes" role="img" aria-label="yes">✓</span>
+                    : <span class="no" role="img" aria-label="no">·</span>}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   </section>
 
+  <section class="section centered">
+    <p class="section-tag">Context</p>
+    <h2>What your agent can see.</h2>
+    <p class="section-lede">
+      Point it at a folder and it reports on five things—metadata only, never
+      the contents of your instructions.
+    </p>
+    <div class="sees-grid">
+      {sees.map((item) => (
+        <article class="sees-card">
+          <h3>{item.name}</h3>
+          <p>{item.copy}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="section centered closing">
+    <p class="section-tag">Local by design</p>
+    <h2>Nothing leaves your Mac.</h2>
+    <p class="section-lede">
+      Metagent reads your agent logs and writes its analysis to a SQLite file on
+      your own disk. No account, no server, nothing to upload.
+    </p>
+    <a
+      class="primary-button"
+      href="https://github.com/ianwatts22/metagent/releases/latest/download/Metagent.zip"
+    >
+      Download
+    </a>
+  </section>
 </SiteLayout>
