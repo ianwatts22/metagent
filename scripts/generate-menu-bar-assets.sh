@@ -7,7 +7,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # variants (default, dark, clear, tinted). The menu bar glyph is a separate
 # template image: macOS tints it, so it must stay flat with no background.
 icon_document="$repo_root/metagent-icon.icon"
-source_svg="$repo_root/public/brand/icon-light.svg"
+# AppBrand.markAspectRatio is derived from this file's 506x400 proportions, so
+# swapping in the square icon artwork here would squash the menu bar glyph.
+source_svg="$repo_root/public/brand/logo.svg"
 resources_dir="$repo_root/apps/MetagentMenuBar/Sources/Resources"
 
 app_icon="$resources_dir/AppIcon.icns"

@@ -65,10 +65,10 @@ const sees = [
     </div>
     <img
       class="hero-shot"
-      src="/app-skills.webp"
-      width="1600"
-      height="1165"
-      alt="The Metagent app showing a project's skills ranked by utility score, token cost, and 30-day usage"
+      src="/app-overview.webp"
+      width="1800"
+      height="1188"
+      alt="The Metagent app's overview: unused and never-used skill counts, reads per skill, token totals, and MCP connections"
     />
   </section>
 
@@ -88,9 +88,11 @@ const sees = [
     <div class="surface-grid">
       {surfaces.map((surface) => (
         <article class="surface-card" tabindex="0">
-          <Icon icon={surface.icon} size={80} stroke={1} />
-          <p class="card-label">{surface.label}</p>
-          <p class="surface-detail">{surface.detail}</p>
+          <div class="surface-id">
+            <Icon icon={surface.icon} size={112} stroke={0.9} />
+            <p class="card-label">{surface.label}</p>
+          </div>
+          <p class="surface-detail"><span>{surface.detail}</span></p>
         </article>
       ))}
     </div>

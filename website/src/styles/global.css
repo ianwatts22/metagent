@@ -263,13 +263,12 @@ img {
 .surface-card {
   display: flex;
   flex: 1 1 0;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   /* Fixed height means hovering can only ever widen a card, never grow it. */
-  min-height: 19rem;
+  min-height: 21rem;
   min-width: 0;
-  padding: 2.4rem 1.5rem;
+  padding: 2rem 1.5rem;
   border-left: 1px solid var(--hairline);
   cursor: default;
   outline: none;
@@ -283,8 +282,16 @@ img {
 
 .surface-card:hover,
 .surface-card:focus-visible {
-  flex-grow: 2.4;
+  flex-grow: 2.6;
   background: var(--white);
+}
+
+/* Icon and label travel together as one unit on the left. */
+.surface-id {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
 }
 
 .surface-card .icon {
@@ -293,33 +300,38 @@ img {
 }
 
 .surface-card .card-label {
-  margin: 0.55rem 0 0;
+  margin: 0.15rem 0 0;
   color: var(--ink);
-  font-size: 1.05rem;
+  font-size: 1.45rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
 }
 
+/* Opens sideways: the copy slides out to the right of the icon. The inner
+   span holds a fixed width so the text never reflows mid-animation. */
 .surface-detail {
   overflow: hidden;
-  max-width: 26rem;
-  max-height: 0;
+  width: 0;
   margin: 0;
   color: var(--steel);
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   line-height: 1.65;
+  text-align: left;
   opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 260ms ease, max-height 420ms ease, transform 320ms ease,
-    margin-top 420ms ease;
+  transition: width 420ms cubic-bezier(0.2, 0.7, 0.2, 1), opacity 260ms ease,
+    margin-left 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.surface-detail span {
+  display: block;
+  width: 17rem;
 }
 
 .surface-card:hover .surface-detail,
 .surface-card:focus-visible .surface-detail {
-  max-height: 9rem;
-  margin-top: 1.1rem;
+  width: 17rem;
+  margin-left: 1.8rem;
   opacity: 1;
-  transform: none;
 }
 
 /* ---------- capability matrix ---------- */
@@ -438,12 +450,21 @@ img {
     border-top: 0;
   }
 
-  /* No hover on touch: show every detail up front. */
+  /* No hover on touch: show every detail up front, stacked. */
+  .surface-card {
+    flex-direction: column;
+    min-height: 0;
+  }
+
   .surface-detail {
-    max-height: none;
-    margin-top: 1rem;
+    width: auto;
+    margin-top: 1.1rem;
     opacity: 1;
-    transform: none;
+    text-align: center;
+  }
+
+  .surface-detail span {
+    width: auto;
   }
 
   .sees-grid {
