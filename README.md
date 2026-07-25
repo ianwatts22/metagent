@@ -169,7 +169,7 @@ Swift is the source of truth:
 Machine-local roots, secrets, account mappings, logs, and generated state stay
 outside the repository. See [architecture](docs/architecture.md),
 [skill provenance](docs/skill-provenance.md), [skill scoring](docs/skill-scoring.md),
-[macOS app behavior](docs/menu-bar.md), and
+[skill projection](docs/skill-projection.md), [macOS app behavior](docs/menu-bar.md), and
 [adjacent tools and product inspiration](docs/adjacent-tools.md) for details.
 
 ## Verify
@@ -177,8 +177,6 @@ outside the repository. See [architecture](docs/architecture.md),
 ```bash
 scripts/verify.sh
 ```
-
-The structural guardrails require `sg` from ast-grep on `PATH`.
 
 ## Contributing
 

@@ -1,8 +1,0 @@
-ruleDirs:
-  - .ast-grep/rules
-
-targets:
-  - include:
-      - crates/**/*.rs
-    exclude:
-      - target/**
