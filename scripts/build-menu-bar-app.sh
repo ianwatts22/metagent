@@ -55,6 +55,20 @@ fi
   swift build --disable-sandbox -c "$configuration" --product metagent
 )
 
+discard_bundle() {
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  if command -v trash >/dev/null 2>&1; then
+    trash "$target" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$target"
+}
+
+# Sweep backups left behind by builds that failed before their cleanup ran.
+while IFS= read -r stale_bundle; do
+  discard_bundle "$stale_bundle"
+done < <(find "$repo_root/dist" -maxdepth 1 -type d -name '.MetagentMenuBar.app.previous-*')
+
 previous_bundle=""
 if [[ -e "$app_bundle" ]]; then
   previous_bundle="$repo_root/dist/.MetagentMenuBar.app.previous-$(date +%Y%m%d%H%M%S)"
@@ -100,13 +114,7 @@ else
 fi
 
 if [[ -n "$previous_bundle" ]]; then
-  if command -v trash >/dev/null 2>&1; then
-    trash "$previous_bundle" || true
-  fi
-  if [[ -e "$previous_bundle" ]]; then
-    echo "Previous app moved to $previous_bundle"
-    echo "Build succeeded; remove that backup later if you do not need it."
-  fi
+  discard_bundle "$previous_bundle"
 fi
 
 echo "$app_bundle"
