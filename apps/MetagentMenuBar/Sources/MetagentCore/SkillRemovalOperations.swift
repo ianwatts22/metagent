@@ -3,6 +3,308 @@ import Darwin
 import ImageIO
 import SQLite3
 
+extension MetagentCore {
+
+    /// Routes one inventory row to the removal path that owns it. Canonical
+    /// `.agents` ownership wins, then Codex plugins, then standalone bundles.
+    public static func resolveSkillRemovalTarget(
+        projectRoot: String,
+        skill: SkillInventoryItem,
+        variants: [SkillInventoryItem]
+    ) -> SkillRemovalTarget? {
+        if let agentsVariant = variants.first(where: { $0.location == "agents" }),
+           agentsVariant.representation == "canonical",
+           ["local", "dotagents", "skills-cli"].contains(agentsVariant.manager)
+        {
+            return .canonical(projectRoot: projectRoot, skillName: agentsVariant.name)
+        }
+        if skill.manager == "codex-plugin", skill.authority.contains("@") {
+            return .codexPlugin(pluginID: skill.authority)
+        }
+        if let standaloneVariant = variants.first(where: { variant in
+            ["codex", "claude"].contains(variant.manager)
+                && variant.representation == "canonical"
+                && canUninstallStandaloneSkill(
+                    projectRoot: projectRoot,
+                    skillPath: variant.path,
+                    skillName: variant.name
+                )
+        }) {
+            return .standalone(
+                projectRoot: projectRoot,
+                skillPath: standaloneVariant.path,
+                skillName: standaloneVariant.name
+            )
+        }
+        return nil
+    }
+
+    public static func resolveSkillRemovalTarget(
+        in project: SkillProject,
+        skillName: String
+    ) -> SkillRemovalTarget? {
+        let variants = project.skills
+            .filter { $0.name == skillName }
+            .sorted(by: skillRemovalVariantOrder)
+        guard let skill = variants.first else { return nil }
+        return resolveSkillRemovalTarget(
+            projectRoot: project.root,
+            skill: skill,
+            variants: variants
+        )
+    }
+
+    public static func resolveSkillRemovalTarget(
+        in scan: SkillScanReport,
+        projectRoot: String,
+        skillName: String
+    ) -> SkillRemovalTarget? {
+        let wanted = canonicalProjectPath(URL(fileURLWithPath: projectRoot))
+        guard let project = scan.projects.first(where: {
+            canonicalProjectPath(URL(fileURLWithPath: $0.root)) == wanted
+        }) else { return nil }
+        return resolveSkillRemovalTarget(in: project, skillName: skillName)
+    }
+
+    /// Resolves a target by scanning `projectRoot` itself, for surfaces that do
+    /// not already hold an inventory scan.
+    public static func resolveSkillRemovalTarget(
+        projectRoot: String,
+        skillName: String
+    ) throws -> SkillRemovalTarget? {
+        let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL
+        return resolveSkillRemovalTarget(in: try readProjectSkills(root: root), skillName: skillName)
+    }
+
+    /// Read-only plan for a resolved target, including the owning manager and
+    /// the package-manager command when one applies.
+    public static func planSkillRemoval(for target: SkillRemovalTarget) throws -> SkillRemovalPlan {
+        switch target.method {
+        case .canonical:
+            guard let projectRoot = target.projectRoot, let skillName = target.skillName else {
+                throw incompleteRemovalTargetError(target)
+            }
+            var plan = try planSkillRemoval(projectRoot: projectRoot, skillName: skillName)
+            plan.method = .canonical
+            plan.targetID = target.id
+            return plan
+        case .standalone:
+            guard let projectRoot = target.projectRoot,
+                  let skillPath = target.skillPath,
+                  let skillName = target.skillName
+            else { throw incompleteRemovalTargetError(target) }
+            let root = URL(fileURLWithPath: projectRoot).standardizedFileURL
+            let item = (try? readProjectSkills(root: root))?.skills.first { $0.path == skillPath }
+            return SkillRemovalPlan(
+                projectRoot: projectRoot,
+                skillName: skillName,
+                manager: item?.manager ?? "unknown",
+                mutability: item?.mutability ?? "unknown",
+                command: nil,
+                applySupported: canUninstallStandaloneSkill(
+                    projectRoot: projectRoot,
+                    skillPath: skillPath,
+                    skillName: skillName
+                ),
+                method: .standalone,
+                targetID: target.id
+            )
+        case .codexPlugin:
+            guard let pluginID = target.pluginID else { throw incompleteRemovalTargetError(target) }
+            return SkillRemovalPlan(
+                projectRoot: "codex-plugin",
+                skillName: pluginID,
+                manager: "codex-plugin",
+                mutability: "managed-read-only",
+                command: "codex plugin remove \(pluginID)",
+                applySupported: pluginID.contains("@"),
+                method: .codexPlugin,
+                targetID: target.id
+            )
+        }
+    }
+
+    /// The single removal entrance. `apply` defaults to a dry run: nothing is
+    /// mutated and each target reports the plan that would run.
+    public static func removeSkills(
+        targets: [SkillRemovalTarget],
+        apply: Bool = false
+    ) -> SkillRemovalBatchReport {
+        var seen = Set<String>()
+        let unique = targets.filter { seen.insert($0.id).inserted }
+        guard !unique.isEmpty else {
+            return SkillRemovalBatchReport(apply: apply, outcomes: [])
+        }
+        guard apply else {
+            return SkillRemovalBatchReport(
+                apply: false,
+                outcomes: unique.map(previewSkillRemoval)
+            )
+        }
+
+        var outcomes: [SkillRemovalTargetOutcome] = []
+        let canonicalTargets = unique.filter { $0.method == .canonical }
+        let groups = Dictionary(grouping: canonicalTargets) { $0.projectRoot ?? "" }
+        for projectRoot in groups.keys.sorted() {
+            outcomes += applyCanonicalSkillRemovals(
+                projectRoot: projectRoot,
+                targets: groups[projectRoot] ?? []
+            )
+        }
+        for target in unique where target.method != .canonical {
+            outcomes.append(applyStandaloneOrPluginRemoval(target))
+        }
+        return SkillRemovalBatchReport(apply: true, outcomes: outcomes)
+    }
+
+    private static func previewSkillRemoval(_ target: SkillRemovalTarget) -> SkillRemovalTargetOutcome {
+        do {
+            let plan = try planSkillRemoval(for: target)
+            var lines = [
+                "would remove \(target.displayName) through the \(plan.method.rawValue) path managed by \(plan.manager)"
+            ]
+            if let command = plan.command {
+                lines.append("manager command: \(command)")
+            }
+            if !plan.applySupported {
+                lines.append("Metagent will not apply this removal; remove it through its owner")
+            }
+            return SkillRemovalTargetOutcome(
+                target: target,
+                plan: plan,
+                succeeded: plan.applySupported,
+                lines: lines,
+                failureMessage: plan.applySupported
+                    ? nil
+                    : "\(target.displayName) cannot be removed by Metagent; it is managed by \(plan.manager)."
+            )
+        } catch {
+            return SkillRemovalTargetOutcome(
+                target: target,
+                succeeded: false,
+                failureMessage: error.localizedDescription
+            )
+        }
+    }
+
+    /// Canonical targets in one root go through the batch path so a multi-skill
+    /// removal keeps its single `skills` CLI invocation.
+    private static func applyCanonicalSkillRemovals(
+        projectRoot: String,
+        targets: [SkillRemovalTarget]
+    ) -> [SkillRemovalTargetOutcome] {
+        var outcomes: [SkillRemovalTargetOutcome] = []
+        let resolvable = targets.filter { $0.skillName != nil && !projectRoot.isEmpty }
+        outcomes += targets.filter { $0.skillName == nil || projectRoot.isEmpty }.map {
+            SkillRemovalTargetOutcome(
+                target: $0,
+                succeeded: false,
+                failureMessage: incompleteRemovalTargetError($0).localizedDescription
+            )
+        }
+        guard !resolvable.isEmpty else { return outcomes }
+
+        let batch = uninstallSkills(
+            projectRoot: projectRoot,
+            skillNames: resolvable.compactMap(\.skillName),
+            allowManagedRemoval: true
+        )
+        var handled = Set<String>()
+        for report in batch.reports {
+            guard let target = resolvable.first(where: { $0.skillName == report.skillName }) else { continue }
+            handled.insert(target.id)
+            outcomes.append(SkillRemovalTargetOutcome(
+                target: target,
+                succeeded: true,
+                lines: report.lines,
+                backupPath: report.backupPath,
+                report: report
+            ))
+        }
+        for failure in batch.failures {
+            guard let target = resolvable.first(where: { $0.skillName == failure.skillName }),
+                  !handled.contains(target.id)
+            else { continue }
+            handled.insert(target.id)
+            outcomes.append(SkillRemovalTargetOutcome(
+                target: target,
+                succeeded: false,
+                needsReconciliation: failure.needsReconciliation,
+                failureMessage: failure.message
+            ))
+        }
+        outcomes += resolvable.filter { !handled.contains($0.id) }.map {
+            SkillRemovalTargetOutcome(
+                target: $0,
+                succeeded: false,
+                failureMessage: "removal did not report a result for \($0.displayName)"
+            )
+        }
+        return outcomes
+    }
+
+    private static func applyStandaloneOrPluginRemoval(
+        _ target: SkillRemovalTarget
+    ) -> SkillRemovalTargetOutcome {
+        do {
+            let report: SkillUninstallReport
+            switch target.method {
+            case .canonical:
+                throw incompleteRemovalTargetError(target)
+            case .standalone:
+                guard let projectRoot = target.projectRoot,
+                      let skillPath = target.skillPath,
+                      let skillName = target.skillName
+                else { throw incompleteRemovalTargetError(target) }
+                report = try uninstallStandaloneSkill(
+                    projectRoot: projectRoot,
+                    skillPath: skillPath,
+                    skillName: skillName
+                )
+            case .codexPlugin:
+                guard let pluginID = target.pluginID else { throw incompleteRemovalTargetError(target) }
+                report = try uninstallCodexPlugin(pluginID: pluginID)
+            }
+            return SkillRemovalTargetOutcome(
+                target: target,
+                succeeded: true,
+                lines: report.lines,
+                backupPath: report.backupPath,
+                report: report
+            )
+        } catch {
+            return SkillRemovalTargetOutcome(
+                target: target,
+                succeeded: false,
+                failureMessage: error.localizedDescription
+            )
+        }
+    }
+
+    private static func incompleteRemovalTargetError(_ target: SkillRemovalTarget) -> NSError {
+        NSError(domain: "MetagentSkillUninstall", code: 13, userInfo: [
+            NSLocalizedDescriptionKey: "incomplete \(target.method.rawValue) removal target: \(target.id)"
+        ])
+    }
+}
+
+/// Same ordering the inventory table uses to pick the primary variant of a
+/// skill: canonical copies first, then `.agents`, `.codex`, `.claude`.
+func skillRemovalVariantOrder(_ left: SkillInventoryItem, _ right: SkillInventoryItem) -> Bool {
+    let leftRepresentationPriority = left.representation == "canonical" ? 0 : 1
+    let rightRepresentationPriority = right.representation == "canonical" ? 0 : 1
+    if leftRepresentationPriority != rightRepresentationPriority {
+        return leftRepresentationPriority < rightRepresentationPriority
+    }
+    let priority = ["agents": 0, "codex": 1, "claude": 2]
+    let leftPriority = priority[left.location, default: 3]
+    let rightPriority = priority[right.location, default: 3]
+    if leftPriority != rightPriority {
+        return leftPriority < rightPriority
+    }
+    return left.path < right.path
+}
+
 func projectRoot(for skillsDirectory: URL) -> URL {
     skillsDirectory
         .deletingLastPathComponent()

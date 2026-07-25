@@ -884,48 +884,12 @@ struct InventorySkillRow: Identifiable, Sendable {
         guard let codexReview else { return "Not reviewed. Use Evaluate → Review with Codex." }
         return "Absolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(codexReview.summary)\nNext: \(codexReview.recommendation)"
     }
-    var agentsVariant: SkillStatus? {
-        variants.first { $0.location == "agents" }
-    }
     var removalRequest: SkillRemovalRequest? {
-        if let agentsVariant,
-           agentsVariant.representation == "canonical",
-           ["local", "dotagents", "skills-cli"].contains(agentsVariant.manager)
-        {
-            return SkillRemovalRequest(
-                id: "canonical:\(project.root):\(agentsVariant.name)",
-                displayName: agentsVariant.name,
-                kind: .canonical(projectRoot: project.root, skillName: agentsVariant.name)
-            )
-        }
-        if skill.manager == "codex-plugin", skill.authority.contains("@") {
-            return SkillRemovalRequest(
-                id: "plugin:\(skill.authority)",
-                displayName: "\(skill.authority) plugin",
-                kind: .plugin(pluginID: skill.authority)
-            )
-        }
-        if let standaloneVariant = variants.first(where: { variant in
-            ["codex", "claude"].contains(variant.manager)
-                && variant.representation == "canonical"
-                && MetagentCore.canUninstallStandaloneSkill(
-                    projectRoot: project.root,
-                    skillPath: variant.path,
-                    skillName: variant.name
-                )
-        })
-        {
-            return SkillRemovalRequest(
-                id: "standalone:\(standaloneVariant.path)",
-                displayName: standaloneVariant.name,
-                kind: .standalone(
-                    projectRoot: project.root,
-                    skillPath: standaloneVariant.path,
-                    skillName: standaloneVariant.name
-                )
-            )
-        }
-        return nil
+        MetagentCore.resolveSkillRemovalTarget(
+            projectRoot: project.root,
+            skill: skill.coreSkill,
+            variants: variants.map(\.coreSkill)
+        )
     }
     func matches(_ query: String) -> Bool {
         [
@@ -985,10 +949,7 @@ func pluginCacheIdentity(
 
 func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
     let requests = rows.compactMap(\.removalRequest)
-    let pluginCount = requests.filter { request in
-        if case .plugin = request.kind { return true }
-        return false
-    }.count
+    let pluginCount = requests.filter { $0.method == .codexPlugin }.count
     let managedCount = rows.filter { ["skills-cli", "dotagents"].contains($0.skill.manager) }.count
     var parts = ["This action is manager-aware and will verify every removal before refreshing inventory."]
     if pluginCount > 0 {

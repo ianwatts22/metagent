@@ -296,8 +296,7 @@ struct DuplicateCandidateCard: View {
     private var canRemove: Bool { row.inventory?.removalRequest != nil }
     private var removalLabel: String {
         guard let request = row.inventory?.removalRequest else { return "Keep" }
-        if case .plugin = request.kind { return "Remove plugin" }
-        return "Remove"
+        return request.method == .codexPlugin ? "Remove plugin" : "Remove"
     }
 
     private var isProjectSkill: Bool { row.scope == "project" }

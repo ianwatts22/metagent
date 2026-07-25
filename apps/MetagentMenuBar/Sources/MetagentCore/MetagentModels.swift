@@ -497,6 +497,8 @@ public struct SkillRemovalPlan: Codable, Equatable, Sendable {
     public var mutability: String
     public var command: String?
     public var applySupported: Bool
+    public var method: SkillRemovalTarget.Method
+    public var targetID: String?
 
     public init(
         projectRoot: String,
@@ -504,7 +506,9 @@ public struct SkillRemovalPlan: Codable, Equatable, Sendable {
         manager: String,
         mutability: String,
         command: String?,
-        applySupported: Bool
+        applySupported: Bool,
+        method: SkillRemovalTarget.Method = .canonical,
+        targetID: String? = nil
     ) {
         self.projectRoot = projectRoot
         self.skillName = skillName
@@ -512,5 +516,163 @@ public struct SkillRemovalPlan: Codable, Equatable, Sendable {
         self.mutability = mutability
         self.command = command
         self.applySupported = applySupported
+        self.method = method
+        self.targetID = targetID
+    }
+}
+
+/// A single removable unit of skill inventory, resolved once in core so every
+/// surface routes removal through the same decision.
+public struct SkillRemovalTarget: Sendable, Codable, Identifiable, Hashable {
+    public enum Method: String, Sendable, Codable {
+        case canonical
+        case standalone
+        case codexPlugin
+    }
+
+    public let id: String
+    public let displayName: String
+    public let method: Method
+    public let projectRoot: String?
+    public let skillName: String?
+    public let skillPath: String?
+    public let pluginID: String?
+
+    public init(
+        id: String,
+        displayName: String,
+        method: Method,
+        projectRoot: String? = nil,
+        skillName: String? = nil,
+        skillPath: String? = nil,
+        pluginID: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.method = method
+        self.projectRoot = projectRoot
+        self.skillName = skillName
+        self.skillPath = skillPath
+        self.pluginID = pluginID
+    }
+
+    public static func canonical(projectRoot: String, skillName: String) -> SkillRemovalTarget {
+        SkillRemovalTarget(
+            id: "canonical:\(projectRoot):\(skillName)",
+            displayName: skillName,
+            method: .canonical,
+            projectRoot: projectRoot,
+            skillName: skillName
+        )
+    }
+
+    public static func standalone(
+        projectRoot: String,
+        skillPath: String,
+        skillName: String
+    ) -> SkillRemovalTarget {
+        SkillRemovalTarget(
+            id: "standalone:\(skillPath)",
+            displayName: skillName,
+            method: .standalone,
+            projectRoot: projectRoot,
+            skillName: skillName,
+            skillPath: skillPath
+        )
+    }
+
+    public static func codexPlugin(pluginID: String) -> SkillRemovalTarget {
+        SkillRemovalTarget(
+            id: "plugin:\(pluginID)",
+            displayName: "\(pluginID) plugin",
+            method: .codexPlugin,
+            pluginID: pluginID
+        )
+    }
+}
+
+public struct SkillRemovalTargetOutcome: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { target.id }
+    public let target: SkillRemovalTarget
+    public let plan: SkillRemovalPlan?
+    public let succeeded: Bool
+    public let needsReconciliation: Bool
+    public let lines: [String]
+    public let backupPath: String?
+    public let failureMessage: String?
+    public let report: SkillUninstallReport?
+
+    public init(
+        target: SkillRemovalTarget,
+        plan: SkillRemovalPlan? = nil,
+        succeeded: Bool,
+        needsReconciliation: Bool = false,
+        lines: [String] = [],
+        backupPath: String? = nil,
+        failureMessage: String? = nil,
+        report: SkillUninstallReport? = nil
+    ) {
+        self.target = target
+        self.plan = plan
+        self.succeeded = succeeded
+        self.needsReconciliation = needsReconciliation
+        self.lines = lines
+        self.backupPath = backupPath
+        self.failureMessage = failureMessage
+        self.report = report
+    }
+}
+
+public struct SkillRemovalBatchReport: Codable, Equatable, Sendable {
+    public let apply: Bool
+    public let outcomes: [SkillRemovalTargetOutcome]
+
+    public init(apply: Bool, outcomes: [SkillRemovalTargetOutcome]) {
+        self.apply = apply
+        self.outcomes = outcomes
+    }
+
+    public var succeededIDs: Set<String> {
+        Set(outcomes.filter(\.succeeded).map(\.id))
+    }
+
+    public var failedIDs: Set<String> {
+        Set(outcomes.filter { !$0.succeeded }.map(\.id))
+    }
+
+    public var reconciliationIDs: Set<String> {
+        Set(outcomes.filter(\.needsReconciliation).map(\.id))
+    }
+
+    public var reports: [SkillUninstallReport] {
+        outcomes.compactMap(\.report)
+    }
+
+    public var failures: [SkillUninstallFailure] {
+        outcomes.compactMap { outcome in
+            guard !outcome.succeeded else { return nil }
+            return SkillUninstallFailure(
+                skillName: outcome.target.skillName ?? outcome.target.displayName,
+                message: outcome.failureMessage ?? "removal did not report a result",
+                needsReconciliation: outcome.needsReconciliation
+            )
+        }
+    }
+
+    public var uninstallBatchReport: SkillUninstallBatchReport {
+        SkillUninstallBatchReport(reports: reports, failures: failures)
+    }
+
+    /// Report text in the order the removals were performed.
+    public var lines: [String] {
+        outcomes.flatMap { outcome -> [String] in
+            guard outcome.succeeded else {
+                return [
+                    "\(outcome.target.displayName): failed",
+                    "  \(outcome.failureMessage ?? "removal did not report a result")",
+                ]
+            }
+            return ["\(outcome.target.displayName):"] + outcome.lines.map { "  \($0)" }
+        }
     }
 }

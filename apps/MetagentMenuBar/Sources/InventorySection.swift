@@ -398,13 +398,6 @@ struct InventorySection: View {
                 }
 
                 Spacer()
-
-                if selectedView == .usage {
-                    Text(model.usageStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
             }
 
             if let evaluationStatus = model.skillEvaluationStatusText {

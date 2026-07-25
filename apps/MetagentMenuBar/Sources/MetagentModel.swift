@@ -3,17 +3,7 @@ import Foundation
 import MetagentCore
 import SwiftUI
 
-struct SkillRemovalRequest: Sendable {
-    enum Kind: Sendable {
-        case canonical(projectRoot: String, skillName: String)
-        case standalone(projectRoot: String, skillPath: String, skillName: String)
-        case plugin(pluginID: String)
-    }
-
-    let id: String
-    let displayName: String
-    let kind: Kind
-}
+typealias SkillRemovalRequest = SkillRemovalTarget
 
 private struct SkillRemovalOutcome: Sendable {
     let succeededIDs: Set<String>
@@ -430,11 +420,11 @@ final class MetagentModel: ObservableObject {
     }
 
     private static func skillRemovalQueueKey(_ request: SkillRemovalRequest) -> String {
-        switch request.kind {
-        case let .canonical(projectRoot, _), let .standalone(projectRoot, _, _):
-            return "root:\(projectRoot)"
-        case let .plugin(pluginID):
-            return "plugin:\(pluginID)"
+        switch request.method {
+        case .canonical, .standalone:
+            return "root:\(request.projectRoot ?? request.id)"
+        case .codexPlugin:
+            return "plugin:\(request.pluginID ?? request.id)"
         }
     }
 
@@ -459,70 +449,12 @@ final class MetagentModel: ObservableObject {
     nonisolated private static func performSkillRemovals(
         _ requests: [SkillRemovalRequest]
     ) -> SkillRemovalOutcome {
-        var succeededIDs = Set<String>()
-        var failedIDs = Set<String>()
-        var reconciliationIDs = Set<String>()
-        var lines: [String] = []
-
-        let canonical = requests.compactMap { request -> (SkillRemovalRequest, String, String)? in
-            guard case let .canonical(projectRoot, skillName) = request.kind else { return nil }
-            return (request, projectRoot, skillName)
-        }
-        if let projectRoot = canonical.first?.1 {
-            let batch = MetagentCore.uninstallSkills(
-                projectRoot: projectRoot,
-                skillNames: canonical.map(\.2),
-                allowManagedRemoval: true
-            )
-            let succeededNames = Set(batch.reports.map(\.skillName))
-            let failedNames = Set(batch.failures.map(\.skillName))
-            succeededIDs.formUnion(canonical.filter { succeededNames.contains($0.2) }.map(\.0.id))
-            failedIDs.formUnion(canonical.filter { failedNames.contains($0.2) }.map(\.0.id))
-            let reconciliationNames = Set(
-                batch.failures.filter(\.needsReconciliation).map(\.skillName)
-            )
-            reconciliationIDs.formUnion(
-                canonical.filter { reconciliationNames.contains($0.2) }.map(\.0.id)
-            )
-            for report in batch.reports {
-                lines.append("\(report.skillName):")
-                lines.append(contentsOf: report.lines.map { "  \($0)" })
-            }
-            for failure in batch.failures {
-                lines.append("\(failure.skillName): failed")
-                lines.append("  \(failure.message)")
-            }
-        }
-
-        for request in requests where !canonical.contains(where: { $0.0.id == request.id }) {
-            do {
-                let report: SkillUninstallReport
-                switch request.kind {
-                case .canonical:
-                    continue
-                case let .standalone(projectRoot, skillPath, skillName):
-                    report = try MetagentCore.uninstallStandaloneSkill(
-                        projectRoot: projectRoot,
-                        skillPath: skillPath,
-                        skillName: skillName
-                    )
-                case let .plugin(pluginID):
-                    report = try MetagentCore.uninstallCodexPlugin(pluginID: pluginID)
-                }
-                succeededIDs.insert(request.id)
-                lines.append("\(request.displayName):")
-                lines.append(contentsOf: report.lines.map { "  \($0)" })
-            } catch {
-                failedIDs.insert(request.id)
-                lines.append("\(request.displayName): failed")
-                lines.append("  \(error.localizedDescription)")
-            }
-        }
+        let batch = MetagentCore.removeSkills(targets: requests, apply: true)
         return SkillRemovalOutcome(
-            succeededIDs: succeededIDs,
-            failedIDs: failedIDs,
-            reconciliationIDs: reconciliationIDs,
-            lines: lines
+            succeededIDs: batch.succeededIDs,
+            failedIDs: batch.failedIDs,
+            reconciliationIDs: batch.reconciliationIDs,
+            lines: batch.lines
         )
     }
 
