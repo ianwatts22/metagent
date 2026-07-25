@@ -9,21 +9,21 @@ import McpServerIcon from "@hugeicons/core-free-icons/McpServerIcon";
 const surfaces = [
   {
     icon: AppWindowMacIcon,
-    label: "Native app",
+    label: "Mac app",
     title: "See the whole system.",
-    copy: "Browse skills, MCP connections, projects, provenance, usage, scores, and cleanup findings in one quiet native interface.",
+    copy: "Explore and clean up your skills and MCP servers—global and per project—in one quiet interface.",
   },
   {
     icon: CommandLineIcon,
     label: "Command line",
     title: "Inspect any folder.",
-    copy: "Produce a versioned project report from the same Swift core that powers the app—useful in terminals, scripts, and CI.",
+    copy: "Produce project reports from the same Swift core that powers the app. Useful in terminals, scripts, and CI.",
   },
   {
     icon: McpServerIcon,
     label: "Local MCP",
     title: "Give agents context.",
-    copy: "Let Codex and Claude inspect a project's instructions, skills, MCP setup, provenance, usage evidence, and Doctor findings.",
+    copy: "Let Codex and Claude read a project's skills, MCP setup, usage, and Doctor findings.",
   },
 ];
 ---
@@ -69,8 +69,10 @@ const surfaces = [
     <div class="surface-grid">
       {surfaces.map((surface) => (
         <article class="surface-card">
-          <Icon icon={surface.icon} size={24} />
-          <p class="card-label">{surface.label}</p>
+          <p class="card-label">
+            <Icon icon={surface.icon} size={20} />
+            {surface.label}
+          </p>
           <h3>{surface.title}</h3>
           <p>{surface.copy}</p>
         </article>
