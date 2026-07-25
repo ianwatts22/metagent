@@ -179,6 +179,11 @@ struct MetagentPanel: View {
         .frame(maxWidth: showsOpenWindowButton ? .infinity : 620)
     }
 
+    private func openMainWindow() {
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     @ViewBuilder
     private var panelContent: some View {
         switch selectedSection {
@@ -194,34 +199,36 @@ struct MetagentPanel: View {
                 )
                 selectedSection = .skills
                 if showsOpenWindowButton {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    openMainWindow()
                 }
             }
         case .skills:
             if showsOpenWindowButton {
-                SkillsMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                }
+                SkillsMenuSection(
+                    model: model,
+                    selectedProjectRoot: selectedProjectRoot,
+                    openMainWindow: openMainWindow
+                )
             } else {
                 InventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
         case .mcps:
             if showsOpenWindowButton {
-                MCPMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                }
+                MCPMenuSection(
+                    model: model,
+                    selectedProjectRoot: selectedProjectRoot,
+                    openMainWindow: openMainWindow
+                )
             } else {
                 MCPInventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
         case .projects:
             if showsOpenWindowButton {
-                ProjectsMenuSection(model: model, selectedProjectRoot: selectedProjectRoot) {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                }
+                ProjectsMenuSection(
+                    model: model,
+                    selectedProjectRoot: selectedProjectRoot,
+                    openMainWindow: openMainWindow
+                )
             } else {
                 ProjectsSection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
@@ -241,8 +248,7 @@ struct MetagentPanel: View {
             Spacer()
 
             Button {
-                openWindow(id: "main")
-                NSApplication.shared.activate(ignoringOtherApps: true)
+                openMainWindow()
             } label: {
                 Label("Open Window", systemImage: "macwindow")
             }

@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
     }()
 
     private static let applicationIcons: [String: NSImage] = {
-        ["com.openai.codex", "com.anthropic.claudefordesktop"].reduce(into: [:]) { icons, bundleIdentifier in
+        MCPClient.allCases.map(\.bundleIdentifier).reduce(into: [:]) { icons, bundleIdentifier in
             guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
                 return
             }

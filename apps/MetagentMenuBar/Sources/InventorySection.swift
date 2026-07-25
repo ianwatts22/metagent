@@ -84,13 +84,9 @@ struct InventorySection: View {
         }
     }
 
-    private var allRows: [SkillTableRow] {
-        cachedRows
-    }
-
     private var rows: [SkillTableRow] {
         let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return allRows
+        return cachedRows
         .filter {
             guard let removalID = $0.inventory?.removalRequest?.id else { return true }
             return !model.pendingSkillRemovalIDs.contains(removalID)
@@ -99,8 +95,7 @@ struct InventorySection: View {
         .filter { selectedView != .duplicates || $0.overlap != nil }
         .filter {
             guard let selectedProjectRoot else { return true }
-            if standardizedDirectoryPath(selectedProjectRoot)
-                == standardizedDirectoryPath(NSHomeDirectory()) {
+            if isGlobalRoot(selectedProjectRoot) {
                 return $0.scope != "project"
             }
             return $0.scope == "project" && $0.projectRoot == selectedProjectRoot
@@ -160,7 +155,7 @@ struct InventorySection: View {
 
     private var completeVisibleDuplicateGroups: [DuplicateReviewGroup] {
         let visibleRowIDs = Set(rows.map(\.id))
-        return Dictionary(grouping: allRows.compactMap { row -> SkillTableRow? in
+        return Dictionary(grouping: cachedRows.compactMap { row -> SkillTableRow? in
             row.overlap == nil ? nil : row
         }, by: { $0.overlap?.groupID ?? "" })
             .compactMap { id, groupRows -> DuplicateReviewGroup? in
@@ -198,7 +193,7 @@ struct InventorySection: View {
     }
 
     private var hasDetectedOverlapGroups: Bool {
-        allRows.contains { $0.overlap != nil }
+        cachedRows.contains { $0.overlap != nil }
     }
 
     private var hasActiveFilter: Bool {

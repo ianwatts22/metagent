@@ -139,6 +139,10 @@ func standardizedDirectoryPath(_ path: String) -> String {
     return url.path
 }
 
+func isGlobalRoot(_ path: String) -> Bool {
+    standardizedDirectoryPath(path) == standardizedDirectoryPath(NSHomeDirectory())
+}
+
 func displayUserPath(_ path: String) -> String {
     let home = NSHomeDirectory()
     if path == home {
@@ -150,10 +154,17 @@ func displayUserPath(_ path: String) -> String {
     return "~" + path.dropFirst(home.count)
 }
 
+// ISO8601DateFormatter is documented as thread-safe.
+nonisolated(unsafe) private let fractionalISO8601Formatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+nonisolated(unsafe) private let plainISO8601Formatter = ISO8601DateFormatter()
+
 func parseISO8601Date(_ value: String) -> Date? {
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    fractionalISO8601Formatter.date(from: value) ?? plainISO8601Formatter.date(from: value)
 }
 
 func githubRepositoryName(url: String?) -> String? {
@@ -270,6 +281,57 @@ func groupedDoctorActionCount(_ findings: [DoctorIssue]) -> Int {
             issue.summary ?? issue.message
         ].joined(separator: "|")
     }).count
+}
+
+extension MCPClient {
+    var bundleIdentifier: String {
+        switch self {
+        case .codex: "com.openai.codex"
+        case .claude: "com.anthropic.claudefordesktop"
+        }
+    }
+}
+
+extension MCPConnectionState {
+    var displayLabel: String {
+        switch self {
+        case .configured: "Configured"
+        case .disabled: "Disabled"
+        case .pendingApproval: "Pending approval"
+        case .needsSignIn: "Needs sign-in"
+        case .unavailable: "Unavailable"
+        }
+    }
+
+    var displaySymbol: String {
+        switch self {
+        case .configured: "checkmark.circle"
+        case .disabled: "pause.circle"
+        case .pendingApproval: "questionmark.circle"
+        case .needsSignIn: "person.crop.circle.badge.exclamationmark"
+        case .unavailable: "exclamationmark.triangle.fill"
+        }
+    }
+
+    var displayTint: Color {
+        switch self {
+        case .configured: .green
+        case .disabled: .secondary
+        case .pendingApproval, .needsSignIn: .orange
+        case .unavailable: .red
+        }
+    }
+}
+
+extension View {
+    func cardBackground() -> some View {
+        self
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+            }
+    }
 }
 
 extension Sequence where Element: Hashable {

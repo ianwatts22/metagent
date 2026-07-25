@@ -4,6 +4,92 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct SkillDetailHeader<Trailing: View>: View {
+    let iconPath: String?
+    let fallbackSymbol: String
+    let title: String
+    let path: String
+    let pathIsSelectable: Bool
+    let trailing: Trailing
+
+    init(
+        iconPath: String?,
+        fallbackSymbol: String,
+        title: String,
+        path: String,
+        pathIsSelectable: Bool = false,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.iconPath = iconPath
+        self.fallbackSymbol = fallbackSymbol
+        self.title = title
+        self.path = path
+        self.pathIsSelectable = pathIsSelectable
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let icon = AppBrand.skillIcon(path: iconPath) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: fallbackSymbol)
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                if pathIsSelectable {
+                    pathText
+                        .textSelection(.enabled)
+                } else {
+                    pathText
+                }
+            }
+            Spacer()
+            trailing
+        }
+    }
+
+    private var pathText: some View {
+        Text(displayUserPath(path))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+}
+
+extension SkillDetailHeader where Trailing == EmptyView {
+    init(
+        iconPath: String?,
+        fallbackSymbol: String,
+        title: String,
+        path: String,
+        pathIsSelectable: Bool = false
+    ) {
+        self.init(
+            iconPath: iconPath,
+            fallbackSymbol: fallbackSymbol,
+            title: title,
+            path: path,
+            pathIsSelectable: pathIsSelectable
+        ) {
+            EmptyView()
+        }
+    }
+}
+
 struct SkillInfoView: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
@@ -16,34 +102,12 @@ struct SkillInfoView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                Group {
-                    if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        Image(systemName: "sparkles")
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundStyle(.secondary)
-                            .padding(6)
-                    }
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(updatedSkillName ?? row.skillName)
-                        .font(.title2.weight(.semibold))
-                    Text(displayUserPath(currentSkillPath))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-            }
+            SkillDetailHeader(
+                iconPath: row.skillIconPath,
+                fallbackSymbol: "sparkles",
+                title: updatedSkillName ?? row.skillName,
+                path: currentSkillPath
+            )
 
             if row.descriptionText != "—" {
                 Text(row.descriptionText)
@@ -170,34 +234,13 @@ struct SkillReaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Group {
-                    if let icon = AppBrand.skillIcon(path: row.skillIconPath) {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        Image(systemName: "doc.text")
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundStyle(.secondary)
-                            .padding(6)
-                    }
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(document?.name ?? row.skillName)
-                        .font(.title2.weight(.semibold))
-                    Text(displayUserPath(currentSkillPath))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-                Spacer()
+            SkillDetailHeader(
+                iconPath: row.skillIconPath,
+                fallbackSymbol: "doc.text",
+                title: document?.name ?? row.skillName,
+                path: currentSkillPath,
+                pathIsSelectable: true
+            ) {
                 if document != nil {
                     Button(isEditing ? "Reading" : "Edit") {
                         if isEditing {

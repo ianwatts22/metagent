@@ -169,11 +169,7 @@ struct OverviewSection: View {
             }
         }
         .padding(isCompact ? 12 : 14)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
-        }
+        .cardBackground()
     }
 
     private var skillHealthRefreshID: String {
@@ -186,7 +182,7 @@ struct OverviewSection: View {
 
     private var skillHealthScope: SkillSystemHealthScope {
         guard let selectedProjectRoot else { return .all }
-        return standardizedDirectoryPath(selectedProjectRoot) == standardizedDirectoryPath(NSHomeDirectory())
+        return isGlobalRoot(selectedProjectRoot)
             ? .global(root: selectedProjectRoot)
             : .project(root: selectedProjectRoot)
     }
@@ -198,7 +194,7 @@ struct OverviewSection: View {
         guard let selectedProjectRoot else {
             return "\(skillHealth.skillCount) installed skills across global and project scopes"
         }
-        if standardizedDirectoryPath(selectedProjectRoot) == standardizedDirectoryPath(NSHomeDirectory()) {
+        if isGlobalRoot(selectedProjectRoot) {
             return "\(skillHealth.skillCount) installed skills in the global scope only"
         }
         return "\(skillHealth.skillCount) installed skills in this directory only"
@@ -434,11 +430,7 @@ struct OverviewSection: View {
                 ))
             }
         }
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
-        }
+        .cardBackground()
         .onChange(of: mcpDetailRows.isEmpty) { _, isEmpty in
             if isEmpty {
                 showsMCPDetails = false
@@ -584,11 +576,7 @@ struct OverviewSection: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
-        }
+        .cardBackground()
     }
 
     private var healthMessage: String {
@@ -625,16 +613,9 @@ struct MCPClientCount: View {
     let client: MCPClient
     let count: Int
 
-    private var bundleIdentifier: String {
-        switch client {
-        case .codex: "com.openai.codex"
-        case .claude: "com.anthropic.claudefordesktop"
-        }
-    }
-
     var body: some View {
         HStack(spacing: 5) {
-            if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier) {
+            if let icon = AppBrand.applicationIcon(bundleIdentifier: client.bundleIdentifier) {
                 Image(nsImage: icon)
                     .resizable()
                     .scaledToFit()
@@ -665,9 +646,9 @@ struct MCPHealthRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            Image(systemName: stateSymbol)
+            Image(systemName: server.state.displaySymbol)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(stateTint)
+                .foregroundStyle(server.state.displayTint)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -685,7 +666,7 @@ struct MCPHealthRow: View {
                 Button(attentionActionLabel, action: openClient)
                     .buttonStyle(.glass)
             } else {
-                Text(stateLabel)
+                Text(server.state.displayLabel)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
@@ -703,40 +684,10 @@ struct MCPHealthRow: View {
         }
         return switch server.client {
         case .codex:
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") == nil
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: MCPClient.codex.bundleIdentifier) == nil
                 ? "Show Codex config…"
                 : "Open Codex…"
         case .claude: "Show Claude config…"
-        }
-    }
-
-    private var stateLabel: String {
-        switch server.state {
-        case .configured: "Configured"
-        case .disabled: "Disabled"
-        case .pendingApproval: "Pending approval"
-        case .needsSignIn: "Needs sign-in"
-        case .unavailable: "Unavailable"
-        }
-    }
-
-    private var stateSymbol: String {
-        switch server.state {
-        case .configured: "checkmark.circle"
-        case .disabled: "pause.circle"
-        case .pendingApproval: "questionmark.circle"
-        case .needsSignIn: "person.crop.circle.badge.exclamationmark"
-        case .unavailable: "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var stateTint: Color {
-        switch server.state {
-        case .configured: .green
-        case .disabled: .secondary
-        case .pendingApproval: .orange
-        case .needsSignIn: .orange
-        case .unavailable: .red
         }
     }
 }

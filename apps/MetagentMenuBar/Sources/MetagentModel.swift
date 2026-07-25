@@ -67,9 +67,7 @@ final class MetagentModel: ObservableObject {
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
             projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
-            repoCount = projects.count
-            skillCount = Self.logicalSkillCount(projects: projects)
-            locationSummaryText = Self.locationSummary(projects: projects)
+            updateInventorySummary()
             rootsText = "cached SQLite snapshot"
             statusText = "\(repoCount) cached locations, \(skillCount) skills"
             systemImage = "externaldrive"
@@ -91,17 +89,6 @@ final class MetagentModel: ObservableObject {
         doctorIssues.filter { $0.severity != .ok }
     }
 
-    var doctorActionCount: Int {
-        Set(doctorFindings.map { issue in
-            [
-                issue.projectRoot ?? "general",
-                issue.category?.rawValue ?? "general",
-                issue.repairAction?.rawValue ?? "review",
-                issue.summary ?? issue.message
-            ].joined(separator: "|")
-        }).count
-    }
-
     var logicalSkillCount: Int {
         Self.logicalSkillCount(projects: projects)
     }
@@ -117,24 +104,11 @@ final class MetagentModel: ObservableObject {
         coreStatusText = "Swift core"
 
         Task {
-            async let scanResult = Task.detached {
-                Result { try MetagentCore.scanSkills() }
-            }.value
-            async let homeScanResult = Task.detached {
-                Result { try MetagentCore.scanHomeSkills(maxDepth: 2) }
-            }.value
-            async let pluginScanResult = Task.detached {
-                Result { try MetagentCore.scanCodexPlugins() }
-            }.value
             async let doctorResult = Task.detached {
                 Result { try MetagentCore.doctor() }
             }.value
-            let (scan, homeScan, pluginScan, doctor) = await (
-                scanResult,
-                homeScanResult,
-                pluginScanResult,
-                doctorResult
-            )
+            let (scan, homeScan, pluginScan) = await Self.scanInventory()
+            let doctor = await doctorResult
 
             applyStatus(
                 scan: scan,
@@ -175,7 +149,7 @@ final class MetagentModel: ObservableObject {
         switch client {
         case .codex:
             if let applicationURL = NSWorkspace.shared.urlForApplication(
-                withBundleIdentifier: "com.openai.codex"
+                withBundleIdentifier: client.bundleIdentifier
             ) {
                 NSWorkspace.shared.openApplication(at: applicationURL, configuration: .init())
             } else {
@@ -425,24 +399,6 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func uninstallSkill(projectRoot: String, skillName: String) {
-        runOperation(
-            title: "Uninstall \(skillName)",
-            runningText: "Uninstalling \(skillName)..."
-        ) {
-            let report = try MetagentCore.uninstallSkill(
-                projectRoot: projectRoot,
-                skillName: skillName,
-                allowManagedRemoval: true
-            )
-            return CommandOutcome(succeeded: true, lines: report.lines, repairPreview: nil)
-        } completion: { [weak self] result in
-            if result.succeeded {
-                self?.refreshStatus()
-            }
-        }
-    }
-
     @discardableResult
     func uninstallSkills(_ requests: [SkillRemovalRequest]) -> Bool {
         guard !isRunning || isRemovingSkills else { return false }
@@ -612,10 +568,7 @@ final class MetagentModel: ObservableObject {
         statusRefreshGeneration += 1
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
-            async let scanResult = Task.detached { Result { try MetagentCore.scanSkills() } }.value
-            async let homeScanResult = Task.detached { Result { try MetagentCore.scanHomeSkills(maxDepth: 2) } }.value
-            async let pluginScanResult = Task.detached { Result { try MetagentCore.scanCodexPlugins() } }.value
-            let (scan, homeScan, pluginScan) = await (scanResult, homeScanResult, pluginScanResult)
+            let (scan, homeScan, pluginScan) = await Self.scanInventory()
 
             let refreshedProjects = [
                 scan.value?.projects,
@@ -629,9 +582,7 @@ final class MetagentModel: ObservableObject {
             let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
             if didRefreshInventory {
                 projects = Self.mergeProjects(refreshedProjects)
-                repoCount = projects.count
-                skillCount = Self.logicalSkillCount(projects: projects)
-                locationSummaryText = Self.locationSummary(projects: projects)
+                updateInventorySummary()
                 MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: []))
                 completedSkillRemovalIDs.subtract(reconcilingIDs)
                 pendingSkillRemovalIDs.subtract(reconcilingIDs)
@@ -653,11 +604,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func copyLastOutput() {
-        let text = lastOutputLines.joined(separator: "\n")
-        guard !text.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        copyToPasteboard(lastOutputLines.joined(separator: "\n"))
     }
 
     func clearLastOutput() {
@@ -668,14 +615,11 @@ final class MetagentModel: ObservableObject {
 
     func copyRepairSummary() {
         guard let repairPreview else { return }
-        let text = repairPreview.summaryText
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        copyToPasteboard(repairPreview.summaryText)
     }
 
     func openProject(_ project: RepairProjectPreview) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: project.root))
+        openProjectRoot(project.root)
     }
 
     func openProjectRoot(_ root: String) {
@@ -722,9 +666,7 @@ final class MetagentModel: ObservableObject {
             skillTableRevision += 1
             let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))
-            repoCount = projects.count
-            skillCount = Self.logicalSkillCount(projects: projects)
-            locationSummaryText = Self.locationSummary(projects: projects)
+            updateInventorySummary()
             rootsText = Self.rootsSummary(
                 configuredProjects: configuredProjects,
                 homeProjects: homeProjects,
@@ -773,6 +715,29 @@ final class MetagentModel: ObservableObject {
         doctorIssues = report.issues
         warningCount = report.warningCount
         failureCount = report.failureCount
+    }
+
+    private func updateInventorySummary() {
+        repoCount = projects.count
+        skillCount = Self.logicalSkillCount(projects: projects)
+        locationSummaryText = Self.locationSummary(projects: projects)
+    }
+
+    nonisolated private static func scanInventory() async -> (
+        scan: Result<SkillScanReport, Error>,
+        homeScan: Result<SkillScanReport, Error>,
+        pluginScan: Result<SkillScanReport, Error>
+    ) {
+        async let scanResult = Task.detached {
+            Result { try MetagentCore.scanSkills() }
+        }.value
+        async let homeScanResult = Task.detached {
+            Result { try MetagentCore.scanHomeSkills(maxDepth: 2) }
+        }.value
+        async let pluginScanResult = Task.detached {
+            Result { try MetagentCore.scanCodexPlugins() }
+        }.value
+        return await (scanResult, homeScanResult, pluginScanResult)
     }
 
     private func refreshSkillEvaluations() {
@@ -936,19 +901,7 @@ struct CommandOutcome: Sendable {
     let succeeded: Bool
     let lines: [String]
     let repairPreview: RepairPreview?
-    let doctorReport: DoctorReport?
-
-    init(
-        succeeded: Bool,
-        lines: [String],
-        repairPreview: RepairPreview?,
-        doctorReport: DoctorReport? = nil
-    ) {
-        self.succeeded = succeeded
-        self.lines = lines
-        self.repairPreview = repairPreview
-        self.doctorReport = doctorReport
-    }
+    var doctorReport: DoctorReport? = nil
 }
 
 struct ProjectStatus: Identifiable, Sendable {
@@ -982,10 +935,6 @@ struct ProjectStatus: Identifiable, Sendable {
         return URL(fileURLWithPath: root).lastPathComponent
     }
 
-    var skillCount: Int {
-        skills.count
-    }
-
     var agentsSkillCount: Int {
         skills.filter { $0.location == "agents" }.count
     }
@@ -1004,17 +953,6 @@ struct ProjectStatus: Identifiable, Sendable {
 
     func agentsSkillCount(manager: String) -> Int {
         skills.filter { $0.location == "agents" && $0.manager == manager }.count
-    }
-
-    var locationSummary: String {
-        [
-            agentsSkillCount > 0 ? ".agents \(agentsSkillCount)" : nil,
-            codexSkillCount > 0 ? ".codex \(codexSkillCount)" : nil,
-            claudeSkillCount > 0 ? ".claude \(claudeSkillCount)" : nil,
-            pluginSkillCount > 0 ? "plugins \(pluginSkillCount)" : nil
-        ]
-        .compactMap { $0 }
-        .joined(separator: "  ")
     }
 
     func merged(with other: ProjectStatus) -> ProjectStatus {
@@ -1054,132 +992,40 @@ extension ProjectStatus {
 #endif
 
 struct SkillStatus: Identifiable, Comparable, Sendable {
-    let name: String
-    let description: String?
-    let path: String
-    let location: String
-    let locationLabel: String
-    let originKind: String
-    let scope: String
-    let manager: String
-    let authority: String
-    let mutability: String
-    let representation: String
-    let canonicalPath: String
-    let source: String?
-    let sourceType: String?
-    let sourceURL: String?
-    let ref: String?
-    let installedAt: String?
-    let updatedAt: String?
-    let symlinkedContainer: Bool
-    let folderKind: String
-    let characterCount: Int
-    let wordCount: Int
-    let tokenEstimate: Int
-    let skillFileCharacterCount: Int
-    let skillFileWordCount: Int
-    let skillFileTokenEstimate: Int
-    let textFileCount: Int
-    let referenceFileCount: Int
-    let scriptFileCount: Int
-    let assetFileCount: Int
-    let otherFileCount: Int
-    let otherFolderCount: Int
-    let hasOpenAIYaml: Bool
-    let hasIconSmall: Bool
-    let hasIconLarge: Bool
-    let hasIconAndLogo: Bool
-    let iconSmallPath: String?
-    let iconLargePath: String?
-
-    var id: String {
-        "\(location):\(path)"
-    }
-
-    var coreSkill: SkillInventoryItem {
-        SkillInventoryItem(
-            name: name,
-            description: description,
-            path: path,
-            location: location,
-            locationLabel: locationLabel,
-            originKind: originKind,
-            scope: scope,
-            manager: manager,
-            authority: authority,
-            mutability: mutability,
-            representation: representation,
-            canonicalPath: canonicalPath,
-            source: source,
-            sourceType: sourceType,
-            sourceURL: sourceURL,
-            ref: ref,
-            installedAt: installedAt,
-            updatedAt: updatedAt,
-            symlinkedContainer: symlinkedContainer,
-            folderKind: folderKind,
-            characterCount: characterCount,
-            wordCount: wordCount,
-            tokenEstimate: tokenEstimate,
-            skillFileCharacterCount: skillFileCharacterCount,
-            skillFileWordCount: skillFileWordCount,
-            skillFileTokenEstimate: skillFileTokenEstimate,
-            textFileCount: textFileCount,
-            referenceFileCount: referenceFileCount,
-            scriptFileCount: scriptFileCount,
-            assetFileCount: assetFileCount,
-            otherFileCount: otherFileCount,
-            otherFolderCount: otherFolderCount,
-            hasOpenAIYaml: hasOpenAIYaml,
-            hasIconSmall: hasIconSmall,
-            hasIconLarge: hasIconLarge,
-            hasIconAndLogo: hasIconAndLogo,
-            iconSmallPath: iconSmallPath,
-            iconLargePath: iconLargePath
-        )
-    }
+    let skill: SkillInventoryItem
 
     fileprivate init(skill: SkillInventoryItem) {
-        self.name = skill.name
-        self.description = skill.description
-        self.path = skill.path
-        self.location = skill.location
-        self.locationLabel = skill.locationLabel
-        self.originKind = skill.originKind
-        self.scope = skill.scope
-        self.manager = skill.manager
-        self.authority = skill.authority
-        self.mutability = skill.mutability
-        self.representation = skill.representation
-        self.canonicalPath = skill.canonicalPath
-        self.source = skill.source
-        self.sourceType = skill.sourceType
-        self.sourceURL = skill.sourceURL
-        self.ref = skill.ref
-        self.installedAt = skill.installedAt
-        self.updatedAt = skill.updatedAt
-        self.symlinkedContainer = skill.symlinkedContainer
-        self.folderKind = skill.folderKind
-        self.characterCount = skill.characterCount
-        self.wordCount = skill.wordCount
-        self.tokenEstimate = skill.tokenEstimate
-        self.skillFileCharacterCount = skill.skillFileCharacterCount
-        self.skillFileWordCount = skill.skillFileWordCount
-        self.skillFileTokenEstimate = skill.skillFileTokenEstimate
-        self.textFileCount = skill.textFileCount
-        self.referenceFileCount = skill.referenceFileCount
-        self.scriptFileCount = skill.scriptFileCount
-        self.assetFileCount = skill.assetFileCount
-        self.otherFileCount = skill.otherFileCount
-        self.otherFolderCount = skill.otherFolderCount
-        self.hasOpenAIYaml = skill.hasOpenAIYaml
-        self.hasIconSmall = skill.hasIconSmall
-        self.hasIconLarge = skill.hasIconLarge
-        self.hasIconAndLogo = skill.hasIconAndLogo
-        self.iconSmallPath = skill.iconSmallPath
-        self.iconLargePath = skill.iconLargePath
+        self.skill = skill
     }
+
+    var id: String { skill.id }
+    var coreSkill: SkillInventoryItem { skill }
+
+    var name: String { skill.name }
+    var description: String? { skill.description }
+    var path: String { skill.path }
+    var location: String { skill.location }
+    var locationLabel: String { skill.locationLabel }
+    var originKind: String { skill.originKind }
+    var scope: String { skill.scope }
+    var manager: String { skill.manager }
+    var authority: String { skill.authority }
+    var mutability: String { skill.mutability }
+    var representation: String { skill.representation }
+    var canonicalPath: String { skill.canonicalPath }
+    var source: String? { skill.source }
+    var sourceType: String? { skill.sourceType }
+    var sourceURL: String? { skill.sourceURL }
+    var ref: String? { skill.ref }
+    var updatedAt: String? { skill.updatedAt }
+    var folderKind: String { skill.folderKind }
+    var tokenEstimate: Int { skill.tokenEstimate }
+    var referenceFileCount: Int { skill.referenceFileCount }
+    var scriptFileCount: Int { skill.scriptFileCount }
+    var assetFileCount: Int { skill.assetFileCount }
+    var otherFileCount: Int { skill.otherFileCount }
+    var iconSmallPath: String? { skill.iconSmallPath }
+    var iconLargePath: String? { skill.iconLargePath }
 
     var originText: String? {
         switch manager {
@@ -1203,7 +1049,7 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
     }
 
     var tableOriginText: String {
-        originText ?? (symlinkedContainer ? "symlink mirror" : "n/a")
+        originText ?? (skill.symlinkedContainer ? "symlink mirror" : "n/a")
     }
 
     static func < (left: SkillStatus, right: SkillStatus) -> Bool {
@@ -1218,7 +1064,7 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
 
 }
 
-struct RepairPreview: Decodable, Sendable {
+struct RepairPreview: Sendable {
     let apply: Bool
     let mode: String
     let summary: RepairSummaryPreview
@@ -1259,7 +1105,7 @@ struct RepairPreview: Decodable, Sendable {
     }
 }
 
-struct RepairSummaryPreview: Decodable, Sendable {
+struct RepairSummaryPreview: Sendable {
     let projectCount: Int
     let validSkillCount: Int
     let warningCount: Int
@@ -1273,17 +1119,9 @@ struct RepairSummaryPreview: Decodable, Sendable {
         self.actionCount = summary.actionCount
         self.skippedCount = summary.skippedCount
     }
-
-    private enum CodingKeys: String, CodingKey {
-        case projectCount = "project_count"
-        case validSkillCount = "valid_skill_count"
-        case warningCount = "warning_count"
-        case actionCount = "action_count"
-        case skippedCount = "skipped_count"
-    }
 }
 
-struct RepairProjectPreview: Decodable, Identifiable, Sendable {
+struct RepairProjectPreview: Identifiable, Sendable {
     let root: String
     let name: String
     let validSkillCount: Int
@@ -1325,21 +1163,9 @@ struct RepairProjectPreview: Decodable, Identifiable, Sendable {
     var info: [RepairLinePreview] {
         lines.filter { $0.kind == .info }
     }
-
-    private enum CodingKeys: String, CodingKey {
-        case root
-        case name
-        case validSkillCount = "valid_skill_count"
-        case warningCount = "warning_count"
-        case actionCount = "action_count"
-        case skippedCount = "skipped_count"
-        case lines
-        case plannedCodexProjectionPaths = "planned_codex_projection_paths"
-    }
-
 }
 
-struct RepairLinePreview: Decodable, Identifiable, Sendable {
+struct RepairLinePreview: Identifiable, Sendable {
     let kind: RepairLineKind
     let text: String
 
@@ -1351,7 +1177,7 @@ struct RepairLinePreview: Decodable, Identifiable, Sendable {
     }
 }
 
-enum RepairLineKind: String, Decodable, Sendable {
+enum RepairLineKind: String, Sendable {
     case action
     case warning
     case skipped

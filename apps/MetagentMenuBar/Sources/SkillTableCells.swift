@@ -542,9 +542,9 @@ struct SkillSourceIconCell: View {
     private var sourceIcon: some View {
         switch category {
         case .plugin, .codexSystem, .codexInstalled:
-            applicationIcon("com.openai.codex", fallback: "sparkles")
+            applicationIcon(MCPClient.codex.bundleIdentifier, fallback: "sparkles")
         case .claude:
-            applicationIcon("com.anthropic.claudefordesktop", fallback: "link")
+            applicationIcon(MCPClient.claude.bundleIdentifier, fallback: "link")
         case .dotagentsLocal, .dotagentsManaged:
             DotagentsSourceMark()
         case .skillsCLI:

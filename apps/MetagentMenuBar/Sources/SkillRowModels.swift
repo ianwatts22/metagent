@@ -21,10 +21,6 @@ enum UsageFilter: String, CaseIterable, Identifiable {
         case .insufficient: "Insufficient data"
         }
     }
-    func includes(_ row: UsageSkillRow) -> Bool {
-        includes(status: row.status, totalInvocations: row.totalInvocations)
-    }
-
     func includes(status: UsageSkillRow.Status, totalInvocations: Int) -> Bool {
         switch self {
         case .all: true
@@ -115,6 +111,48 @@ struct UsageSkillRow: Identifiable, Sendable {
 
     var scopeLabel: String { skillScopeLabel(scope) }
 
+    static func placeholder(
+        id: String,
+        skillName: String,
+        canonicalPath: String?,
+        scope: String,
+        status: Status
+    ) -> UsageSkillRow {
+        UsageSkillRow(
+            id: id,
+            skillName: skillName,
+            canonicalPath: canonicalPath,
+            scope: scope,
+            totalInvocations: 0,
+            invocations7d: 0,
+            invocations30d: 0,
+            distinctThreads: 0,
+            repeatInvocations: 0,
+            lastUsedDate: nil,
+            lastUsedSortValue: -.infinity,
+            status: status
+        )
+    }
+
+    static func inventoryPlaceholder(
+        id: String,
+        skillName: String,
+        canonicalPath: String?,
+        folderKind: String,
+        projectRoot: String,
+        isBackfillComplete: Bool
+    ) -> UsageSkillRow {
+        placeholder(
+            id: id,
+            skillName: skillName,
+            canonicalPath: canonicalPath,
+            scope: folderKind == "system"
+                ? "system"
+                : (projectRoot == NSHomeDirectory() ? "global" : "project"),
+            status: isBackfillComplete ? .neverObserved : .insufficient
+        )
+    }
+
     static func rows(
         projects: [ProjectStatus],
         summaries: [SkillUsageSummary],
@@ -140,21 +178,13 @@ struct UsageSkillRow: Identifiable, Sendable {
             else {
                 continue
             }
-            rows.append(UsageSkillRow(
+            rows.append(UsageSkillRow.inventoryPlaceholder(
                 id: "inventory:\(project.root):\(skill.path)",
                 skillName: skill.name,
                 canonicalPath: directory,
-                scope: skill.folderKind == "system"
-                    ? "system"
-                    : (project.root == NSHomeDirectory() ? "global" : "project"),
-                totalInvocations: 0,
-                invocations7d: 0,
-                invocations30d: 0,
-                distinctThreads: 0,
-                repeatInvocations: 0,
-                lastUsedDate: nil,
-                lastUsedSortValue: -.infinity,
-                status: isBackfillComplete ? .neverObserved : .insufficient
+                folderKind: skill.folderKind,
+                projectRoot: project.root,
+                isBackfillComplete: isBackfillComplete
             ))
         }
         return rows
@@ -533,21 +563,13 @@ struct SkillTableRow: Identifiable, Sendable {
             let matched = usageByPath[standardizedDirectoryPath(inventory.canonicalPath)]
                 ?? pluginUsageMatchKey(inventory.skill).flatMap { usageByPlugin[$0] }
             if let matched { matchedUsageIDs.insert(matched.id) }
-            let usage = matched ?? UsageSkillRow(
+            let usage = matched ?? UsageSkillRow.inventoryPlaceholder(
                 id: "inventory:\(inventory.id)",
                 skillName: inventory.skillName,
                 canonicalPath: inventory.canonicalPath,
-                scope: inventory.skill.folderKind == "system"
-                    ? "system"
-                    : (inventory.projectRoot == NSHomeDirectory() ? "global" : "project"),
-                totalInvocations: 0,
-                invocations7d: 0,
-                invocations30d: 0,
-                distinctThreads: 0,
-                repeatInvocations: 0,
-                lastUsedDate: nil,
-                lastUsedSortValue: -.infinity,
-                status: isBackfillComplete ? .neverObserved : .insufficient
+                folderKind: inventory.skill.folderKind,
+                projectRoot: inventory.projectRoot,
+                isBackfillComplete: isBackfillComplete
             )
             return SkillTableRow(
                 inventory: inventory,
@@ -576,18 +598,11 @@ struct SkillTableRow: Identifiable, Sendable {
     static func group(id: String, title: String, children: [SkillTableRow]) -> SkillTableRow {
         SkillTableRow(
             inventory: nil,
-            usage: UsageSkillRow(
+            usage: UsageSkillRow.placeholder(
                 id: "group:\(id)",
                 skillName: title,
                 canonicalPath: nil,
                 scope: "group",
-                totalInvocations: 0,
-                invocations7d: 0,
-                invocations30d: 0,
-                distinctThreads: 0,
-                repeatInvocations: 0,
-                lastUsedDate: nil,
-                lastUsedSortValue: -.infinity,
                 status: .insufficient
             ),
             historicalProjectRoot: nil,
@@ -810,7 +825,6 @@ struct InventorySkillRow: Identifiable, Sendable {
     var scriptFileCount: Int { skill.scriptFileCount }
     var assetFileCount: Int { skill.assetFileCount }
     var otherFileCount: Int { skill.otherFileCount }
-    var otherFolderCount: Int { skill.otherFolderCount }
     var skillIconPath: String? { skill.iconSmallPath ?? skill.iconLargePath }
     var canEditIcon: Bool {
         skill.representation == "canonical"

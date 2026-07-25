@@ -48,7 +48,7 @@ struct ProjectDirectoryRow: Identifiable {
         mcpCount = mcpHealth.projectOnly(at: directory.root).inventory.count
         claudeState = Self.claudeLinkState(
             root: directory.root,
-            isGlobal: standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(NSHomeDirectory())
+            isGlobal: isGlobalRoot(directory.root)
         )
         let agentsPaths = Set(matchingProjects.flatMap { project in
             project.skills
@@ -77,6 +77,31 @@ struct ProjectDirectoryRow: Identifiable {
         })
     }
 
+    static func rows(
+        projects: [ProjectStatus],
+        mcpHealth: MCPHealthSnapshot,
+        doctorIssues: [DoctorIssue],
+        selectedProjectRoot: String?
+    ) -> [ProjectDirectoryRow] {
+        directoryFilterOptions(
+            projects: projects,
+            mcpHealth: mcpHealth,
+            doctorIssues: doctorIssues
+        )
+        .filter { directory in
+            guard let selectedProjectRoot else { return true }
+            return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
+        }
+        .map {
+            ProjectDirectoryRow(
+                directory: $0,
+                projects: projects,
+                mcpHealth: mcpHealth,
+                doctorIssues: doctorIssues
+            )
+        }
+    }
+
     private static func claudeLinkState(root: String, isGlobal: Bool) -> LinkState {
         let project = URL(fileURLWithPath: root)
         let link = project.appendingPathComponent(".claude/skills")
@@ -101,23 +126,12 @@ struct ProjectsSection: View {
     @State private var sortOrder = [KeyPathComparator(\ProjectDirectoryRow.name)]
 
     private var allRows: [ProjectDirectoryRow] {
-        directoryFilterOptions(
+        ProjectDirectoryRow.rows(
             projects: model.projects,
             mcpHealth: model.mcpHealth,
-            doctorIssues: model.doctorIssues
+            doctorIssues: model.doctorIssues,
+            selectedProjectRoot: selectedProjectRoot
         )
-        .filter { directory in
-            guard let selectedProjectRoot else { return true }
-            return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
-        }
-        .map {
-            ProjectDirectoryRow(
-                directory: $0,
-                projects: model.projects,
-                mcpHealth: model.mcpHealth,
-                doctorIssues: model.doctorIssues
-            )
-        }
     }
 
     private func filteredRows(from allRows: [ProjectDirectoryRow]) -> [ProjectDirectoryRow] {
@@ -223,12 +237,12 @@ struct ProjectsMenuSection: View {
     let openMainWindow: () -> Void
 
     private var rows: [ProjectDirectoryRow] {
-        directoryFilterOptions(projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues)
-            .filter { directory in
-                guard let selectedProjectRoot else { return true }
-                return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
-            }
-            .map { ProjectDirectoryRow(directory: $0, projects: model.projects, mcpHealth: model.mcpHealth, doctorIssues: model.doctorIssues) }
+        ProjectDirectoryRow.rows(
+            projects: model.projects,
+            mcpHealth: model.mcpHealth,
+            doctorIssues: model.doctorIssues,
+            selectedProjectRoot: selectedProjectRoot
+        )
     }
 
     var body: some View {

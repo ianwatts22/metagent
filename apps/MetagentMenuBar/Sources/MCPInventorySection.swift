@@ -48,15 +48,7 @@ struct MCPInventoryRow: Identifiable {
         case .configured: 4
         }
     }
-    var statusLabel: String {
-        switch state {
-        case .configured: "Configured"
-        case .disabled: "Disabled"
-        case .pendingApproval: "Pending approval"
-        case .needsSignIn: "Needs sign-in"
-        case .unavailable: "Unavailable"
-        }
-    }
+    var statusLabel: String { state.displayLabel }
     var scopeLabel: String {
         let global = !entry.globalClients.isEmpty
         let projects = entry.projectPaths.count
@@ -103,6 +95,15 @@ struct MCPInventoryRow: Identifiable {
     }
 }
 
+func mcpInventoryRows(
+    _ snapshot: MCPHealthSnapshot,
+    selectedProjectRoot: String?
+) -> [MCPInventoryRow] {
+    projectFilteredMCPHealth(snapshot, selectedProjectRoot: selectedProjectRoot)
+        .inventory
+        .map(MCPInventoryRow.init)
+}
+
 struct MCPInventorySection: View {
     @ObservedObject var model: MetagentModel
     let selectedProjectRoot: String?
@@ -111,9 +112,7 @@ struct MCPInventorySection: View {
     @State private var sortOrder = [KeyPathComparator(\MCPInventoryRow.name)]
 
     private var allRows: [MCPInventoryRow] {
-        projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
-            .inventory
-            .map(MCPInventoryRow.init)
+        mcpInventoryRows(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
     }
 
     private var rows: [MCPInventoryRow] {
@@ -207,9 +206,7 @@ struct MCPMenuSection: View {
     let openMainWindow: () -> Void
 
     private var rows: [MCPInventoryRow] {
-        projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
-            .inventory
-            .map(MCPInventoryRow.init)
+        mcpInventoryRows(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
     }
 
     var body: some View {
@@ -250,7 +247,7 @@ struct MCPClientIcons: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(clients, id: \.self) { client in
-                if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier(for: client)) {
+                if let icon = AppBrand.applicationIcon(bundleIdentifier: client.bundleIdentifier) {
                     Image(nsImage: icon)
                         .resizable()
                         .scaledToFit()
@@ -266,13 +263,6 @@ struct MCPClientIcons: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(clients.map(\.displayName).joined(separator: ", "))
-    }
-
-    private func bundleIdentifier(for client: MCPClient) -> String {
-        switch client {
-        case .codex: "com.openai.codex"
-        case .claude: "com.anthropic.claudefordesktop"
-        }
     }
 }
 
@@ -310,27 +300,8 @@ struct MCPStateCell: View {
     let label: String
 
     var body: some View {
-        Label(label, systemImage: symbol)
+        Label(label, systemImage: state.displaySymbol)
             .font(.callout)
-            .foregroundStyle(tint)
-    }
-
-    private var symbol: String {
-        switch state {
-        case .configured: "checkmark.circle"
-        case .disabled: "pause.circle"
-        case .pendingApproval: "questionmark.circle"
-        case .needsSignIn: "person.crop.circle.badge.exclamationmark"
-        case .unavailable: "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var tint: Color {
-        switch state {
-        case .configured: .green
-        case .disabled: .secondary
-        case .pendingApproval, .needsSignIn: .orange
-        case .unavailable: .red
-        }
+            .foregroundStyle(state.displayTint)
     }
 }
