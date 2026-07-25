@@ -116,6 +116,12 @@ struct MetagentCLI {
             } else {
                 printRepairReport(report)
             }
+        case "list":
+            try runSkillList(Array(args.dropFirst()))
+        case "duplicates":
+            try runSkillDuplicates(Array(args.dropFirst()))
+        case "show":
+            try runSkillShow(Array(args.dropFirst()))
         case "remove":
             try runSkillRemoval(Array(args.dropFirst()))
         case "evaluate":
@@ -144,16 +150,160 @@ struct MetagentCLI {
         }
     }
 
-    private static func runSkillRemoval(_ args: [String]) throws {
-        guard let skillName = args.first, !skillName.hasPrefix("--") else {
-            throw CLIError.message("skills remove requires a skill name")
-        }
+    private static func runSkillList(_ args: [String]) throws {
         var root: String?
-        var apply = false
+        var global = false
+        var options = SkillQueryOptions()
+        var managers: Set<String> = []
+        var mutabilities: Set<String> = []
+        var json = false
+        var index = 0
+
+        while index < args.count {
+            switch args[index] {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--global":
+                global = true
+            case "--sort":
+                let value = try readFlagValue("--sort", args: args, index: &index)
+                guard let parsed = SkillQuerySortKey(rawValue: value) else {
+                    throw CLIError.message("--sort must be one of: \(skillSortKeyList)")
+                }
+                options.sortKey = parsed
+            case "--order":
+                let value = try readFlagValue("--order", args: args, index: &index)
+                switch value {
+                case "asc", "ascending":
+                    options.sortOrder = .ascending
+                case "desc", "descending":
+                    options.sortOrder = .descending
+                default:
+                    throw CLIError.message("--order must be asc or desc")
+                }
+            case "--limit":
+                options.limit = Int(try readPositiveInt("--limit", args: args, index: &index))
+            case "--cursor":
+                options.cursor = try readFlagValue("--cursor", args: args, index: &index)
+            case "--name":
+                options.nameContains = try readFlagValue("--name", args: args, index: &index)
+            case "--manager":
+                managers.insert(try readFlagValue("--manager", args: args, index: &index))
+            case "--mutability":
+                mutabilities.insert(try readFlagValue("--mutability", args: args, index: &index))
+            case "--min-score":
+                options.minScore = Int(try readPositiveInt("--min-score", args: args, index: &index))
+            case "--unused":
+                options.unusedOnly = true
+            case "--used-within-days":
+                options.usedWithinDays = Int(try readPositiveInt("--used-within-days", args: args, index: &index))
+            case "--include-projections":
+                options.includeProjections = true
+            case "--no-descriptions":
+                options.includeDescriptions = false
+            case "--json":
+                json = true
+            default:
+                throw CLIError.message("unknown skills list flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        options.scope = try skillQueryScope(root: root, global: global, command: "skills list")
+        if !managers.isEmpty { options.managers = managers }
+        if !mutabilities.isEmpty { options.mutabilities = mutabilities }
+
+        let page = try MetagentCore.querySkills(options: options)
+        if json {
+            try printJSON(page)
+        } else {
+            printSkillQueryPage(page)
+        }
+    }
+
+    private static func runSkillDuplicates(_ args: [String]) throws {
+        var root: String?
+        var global = false
+        var json = false
+        var index = 0
+        while index < args.count {
+            switch args[index] {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--global":
+                global = true
+            case "--json":
+                json = true
+            default:
+                throw CLIError.message("unknown skills duplicates flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        let scope = try skillQueryScope(root: root, global: global, command: "skills duplicates")
+        let report = try MetagentCore.findDuplicateSkills(scope: scope)
+        if json {
+            try printJSON(report)
+            return
+        }
+        guard !report.groups.isEmpty else {
+            print("no duplicate skill groups found")
+            return
+        }
+        for group in report.groups {
+            print("")
+            let similarity = group.similarity.formatted(.percent.precision(.fractionLength(0)))
+            print("\(group.kind.rawValue) · \(similarity) similar · \(group.skillName)")
+            for member in group.members {
+                let marker = member.suggestedRemoval ? "suggested removal" : "keep"
+                print("  [\(marker)] \(member.scope) · \(member.manager) · \(member.mutability) · \(member.path)")
+            }
+        }
+    }
+
+    private static func runSkillShow(_ args: [String]) throws {
+        guard let skillPath = args.first, !skillPath.hasPrefix("--") else {
+            throw CLIError.message("skills show requires a skill directory or SKILL.md path")
+        }
+        var includeBody = true
+        var maxBodyCharacters = 20_000
         var json = false
         var index = 1
         while index < args.count {
             switch args[index] {
+            case "--no-body":
+                includeBody = false
+            case "--max-body-chars":
+                maxBodyCharacters = Int(try readPositiveInt("--max-body-chars", args: args, index: &index))
+            case "--json":
+                json = true
+            default:
+                throw CLIError.message("unknown skills show flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        let detail = try MetagentCore.getSkillDetail(
+            path: skillPath,
+            includeBody: includeBody,
+            maxBodyCharacters: maxBodyCharacters
+        )
+        if json {
+            try printJSON(detail)
+            return
+        }
+        printSkillDetail(detail)
+    }
+
+    private static func runSkillRemoval(_ args: [String]) throws {
+        var skillNames: [String] = []
+        var root: String?
+        var apply = false
+        var json = false
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            switch arg {
             case "--root":
                 root = try readFlagValue("--root", args: args, index: &index)
             case "--apply":
@@ -161,28 +311,51 @@ struct MetagentCLI {
             case "--json":
                 json = true
             default:
-                throw CLIError.message("unknown skills remove flag: \(args[index])")
+                guard !arg.hasPrefix("--") else {
+                    throw CLIError.message("unknown skills remove flag: \(arg)")
+                }
+                skillNames.append(arg)
             }
             index += 1
         }
-        let projectRoot = root ?? FileManager.default.currentDirectoryPath
-        if apply {
-            let report = try MetagentCore.uninstallSkill(
-                projectRoot: projectRoot,
-                skillName: skillName,
-                allowManagedRemoval: true
-            )
-            if json { try printJSON(report) } else { report.lines.forEach { print($0) } }
-        } else {
-            let plan = try MetagentCore.planSkillRemoval(projectRoot: projectRoot, skillName: skillName)
-            if json {
-                try printJSON(plan)
-            } else {
-                print("dry run: \(plan.skillName) is managed by \(plan.manager) (\(plan.mutability))")
-                if let command = plan.command { print("package-manager action: \(command)") }
-                print("run again with --apply to remove it with recovery state")
-            }
+        guard !skillNames.isEmpty else {
+            throw CLIError.message("skills remove requires at least one skill name")
         }
+
+        let projectRoot = root ?? FileManager.default.currentDirectoryPath
+        let targets = try skillNames.map { skillName -> SkillRemovalTarget in
+            guard let target = try MetagentCore.resolveSkillRemovalTarget(
+                projectRoot: projectRoot,
+                skillName: skillName
+            ) else {
+                throw CLIError.message("no removable skill named \(skillName) in \(projectRoot)")
+            }
+            return target
+        }
+
+        let report = MetagentCore.removeSkills(targets: targets, apply: apply)
+        if json {
+            try printJSON(report)
+        } else {
+            printSkillRemovalReport(report)
+        }
+        if report.outcomes.contains(where: { !$0.succeeded }) {
+            throw CLIError.message("skills remove could not complete every target")
+        }
+    }
+
+    private static func skillQueryScope(
+        root: String?,
+        global: Bool,
+        command: String
+    ) throws -> SkillQueryScope {
+        if global {
+            guard root == nil else {
+                throw CLIError.message("\(command) accepts either --root or --global")
+            }
+            return .global
+        }
+        return .project(root: root ?? FileManager.default.currentDirectoryPath)
     }
 
     private static func runSkillEvaluation(_ args: [String]) throws {
@@ -615,6 +788,105 @@ struct MetagentCLI {
         }
     }
 
+    private static let skillSortKeyList = SkillQuerySortKey.allCases
+        .map(\.rawValue)
+        .joined(separator: ", ")
+
+    private static func printSkillQueryPage(_ page: SkillQueryPage) {
+        let nameWidth = columnWidth(page.items.map(\.name), minimum: 4)
+        let scopeWidth = columnWidth(page.items.map(\.scope), minimum: 5)
+        let managerWidth = columnWidth(page.items.map(\.manager), minimum: 7)
+        for item in page.items {
+            let columns = [
+                padded(item.name, nameWidth),
+                padded(item.scope, scopeWidth),
+                padded(item.manager, managerWidth),
+                padded(item.score.map(String.init) ?? "-", 5, alignRight: true),
+                padded("\(item.invocations30d)", 5, alignRight: true),
+                item.path
+            ]
+            print(columns.joined(separator: "  "))
+        }
+        print("showing \(page.returnedCount) of \(page.totalCount)")
+        if let cursor = page.nextCursor {
+            print("next cursor: \(cursor)")
+        }
+        for warning in page.warnings {
+            print("warning: \(warning)")
+        }
+    }
+
+    private static func printSkillDetail(_ detail: SkillDetail) {
+        print("skill: \(detail.name)")
+        print("path: \(detail.path)")
+        if let description = detail.description { print("description: \(description)") }
+        if let scope = detail.scope, let location = detail.locationLabel {
+            print("scope: \(scope) · \(location)")
+        }
+        if let provenance = detail.provenance {
+            print("provenance: \(provenance.manager) · \(provenance.authority) · \(provenance.mutability) · \(provenance.representation)")
+            if let source = provenance.source {
+                print("  source: \(source)\(provenance.sourceType.map { " (\($0))" } ?? "")")
+            }
+            if let updatedAt = provenance.updatedAt { print("  updated: \(updatedAt)") }
+        }
+        if let size = detail.size {
+            print("size: \(size.characterCount) chars · \(size.wordCount) words · ~\(size.tokenEstimate) tokens")
+            print("  SKILL.md: \(size.skillFileCharacterCount) chars · ~\(size.skillFileTokenEstimate) tokens")
+            print("  files: \(size.textFileCount) text · \(size.referenceFileCount) reference · \(size.scriptFileCount) script · \(size.assetFileCount) asset")
+        }
+        if let usage = detail.usage {
+            print("usage: \(usage.totalInvocations) invocations · \(usage.invocations30d) in 30d · \(usage.invocations7d) in 7d · \(usage.distinctThreads) threads")
+            if let lastUsedAt = usage.lastUsedAt { print("  last used: \(lastUsedAt)") }
+        } else {
+            print("usage: no observed invocations")
+        }
+        if let score = detail.score {
+            print("score: \(score)\(detail.grade.map { " \($0)" } ?? "")")
+        }
+        if let body = detail.body {
+            print("")
+            print(body)
+            if detail.bodyTruncated {
+                print("")
+                print("… body truncated: showing \(body.count) of \(detail.bodyCharacterCount) characters; raise --max-body-chars for more")
+            }
+        } else {
+            print("body: omitted (\(detail.bodyCharacterCount) characters)")
+        }
+    }
+
+    private static func printSkillRemovalReport(_ report: SkillRemovalBatchReport) {
+        print(report.apply ? "skills remove: applied" : "skills remove: dry run")
+        for outcome in report.outcomes {
+            print("")
+            print("\(outcome.target.displayName) [\(outcome.target.method.rawValue)]")
+            if let plan = outcome.plan {
+                print("  manager: \(plan.manager) (\(plan.mutability))")
+                print("  apply supported: \(plan.applySupported ? "yes" : "no")")
+                if let command = plan.command { print("  manager command: \(command)") }
+            }
+            for line in outcome.lines { print("  \(line)") }
+            if let backupPath = outcome.backupPath { print("  recovery: \(backupPath)") }
+            if outcome.needsReconciliation { print("  needs reconciliation") }
+            if let failureMessage = outcome.failureMessage { print("  error: \(failureMessage)") }
+        }
+        if !report.apply {
+            print("")
+            print("run again with --apply to remove these skills with recovery state")
+        }
+    }
+
+    private static func columnWidth(_ values: [String], minimum: Int) -> Int {
+        max(minimum, values.map(\.count).max() ?? minimum)
+    }
+
+    private static func padded(_ value: String, _ width: Int, alignRight: Bool = false) -> String {
+        guard value.count < width else { return value }
+        let padding = String(repeating: " ", count: width - value.count)
+        return alignRight ? padding + value : value + padding
+    }
+
     private static func printRepairReport(_ report: SkillsRepairReport) {
         print("metagent skills repair: \(report.mode)")
         for project in report.projects {
@@ -648,7 +920,7 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <scan|repair|doctor|remove|evaluate> [flags]
+          metagent skills <list|show|duplicates|scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent analyze [--root PATH] [--json] [--details|--verbose]
@@ -676,11 +948,25 @@ struct MetagentCLI {
         metagent skills
 
         Usage:
+          metagent skills list [--root PATH | --global] [--sort KEY] [--order asc|desc]
+                               [--limit N] [--cursor C] [--name TEXT] [--manager M]...
+                               [--mutability M]... [--min-score N] [--unused]
+                               [--used-within-days N] [--include-projections]
+                               [--no-descriptions] [--json]
+          metagent skills show PATH [--no-body] [--max-body-chars N] [--json]
+          metagent skills duplicates [--root PATH | --global] [--json]
           metagent skills scan [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
-          metagent skills remove NAME [--root PATH] [--apply] [--json]
+          metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
           metagent skills evaluate PATH [--provider plugin-eval|codex|all] [--json]
+
+        list, duplicates, and remove default to the current folder; list and
+        duplicates take --global for the whole portfolio, the same scope bare
+        `skills doctor` reads. --sort accepts: \(skillSortKeyList).
+
+        remove is a dry run unless --apply is supplied. Applying moves the skill
+        into recovery state rather than deleting it outright.
         """)
     }
 

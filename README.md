@@ -50,11 +50,32 @@ Narrower commands are also available:
 
 ```bash
 metagent inventory --json
+metagent skills list --global --sort invocations_30d --order desc --limit 20
+metagent skills show /absolute/path/to/skill --no-body
+metagent skills duplicates --global
 metagent skills scan --root /absolute/path/to/project --json
 metagent skills doctor --root /absolute/path/to/project --json
 metagent skills evaluate /absolute/path/to/skill --provider plugin-eval --json
 metagent usage status --json
 ```
+
+`metagent skills list` is the compact, paginated view: it filters by `--name`,
+`--manager`, `--mutability`, `--min-score`, `--unused`, and
+`--used-within-days`, sorts by `--sort`/`--order`, pages with
+`--limit`/`--cursor`, and shrinks further with `--no-descriptions`. Like
+`metagent skills duplicates`, it reads the current folder unless you pass
+`--root PATH` or `--global`.
+
+Removing skills accepts one or more names and previews by default:
+
+```bash
+metagent skills remove NAME [NAME...] --root /absolute/path/to/project
+metagent skills remove NAME --root /absolute/path/to/project --apply
+```
+
+The dry run reports the removal method, owning manager, and mutability per
+skill. `--apply` moves the skill and its projections into recovery state and
+prints the recovery path rather than deleting them outright.
 
 ### Local MCP server
 
@@ -89,9 +110,14 @@ Existing agent sessions may need to be restarted before the newly registered
 server appears. Configuration and a direct handshake do not prove that a client
 has loaded, connected to, or invoked it.
 
-The server exposes four read-only tools: compact project analysis through
+The server exposes seven read-only tools: compact project analysis through
 `analyze_project`, bounded and paginated drilldown through
-`get_project_analysis_details`, plus `list_skills` and `doctor_project`. For
+`get_project_analysis_details`, the compact paginated inventory in
+`list_skills`, the global root overview in `list_projects`, overlap groups in
+`find_duplicate_skills`, one skill's detail in `get_skill`, and
+`doctor_project`. It also exposes `remove_skills`, which is destructive: it
+defaults to `apply: false` and returns only a dry-run plan, and agents must get
+explicit user confirmation for the specific removal before applying. For
 example, ask an agent:
 
 > Use Metagent to analyze this project’s instructions, skills, MCP setup,

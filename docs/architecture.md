@@ -81,9 +81,13 @@ The Swift `metagent` helper exists for non-GUI entry points:
 
 ```bash
 metagent config show --json
+metagent skills list --global --sort invocations_30d --order desc --limit 20
+metagent skills show /absolute/path/to/skill --no-body
+metagent skills duplicates --global
 metagent skills scan --json
 metagent skills repair --apply
 metagent skills doctor
+metagent skills remove NAME [NAME...] --root /absolute/path/to/project
 metagent skills evaluate /absolute/path/to/skill --provider plugin-eval
 metagent skills evaluate /absolute/path/to/skill --provider codex
 metagent usage status
@@ -93,6 +97,16 @@ metagent mcp --stdio
 ```
 
 The helper is intentionally subordinate to `MetagentCore`. It should stay a thin command surface over shared Swift code.
+
+`skills list` and `skills duplicates` read the current folder by default and take
+`--global` for the whole portfolio, the scope bare `skills doctor` already uses.
+`skills list` returns a compact paginated projection — filters
+(`--name`, `--manager`, `--mutability`, `--min-score`, `--unused`,
+`--used-within-days`, `--include-projections`, `--no-descriptions`), sorting
+(`--sort`, `--order`), and paging (`--limit`, `--cursor`) — rather than the full
+`skills scan` inventory. `skills remove` accepts one or more names, routes each
+through the shared removal resolver (canonical, standalone, or Codex plugin), and
+stays a dry run unless `--apply` is supplied.
 
 ## Project Analysis and MCP
 
@@ -110,17 +124,28 @@ The stdio server is:
 metagent mcp --stdio
 ```
 
-It uses the pinned official MCP Swift SDK and exposes four read-only tools:
-`analyze_project`, `get_project_analysis_details`, `list_skills`, and
-`doctor_project`. `analyze_project` defaults to a compact schema-version-2
-project-only summary: counts, usage coverage, and at most five prioritized
-findings. It deliberately excludes global plugin inventories and global MCP
-servers. `get_project_analysis_details` retrieves one project-only section at a
-time (`instructions`, `skills`, `doctor`, `mcp`, or `usage`), caps pages at 100
-records, and returns an opaque cursor when another page exists. All tools call
-`MetagentCore`; the server owns no parallel scanner or cache. Add Rust or Python
-workers only for measured hot paths or exploratory analysis that Swift plus
-SQLite cannot handle cleanly.
+It uses the pinned official MCP Swift SDK and exposes seven read-only tools plus
+one gated destructive tool: `analyze_project`, `get_project_analysis_details`,
+`list_skills`, `list_projects`, `find_duplicate_skills`, `get_skill`,
+`doctor_project`, and `remove_skills`. `analyze_project` defaults to a compact
+schema-version-2 project-only summary: counts, usage coverage, and at most five
+prioritized findings. It deliberately excludes global plugin inventories and
+global MCP servers. `get_project_analysis_details` retrieves one project-only
+section at a time (`instructions`, `skills`, `doctor`, `mcp`, or `usage`), caps
+pages at 100 records, and returns an opaque cursor when another page exists.
+`list_skills` returns the same compact paginated projection as `skills list`
+(`root`, `scope`, `sort`, `order`, `limit`, `cursor`, `name_contains`, `manager`,
+`mutability`, `min_score`, `unused_only`, `used_within_days`,
+`include_projections`, `include_descriptions`). `list_projects` is a small global
+overview of every root with its skill count and per-location breakdown.
+`find_duplicate_skills` takes `root` and `scope`; `get_skill` takes `path`,
+`include_body`, and `max_body_characters`; `doctor_project` now takes `scope`
+alongside `root`. `remove_skills` takes `skill_names`, `root`, and `apply`, which
+defaults to `false`; applying is destructive, requires explicit user
+confirmation for that specific removal, and moves content into recovery state
+instead of hard-deleting it. All tools call `MetagentCore`; the server owns no
+parallel scanner or cache. Add Rust or Python workers only for measured hot
+paths or exploratory analysis that Swift plus SQLite cannot handle cleanly.
 
 ## Local State
 

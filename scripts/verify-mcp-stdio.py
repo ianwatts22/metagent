@@ -103,19 +103,26 @@ def main() -> int:
                 f"MCP verifier timed out waiting for response IDs: {sorted(missing_response_ids)}"
             )
 
-        tools = [tool["name"] for tool in responses[2]["result"]["tools"]]
-        expected = [
+        tools = {tool["name"] for tool in responses[2]["result"]["tools"]}
+        required = {
             "analyze_project",
             "get_project_analysis_details",
             "list_skills",
+            "list_projects",
+            "find_duplicate_skills",
+            "get_skill",
+            "remove_skills",
             "doctor_project",
-        ]
-        if tools != expected:
-            raise RuntimeError(f"unexpected MCP tools: {tools}")
+        }
+        missing_tools = required - tools
+        if missing_tools:
+            raise RuntimeError(f"missing MCP tools: {sorted(missing_tools)}")
 
         payload = json.loads(responses[3]["result"]["content"][0]["text"])
-        if not payload.get("projects"):
-            raise RuntimeError("MCP list_skills returned no project inventory")
+        if not payload.get("items"):
+            raise RuntimeError("MCP list_skills returned no skill records")
+        if payload.get("total_count") is None:
+            raise RuntimeError("MCP list_skills did not report a total count")
         analysis = json.loads(responses[4]["result"]["content"][0]["text"])
         if analysis.get("schema_version") != 2:
             raise RuntimeError("MCP analyze_project did not return schema version 2")
