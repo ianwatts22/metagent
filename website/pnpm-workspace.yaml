@@ -1,0 +1,11 @@
+# Makes website/ its own pnpm workspace root so installs never resolve against
+# a workspace higher up the filesystem.
+packages: []
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+onlyBuiltDependencies:
+  - esbuild
+  - sharp

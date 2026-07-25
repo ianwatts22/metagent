@@ -8,3 +8,7 @@
 
 # Xcode per-user state
 apps/MetagentMenuBar/.swiftpm/
+.vercel
+
+# Vercel
+.vercel

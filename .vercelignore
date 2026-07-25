@@ -1,0 +1,15 @@
+# The web build only needs website/ and public/. Everything else is the Swift app.
+apps
+target
+tools
+docs
+config
+scripts
+ast-grep
+sgconfig.yml
+AGENTS.md
+design-qa.md
+
+# Build artifacts — Vercel installs and builds from source.
+dist
+node_modules
