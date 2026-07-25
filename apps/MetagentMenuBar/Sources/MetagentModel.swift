@@ -87,30 +87,6 @@ final class MetagentModel: ObservableObject {
         warningCount + failureCount
     }
 
-    var problemText: String {
-        if doctorActionCount == 0 {
-            return "No doctor issues"
-        }
-        if failureCount > 0 {
-            return "\(failureCount) fail, \(warningCount) warn"
-        }
-        if doctorReviewCount > 0, doctorRepairableCount > 0 {
-            return "\(doctorRepairableCount) fixable, \(doctorReviewCount) review"
-        }
-        if doctorRepairableCount > 0 {
-            return "\(doctorRepairableCount) fixable"
-        }
-        return "\(doctorActionCount) \(doctorActionCount == 1 ? "cleanup" : "cleanups")"
-    }
-
-    var doctorRepairableCount: Int {
-        doctorIssues.filter { $0.severity != .ok && $0.repairAction != nil }.count
-    }
-
-    var doctorReviewCount: Int {
-        problemCount - doctorRepairableCount
-    }
-
     var doctorFindings: [DoctorIssue] {
         doctorIssues.filter { $0.severity != .ok }
     }
@@ -126,43 +102,8 @@ final class MetagentModel: ObservableObject {
         }).count
     }
 
-    var skillInventory: [SkillStatus] {
-        projects.flatMap { $0.skills }.sorted()
-    }
-
     var logicalSkillCount: Int {
         Self.logicalSkillCount(projects: projects)
-    }
-
-    var refreshPolicyText: String {
-        "Cached immediately; low-priority usage backfill, no polling"
-    }
-
-    var usageProgress: Double {
-        guard usageSnapshot.totalBytes > 0 else { return 0 }
-        return min(1, Double(usageSnapshot.processedBytes) / Double(usageSnapshot.totalBytes))
-    }
-
-    var usageProgressText: String {
-        if usageSnapshot.totalFiles == 0 {
-            return "No retained Codex sessions found"
-        }
-        let processed = ByteCountFormatter.string(fromByteCount: usageSnapshot.processedBytes, countStyle: .file)
-        let total = ByteCountFormatter.string(fromByteCount: usageSnapshot.totalBytes, countStyle: .file)
-        return "\(processed) of \(total) · \(usageSnapshot.completedFiles)/\(usageSnapshot.totalFiles) files"
-    }
-
-    var usageCoverageText: String {
-        if usageSnapshot.isParserUpgradeBackfill {
-            return "Showing saved history while parser v\(usageSnapshot.targetParserVersion) updates"
-        }
-        guard let startedAt = usageSnapshot.coverageStartedAt,
-              let date = MetagentCore.parseSkillUsageTimestamp(startedAt)
-        else {
-            return usageSnapshot.isBackfillComplete ? "No observed skill reads" : "Coverage building"
-        }
-        let formatted = date.formatted(date: .abbreviated, time: .omitted)
-        return usageSnapshot.isBackfillComplete ? "Retained history since \(formatted)" : "Observed coverage currently reaches \(formatted)"
     }
 
     func refreshStatus() {
@@ -709,11 +650,6 @@ final class MetagentModel: ObservableObject {
 
     func toggleRawOutput() {
         showsRawOutput.toggle()
-    }
-
-    func clearRepairPreview() {
-        repairPreview = nil
-        showsRawOutput = false
     }
 
     func copyLastOutput() {
@@ -1268,49 +1204,6 @@ struct SkillStatus: Identifiable, Comparable, Sendable {
 
     var tableOriginText: String {
         originText ?? (symlinkedContainer ? "symlink mirror" : "n/a")
-    }
-
-    var folderKindLabel: String {
-        switch folderKind {
-        case "npx-installed": "npx installed"
-        case "dotagents-local": "dotagents local"
-        case "dotagents-managed": "dotagents managed"
-        case "external-cli": "external CLI"
-        case "user-local": "user local"
-        case "project-local": "project local"
-        case "agents-local", "native", "unmanaged": "unmanaged"
-        case "codex-local": "codex local"
-        case "claude-local": "claude local"
-        case "symlinked": "symlinked"
-        case "system": "system"
-        case "versioned-cache": "versioned cache"
-        default: folderKind
-        }
-    }
-
-    var iconLogoText: String {
-        if hasIconAndLogo {
-            return "icon + logo"
-        }
-        if hasIconSmall {
-            return "icon only"
-        }
-        if hasIconLarge {
-            return "logo only"
-        }
-        if hasOpenAIYaml {
-            return "metadata only"
-        }
-        return "none"
-    }
-
-    var locationSymbol: String {
-        switch location {
-        case "agents": "sparkles"
-        case "codex": "chevron.left.forwardslash.chevron.right"
-        case "claude": "link"
-        default: "folder"
-        }
     }
 
     static func < (left: SkillStatus, right: SkillStatus) -> Bool {

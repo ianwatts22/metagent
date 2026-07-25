@@ -68,10 +68,6 @@ public struct MetagentSkillScore: Codable, Equatable, Sendable {
         return Int((Double(earned) / Double(maximum) * 100).rounded())
     }
 
-    public var structuralGrade: SkillGrade {
-        .forScore(structuralScore)
-    }
-
     /// Stable aggregate led by skill-content evaluation when it is available.
     /// Missing optional evaluators are excluded rather than treated as zero.
     public func qualityScore(
@@ -825,12 +821,22 @@ private func reviewCodexExecutable() throws -> URL {
 
 private let codexReviewMaximumBytes = 1_048_576
 
-private func validateSkillReviewBundle(at source: URL, maximumBytes: Int) throws {
+/// Names that never belong in a review bundle.
+private let skillReviewSkippedNames: Set<String> = [".git", "node_modules"]
+
+/// Walks a skill bundle depth-first, refusing any link that escapes the bundle
+/// root and any link that forms a directory cycle. Callbacks receive the
+/// resolved URL plus its path components relative to the root.
+private func walkSkillReviewBundle(
+    at source: URL,
+    escapedFileLinkMessage: String,
+    onDirectory: (URL, [String]) throws -> Void,
+    onFile: (URL, URLResourceValues, [String]) throws -> Void
+) throws {
     let root = source.resolvingSymlinksInPath().standardizedFileURL
     var activeDirectories = Set<String>()
-    var totalBytes = 0
 
-    func inspect(_ directory: URL) throws {
+    func visit(_ directory: URL, relativePath: [String]) throws {
         let resolvedDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
         guard try isContained(resolvedDirectory, in: root) else {
             throw skillEvaluationError("The skill contains a directory link outside its canonical folder; Codex review was not run")
@@ -839,75 +845,64 @@ private func validateSkillReviewBundle(at source: URL, maximumBytes: Int) throws
             throw skillEvaluationError("The skill contains a cyclic directory link; Codex review was not run")
         }
         defer { activeDirectories.remove(resolvedDirectory.path) }
+
+        try onDirectory(resolvedDirectory, relativePath)
 
         let children = try FileManager.default.contentsOfDirectory(
             at: resolvedDirectory,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
             options: []
-        )
-        for child in children where ![".git", "node_modules"].contains(child.lastPathComponent) {
+        ).sorted { $0.lastPathComponent.localizedCompare($1.lastPathComponent) == .orderedAscending }
+
+        for child in children where !skillReviewSkippedNames.contains(child.lastPathComponent) {
             let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
             let resolved = values.isSymbolicLink == true
                 ? child.resolvingSymlinksInPath().standardizedFileURL
                 : child
             guard try isContained(resolved, in: root) else {
-                throw skillEvaluationError("The skill contains a link outside its canonical folder; Codex review was not run")
+                throw skillEvaluationError(escapedFileLinkMessage)
             }
             let resolvedValues = try resolved.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
+            let childPath = relativePath + [child.lastPathComponent]
             if resolvedValues.isDirectory == true {
-                try inspect(resolved)
+                try visit(resolved, relativePath: childPath)
             } else if resolvedValues.isRegularFile == true {
-                totalBytes += resolvedValues.fileSize ?? 0
-                guard totalBytes <= maximumBytes else {
-                    throw skillEvaluationError("The skill contains more than 1 MiB of files; Codex review was not run")
-                }
+                try onFile(resolved, resolvedValues, childPath)
             }
         }
     }
 
-    try inspect(root)
+    try visit(root, relativePath: [])
+}
+
+private func validateSkillReviewBundle(at source: URL, maximumBytes: Int) throws {
+    var totalBytes = 0
+    try walkSkillReviewBundle(
+        at: source,
+        escapedFileLinkMessage: "The skill contains a link outside its canonical folder; Codex review was not run",
+        onDirectory: { _, _ in },
+        onFile: { _, values, _ in
+            totalBytes += values.fileSize ?? 0
+            guard totalBytes <= maximumBytes else {
+                throw skillEvaluationError("The skill contains more than 1 MiB of files; Codex review was not run")
+            }
+        }
+    )
 }
 
 private func copySkillForReview(from source: URL, to destination: URL) throws {
-    let root = source.resolvingSymlinksInPath().standardizedFileURL
-    var activeDirectories = Set<String>()
-
-    func copyDirectory(_ directory: URL, to output: URL) throws {
-        let resolvedDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
-        guard try isContained(resolvedDirectory, in: root) else {
-            throw skillEvaluationError("The skill contains a directory link outside its canonical folder; Codex review was not run")
+    try walkSkillReviewBundle(
+        at: source,
+        escapedFileLinkMessage: "The skill contains a file link outside its canonical folder; Codex review was not run",
+        onDirectory: { _, relativePath in
+            let output = relativePath.reduce(destination) { $0.appendingPathComponent($1) }
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        },
+        onFile: { resolved, _, relativePath in
+            let target = relativePath.reduce(destination) { $0.appendingPathComponent($1) }
+            try Data(contentsOf: resolved).write(to: target, options: .atomic)
         }
-        guard activeDirectories.insert(resolvedDirectory.path).inserted else {
-            throw skillEvaluationError("The skill contains a cyclic directory link; Codex review was not run")
-        }
-        defer { activeDirectories.remove(resolvedDirectory.path) }
-
-        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let children = try FileManager.default.contentsOfDirectory(
-            at: resolvedDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
-            options: []
-        ).sorted { $0.lastPathComponent.localizedCompare($1.lastPathComponent) == .orderedAscending }
-
-        for child in children where ![".git", "node_modules"].contains(child.lastPathComponent) {
-            let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
-            let resolved = values.isSymbolicLink == true
-                ? child.resolvingSymlinksInPath().standardizedFileURL
-                : child
-            guard try isContained(resolved, in: root) else {
-                throw skillEvaluationError("The skill contains a file link outside its canonical folder; Codex review was not run")
-            }
-            let resolvedValues = try resolved.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-            let target = output.appendingPathComponent(child.lastPathComponent)
-            if resolvedValues.isDirectory == true {
-                try copyDirectory(resolved, to: target)
-            } else if resolvedValues.isRegularFile == true {
-                try Data(contentsOf: resolved).write(to: target, options: .atomic)
-            }
-        }
-    }
-
-    try copyDirectory(root, to: destination)
+    )
 }
 
 private func isContained(_ item: URL, in directory: URL) throws -> Bool {

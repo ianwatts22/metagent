@@ -267,14 +267,6 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         issues.filter { $0.severity == .failure }.count
     }
 
-    public var repairableCount: Int {
-        issues.filter { $0.severity != .ok && $0.repairAction != nil }.count
-    }
-
-    public var reviewCount: Int {
-        warningCount + failureCount - repairableCount
-    }
-
     public init(issues: [DoctorIssue]) {
         self.issues = issues
     }
@@ -1106,17 +1098,11 @@ public enum MetagentCore {
                 )
             try fileManager.copyItem(at: skillURL, to: recoveredSkill)
             lines.append("copied managed skill into recovery: \(recoveredSkill.path)")
-            var retainedBackups: [(original: URL, backup: URL)] = []
-            for (index, retainedSkill) in retained.enumerated() {
-                let original = URL(fileURLWithPath: retainedSkill.path)
-                let backup = recovery
-                    .appendingPathComponent("retained")
-                    .appendingPathComponent("\(index)-\(retainedSkill.location)")
-                    .appendingPathComponent(skillName)
-                try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fileManager.copyItem(at: original, to: backup)
-                retainedBackups.append((original, backup))
-            }
+            let retainedBackups = try snapshotRetainedSkills(
+                retained,
+                into: recovery,
+                skillName: skillName
+            )
             if !retainedBackups.isEmpty {
                 lines.append("snapshotted \(retainedBackups.count) independent same-name location(s)")
             }
@@ -1226,38 +1212,15 @@ public enum MetagentCore {
             )
         }
 
-        var movedProjections: [(original: URL, recovery: URL)] = []
-        do {
-            for (index, projection) in projections.enumerated() {
-                let projectionURL = URL(fileURLWithPath: projection.path)
-                let projectionRecovery = recovery
-                    .appendingPathComponent("projections")
-                    .appendingPathComponent("\(index)-\(projection.location)")
-                    .appendingPathComponent(skillName)
-                try fileManager.createDirectory(
-                    at: projectionRecovery.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
-                movedProjections.append((projectionURL, projectionRecovery))
-            }
-            try fileManager.moveItem(at: skillURL, to: recoveredSkill)
-        } catch {
-            var rollbackFailures: [String] = []
-            for moved in movedProjections.reversed() {
-                do {
-                    try fileManager.moveItem(at: moved.recovery, to: moved.original)
-                } catch {
-                    rollbackFailures.append("\(moved.original.path): \(error.localizedDescription)")
-                }
-            }
-            if !rollbackFailures.isEmpty {
-                throw NSError(domain: "MetagentSkillUninstall", code: 6, userInfo: [
-                    NSLocalizedDescriptionKey: "local uninstall failed and rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
-                ])
-            }
-            throw error
-        }
+        try moveSkillAndProjectionsToRecovery(
+            skill: skillURL,
+            to: recoveredSkill,
+            projections: projections,
+            recovery: recovery,
+            skillName: skillName,
+            rollbackErrorCode: 6,
+            rollbackFailureSummary: "local uninstall failed and rollback was incomplete."
+        )
         lines.append("moved local skill to recovery: \(recoveredSkill.path)")
         if !projections.isEmpty {
             lines.append("removed \(projections.count) per-skill projection link(s)")
@@ -1410,17 +1373,11 @@ public enum MetagentCore {
                 let recovery = try prepareRemovalRecovery(projectRoot: root, skillName: skillName)
                 try fileManager.copyItem(at: skillURL, to: recovery.appendingPathComponent(skillName))
 
-                var retainedBackups: [(original: URL, backup: URL)] = []
-                for (index, retainedSkill) in retained.enumerated() {
-                    let original = URL(fileURLWithPath: retainedSkill.path)
-                    let backup = recovery
-                        .appendingPathComponent("retained")
-                        .appendingPathComponent("\(index)-\(retainedSkill.location)")
-                        .appendingPathComponent(skillName)
-                    try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try fileManager.copyItem(at: original, to: backup)
-                    retainedBackups.append((original, backup))
-                }
+                let retainedBackups = try snapshotRetainedSkills(
+                    retained,
+                    into: recovery,
+                    skillName: skillName
+                )
                 removals.append(SkillsCLIManagedRemoval(
                     skillName: skillName,
                     skillURL: skillURL,
@@ -1623,38 +1580,15 @@ public enum MetagentCore {
             let candidateURL = URL(fileURLWithPath: candidate.path)
             return isSymlink(candidateURL) && symlink(candidateURL, resolvesTo: skill)
         }
-        var movedProjections: [(original: URL, recovery: URL)] = []
-        do {
-            for (index, projection) in projections.enumerated() {
-                let projectionURL = URL(fileURLWithPath: projection.path)
-                let projectionRecovery = recovery
-                    .appendingPathComponent("projections")
-                    .appendingPathComponent("\(index)-\(projection.location)")
-                    .appendingPathComponent(skillName)
-                try fileManager.createDirectory(
-                    at: projectionRecovery.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
-                movedProjections.append((projectionURL, projectionRecovery))
-            }
-            try fileManager.moveItem(at: skill, to: recoveredSkill)
-        } catch {
-            var rollbackFailures: [String] = []
-            for moved in movedProjections.reversed() {
-                do {
-                    try fileManager.moveItem(at: moved.recovery, to: moved.original)
-                } catch {
-                    rollbackFailures.append("\(moved.original.path): \(error.localizedDescription)")
-                }
-            }
-            if !rollbackFailures.isEmpty {
-                throw NSError(domain: "MetagentSkillUninstall", code: 10, userInfo: [
-                    NSLocalizedDescriptionKey: "standalone removal failed and projection rollback was incomplete. Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
-                ])
-            }
-            throw error
-        }
+        try moveSkillAndProjectionsToRecovery(
+            skill: skill,
+            to: recoveredSkill,
+            projections: projections,
+            recovery: recovery,
+            skillName: skillName,
+            rollbackErrorCode: 10,
+            rollbackFailureSummary: "standalone removal failed and projection rollback was incomplete."
+        )
         guard !fileManager.fileExists(atPath: skill.path) else {
             throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
                 NSLocalizedDescriptionKey: "standalone removal verification failed: \(skill.path) still exists"
@@ -1941,14 +1875,14 @@ private func discoverProjectRoots(
 private func projectRootForSkillContainer(_ url: URL) -> String? {
     guard url.lastPathComponent == "skills" else { return nil }
     let dotDirectory = url.deletingLastPathComponent()
-    guard [".agents", ".codex", ".claude"].contains(dotDirectory.lastPathComponent) else {
+    guard agentDirectoryNames.contains(dotDirectory.lastPathComponent) else {
         return nil
     }
     return canonicalProjectPath(dotDirectory.deletingLastPathComponent())
 }
 
 private func projectRootForDotSkillDirectory(_ url: URL) -> String? {
-    guard [".agents", ".codex", ".claude"].contains(url.lastPathComponent) else {
+    guard agentDirectoryNames.contains(url.lastPathComponent) else {
         return nil
     }
     guard fileManager.fileExists(atPath: url.appendingPathComponent("skills").path) else {
@@ -3197,6 +3131,74 @@ private func npxExecutable() throws -> URL {
     ])
 }
 
+/// Copies every independent same-name skill location into the recovery folder
+/// so a manager-driven removal can be reversed even where Metagent did not own
+/// the copy it deleted.
+private func snapshotRetainedSkills(
+    _ retained: [SkillInventoryItem],
+    into recovery: URL,
+    skillName: String
+) throws -> [(original: URL, backup: URL)] {
+    var retainedBackups: [(original: URL, backup: URL)] = []
+    for (index, retainedSkill) in retained.enumerated() {
+        let original = URL(fileURLWithPath: retainedSkill.path)
+        let backup = recovery
+            .appendingPathComponent("retained")
+            .appendingPathComponent("\(index)-\(retainedSkill.location)")
+            .appendingPathComponent(skillName)
+        try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.copyItem(at: original, to: backup)
+        retainedBackups.append((original, backup))
+    }
+    return retainedBackups
+}
+
+/// Moves each per-skill projection link, then the skill bundle itself, into the
+/// recovery folder. If any move fails, every projection already moved is put
+/// back before the error propagates, so a partial removal never survives.
+private func moveSkillAndProjectionsToRecovery(
+    skill: URL,
+    to recoveredSkill: URL,
+    projections: [SkillInventoryItem],
+    recovery: URL,
+    skillName: String,
+    rollbackErrorCode: Int,
+    rollbackFailureSummary: String
+) throws {
+    var movedProjections: [(original: URL, recovery: URL)] = []
+    do {
+        for (index, projection) in projections.enumerated() {
+            let projectionURL = URL(fileURLWithPath: projection.path)
+            let projectionRecovery = recovery
+                .appendingPathComponent("projections")
+                .appendingPathComponent("\(index)-\(projection.location)")
+                .appendingPathComponent(skillName)
+            try fileManager.createDirectory(
+                at: projectionRecovery.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
+            movedProjections.append((projectionURL, projectionRecovery))
+        }
+        try fileManager.moveItem(at: skill, to: recoveredSkill)
+    } catch {
+        var rollbackFailures: [String] = []
+        for moved in movedProjections.reversed() {
+            do {
+                try fileManager.moveItem(at: moved.recovery, to: moved.original)
+            } catch {
+                rollbackFailures.append("\(moved.original.path): \(error.localizedDescription)")
+            }
+        }
+        if !rollbackFailures.isEmpty {
+            throw NSError(domain: "MetagentSkillUninstall", code: rollbackErrorCode, userInfo: [
+                NSLocalizedDescriptionKey: "\(rollbackFailureSummary) Original error: \(error.localizedDescription)\nRollback failures:\n\(rollbackFailures.joined(separator: "\n"))\nRecovery state: \(recovery.path)"
+            ])
+        }
+        throw error
+    }
+}
+
 private func prepareRemovalRecovery(
     projectRoot: URL,
     skillName: String
@@ -3503,35 +3505,49 @@ private final class SkillInventoryCache {
     func save(_ report: SkillScanReport) throws {
         let data = try JSONEncoder().encode(report)
         let json = String(data: data, encoding: .utf8) ?? "{}"
-        var db: OpaquePointer?
-        try open(&db)
-        defer { sqlite3_close(db) }
-        try exec(db, """
-        CREATE TABLE IF NOT EXISTS inventory_snapshots (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            updated_at TEXT NOT NULL,
-            json TEXT NOT NULL
-        );
-        """)
-        try exec(db, "DELETE FROM inventory_snapshots WHERE id = 1;")
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            db,
-            "INSERT INTO inventory_snapshots (id, updated_at, json) VALUES (1, datetime('now'), ?);",
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            throw cacheError(db, "prepare insert")
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, json, -1, SQLITE_TRANSIENT)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw cacheError(db, "insert snapshot")
+        try withPreparedDatabase { db in
+            try exec(db, "DELETE FROM inventory_snapshots WHERE id = 1;")
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                "INSERT INTO inventory_snapshots (id, updated_at, json) VALUES (1, datetime('now'), ?);",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK else {
+                throw cacheError(db, "prepare insert")
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, json, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw cacheError(db, "insert snapshot")
+            }
         }
     }
 
     func load() throws -> SkillScanReport? {
+        try withPreparedDatabase { db in
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                "SELECT json FROM inventory_snapshots WHERE id = 1;",
+                -1,
+                &statement,
+                nil
+            ) == SQLITE_OK else {
+                throw cacheError(db, "prepare select")
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            guard let text = sqlite3_column_text(statement, 0) else { return nil }
+            let json = String(cString: text)
+            return try JSONDecoder().decode(SkillScanReport.self, from: Data(json.utf8))
+        }
+    }
+
+    /// Opens the cache, ensures the snapshot table exists, and closes it again
+    /// once `work` returns.
+    private func withPreparedDatabase<T>(_ work: (OpaquePointer?) throws -> T) throws -> T {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
@@ -3542,21 +3558,7 @@ private final class SkillInventoryCache {
             json TEXT NOT NULL
         );
         """)
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            db,
-            "SELECT json FROM inventory_snapshots WHERE id = 1;",
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            throw cacheError(db, "prepare select")
-        }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-        guard let text = sqlite3_column_text(statement, 0) else { return nil }
-        let json = String(cString: text)
-        return try JSONDecoder().decode(SkillScanReport.self, from: Data(json.utf8))
+        return try work(db)
     }
 
     private func open(_ db: inout OpaquePointer?) throws {
@@ -3617,51 +3619,33 @@ private func skillContainerEntries(at url: URL) -> [URL]? {
     return names.map { url.appendingPathComponent($0) }
 }
 
-private func isKnownSkillContainerDirectory(_ url: URL) -> Bool {
-    guard url.lastPathComponent == "skills" else {
-        return false
-    }
-    let parent = url.deletingLastPathComponent().lastPathComponent
-    return [".agents", ".codex", ".claude"].contains(parent)
-}
+/// Directories that never contain skills and are skipped by every walk.
+private let prunedDirectoryNames: Set<String> = [
+    ".git",
+    ".hg",
+    ".svn",
+    ".build",
+    ".next",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "DerivedData"
+]
+
+/// Dot-directories that do hold skills, so a walk must descend into them.
+let agentDirectoryNames: Set<String> = [".agents", ".codex", ".claude"]
 
 private func shouldPrune(name: String) -> Bool {
-    if [
-        ".git",
-        ".hg",
-        ".svn",
-        ".build",
-        ".next",
-        "node_modules",
-        "target",
-        "dist",
-        "build",
-        "vendor",
-        "DerivedData",
-        "_archive"
-    ].contains(name) {
+    if prunedDirectoryNames.contains(name) || name == "_archive" {
         return true
     }
-    if name.hasPrefix("."), ![".agents", ".codex", ".claude"].contains(name) {
-        return true
-    }
-    return false
+    return name.hasPrefix(".") && !agentDirectoryNames.contains(name)
 }
 
 private func shouldPruneSkillContainer(name: String) -> Bool {
-    [
-        ".git",
-        ".hg",
-        ".svn",
-        ".build",
-        ".next",
-        "node_modules",
-        "target",
-        "dist",
-        "DerivedData",
-        "build",
-        "vendor"
-    ].contains(name)
+    prunedDirectoryNames.contains(name)
 }
 
 private func isValidSkillName(_ name: String) -> Bool {
@@ -3840,53 +3824,9 @@ private func firstRegexCapture(pattern: String, text: String) -> String? {
     return String(text[swiftRange])
 }
 
-private func quotedStrings(in text: String) -> [String] {
-    var values: [String] = []
-    var current = ""
-    var quote: Character?
-    var escaped = false
-
-    for character in text {
-        if let activeQuote = quote {
-            if escaped {
-                current.append(character)
-                escaped = false
-            } else if character == "\\" {
-                escaped = true
-            } else if character == activeQuote {
-                values.append(current)
-                current = ""
-                quote = nil
-            } else {
-                current.append(character)
-            }
-        } else if character == "\"" || character == "'" {
-            quote = character
-        }
-    }
-
-    return values
-}
-
 private extension String {
-    var nonEmptyLines: [String] {
-        split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    var nonEmpty: String? {
-        isEmpty ? nil : self
-    }
-
     func removingPrefix(_ prefix: String) -> String? {
         guard hasPrefix(prefix) else { return nil }
         return String(dropFirst(prefix.count))
-    }
-
-    func splitOnce(_ separator: Character) -> (Substring, Substring)? {
-        guard let index = firstIndex(of: separator) else { return nil }
-        return (self[..<index], self[self.index(after: index)...])
     }
 }

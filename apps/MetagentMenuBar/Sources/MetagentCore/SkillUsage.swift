@@ -836,23 +836,8 @@ private final class SkillUsageStore {
         var commands: [String] = []
         var index = 0
         while index < characters.count {
-            if characters[index] == "/", index + 1 < characters.count {
-                if characters[index + 1] == "/" {
-                    index += 2
-                    while index < characters.count, characters[index] != "\n" { index += 1 }
-                    continue
-                }
-                if characters[index + 1] == "*" {
-                    index += 2
-                    while index + 1 < characters.count,
-                          !(characters[index] == "*" && characters[index + 1] == "/")
-                    { index += 1 }
-                    index = min(characters.count, index + 2)
-                    continue
-                }
-            }
-            if characters[index] == "\"" || characters[index] == "'" || characters[index] == "`" {
-                index = skipJavaScriptString(characters, from: index)
+            if let next = skipJavaScriptNonCode(characters, from: index) {
+                index = next
                 continue
             }
             guard isIdentifierStart(characters[index]) else {
@@ -886,23 +871,8 @@ private final class SkillUsageStore {
         var results: [ExecutedCommand] = []
         var index = 0
         while index < characters.count {
-            if characters[index] == "/", index + 1 < characters.count {
-                if characters[index + 1] == "/" {
-                    index += 2
-                    while index < characters.count, characters[index] != "\n" { index += 1 }
-                    continue
-                }
-                if characters[index + 1] == "*" {
-                    index += 2
-                    while index + 1 < characters.count,
-                          !(characters[index] == "*" && characters[index + 1] == "/")
-                    { index += 1 }
-                    index = min(characters.count, index + 2)
-                    continue
-                }
-            }
-            if characters[index] == "\"" || characters[index] == "'" || characters[index] == "`" {
-                index = skipJavaScriptString(characters, from: index)
+            if let next = skipJavaScriptNonCode(characters, from: index) {
+                index = next
                 continue
             }
             let markerEnd = index + marker.count
@@ -958,6 +928,30 @@ private final class SkillUsageStore {
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             .replacingOccurrences(of: #"\ "#, with: " ")
         return resolve(path: directory, cwd: sessionCWD)
+    }
+
+    /// Returns the index just past a comment or string literal starting at
+    /// `index`, or nil when that position is ordinary code. Both JavaScript
+    /// scanners use this to stay out of quoted and commented text.
+    private func skipJavaScriptNonCode(_ characters: [Character], from index: Int) -> Int? {
+        if characters[index] == "/", index + 1 < characters.count {
+            if characters[index + 1] == "/" {
+                var cursor = index + 2
+                while cursor < characters.count, characters[cursor] != "\n" { cursor += 1 }
+                return cursor
+            }
+            if characters[index + 1] == "*" {
+                var cursor = index + 2
+                while cursor + 1 < characters.count,
+                      !(characters[cursor] == "*" && characters[cursor + 1] == "/")
+                { cursor += 1 }
+                return min(characters.count, cursor + 2)
+            }
+        }
+        if characters[index] == "\"" || characters[index] == "'" || characters[index] == "`" {
+            return skipJavaScriptString(characters, from: index)
+        }
+        return nil
     }
 
     private func skipJavaScriptString(_ characters: [Character], from start: Int) -> Int {
@@ -1241,7 +1235,7 @@ private final class SkillUsageStore {
         }
 
         if let containerIndex = components.lastIndex(where: {
-            [".agents", ".codex", ".claude"].contains($0)
+            agentDirectoryNames.contains($0)
         }),
            containerIndex + 1 < components.count,
            components[containerIndex + 1] == "skills"

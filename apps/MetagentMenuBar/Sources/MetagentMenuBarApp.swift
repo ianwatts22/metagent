@@ -1543,13 +1543,6 @@ private enum UsageFilter: String, CaseIterable, Identifiable {
         case .insufficient: "Insufficient data"
         }
     }
-    var emptyTitle: String { self == .all ? "No skill usage yet" : "No matching skills" }
-    func emptyMessage(backfillComplete: Bool) -> String {
-        if !backfillComplete {
-            return "The low-priority backfill is still building coverage."
-        }
-        return "No skills currently match this usage filter."
-    }
     func includes(_ row: UsageSkillRow) -> Bool {
         includes(status: row.status, totalInvocations: row.totalInvocations)
     }
@@ -1642,15 +1635,7 @@ private struct UsageSkillRow: Identifiable, Sendable {
     let lastUsedSortValue: TimeInterval
     let status: Status
 
-    var scopeLabel: String {
-        switch scope {
-        case "project": "Project"
-        case "global": "Global"
-        case "plugin": "Plugin"
-        case "system": "System"
-        default: "Unknown"
-        }
-    }
+    var scopeLabel: String { skillScopeLabel(scope) }
 
     static func rows(
         projects: [ProjectStatus],
@@ -1660,7 +1645,7 @@ private struct UsageSkillRow: Identifiable, Sendable {
         var rows = summaries.map { summary in
             from(summary: summary, isBackfillComplete: isBackfillComplete)
         }
-        let summaryPaths = Set(summaries.compactMap(\.canonicalPath).map(standardizedDirectory))
+        let summaryPaths = Set(summaries.compactMap(\.canonicalPath).map(standardizedDirectoryPath))
         let summaryPluginKeys = Set(summaries.compactMap {
             pluginUsageMatchKey(id: $0.id, canonicalPath: $0.canonicalPath)
         })
@@ -1669,7 +1654,7 @@ private struct UsageSkillRow: Identifiable, Sendable {
         for (project, skill) in projects.flatMap({ project in
             project.skills.map { (project, $0) }
         }) {
-            let directory = standardizedDirectory(skill.path)
+            let directory = standardizedDirectoryPath(skill.path)
             let pluginAlreadyRepresented = pluginUsageMatchKey(skill).map(summaryPluginKeys.contains) ?? false
             guard !summaryPaths.contains(directory),
                   !pluginAlreadyRepresented,
@@ -1719,13 +1704,6 @@ private struct UsageSkillRow: Identifiable, Sendable {
         )
     }
 
-    private static func standardizedDirectory(_ path: String) -> String {
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        if FileManager.default.fileExists(atPath: url.path) {
-            return url.resolvingSymlinksInPath().standardizedFileURL.path
-        }
-        return url.path
-    }
 }
 
 private enum InventoryConfirmation: Identifiable {
@@ -1939,15 +1917,7 @@ private struct SkillTableRow: Identifiable, Sendable {
         return "\(sourceCategory.explanation)\n\(detail)"
     }
     var scope: String { inventory?.skill.scope ?? usage.scope }
-    var scopeLabel: String {
-        switch scope {
-        case "project": "Project"
-        case "global": "Global"
-        case "plugin": "Plugin"
-        case "system": "System"
-        default: "Unknown"
-        }
-    }
+    var scopeLabel: String { skillScopeLabel(scope) }
     var displayLocationText: String {
         scope == "project" ? projectName : ""
     }
@@ -4007,7 +3977,7 @@ private struct InventorySkillRow: Identifiable, Sendable {
     ) -> [InventorySkillRow] {
         let usageByPath = Dictionary(grouping: usage.summaries.compactMap { summary -> (String, SkillUsageSummary)? in
             guard let canonicalPath = summary.canonicalPath else { return nil }
-            return (standardizedDirectory(canonicalPath), summary)
+            return (standardizedDirectoryPath(canonicalPath), summary)
         }, by: \.0).compactMapValues { values in
             values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
         }
@@ -4022,14 +3992,14 @@ private struct InventorySkillRow: Identifiable, Sendable {
             values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
         }
         let evaluationsByPath = Dictionary(evaluations.records.values.map {
-            (standardizedDirectory($0.canonicalPath), $0)
+            (standardizedDirectoryPath($0.canonicalPath), $0)
         }, uniquingKeysWith: { first, _ in first })
         let portfolioVariantsByName = Dictionary(grouping: projects.flatMap(\.skills), by: \.name)
         return projects.flatMap { project in
             Dictionary(grouping: project.skills, by: canonicalSkillIdentity).values.map { variants in
                 let sortedVariants = variants.sorted(by: canonicalSkillOrder)
                 let skill = sortedVariants[0]
-                let canonicalPath = standardizedDirectory(skill.canonicalPath)
+                let canonicalPath = standardizedDirectoryPath(skill.canonicalPath)
                 let matchedUsage = usageByPath[canonicalPath]
                     ?? pluginUsageMatchKey(skill).flatMap { pluginUsageByKey[$0] }
                     ?? (skill.canonicalPath.isEmpty ? usageByIdentity["\(skill.name):\(skill.scope)"] : nil)
@@ -4070,9 +4040,9 @@ private struct InventorySkillRow: Identifiable, Sendable {
             return "plugin:\(pluginKey)"
         }
         if !skill.canonicalPath.isEmpty {
-            return "path:\(standardizedDirectory(skill.canonicalPath))"
+            return "path:\(standardizedDirectoryPath(skill.canonicalPath))"
         }
-        return "installed:\(skill.location):\(standardizedDirectory(skill.path))"
+        return "installed:\(skill.location):\(standardizedDirectoryPath(skill.path))"
     }
 
     var id: String {
@@ -4145,13 +4115,6 @@ private struct InventorySkillRow: Identifiable, Sendable {
     var assetFileCount: Int { skill.assetFileCount }
     var otherFileCount: Int { skill.otherFileCount }
     var otherFolderCount: Int { skill.otherFolderCount }
-    var metadataText: String { skill.hasOpenAIYaml ? "yes" : "no" }
-    var iconText: String { skill.hasIconSmall || skill.hasIconLarge ? "yes" : "no" }
-    var iconHelp: String {
-        [skill.iconSmallPath, skill.iconLargePath]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-    }
     var skillIconPath: String? { skill.iconSmallPath ?? skill.iconLargePath }
     var canEditIcon: Bool {
         skill.representation == "canonical"
@@ -4269,14 +4232,6 @@ private struct InventorySkillRow: Identifiable, Sendable {
         ]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
-    private static func standardizedDirectory(_ path: String) -> String {
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        if FileManager.default.fileExists(atPath: url.path) {
-            return url.resolvingSymlinksInPath().standardizedFileURL.path
-        }
-        return url.path
-    }
-
 }
 
 private func pluginUsageMatchKey(id: String, canonicalPath: String?) -> String? {
@@ -6194,6 +6149,16 @@ private func skillFileURLs(for rows: [SkillTableRow]) -> [URL] {
     }
 }
 
+private func skillScopeLabel(_ scope: String) -> String {
+    switch scope {
+    case "project": "Project"
+    case "global": "Global"
+    case "plugin": "Plugin"
+    case "system": "System"
+    default: "Unknown"
+    }
+}
+
 private func standardizedDirectoryPath(_ path: String) -> String {
     let url = URL(fileURLWithPath: path).standardizedFileURL
     if FileManager.default.fileExists(atPath: url.path) {
@@ -6453,31 +6418,6 @@ private struct CleanupFailureView: View {
     }
 }
 
-private struct InfoRow: View {
-    let title: String
-    let value: String
-    let symbol: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 16)
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.monospaced())
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            Spacer()
-        }
-        .padding(10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-}
-
 private struct EmptyStateView: View {
     let title: String
     let message: String
@@ -6668,31 +6608,6 @@ private struct LineGroup: View {
                 }
             }
         }
-    }
-}
-
-private struct LastOutputView: View {
-    let title: String
-    let lines: [String]
-    let onCopy: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(title)
-                    .font(.headline)
-                Spacer()
-                Button {
-                    onCopy()
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.glass)
-            }
-
-            RawOutputBlock(title: nil, lines: Array(lines.prefix(18)))
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
