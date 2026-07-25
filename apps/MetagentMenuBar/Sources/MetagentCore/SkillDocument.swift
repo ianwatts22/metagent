@@ -428,13 +428,6 @@ private func isValidEditableSkillName(_ name: String) -> Bool {
     }
 }
 
-private func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
-    let value = scalar.value
-    return (48...57).contains(value)
-        || (65...90).contains(value)
-        || (97...122).contains(value)
-}
-
 private func splitSkillDocument(_ text: String) -> (frontmatter: [String], body: String) {
     let lines = text.components(separatedBy: .newlines)
     guard lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---",
