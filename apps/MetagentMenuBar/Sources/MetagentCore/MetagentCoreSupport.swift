@@ -99,7 +99,7 @@ func runSubprocess(
     )
     if let currentDirectory {
         let result = currentDirectory.path.withCString {
-            posix_spawn_file_actions_addchdir_np(&fileActions, $0)
+            posix_spawn_file_actions_addchdir(&fileActions, $0)
         }
         try requirePosixSuccess(result, action: "set process working directory")
     }
