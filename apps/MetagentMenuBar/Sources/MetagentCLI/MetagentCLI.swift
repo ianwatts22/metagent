@@ -54,15 +54,7 @@ struct MetagentCLI {
             throw CLIError.message("unknown config command: \(command)")
         }
 
-        var json = false
-        for arg in args.dropFirst() {
-            switch arg {
-            case "--json":
-                json = true
-            default:
-                throw CLIError.message("unknown config show flag: \(arg)")
-            }
-        }
+        let json = try parseJSONOnly(Array(args.dropFirst()), command: "config show")
 
         let config = try MetagentCore.loadUserConfig()
         if json {
@@ -264,17 +256,9 @@ struct MetagentCLI {
             while index < flags.count {
                 switch flags[index] {
                 case "--max-bytes":
-                    let value = try readFlagValue("--max-bytes", args: flags, index: &index)
-                    guard let parsed = Int64(value), parsed > 0 else {
-                        throw CLIError.message("--max-bytes must be a positive integer")
-                    }
-                    maxBytes = parsed
+                    maxBytes = try readPositiveInt("--max-bytes", args: flags, index: &index)
                 case "--max-files":
-                    let value = try readFlagValue("--max-files", args: flags, index: &index)
-                    guard let parsed = Int(value), parsed > 0 else {
-                        throw CLIError.message("--max-files must be a positive integer")
-                    }
-                    maxFiles = parsed
+                    maxFiles = Int(try readPositiveInt("--max-files", args: flags, index: &index))
                 case "--json":
                     json = true
                 default:
@@ -314,7 +298,7 @@ struct MetagentCLI {
             case "--details", "--verbose":
                 details = true
             case "--help", "-h":
-                print("metagent analyze\n\nUsage:\n  metagent analyze [--root PATH] [--json] [--details]")
+                print("metagent analyze\n\nUsage:\n  metagent analyze [--root PATH] [--json] [--details|--verbose]")
                 return
             default:
                 throw CLIError.message("unknown analyze flag: \(args[index])")
@@ -597,6 +581,14 @@ struct MetagentCLI {
         return args[index]
     }
 
+    private static func readPositiveInt(_ flag: String, args: [String], index: inout Int) throws -> Int64 {
+        let value = try readFlagValue(flag, args: args, index: &index)
+        guard let parsed = Int64(value), parsed > 0 else {
+            throw CLIError.message("\(flag) must be a positive integer")
+        }
+        return parsed
+    }
+
     private static func parseJSONOnly(_ args: [String], command: String) throws -> Bool {
         var json = false
         for arg in args {
@@ -659,7 +651,7 @@ struct MetagentCLI {
           metagent skills <scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
-          metagent analyze [--root PATH] [--json] [--details]
+          metagent analyze [--root PATH] [--json] [--details|--verbose]
           metagent mcp <install|status|remove> [flags]
           metagent mcp --stdio
         """)
