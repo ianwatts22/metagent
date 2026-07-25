@@ -229,8 +229,14 @@ img {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 6rem 0;
+  padding: 5rem 0;
   text-align: center;
+}
+
+.centered h2 + .surface-grid,
+.centered h2 + .matrix-wrap,
+.centered h2 + .sees-grid {
+  margin-top: 3rem;
 }
 
 .centered h2 {
@@ -266,9 +272,9 @@ img {
   align-items: center;
   justify-content: center;
   /* Fixed height means hovering can only ever widen a card, never grow it. */
-  min-height: 21rem;
+  min-height: 16.5rem;
   min-width: 0;
-  padding: 2rem 1.5rem;
+  padding: 1.4rem 1.2rem;
   border-left: 1px solid var(--hairline);
   cursor: default;
   outline: none;
@@ -300,9 +306,9 @@ img {
 }
 
 .surface-card .card-label {
-  margin: 0.15rem 0 0;
+  margin: 0.1rem 0 0;
   color: var(--ink);
-  font-size: 1.45rem;
+  font-size: 1.9rem;
   font-weight: 700;
   letter-spacing: 0.14em;
 }
@@ -314,8 +320,8 @@ img {
   width: 0;
   margin: 0;
   color: var(--steel);
-  font-size: 0.95rem;
-  line-height: 1.65;
+  font-size: 1.28rem;
+  line-height: 1.55;
   text-align: left;
   opacity: 0;
   transition: width 640ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -325,13 +331,13 @@ img {
 
 .surface-detail span {
   display: block;
-  width: 17rem;
+  width: 21rem;
 }
 
 .surface-card:hover .surface-detail,
 .surface-card:focus-visible .surface-detail {
-  width: 17rem;
-  margin-left: 1.8rem;
+  width: 21rem;
+  margin-left: 2rem;
   opacity: 1;
 }
 
@@ -469,16 +475,20 @@ img {
   }
 
   .surface-id {
-    flex: 0 0 5.5rem;
+    flex: 0 0 6.5rem;
   }
 
   .surface-card .icon {
-    width: 3.4rem;
-    height: 3.4rem;
+    width: 4.2rem;
+    height: 4.2rem;
   }
 
   .surface-card .card-label {
-    font-size: 1rem;
+    font-size: 1.25rem;
+  }
+
+  .surface-detail {
+    font-size: 1.05rem;
   }
 
   /* No hover on touch: every detail is shown up front, beside the mark. */

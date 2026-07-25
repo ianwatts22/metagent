@@ -73,7 +73,6 @@ const sees = [
   </section>
 
   <section class="section centered">
-    <p class="section-tag">Principle</p>
     <h2>Agent setup should be inspectable, not archaeological.</h2>
     <p class="section-lede">
       Configured, installed, observed, and healthy are four different things.
@@ -82,14 +81,12 @@ const sees = [
   </section>
 
   <section class="section centered">
-    <p class="section-tag">Surfaces</p>
-    <h2>One core. Three ways in.</h2>
-    <p class="section-lede">Hover to see what each one is for.</p>
+    <h2>Human and agent friendly.</h2>
     <div class="surface-grid">
       {surfaces.map((surface) => (
         <article class="surface-card" tabindex="0">
           <div class="surface-id">
-            <Icon icon={surface.icon} size={112} stroke={0.9} />
+            <Icon icon={surface.icon} size={148} stroke={0.85} />
             <p class="card-label">{surface.label}</p>
           </div>
           <p class="surface-detail"><span>{surface.detail}</span></p>
@@ -99,11 +96,23 @@ const sees = [
   </section>
 
   <section class="section centered">
-    <p class="section-tag">Capabilities</p>
-    <h2>What lives where.</h2>
+    <h2>Complete context control.</h2>
     <p class="section-lede">
-      The app and CLI can change things. The MCP only ever reads.
+      Point it at a folder and it reports on five things—metadata only, never
+      the contents of your instructions.
     </p>
+    <div class="sees-grid">
+      {sees.map((item) => (
+        <article class="sees-card">
+          <h3>{item.name}</h3>
+          <p>{item.copy}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="section centered">
+    <h2>Capabilities</h2>
     <div class="matrix-wrap">
       <table class="matrix">
         <thead>
@@ -127,26 +136,8 @@ const sees = [
     </div>
   </section>
 
-  <section class="section centered">
-    <p class="section-tag">Context</p>
-    <h2>What your agent can see.</h2>
-    <p class="section-lede">
-      Point it at a folder and it reports on five things—metadata only, never
-      the contents of your instructions.
-    </p>
-    <div class="sees-grid">
-      {sees.map((item) => (
-        <article class="sees-card">
-          <h3>{item.name}</h3>
-          <p>{item.copy}</p>
-        </article>
-      ))}
-    </div>
-  </section>
-
   <section class="section centered closing">
-    <p class="section-tag">Local by design</p>
-    <h2>Nothing leaves your Mac.</h2>
+    <h2>100% free &amp; local.</h2>
     <p class="section-lede">
       Metagent reads your agent logs and writes its analysis to a SQLite file on
       your own disk. No account, no server, nothing to upload.
