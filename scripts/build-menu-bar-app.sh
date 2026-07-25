@@ -42,10 +42,8 @@ if [[ -z "$signing_identity" && "${METAGENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]
   exit 1
 fi
 
-export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
-if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
+source "$repo_root/scripts/lib.sh"
+setup_swift_build_env
 
 "$repo_root/scripts/generate-menu-bar-assets.sh"
 

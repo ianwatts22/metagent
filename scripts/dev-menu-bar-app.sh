@@ -8,11 +8,11 @@ configuration="debug"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/dev-menu-bar-app.sh [--release]
+  scripts/dev-menu-bar-app.sh [--release|--debug]
 
 Watches app sources and rebuilds, installs, and restarts Metagent on every
-change. Builds the debug configuration by default so reloads stay fast; pass
---release to iterate against the optimized build instead.
+change. Builds the debug configuration by default (--debug) so reloads stay
+fast; pass --release to iterate against the optimized build instead.
 USAGE
 }
 

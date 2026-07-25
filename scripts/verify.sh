@@ -5,19 +5,71 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_source="$repo_root/apps/MetagentMenuBar"
 swift_helper="$app_source/.build/debug/metagent"
 
-export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
-if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
+source "$repo_root/scripts/lib.sh"
+setup_swift_build_env
+
+# Run a command that must fail, capturing its combined output to out_file,
+# then assert the output contains the expected literal message. Pass an empty
+# message to skip the output assertion.
+# Usage: expect_failure "expected message" out_file -- cmd args...
+expect_failure() {
+  local expected="$1" out_file="$2"
+  shift 2
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  if "$@" >"$out_file" 2>&1; then
+    echo "expected failure, but the command succeeded: $*" >&2
+    exit 1
+  fi
+  if [[ -n "$expected" ]]; then
+    grep -Fq -- "$expected" "$out_file"
+  fi
+}
+
+# Write a minimal skill fixture: <dir>/SKILL.md with frontmatter only.
+make_skill() {
+  local dir="$1" name="$2" description="$3"
+  mkdir -p "$dir"
+  printf -- "---\nname: %s\ndescription: %s\n---\n" "$name" "$description" >"$dir/SKILL.md"
+}
+
+# Write a skills-lock.json with two plain github-sourced entries.
+write_pair_lock() {
+  local lock_path="$1" first="$2" second="$3"
+  cat >"$lock_path" <<EOF
+{
+  "version": 1,
+  "skills": {
+    "$first": {"source": "example/skills", "sourceType": "github"},
+    "$second": {"source": "example/skills", "sourceType": "github"}
+  }
+}
+EOF
+}
+
+# Write the stale-lock fixture with future metadata that must be preserved.
+write_stale_lock() {
+  local lock_path="$1"
+  cat >"$lock_path" <<'EOF'
+{
+  "version": 1,
+  "skills": {
+    "stale-lock": {
+      "source": "example/skills",
+      "sourceType": "github",
+      "futureMetadata": {"preserve": true}
+    }
+  },
+  "futureRootMetadata": {"preserve": true}
+}
+EOF
+}
 
 cd "$repo_root"
-sg scan --config "$repo_root/sgconfig.yml" --filter no-direct-hard-delete --report-style short
-bash -n "$repo_root/scripts/generate-menu-bar-assets.sh"
-bash -n "$repo_root/scripts/install-menu-bar-app.sh"
-bash -n "$repo_root/scripts/dev-menu-bar-app.sh"
-bash -n "$repo_root/scripts/install-cli.sh"
-bash -n "$repo_root/scripts/build-menu-bar-app.sh"
-bash -n "$repo_root/scripts/retire-dotagents-state.sh"
+for shell_script in "$repo_root"/scripts/*.sh; do
+  bash -n "$shell_script"
+done
 
 (
   cd "$app_source"
@@ -126,32 +178,20 @@ grep -Fq "would trash: $fixture_root/dotagents-no-newline/agents.toml" "$no_newl
 test -f "$fixture_root/dotagents-no-newline/agents.toml"
 "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-reordered" >/dev/null
 empty_output="$fixture_root/dotagents-empty.out"
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty" >"$empty_output" 2>&1; then
-  echo "dotagents retirement accepted a manifest without skill declarations" >&2
-  exit 1
-fi
-grep -Fq "no skill declarations were found" "$empty_output"
+expect_failure "no skill declarations were found" "$empty_output" -- \
+  "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-empty"
 test -f "$fixture_root/dotagents-empty/agents.toml"
 invalid_name_output="$fixture_root/dotagents-invalid-name.out"
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name" >"$invalid_name_output" 2>&1; then
-  echo "dotagents retirement accepted an invalid skill name" >&2
-  exit 1
-fi
-grep -Fq "invalid skill name ../external" "$invalid_name_output"
+expect_failure "invalid skill name ../external" "$invalid_name_output" -- \
+  "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-invalid-name"
 test -f "$fixture_root/dotagents-invalid-name/agents.toml"
 missing_output="$fixture_root/dotagents-missing.out"
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-missing" >"$missing_output" 2>&1; then
-  echo "dotagents retirement accepted a missing skill directory" >&2
-  exit 1
-fi
-grep -Fq "missing's skill directory is missing on disk" "$missing_output"
+expect_failure "missing's skill directory is missing on disk" "$missing_output" -- \
+  "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-missing"
 test -f "$fixture_root/dotagents-missing/agents.toml"
 unsafe_output="$fixture_root/dotagents-unsafe.out"
-if "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe" >"$unsafe_output" 2>&1; then
-  echo "dotagents retirement accepted a different same-root source" >&2
-  exit 1
-fi
-grep -Fq "demo uses independent source path:.agents/skills/other" "$unsafe_output"
+expect_failure "demo uses independent source path:.agents/skills/other" "$unsafe_output" -- \
+  "$repo_root/scripts/retire-dotagents-state.sh" "$fixture_root/dotagents-unsafe"
 test -f "$fixture_root/dotagents-unsafe/agents.toml"
 
 mkdir -p \
@@ -163,10 +203,10 @@ mkdir -p \
   "$fixture_root/workspace/child/.agents/skills/directory-skill/SKILL.md" \
   "$fixture_root/workspace/child/.agents/skills/child-skill/references/example/.agents/skills/nested-skill" \
   "$fixture_root/default/.agents/skills/default-skill"
-printf -- "---\nname: old-skill\ndescription: old\n---\n" >"$fixture_root/old/.agents/skills/old-skill/SKILL.md"
-printf -- "---\nname: workspace-skill\ndescription: workspace\n---\n" >"$fixture_root/workspace/.agents/skills/workspace-skill/SKILL.md"
-printf -- "---\nname: archive-skill\ndescription: archived\n---\n" >"$fixture_root/workspace/_archive/stale/.agents/skills/archive-skill/SKILL.md"
-printf -- "---\nname: child-skill\ndescription: child\n---\n" >"$fixture_root/workspace/child/.agents/skills/child-skill/SKILL.md"
+make_skill "$fixture_root/old/.agents/skills/old-skill" "old-skill" "old"
+make_skill "$fixture_root/workspace/.agents/skills/workspace-skill" "workspace-skill" "workspace"
+make_skill "$fixture_root/workspace/_archive/stale/.agents/skills/archive-skill" "archive-skill" "archived"
+make_skill "$fixture_root/workspace/child/.agents/skills/child-skill" "child-skill" "child"
 cat >"$fixture_root/workspace/child/skills-lock.json" <<'EOF'
 {
   "version": 1,
@@ -180,8 +220,8 @@ cat >"$fixture_root/workspace/child/skills-lock.json" <<'EOF'
   }
 }
 EOF
-printf -- "---\nname: nested-skill\ndescription: nested\n---\n" >"$fixture_root/workspace/child/.agents/skills/child-skill/references/example/.agents/skills/nested-skill/SKILL.md"
-printf -- "---\nname: default-skill\ndescription: default\n---\n" >"$fixture_root/default/.agents/skills/default-skill/SKILL.md"
+make_skill "$fixture_root/workspace/child/.agents/skills/child-skill/references/example/.agents/skills/nested-skill" "nested-skill" "nested"
+make_skill "$fixture_root/default/.agents/skills/default-skill" "default-skill" "default"
 mkdir -p "$fixture_root/workspace/child/.claude"
 ln -s ../.agents/skills "$fixture_root/workspace/child/.claude/skills"
 ln -s .. "$fixture_root/workspace/child/.agents/skills/child-skill/references/loop"
@@ -225,8 +265,8 @@ grep -q '"source" : "example' <<<"$fixture_scan"
 
 legacy_lock_root="$fixture_root/legacy-lock-project"
 mkdir -p "$legacy_lock_root/.agents/skills/root-managed" "$legacy_lock_root/.agents/skills/nested-only"
-printf -- "---\nname: root-managed\ndescription: root lock\n---\n" >"$legacy_lock_root/.agents/skills/root-managed/SKILL.md"
-printf -- "---\nname: nested-only\ndescription: nested legacy lock\n---\n" >"$legacy_lock_root/.agents/skills/nested-only/SKILL.md"
+make_skill "$legacy_lock_root/.agents/skills/root-managed" "root-managed" "root lock"
+make_skill "$legacy_lock_root/.agents/skills/nested-only" "nested-only" "nested legacy lock"
 cat >"$legacy_lock_root/skills-lock.json" <<'EOF'
 {"version":1,"skills":{"root-managed":{"source":"root/source","sourceType":"github","computedHash":"fixture"}}}
 EOF
@@ -242,7 +282,7 @@ grep -q 'Legacy skills lock ignored' <<<"$legacy_lock_doctor"
 plugin_home="$fixture_root/plugin-home"
 plugin_root="$plugin_home/.codex/plugins/cache/test-market/demo/1.2.3"
 mkdir -p "$plugin_root/skills/demo-skill"
-printf -- "---\nname: demo-skill\ndescription: plugin fixture\n---\n" >"$plugin_root/skills/demo-skill/SKILL.md"
+make_skill "$plugin_root/skills/demo-skill" "demo-skill" "plugin fixture"
 codex_stub="$fixture_root/codex-stub"
 cat >"$codex_stub" <<EOF
 #!/usr/bin/env bash
@@ -258,8 +298,8 @@ test "$(jq -r '.projects[].skills[] | select(.name=="demo-skill") | [.manager,.m
 
 plugin_collision_root="$fixture_root/plugin-collision"
 mkdir -p "$plugin_collision_root/.agents/skills/local-skill" "$plugin_collision_root/skills/plugin-skill"
-printf -- "---\nname: local-skill\ndescription: local\n---\n" >"$plugin_collision_root/.agents/skills/local-skill/SKILL.md"
-printf -- "---\nname: plugin-skill\ndescription: plugin\n---\n" >"$plugin_collision_root/skills/plugin-skill/SKILL.md"
+make_skill "$plugin_collision_root/.agents/skills/local-skill" "local-skill" "local"
+make_skill "$plugin_collision_root/skills/plugin-skill" "plugin-skill" "plugin"
 cat >"$codex_stub" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -300,8 +340,8 @@ grep -q "workspace-skill" <<<"$skills_root_scan"
 mkdir -p \
   "$fixture_root/home/code_projects/.agents/skills/home-parent" \
   "$fixture_root/home/code_projects/home-child/.agents/skills/home-child"
-printf -- "---\nname: home-parent\ndescription: home parent\n---\n" >"$fixture_root/home/code_projects/.agents/skills/home-parent/SKILL.md"
-printf -- "---\nname: home-child\ndescription: home child\n---\n" >"$fixture_root/home/code_projects/home-child/.agents/skills/home-child/SKILL.md"
+make_skill "$fixture_root/home/code_projects/.agents/skills/home-parent" "home-parent" "home parent"
+make_skill "$fixture_root/home/code_projects/home-child/.agents/skills/home-child" "home-child" "home child"
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
 roots = ["$fixture_root/home/code_projects"]
 max_depth = 3
@@ -337,8 +377,8 @@ mkdir -p \
   "$cache_home/.config/metagent" \
   "$cache_home/full/.agents/skills/cache-full" \
   "$cache_home/scoped/.agents/skills/cache-scoped"
-printf -- "---\nname: cache-full\ndescription: full\n---\n" >"$cache_home/full/.agents/skills/cache-full/SKILL.md"
-printf -- "---\nname: cache-scoped\ndescription: scoped\n---\n" >"$cache_home/scoped/.agents/skills/cache-scoped/SKILL.md"
+make_skill "$cache_home/full/.agents/skills/cache-full" "cache-full" "full"
+make_skill "$cache_home/scoped/.agents/skills/cache-scoped" "cache-scoped" "scoped"
 cat >"$cache_home/.config/metagent/config.toml" <<EOF
 roots = ["$cache_home/full"]
 max_depth = 0
@@ -359,9 +399,9 @@ mkdir -p \
   "$uninstall_root/.agents/skills/keep-me" \
   "$uninstall_root/.codex/skills/remove-me" \
   "$uninstall_root/.claude"
-printf -- "---\nname: remove-me\ndescription: remove\n---\n" >"$uninstall_root/.agents/skills/remove-me/SKILL.md"
-printf -- "---\nname: keep-me\ndescription: keep\n---\n" >"$uninstall_root/.agents/skills/keep-me/SKILL.md"
-printf -- "---\nname: remove-me\ndescription: independent codex copy\n---\n" >"$uninstall_root/.codex/skills/remove-me/SKILL.md"
+make_skill "$uninstall_root/.agents/skills/remove-me" "remove-me" "remove"
+make_skill "$uninstall_root/.agents/skills/keep-me" "keep-me" "keep"
+make_skill "$uninstall_root/.codex/skills/remove-me" "remove-me" "independent codex copy"
 ln -s ../.agents/skills "$uninstall_root/.claude/skills"
 cat >"$uninstall_root/skills-lock.json" <<'EOF'
 {
@@ -424,11 +464,8 @@ struct Probe {
 SWIFT
 swiftc "$app_source"/Sources/MetagentCore/*.swift "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
 managed_uninstall_output="$fixture_root/managed-uninstall.out"
-if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me >"$managed_uninstall_output" 2>&1; then
-  echo "Metagent removed an npx-managed skill directly" >&2
-  exit 1
-fi
-grep -q 'npx --yes skills remove remove-me --yes' "$managed_uninstall_output"
+expect_failure 'npx --yes skills remove remove-me --yes' "$managed_uninstall_output" -- \
+  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me
 test -f "$uninstall_root/.agents/skills/remove-me/SKILL.md"
 test -f "$uninstall_root/.agents/skills/keep-me/SKILL.md"
 test -f "$uninstall_root/.codex/skills/remove-me/SKILL.md"
@@ -481,17 +518,9 @@ fi
 
 batch_root="$fixture_root/batch-uninstall-project"
 mkdir -p "$batch_root/.agents/skills/batch-one" "$batch_root/.agents/skills/batch-two"
-printf -- "---\nname: batch-one\ndescription: first\n---\n" >"$batch_root/.agents/skills/batch-one/SKILL.md"
-printf -- "---\nname: batch-two\ndescription: second\n---\n" >"$batch_root/.agents/skills/batch-two/SKILL.md"
-cat >"$batch_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "batch-one": {"source": "example/skills", "sourceType": "github"},
-    "batch-two": {"source": "example/skills", "sourceType": "github"}
-  }
-}
-EOF
+make_skill "$batch_root/.agents/skills/batch-one" "batch-one" "first"
+make_skill "$batch_root/.agents/skills/batch-two" "batch-two" "second"
+write_pair_lock "$batch_root/skills-lock.json" batch-one batch-two
 batch_npx_log="$fixture_root/batch-npx.log"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_LOG="$batch_npx_log" \
   "$fixture_root/uninstall-probe" "$batch_root" batch-one,batch-two batch >/dev/null
@@ -503,20 +532,8 @@ grep -q 'skills remove batch-one batch-two --yes' "$batch_npx_log"
 
 stale_lock_root="$fixture_root/stale-lock-uninstall-project"
 mkdir -p "$stale_lock_root/.agents/skills/stale-lock"
-printf -- "---\nname: stale-lock\ndescription: stale lock fixture\n---\n" >"$stale_lock_root/.agents/skills/stale-lock/SKILL.md"
-cat >"$stale_lock_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "stale-lock": {
-      "source": "example/skills",
-      "sourceType": "github",
-      "futureMetadata": {"preserve": true}
-    }
-  },
-  "futureRootMetadata": {"preserve": true}
-}
-EOF
+make_skill "$stale_lock_root/.agents/skills/stale-lock" "stale-lock" "stale lock fixture"
+write_stale_lock "$stale_lock_root/skills-lock.json"
 stale_lock_output="$fixture_root/stale-lock.out"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_LEAVE_LOCK=1 \
   "$fixture_root/uninstall-probe" "$stale_lock_root" stale-lock apply >"$stale_lock_output"
@@ -524,19 +541,7 @@ test ! -e "$stale_lock_root/.agents/skills/stale-lock"
 jq -e '.skills == {} and .futureRootMetadata.preserve == true' "$stale_lock_root/skills-lock.json" >/dev/null
 grep -q 'removed a stale project lock entry left by skills-cli' "$stale_lock_output"
 
-cat >"$stale_lock_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "stale-lock": {
-      "source": "example/skills",
-      "sourceType": "github",
-      "futureMetadata": {"preserve": true}
-    }
-  },
-  "futureRootMetadata": {"preserve": true}
-}
-EOF
+write_stale_lock "$stale_lock_root/skills-lock.json"
 mkdir -p "$stale_lock_root/.codex/skills"
 ln -s ../../.agents/skills/stale-lock "$stale_lock_root/.codex/skills/stale-lock"
 mkdir -p "$stale_lock_root/.claude/shared-skills"
@@ -553,52 +558,28 @@ grep -q 'removed 1 dangling per-skill projection link' "$stale_lock_retry_output
 
 partial_root="$fixture_root/partial-batch-uninstall-project"
 mkdir -p "$partial_root/.agents/skills/partial-one" "$partial_root/.agents/skills/partial-two"
-printf -- "---\nname: partial-one\ndescription: first\n---\n" >"$partial_root/.agents/skills/partial-one/SKILL.md"
-printf -- "---\nname: partial-two\ndescription: second\n---\n" >"$partial_root/.agents/skills/partial-two/SKILL.md"
-cat >"$partial_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "partial-one": {"source": "example/skills", "sourceType": "github"},
-    "partial-two": {"source": "example/skills", "sourceType": "github"}
-  }
-}
-EOF
+make_skill "$partial_root/.agents/skills/partial-one" "partial-one" "first"
+make_skill "$partial_root/.agents/skills/partial-two" "partial-two" "second"
+write_pair_lock "$partial_root/skills-lock.json" partial-one partial-two
 partial_output="$fixture_root/partial-batch.out"
-if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_FAIL_AFTER_FIRST=1 \
-  "$fixture_root/uninstall-probe" "$partial_root" partial-one,partial-two batch >"$partial_output" 2>&1
-then
-  echo "partially failed Skills CLI batch reported complete success" >&2
-  exit 1
-fi
+expect_failure 'partial-one' "$partial_output" -- \
+  env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_FAIL_AFTER_FIRST=1 \
+  "$fixture_root/uninstall-probe" "$partial_root" partial-one,partial-two batch
 test ! -e "$partial_root/.agents/skills/partial-one"
 test -f "$partial_root/.agents/skills/partial-two/SKILL.md"
 jq -e '.skills["partial-one"] == null and .skills["partial-two"] != null' "$partial_root/skills-lock.json" >/dev/null
-grep -q 'partial-one' "$partial_output"
 partial_recovery_metadata="$(rg -l '^skill=partial-one$' "$fixture_root/home/Library/Application Support/Metagent/Removed Skills" -g REMOVAL.txt | head -1)"
 test -f "$(dirname "$partial_recovery_metadata")/after.json"
 
 corrupt_root="$fixture_root/corrupt-batch-uninstall-project"
 mkdir -p "$corrupt_root/.agents/skills/corrupt-one" "$corrupt_root/.agents/skills/corrupt-two"
-printf -- "---\nname: corrupt-one\ndescription: first\n---\n" >"$corrupt_root/.agents/skills/corrupt-one/SKILL.md"
-printf -- "---\nname: corrupt-two\ndescription: second\n---\n" >"$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
-cat >"$corrupt_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "corrupt-one": {"source": "example/skills", "sourceType": "github"},
-    "corrupt-two": {"source": "example/skills", "sourceType": "github"}
-  }
-}
-EOF
+make_skill "$corrupt_root/.agents/skills/corrupt-one" "corrupt-one" "first"
+make_skill "$corrupt_root/.agents/skills/corrupt-two" "corrupt-two" "second"
+write_pair_lock "$corrupt_root/skills-lock.json" corrupt-one corrupt-two
 corrupt_output="$fixture_root/corrupt-batch.out"
-if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_CORRUPT_AFTER_FIRST=1 \
-  "$fixture_root/uninstall-probe" "$corrupt_root" corrupt-one,corrupt-two batch >"$corrupt_output" 2>&1
-then
-  echo "corrupted Skills CLI lock state reported complete success" >&2
-  exit 1
-fi
-grep -q 'Could not verify Skills CLI lock state' "$corrupt_output"
+expect_failure 'Could not verify Skills CLI lock state' "$corrupt_output" -- \
+  env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_CORRUPT_AFTER_FIRST=1 \
+  "$fixture_root/uninstall-probe" "$corrupt_root" corrupt-one,corrupt-two batch
 grep -q 'Recovery state:' "$corrupt_output"
 test ! -e "$corrupt_root/.agents/skills/corrupt-one"
 test -f "$corrupt_root/.agents/skills/corrupt-two/SKILL.md"
@@ -607,27 +588,15 @@ test -f "$(dirname "$corrupt_recovery_metadata")/after.json"
 
 partial_success_root="$fixture_root/partial-success-corrupt-lock-project"
 mkdir -p "$partial_success_root/.agents/skills/partial-success-one" "$partial_success_root/.agents/skills/partial-success-two"
-printf -- "---\nname: partial-success-one\ndescription: first\n---\n" >"$partial_success_root/.agents/skills/partial-success-one/SKILL.md"
-printf -- "---\nname: partial-success-two\ndescription: second\n---\n" >"$partial_success_root/.agents/skills/partial-success-two/SKILL.md"
-cat >"$partial_success_root/skills-lock.json" <<'EOF'
-{
-  "version": 1,
-  "skills": {
-    "partial-success-one": {"source": "example/skills", "sourceType": "github"},
-    "partial-success-two": {"source": "example/skills", "sourceType": "github"}
-  }
-}
-EOF
+make_skill "$partial_success_root/.agents/skills/partial-success-one" "partial-success-one" "first"
+make_skill "$partial_success_root/.agents/skills/partial-success-two" "partial-success-two" "second"
+write_pair_lock "$partial_success_root/skills-lock.json" partial-success-one partial-success-two
 partial_success_output="$fixture_root/partial-success-corrupt-lock.out"
-if HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT=1 \
-  "$fixture_root/uninstall-probe" "$partial_success_root" partial-success-one,partial-success-two batch >"$partial_success_output" 2>&1
-then
-  echo "partial success with a corrupt lock reported complete success" >&2
-  exit 1
-fi
+expect_failure 'partial-success-one' "$partial_success_output" -- \
+  env HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT=1 \
+  "$fixture_root/uninstall-probe" "$partial_success_root" partial-success-one,partial-success-two batch
 test ! -e "$partial_success_root/.agents/skills/partial-success-one"
 test -f "$partial_success_root/.agents/skills/partial-success-two/SKILL.md"
-grep -q 'partial-success-one' "$partial_success_output"
 grep -q 'partial-success-two' "$partial_success_output"
 
 native_root="$fixture_root/native-uninstall-project"
@@ -635,8 +604,8 @@ mkdir -p \
   "$native_root/.agents/skills/native-remove" \
   "$native_root/.claude/skills" \
   "$native_root/.codex/skills/native-remove"
-printf -- "---\nname: native-remove\ndescription: native\n---\n" >"$native_root/.agents/skills/native-remove/SKILL.md"
-printf -- "---\nname: native-remove\ndescription: independent\n---\n" >"$native_root/.codex/skills/native-remove/SKILL.md"
+make_skill "$native_root/.agents/skills/native-remove" "native-remove" "native"
+make_skill "$native_root/.codex/skills/native-remove" "native-remove" "independent"
 ln -s ../../.agents/skills/native-remove "$native_root/.claude/skills/native-remove"
 HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$native_root" native-remove >/dev/null
 test ! -e "$native_root/.agents/skills/native-remove"
@@ -649,14 +618,12 @@ test -f "$native_recovery_root/native-remove/SKILL.md"
 
 rollback_root="$fixture_root/native-uninstall-rollback"
 mkdir -p "$rollback_root/.agents/skills/native-rollback" "$rollback_root/.claude/skills"
-printf -- "---\nname: native-rollback\ndescription: rollback\n---\n" >"$rollback_root/.agents/skills/native-rollback/SKILL.md"
+make_skill "$rollback_root/.agents/skills/native-rollback" "native-rollback" "rollback"
 ln -s ../../.agents/skills/native-rollback "$rollback_root/.claude/skills/native-rollback"
 chmod 555 "$rollback_root/.claude/skills"
 rollback_output="$fixture_root/native-rollback.out"
-if HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$rollback_root" native-rollback >"$rollback_output" 2>&1; then
-  echo "native uninstall unexpectedly wrote through a read-only projection directory" >&2
-  exit 1
-fi
+expect_failure "" "$rollback_output" -- \
+  env HOME="$fixture_root/home" "$fixture_root/uninstall-probe" "$rollback_root" native-rollback
 test -f "$rollback_root/.agents/skills/native-rollback/SKILL.md"
 test -L "$rollback_root/.claude/skills/native-rollback"
 chmod 755 "$rollback_root/.claude/skills"
@@ -664,7 +631,7 @@ chmod 755 "$rollback_root/.claude/skills"
 global_home="$fixture_root/global-home"
 global_xdg="$fixture_root/global-xdg"
 mkdir -p "$global_home/.agents/skills/global-managed" "$global_xdg/skills"
-printf -- "---\nname: global-managed\ndescription: global\n---\n" >"$global_home/.agents/skills/global-managed/SKILL.md"
+make_skill "$global_home/.agents/skills/global-managed" "global-managed" "global"
 cat >"$global_xdg/skills/.skill-lock.json" <<'EOF'
 {
   "version": 3,
@@ -685,11 +652,8 @@ grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
 global_doctor="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills doctor --json)"
 jq -e '([.issues[] | select(.severity != "OK")] | length) == 0' <<<"$global_doctor" >/dev/null
 global_uninstall_output="$fixture_root/global-uninstall.out"
-if HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed >"$global_uninstall_output" 2>&1; then
-  echo "Metagent removed a global npx-managed skill directly" >&2
-  exit 1
-fi
-grep -q 'npx --yes skills remove global-managed --yes --global' "$global_uninstall_output"
+expect_failure 'npx --yes skills remove global-managed --yes --global' "$global_uninstall_output" -- \
+  env HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$fixture_root/uninstall-probe" "$global_home" global-managed
 test -f "$global_home/.agents/skills/global-managed/SKILL.md"
 grep -q '"global-managed"' "$global_xdg/skills/.skill-lock.json"
 HOME="$global_home" XDG_STATE_HOME="$global_xdg" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$global_home" global-managed apply >/dev/null
@@ -703,9 +667,9 @@ mkdir -p \
   "$fixture_root/prune-root/app/.agents/skills/app-skill" \
   "$fixture_root/prune-root/build/generated/.agents/skills/built" \
   "$fixture_root/prune-root/vendor/dependency/.agents/skills/vendored"
-printf -- "---\nname: app-skill\ndescription: app\n---\n" >"$fixture_root/prune-root/app/.agents/skills/app-skill/SKILL.md"
-printf -- "---\nname: built\ndescription: built\n---\n" >"$fixture_root/prune-root/build/generated/.agents/skills/built/SKILL.md"
-printf -- "---\nname: vendored\ndescription: vendored\n---\n" >"$fixture_root/prune-root/vendor/dependency/.agents/skills/vendored/SKILL.md"
+make_skill "$fixture_root/prune-root/app/.agents/skills/app-skill" "app-skill" "app"
+make_skill "$fixture_root/prune-root/build/generated/.agents/skills/built" "built" "built"
+make_skill "$fixture_root/prune-root/vendor/dependency/.agents/skills/vendored" "vendored" "vendored"
 prune_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/prune-root" --max-depth 4 --json)"
 grep -q "app-skill" <<<"$prune_scan"
 if grep -q "built" <<<"$prune_scan"; then
@@ -717,32 +681,17 @@ if grep -q "vendored" <<<"$prune_scan"; then
   exit 1
 fi
 
-cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
-roots = ["$fixture_root/workspace"]
-max_depth = 3
-ignore_projects = ["$fixture_root/workspace"]
-EOF
-
 missing_root_output="$fixture_root/missing-root.out"
-if "$swift_helper" skills repair --apply --root >"$missing_root_output" 2>&1; then
-  echo "missing --root value was accepted" >&2
-  exit 1
-fi
-grep -q -- "--root requires a value" "$missing_root_output"
+expect_failure "--root requires a value" "$missing_root_output" -- \
+  "$swift_helper" skills repair --apply --root
 
 bad_config_flag_output="$fixture_root/bad-config-flag.out"
-if "$swift_helper" config show --bogus >"$bad_config_flag_output" 2>&1; then
-  echo "unknown config show flag was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown config show flag: --bogus" "$bad_config_flag_output"
+expect_failure "unknown config show flag: --bogus" "$bad_config_flag_output" -- \
+  "$swift_helper" config show --bogus
 
 bad_config_command_output="$fixture_root/bad-config-command.out"
-if "$swift_helper" config bogus >"$bad_config_command_output" 2>&1; then
-  echo "unknown config command was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown config command: bogus" "$bad_config_command_output"
+expect_failure "unknown config command: bogus" "$bad_config_command_output" -- \
+  "$swift_helper" config bogus
 
 bad_max_depth_home="$fixture_root/bad-max-depth-home"
 mkdir -p "$bad_max_depth_home/.config/metagent"
@@ -751,11 +700,8 @@ roots = ["$fixture_root/workspace"]
 max_depth = 3.5
 EOF
 bad_max_depth_output="$fixture_root/bad-max-depth.out"
-if HOME="$bad_max_depth_home" "$swift_helper" config show --json >"$bad_max_depth_output" 2>&1; then
-  echo "malformed max_depth was accepted" >&2
-  exit 1
-fi
-grep -q -- "max_depth must be an integer" "$bad_max_depth_output"
+expect_failure "max_depth must be an integer" "$bad_max_depth_output" -- \
+  env HOME="$bad_max_depth_home" "$swift_helper" config show --json
 
 install_home="$fixture_root/install-home"
 mkdir -p "$install_home/.cargo/bin"
@@ -768,22 +714,16 @@ HOME="$install_home" "$install_home/.cargo/bin/metagent" --help >/dev/null
 unreadable_config_home="$fixture_root/unreadable-config-home"
 mkdir -p "$unreadable_config_home/.config/metagent/config.toml"
 unreadable_config_output="$fixture_root/unreadable-config.out"
-if HOME="$unreadable_config_home" "$swift_helper" config show --json >"$unreadable_config_output" 2>&1; then
-  echo "unreadable config was treated as default config" >&2
-  exit 1
-fi
-grep -q -- "failed reading" "$unreadable_config_output"
+expect_failure "failed reading" "$unreadable_config_output" -- \
+  env HOME="$unreadable_config_home" "$swift_helper" config show --json
 
 unknown_repair_output="$fixture_root/unknown-repair.out"
-if HOME="$fixture_root/home" "$swift_helper" skills repair --apply --rot "$fixture_root/workspace/child" >"$unknown_repair_output" 2>&1; then
-  echo "unknown repair flag was accepted" >&2
-  exit 1
-fi
-grep -q -- "unknown repair flag: --rot" "$unknown_repair_output"
+expect_failure "unknown repair flag: --rot" "$unknown_repair_output" -- \
+  env HOME="$fixture_root/home" "$swift_helper" skills repair --apply --rot "$fixture_root/workspace/child"
 
 repair_project="$fixture_root/repair-project"
 mkdir -p "$repair_project/.agents/skills/native-skill"
-printf -- "---\nname: native-skill\ndescription: native\n---\n" >"$repair_project/.agents/skills/native-skill/SKILL.md"
+make_skill "$repair_project/.agents/skills/native-skill" "native-skill" "native"
 repair_preview="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0)"
 grep -q "would create .claude/skills symlink" <<<"$repair_preview"
 test ! -e "$repair_project/.claude/skills"
@@ -797,14 +737,14 @@ test ! -e "$repair_project/agents.lock"
 
 repair_home="$fixture_root/repair-home"
 mkdir -p "$repair_home/.agents/skills/global-only"
-printf -- "---\nname: global-only\ndescription: global\n---\n" >"$repair_home/.agents/skills/global-only/SKILL.md"
+make_skill "$repair_home/.agents/skills/global-only" "global-only" "global"
 HOME="$repair_home" "$swift_helper" skills repair --root "$repair_home" --max-depth 0 --apply >/dev/null
 test ! -e "$repair_home/.claude/skills"
 
 shared_claude_project="$fixture_root/shared-claude-project"
 shared_claude_target="$fixture_root/shared-claude-target"
 mkdir -p "$shared_claude_project/.agents/skills/shared-test" "$shared_claude_target"
-printf -- "---\nname: shared-test\ndescription: shared\n---\n" >"$shared_claude_project/.agents/skills/shared-test/SKILL.md"
+make_skill "$shared_claude_project/.agents/skills/shared-test" "shared-test" "shared"
 ln -s "$shared_claude_target" "$shared_claude_project/.claude"
 shared_claude_output="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$shared_claude_project" --max-depth 0 --apply)"
 grep -q "refusing to modify its shared target" <<<"$shared_claude_output"
@@ -812,7 +752,7 @@ test ! -e "$shared_claude_target/skills"
 
 wrong_link_project="$fixture_root/wrong-link-project"
 mkdir -p "$wrong_link_project/.agents/skills/wrong-link-skill" "$wrong_link_project/.claude"
-printf -- "---\nname: wrong-link-skill\ndescription: wrong link\n---\n" >"$wrong_link_project/.agents/skills/wrong-link-skill/SKILL.md"
+make_skill "$wrong_link_project/.agents/skills/wrong-link-skill" "wrong-link-skill" "wrong link"
 ln -s ../somewhere-else "$wrong_link_project/.claude/skills"
 wrong_link_preview="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0)"
 grep -q "would replace wrong .claude/skills symlink" <<<"$wrong_link_preview"
@@ -822,7 +762,7 @@ test "$(readlink "$wrong_link_project/.claude/skills")" = "../.agents/skills"
 
 conflict_project="$fixture_root/conflict-project"
 mkdir -p "$conflict_project/.agents/skills/canonical-skill" "$conflict_project/.claude/skills/claude-only"
-printf -- "---\nname: canonical-skill\ndescription: canonical\n---\n" >"$conflict_project/.agents/skills/canonical-skill/SKILL.md"
+make_skill "$conflict_project/.agents/skills/canonical-skill" "canonical-skill" "canonical"
 printf -- "keep me\n" >"$conflict_project/.claude/skills/claude-only/SKILL.md"
 conflict_output="$("$swift_helper" skills repair --root "$conflict_project" --max-depth 0 --apply)"
 grep -q "manual review: .claude/skills exists and is not a symlink" <<<"$conflict_output"
@@ -833,22 +773,16 @@ cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
 roots = ["$fixture_root/default"
 EOF
 bad_config_output="$fixture_root/bad-config.out"
-if HOME="$fixture_root/home" "$swift_helper" skills repair --apply >"$bad_config_output" 2>&1; then
-  echo "malformed config was accepted" >&2
-  exit 1
-fi
-grep -q -- "roots must be a TOML string array" "$bad_config_output"
+expect_failure "roots must be a TOML string array" "$bad_config_output" -- \
+  env HOME="$fixture_root/home" "$swift_helper" skills repair --apply
 test ! -e "$fixture_root/default/.claude/skills"
 
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
 roots = [$fixture_root/default]
 EOF
 bare_array_output="$fixture_root/bare-array.out"
-if HOME="$fixture_root/home" "$swift_helper" skills repair --apply >"$bare_array_output" 2>&1; then
-  echo "bare config array value was accepted" >&2
-  exit 1
-fi
-grep -q -- "roots must be a TOML string array" "$bare_array_output"
+expect_failure "roots must be a TOML string array" "$bare_array_output" -- \
+  env HOME="$fixture_root/home" "$swift_helper" skills repair --apply
 test ! -e "$fixture_root/default/.claude/skills"
 
 echo "metagent verification passed"

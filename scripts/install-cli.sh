@@ -15,10 +15,8 @@ else
   fi
 fi
 
-export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/metagent-clang-cache}"
-if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
+source "$repo_root/scripts/lib.sh"
+setup_swift_build_env
 
 (
   cd "$app_source"
