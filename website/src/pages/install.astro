@@ -1,0 +1,77 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import PageIntro from "../components/PageIntro.astro";
+import CommandBlock from "../components/CommandBlock.astro";
+---
+
+<SiteLayout
+  title="Install Metagent — Developer preview"
+  description="Build the Metagent macOS app and local CLI from source."
+>
+  <PageIntro
+    eyebrow="Developer preview"
+    title="Install Metagent from source."
+    lede="The current preview is for developers on macOS 26 or newer. A signed and notarized download is planned for the public release."
+  />
+
+  <section class="docs-shell">
+    <aside class="docs-aside">
+      <span>On this page</span>
+      <a href="#requirements">Requirements</a>
+      <a href="#app">App + CLI</a>
+      <a href="#mcp">Connect agents</a>
+      <a href="#verify">Verify</a>
+    </aside>
+    <div class="docs-content">
+      <section id="requirements">
+        <p class="step">01 · Before you start</p>
+        <h2>Requirements</h2>
+        <ul class="check-list">
+          <li>macOS 26 or newer</li>
+          <li>Xcode with a Swift toolchain</li>
+          <li>An Apple Development signing identity for local app installation</li>
+        </ul>
+        <p class="callout">
+          Metagent is an early developer preview. The local installer builds and
+          signs the app with your development identity; it is not yet a notarized distribution.
+        </p>
+      </section>
+
+      <section id="app">
+        <p class="step">02 · Build locally</p>
+        <h2>Install the app and CLI</h2>
+        <p>Clone the repository and run the two focused installers.</p>
+        <CommandBlock command="git clone https://github.com/ianwatts22/metagent.git" label="clone command" />
+        <CommandBlock command="cd metagent" label="change directory command" />
+        <CommandBlock command="scripts/install-menu-bar-app.sh --restart" label="app install command" />
+        <CommandBlock command="scripts/install-cli.sh" label="CLI install command" />
+        <div class="path-pair">
+          <div><span>Native app</span><code>~/Applications/Metagent.app</code></div>
+          <div><span>Command line</span><code>~/.local/bin/metagent</code></div>
+        </div>
+      </section>
+
+      <section id="mcp">
+        <p class="step">03 · Optional</p>
+        <h2>Connect Codex or Claude</h2>
+        <p>
+          Register the local read-only MCP server after installing the CLI.
+          Existing agent sessions may need to be restarted.
+        </p>
+        <CommandBlock command='codex mcp add metagent -- "$(command -v metagent)" mcp --stdio' label="Codex MCP registration command" />
+        <CommandBlock command='claude mcp add --scope user metagent -- "$(command -v metagent)" mcp --stdio' label="Claude MCP registration command" />
+      </section>
+
+      <section id="verify">
+        <p class="step">04 · Confirm</p>
+        <h2>Verify the connection</h2>
+        <CommandBlock command="codex mcp get metagent" label="Codex verification command" />
+        <CommandBlock command="claude mcp get metagent" label="Claude verification command" />
+        <p>
+          Then ask your agent: “Use Metagent to analyze this project’s instructions,
+          skills, MCP setup, provenance, usage evidence, and Doctor findings.”
+        </p>
+      </section>
+    </div>
+  </section>
+</SiteLayout>

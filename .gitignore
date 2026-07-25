@@ -5,3 +5,6 @@
 /.DS_Store
 **/.DS_Store
 /.metagent.local.toml
+
+# Xcode per-user state
+apps/MetagentMenuBar/.swiftpm/

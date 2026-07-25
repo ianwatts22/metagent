@@ -1,0 +1,104 @@
+---
+import "../styles/global.css";
+import GitHubMark from "../components/GitHubMark.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "Metagent — Clean up your agent environment",
+  description = "A native control center and local analysis toolkit for coding-agent skills, MCP servers, and project instructions.",
+} = Astro.props;
+
+const pathname = Astro.url.pathname;
+const nav = [
+  { href: "/install/", label: "Install" },
+  { href: "/cli-mcp/", label: "CLI + MCP" },
+  { href: "/privacy/", label: "Privacy" },
+  { href: "/contributing/", label: "Contributing" },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#f0efec" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" type="image/svg+xml" href="/brand/logo.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,300..700;1,300..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Metagent home">
+        <img src="/brand/logo.svg" alt="" width="32" height="32" />
+        <span>Metagent</span>
+      </a>
+
+      <nav class="desktop-nav" aria-label="Primary navigation">
+        {nav.map((item) => (
+          <a href={item.href} aria-current={pathname === item.href ? "page" : undefined}>
+            {item.label}
+          </a>
+        ))}
+      </nav>
+
+      <a
+        class="header-github"
+        href="https://github.com/ianwatts22/metagent"
+        aria-label="Metagent on GitHub"
+      >
+        <GitHubMark size={17} />
+      </a>
+
+      <details class="mobile-menu">
+        <summary aria-label="Open navigation menu">
+          <span>Menu</span>
+          <span aria-hidden="true">⌄</span>
+        </summary>
+        <nav aria-label="Mobile navigation">
+          {nav.map((item) => (
+            <a href={item.href} aria-current={pathname === item.href ? "page" : undefined}>
+              {item.label}
+            </a>
+          ))}
+        </nav>
+      </details>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <img src="/brand/logo.svg" alt="" width="28" height="28" />
+        <div>
+          <strong>Metagent</strong>
+          <span>Local clarity for agent systems.</span>
+        </div>
+      </div>
+      <div class="footer-links">
+        <a href="/install/">Install</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="https://github.com/ianwatts22/metagent/issues">Issues</a>
+        <a href="https://github.com/ianwatts22/metagent">Source</a>
+      </div>
+      <p>Early developer preview · macOS 26+</p>
+    </footer>
+  </body>
+</html>

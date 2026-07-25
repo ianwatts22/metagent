@@ -1,0 +1,121 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import CommandBlock from "../components/CommandBlock.astro";
+import GitHubMark from "../components/GitHubMark.astro";
+
+const surfaces = [
+  {
+    label: "Native app",
+    title: "See the whole system.",
+    copy: "Browse skills, MCP connections, projects, provenance, usage, scores, and cleanup findings in one quiet native interface.",
+  },
+  {
+    label: "Command line",
+    title: "Inspect any folder.",
+    copy: "Produce a versioned project report from the same Swift core that powers the app—useful in terminals, scripts, and CI.",
+  },
+  {
+    label: "Local MCP",
+    title: "Give agents context.",
+    copy: "Let Codex and Claude inspect a project's instructions, skills, MCP setup, provenance, usage evidence, and Doctor findings.",
+  },
+];
+---
+
+<SiteLayout>
+  <section class="hero">
+    <h1>Give your agent the workspace it deserves.</h1>
+    <p class="hero-lede">
+      Metagent turns scattered skills, MCP servers, and instructions into one
+      tidy system—so your agents have room to succeed.
+    </p>
+    <div class="hero-actions">
+      <a
+        class="primary-button"
+        href="https://github.com/ianwatts22/metagent/releases/latest/download/Metagent.zip"
+      >
+        Download
+      </a>
+      <a class="secondary-button" href="https://github.com/ianwatts22/metagent">
+        <GitHubMark size={15} /> GitHub
+      </a>
+    </div>
+    <p class="requirement">macOS 26+ · Local-first</p>
+    <img
+      class="hero-shot"
+      src="/app-skills.webp"
+      width="1600"
+      height="1165"
+      alt="The Metagent app showing a project's skills ranked by utility score, token cost, and 30-day usage"
+    />
+  </section>
+
+  <section class="section feature-intro">
+    <header class="sheet-head"><b>01</b> Principle</header>
+    <h2>Agent setup should be inspectable, not archaeological.</h2>
+    <p>
+      Metagent resolves the difference between configured, installed, observed,
+      and healthy—without flattening them into one misleading status.
+    </p>
+  </section>
+
+  <section class="section">
+    <header class="sheet-head"><b>02</b> Surfaces</header>
+    <div class="surface-grid">
+      {surfaces.map((surface) => (
+        <article class="surface-card">
+          <p class="card-label">{surface.label}</p>
+          <h3>{surface.title}</h3>
+          <p>{surface.copy}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="section split-section">
+    <div>
+      <header class="sheet-head"><b>03</b> Project analysis</header>
+      <h2>Point it at a folder. Get the operating picture.</h2>
+      <p>
+        The compact report combines project instructions, project skills,
+        provenance, relevant MCP configuration, observed usage, and Doctor findings.
+        It reports metadata—not instruction contents.
+      </p>
+      <a class="text-link" href="/cli-mcp/">Explore the CLI and MCP <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="terminal-panel">
+      <pre><code><span class="prompt">❯</span> metagent analyze --root . --json
+
+<span class="dim">{'{'}</span>
+  <span class="key">"schema_version"</span>: <span class="number">2</span>,
+  <span class="key">"root"</span>: <span class="string">"/path/to/social-glass"</span>,
+  <span class="key">"counts"</span>: <span class="dim">{'{'}</span>
+    <span class="key">"project_skills"</span>: <span class="number">18</span>,
+    <span class="key">"project_mcp_servers"</span>: <span class="number">12</span>,
+    <span class="key">"findings"</span>: <span class="number">2</span>
+  <span class="dim">{'}'}</span>,
+  <span class="key">"findings"</span>: <span class="dim">[ … ]</span>
+<span class="dim">{'}'}</span></code></pre>
+    </div>
+  </section>
+
+  <section class="section split-section">
+    <div>
+      <header class="sheet-head"><b>04</b> Local by design</header>
+      <h2>Your agent system stays on your Mac.</h2>
+      <p>
+        Inventory, usage metadata, evaluations, and project analysis live locally.
+        Metagent does not upload your inventory or session content.
+      </p>
+      <a class="text-link" href="/privacy/">Read the privacy model <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section class="section cta-section">
+    <header class="sheet-head"><b>05</b> Install</header>
+    <h2>Make the invisible system visible.</h2>
+    <p>Build the native app and local CLI from source in a few commands.</p>
+    <CommandBlock command="git clone https://github.com/ianwatts22/metagent.git" label="clone command" />
+    <a class="primary-button" href="/install/">Read the install guide</a>
+  </section>
+</SiteLayout>

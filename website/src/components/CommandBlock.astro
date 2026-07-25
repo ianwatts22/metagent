@@ -1,0 +1,30 @@
+---
+interface Props {
+  command: string;
+  label?: string;
+}
+
+const { command, label = "Terminal command" } = Astro.props;
+---
+
+<div class="command-block">
+  <code aria-label={label}>{command}</code>
+  <button class="copy-button" type="button" data-copy={command} aria-label={`Copy ${label}`}>
+    Copy
+  </button>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const value = button.dataset.copy;
+      if (!value) return;
+
+      await navigator.clipboard.writeText(value);
+      button.textContent = "Copied";
+      window.setTimeout(() => {
+        button.textContent = "Copy";
+      }, 1600);
+    });
+  });
+</script>

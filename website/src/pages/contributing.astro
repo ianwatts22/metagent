@@ -1,0 +1,50 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import PageIntro from "../components/PageIntro.astro";
+import CommandBlock from "../components/CommandBlock.astro";
+---
+
+<SiteLayout
+  title="Contributing — Metagent"
+  description="Contribute focused fixes and product proposals to Metagent."
+>
+  <PageIntro
+    eyebrow="Open source"
+    title="Help make agent systems legible."
+    lede="Metagent is early. Focused bug reports, reproducible edge cases, and narrowly scoped improvements are the most useful contributions."
+  />
+
+  <section class="section contribute-grid">
+    <article>
+      <span class="contribute-icon">01</span>
+      <h2>Report what is ambiguous.</h2>
+      <p>
+        Provenance, manager ownership, scope, and passive health are subtle.
+        Include exact paths and expected ownership without sharing secrets.
+      </p>
+      <a class="text-link" href="https://github.com/ianwatts22/metagent/issues">
+        Open a GitHub issue <span aria-hidden="true">↗</span>
+      </a>
+    </article>
+    <article>
+      <span class="contribute-icon">02</span>
+      <h2>Keep changes focused.</h2>
+      <p>
+        Swift is the source of truth. Shared behavior belongs in MetagentCore;
+        the app and CLI should remain consumers of that core.
+      </p>
+      <a class="text-link" href="https://github.com/ianwatts22/metagent">
+        Browse the repository <span aria-hidden="true">↗</span>
+      </a>
+    </article>
+  </section>
+
+  <section class="section verify-section">
+    <div>
+      <p class="eyebrow">Before a pull request</p>
+      <h2>Run the project verification.</h2>
+      <p>The verification script checks the Swift packages, tests, and architectural guardrails.</p>
+    </div>
+    <CommandBlock command="scripts/verify.sh" label="verification command" />
+  </section>
+</SiteLayout>

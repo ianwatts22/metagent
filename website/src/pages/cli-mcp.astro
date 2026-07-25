@@ -1,0 +1,60 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import PageIntro from "../components/PageIntro.astro";
+import CommandBlock from "../components/CommandBlock.astro";
+---
+
+<SiteLayout
+  title="CLI and MCP — Metagent"
+  description="Inspect agent configuration from a terminal or expose local project analysis to Codex and Claude."
+>
+  <PageIntro
+    eyebrow="CLI + MCP"
+    title="One Swift core. Three ways in."
+    lede="The native app, command line, and local MCP server share the same inventory, provenance, health, usage, and analysis logic."
+  />
+
+  <section class="section contract-grid">
+    <div class="contract-copy">
+      <p class="eyebrow">Project contract</p>
+      <h2>Analyze the folder you are actually working in.</h2>
+      <p>
+        Metagent combines relevant instructions, project skills, project MCP
+        configuration, retained usage evidence, and Doctor findings into a
+        versioned read-only report.
+      </p>
+      <CommandBlock command="metagent analyze --root /absolute/path/to/project --json" label="project analysis command" />
+    </div>
+    <div class="contract-list">
+      <div><span>01</span><strong>Instructions</strong><p>Discover durable agent guidance and configuration.</p></div>
+      <div><span>02</span><strong>Skills</strong><p>Resolve scope, provenance, scores, and usage evidence.</p></div>
+      <div><span>03</span><strong>MCP</strong><p>Report relevant passive configuration and known issues.</p></div>
+      <div><span>04</span><strong>Doctor</strong><p>Group actionable findings without inventing urgency.</p></div>
+    </div>
+  </section>
+
+  <section class="section tool-section">
+    <p class="eyebrow">Read-only tools</p>
+    <h2>Give agents the operating picture.</h2>
+    <div class="tool-grid">
+      <article><code>analyze_project</code><p>Return the combined project report.</p></article>
+      <article><code>get_project_analysis_details</code><p>Page through one report section only when deeper evidence is needed.</p></article>
+      <article><code>list_skills</code><p>Inspect matching installed skills.</p></article>
+      <article><code>doctor_project</code><p>Review actionable configuration findings.</p></article>
+    </div>
+    <div class="boundary-note">
+      <strong>Important distinction</strong>
+      <p>
+        Configured is not the same as authenticated, loaded, verified, or used.
+        Metagent preserves those boundaries instead of collapsing them into “healthy.”
+      </p>
+    </div>
+  </section>
+
+  <section class="section cta-section">
+    <p class="eyebrow">Connect locally</p>
+    <h2>Run the MCP server over stdio.</h2>
+    <CommandBlock command="metagent mcp --stdio" label="MCP server command" />
+    <a class="primary-button" href="/install/#mcp">Connect Codex or Claude</a>
+  </section>
+</SiteLayout>

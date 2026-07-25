@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0). Created if it does not exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
+
+      - name: Install asset tooling
+        run: brew install librsvg
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: apps/MetagentMenuBar/.build
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('apps/MetagentMenuBar/Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-
+
+      - name: Run tests
+        working-directory: apps/MetagentMenuBar
+        run: swift test --disable-sandbox
+
+      # Unsigned build. Releases are ad-hoc signed only: the repo has no Developer ID
+      # certificate, so downloads are quarantined by Gatekeeper until the user clears
+      # the attribute. See the release notes for the one-line workaround.
+      - name: Build app bundle and CLI
+        run: ./scripts/build-menu-bar-app.sh
+
+      - name: Package artifacts
+        id: package
+        run: |
+          version="${{ steps.meta.outputs.version }}"
+          mkdir -p artifacts
+          ditto -c -k --keepParent dist/MetagentMenuBar.app "artifacts/Metagent.zip"
+          ditto -c -k "apps/MetagentMenuBar/.build/release/metagent" "artifacts/metagent-cli.zip"
+          cd artifacts
+          shasum -a 256 Metagent.zip metagent-cli.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Metagent $tag" \
+              --generate-notes \
+              --prerelease
+          fi
+          gh release upload "$tag" \
+            artifacts/Metagent.zip \
+            artifacts/metagent-cli.zip \
+            artifacts/checksums.txt \
+            --clobber
