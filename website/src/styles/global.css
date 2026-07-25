@@ -266,8 +266,10 @@ img {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* Fixed height means hovering can only ever widen a card, never grow it. */
+  min-height: 19rem;
   min-width: 0;
-  padding: 3.2rem 1.5rem;
+  padding: 2.4rem 1.5rem;
   border-left: 1px solid var(--hairline);
   cursor: default;
   outline: none;
@@ -291,7 +293,7 @@ img {
 }
 
 .surface-card .card-label {
-  margin: 1.4rem 0 0;
+  margin: 0.55rem 0 0;
   color: var(--ink);
   font-size: 1.05rem;
   font-weight: 700;

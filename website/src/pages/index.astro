@@ -34,7 +34,6 @@ const matrix = [
   { name: "Utility scores", app: true, cli: true, mcp: false },
   { name: "Duplicate detection", app: true, cli: false, mcp: false },
   { name: "Repair and remove", app: true, cli: true, mcp: false },
-  { name: "Connect an agent", app: false, cli: true, mcp: false },
 ];
 
 const sees = [
@@ -89,7 +88,7 @@ const sees = [
     <div class="surface-grid">
       {surfaces.map((surface) => (
         <article class="surface-card" tabindex="0">
-          <Icon icon={surface.icon} size={56} stroke={1.1} />
+          <Icon icon={surface.icon} size={80} stroke={1} />
           <p class="card-label">{surface.label}</p>
           <p class="surface-detail">{surface.detail}</p>
         </article>
