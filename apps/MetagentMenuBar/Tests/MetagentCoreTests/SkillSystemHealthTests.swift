@@ -170,6 +170,113 @@ struct SkillSystemHealthTests {
         #expect(health.usageCoverage == .partial(progress: 0.4))
     }
 
+    @Test("dormant project directories drop out of adoption rates but stay in inventory totals")
+    func dormantProjectsAreNotRated() {
+        let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!
+        let health = MetagentCore.skillSystemHealth(
+            projects: dormancyProjects(),
+            usage: dormancyUsage(),
+            activity: dormancyActivity(now: now),
+            now: now
+        )
+
+        #expect(health.skillCount == 4)
+        #expect(health.assessedSkillCount == 2)
+        #expect(health.dormantSkillCount == 2)
+        #expect(health.dormantProjectCount == 1)
+        #expect(health.active30dSkillCount == 1)
+        #expect(health.unused30dSkillCount == 1)
+        #expect(health.neverObservedSkillCount == 1)
+        #expect(health.unused30dFraction == 0.5)
+        // Token and age totals describe what is installed, not what is rated.
+        #expect(health.skillBodyTokenEstimate == 400)
+    }
+
+    @Test("every skill stays rated when no session corpus is available")
+    func missingActivityCorpusRatesEverything() {
+        let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!
+        let health = MetagentCore.skillSystemHealth(
+            projects: dormancyProjects(),
+            usage: dormancyUsage(),
+            activity: .unavailable,
+            now: now
+        )
+
+        #expect(health.assessedSkillCount == 4)
+        #expect(health.dormantSkillCount == 0)
+        #expect(health.unused30dSkillCount == 3)
+    }
+
+    @Test("selecting a dormant directory still rates its own skills")
+    func selectedProjectScopeIgnoresDormancy() {
+        let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!
+        let health = MetagentCore.skillSystemHealth(
+            projects: dormancyProjects(),
+            usage: dormancyUsage(),
+            scope: .project(root: "/Users/tester/code/dormant"),
+            activity: dormancyActivity(now: now),
+            now: now
+        )
+
+        #expect(health.skillCount == 2)
+        #expect(health.assessedSkillCount == 2)
+        #expect(health.dormantSkillCount == 0)
+        #expect(health.unused30dSkillCount == 2)
+    }
+
+    @Test("session directory names fold separators, dots, and underscores")
+    func sessionDirectoryNaming() {
+        #expect(
+            sessionDirectoryName(for: "/Users/tester/code_projects/agent-tools")
+                == "-Users-tester-code-projects-agent-tools"
+        )
+        #expect(sessionDirectoryName(for: "/Users/tester/.agents") == "-Users-tester--agents")
+    }
+
+    private func dormancyProjects() -> [SkillProject] {
+        let globalRoot = "/Users/tester"
+        let activeRoot = "/Users/tester/code/active"
+        let dormantRoot = "/Users/tester/code/dormant"
+        return [
+            project(root: globalRoot, skills: [
+                skill(name: "alpha", root: globalRoot, scope: "global"),
+            ]),
+            project(root: activeRoot, skills: [
+                skill(name: "beta", root: activeRoot, scope: "project"),
+            ]),
+            project(root: dormantRoot, skills: [
+                skill(name: "gamma", root: dormantRoot, scope: "project"),
+                skill(name: "delta", root: dormantRoot, scope: "project"),
+            ]),
+        ]
+    }
+
+    private func dormancyUsage() -> SkillUsageSnapshot {
+        snapshot(
+            summaries: [
+                usageSummary(
+                    name: "alpha",
+                    path: "/Users/tester/.agents/skills/alpha",
+                    scope: "global",
+                    total: 5,
+                    last30d: 2
+                ),
+            ],
+            complete: true
+        )
+    }
+
+    private func dormancyActivity(now: Date) -> ProjectActivityIndex {
+        ProjectActivityIndex(
+            lastActiveByRoot: [
+                "/Users/tester": now,
+                "/Users/tester/code/active": now.addingTimeInterval(-2 * 86_400),
+                "/Users/tester/code/dormant": now.addingTimeInterval(-120 * 86_400),
+            ],
+            isAvailable: true
+        )
+    }
+
     private func project(root: String, skills: [SkillInventoryItem]) -> SkillProject {
         SkillProject(
             root: root,
