@@ -17,7 +17,6 @@ struct InventorySection: View {
     @State private var inspectedSkill: InventorySkillRow?
     @State private var viewedSkill: InventorySkillRow?
     @State private var iconTarget: InventorySkillRow?
-    @State private var showsScoreExplanation = false
     @State private var selectedDuplicateGroupID: String?
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
     @State private var reviewedDuplicateGroupIDs = Set<String>()
@@ -260,156 +259,113 @@ struct InventorySection: View {
         hiddenSourceRawBeforeDuplicateReview = nil
     }
 
+    private var countText: String {
+        if !selectedRows.isEmpty {
+            return "\(selectedRows.count) selected"
+        }
+        if selectedView == .duplicates {
+            return "\(visibleOverlapGroupCount) groups · \(rows.count) copies"
+        }
+        return "\(rows.count) skills"
+    }
+
+    /// How many of the tucked-away controls are off their default, so the menu
+    /// can say so without the user opening it.
+    private var activeAdvancedFilterCount: Int {
+        var count = hiddenSources.isEmpty ? 0 : 1
+        if scopeFilter != SkillScopeFilter.allCases[0] { count += 1 }
+        return count
+    }
+
+    private var advancedFilterTitle: String {
+        activeAdvancedFilterCount == 0 ? "Filters" : "Filters · \(activeAdvancedFilterCount)"
+    }
+
+    @ViewBuilder
+    private var toolbarControls: some View {
+        SkillViewSelector(selection: selectedViewBinding)
+        CountChip(text: countText)
+        filterControls
+    }
+
+    @ViewBuilder
+    private var filterControls: some View {
+        GlassSearchField(placeholder: "Search", text: $query, width: 150)
+
+        // Usage is the question this app exists to answer, so it stays in the
+        // open alongside search and grouping.
+        GlassSelectionMenu(
+            title: "Usage",
+            selection: $usageFilter,
+            options: Array(UsageFilter.allCases),
+            optionTitle: { $0.title },
+            width: 158
+        )
+
+        if selectedView != .duplicates {
+            GlassSelectionMenu(
+                title: "Group",
+                selection: groupingBinding,
+                options: Array(SkillGrouping.allCases),
+                optionTitle: { $0.title },
+                width: 150
+            )
+            .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
+        }
+
+        Menu {
+            Picker("Location", selection: $scopeFilter) {
+                ForEach(SkillScopeFilter.allCases) { scope in
+                    Text(scope.title).tag(scope)
+                }
+            }
+
+            Section("Visible sources") {
+                Button("Show All Sources") {
+                    hiddenSourceRaw = ""
+                    selection.removeAll()
+                }
+                .disabled(hiddenSources.isEmpty)
+                ForEach(SkillSourceCategory.allCases) { source in
+                    Toggle(
+                        source.title,
+                        isOn: Binding(
+                            get: { !hiddenSources.contains(source) },
+                            set: { setSource(source, visible: $0) }
+                        )
+                    )
+                }
+            }
+        } label: {
+            GlassMenuLabel(
+                title: advancedFilterTitle,
+                systemImage: "slider.horizontal.3",
+                width: activeAdvancedFilterCount == 0 ? 112 : 128
+            )
+        }
+        .help("Location and which skill sources are visible")
+        .buttonStyle(.plain)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Skills")
-                        .font(.headline)
-                    Text(selectedRows.isEmpty
-                        ? (selectedView == .duplicates
-                            ? "\(visibleOverlapGroupCount) groups · \(rows.count) installed copies"
-                            : "\(rows.count) visible skills")
-                        : "\(selectedRows.count) selected · \(rows.count) visible")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            // One row when the window allows it, two only when it does not.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    toolbarControls
+                    Spacer(minLength: 0)
                 }
 
-                Spacer()
-
-                SkillViewSelector(selection: selectedViewBinding)
-                .frame(width: 430)
-
-                Button {
-                    showsScoreExplanation = true
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                }
-                .buttonStyle(.glass)
-                .help("Quality = Plugin Eval 60% + management confidence 20% + optional Codex review 20%; available inputs are normalized. Utility = Quality 70% + observed adoption 30%. Click for full details.")
-                .accessibilityLabel("How scores work")
-
-                if selectedView != .duplicates {
-                    Menu {
-                        Button("Run Plugin Eval") {
-                            if let selectedRow {
-                                model.evaluateSkillWithPluginEval(path: selectedRow.canonicalPath)
-                            }
-                        }
-                        .disabled(selectedRow == nil)
-                        Button("Review with Codex") {
-                            if let selectedRow {
-                                pendingConfirmation = .codexReview(selectedRow)
-                            }
-                        }
-                        .disabled(selectedRow == nil)
-                        Divider()
-                        Button("Run Plugin Eval for Visible Skills") {
-                            model.evaluateSkillsWithPluginEval(paths: visibleInventoryRows.map(\.canonicalPath))
-                        }
-                        .disabled(visibleInventoryRows.isEmpty)
-                    } label: {
-                        Label("Evaluate", systemImage: "checkmark.seal")
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        SkillViewSelector(selection: selectedViewBinding)
+                        CountChip(text: countText)
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.glass)
-                    .disabled(visibleInventoryRows.isEmpty || model.isSkillEvaluating)
-
-                    Button(role: .destructive) {
-                        pendingConfirmation = .removal(selectedRemovalRows)
-                    } label: {
-                        Label(
-                            selectedRemovalRows.count > 1 ? "Remove \(selectedRemovalRows.count)" : "Remove",
-                            systemImage: "trash"
-                        )
+                    HStack(spacing: 8) {
+                        filterControls
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.glass)
-                    .disabled(selectedRemovalRows.isEmpty)
-                }
-
-                Button {
-                    model.refreshStatus()
-                    model.refreshUsage()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.glass)
-                .help("Refresh skills and usage")
-                .disabled(model.isRunning)
-            }
-
-            HStack(spacing: 10) {
-                GlassSearchField(placeholder: "Filter skills", text: $query, width: 190)
-
-                Menu {
-                    Button("Show All Sources") {
-                        hiddenSourceRaw = ""
-                        selection.removeAll()
-                    }
-                    .disabled(hiddenSources.isEmpty)
-                    Divider()
-                    ForEach(SkillSourceCategory.allCases) { source in
-                        Toggle(
-                            source.title,
-                            isOn: Binding(
-                                get: { !hiddenSources.contains(source) },
-                                set: { setSource(source, visible: $0) }
-                            )
-                        )
-                    }
-                } label: {
-                    GlassMenuLabel(
-                        title: hiddenSources.isEmpty ? "Sources" : "Sources · \(hiddenSources.count) hidden",
-                        systemImage: hiddenSources.isEmpty
-                            ? "line.3.horizontal.decrease.circle"
-                            : "line.3.horizontal.decrease.circle.fill",
-                        width: hiddenSources.isEmpty ? 112 : 168
-                    )
-                }
-                .help("Choose which skill sources are visible")
-                .buttonStyle(.plain)
-
-                GlassSelectionMenu(
-                    title: "Usage",
-                    selection: $usageFilter,
-                    options: Array(UsageFilter.allCases),
-                    optionTitle: { $0.title },
-                    width: 170
-                )
-
-                GlassSelectionMenu(
-                    title: "Location",
-                    selection: $scopeFilter,
-                    options: Array(SkillScopeFilter.allCases),
-                    optionTitle: { $0.title },
-                    width: 164
-                )
-
-                if selectedView != .duplicates {
-                    GlassSelectionMenu(
-                        title: "Group",
-                        selection: groupingBinding,
-                        options: Array(SkillGrouping.allCases),
-                        optionTitle: { $0.title },
-                        width: 160
-                    )
-                    .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
-                }
-
-                Spacer()
-            }
-
-            if let evaluationStatus = model.skillEvaluationStatusText {
-                HStack(spacing: 6) {
-                    if model.isSkillEvaluating {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(evaluationStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
 
@@ -480,6 +436,13 @@ struct InventorySection: View {
         }
         .task(id: model.skillTableRevision) {
             await rebuildRows()
+            model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
+        }
+        .onChange(of: model.isSkillEvaluating) { _, isEvaluating in
+            // Each batch bumps the revision, so pick up whatever is still
+            // unevaluated once the previous pass finishes.
+            guard !isEvaluating else { return }
+            model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
         .onChange(of: selectedViewRaw) { oldRawValue, rawValue in
             let oldView = SkillTableView(rawValue: oldRawValue) ?? .summary
@@ -529,9 +492,6 @@ struct InventorySection: View {
         }
         .sheet(item: $iconTarget) { row in
             SkillIconEditorView(model: model, row: row)
-        }
-        .sheet(isPresented: $showsScoreExplanation) {
-            ScoreExplanationView()
         }
     }
 
@@ -611,6 +571,19 @@ struct InventorySection: View {
         }
         .disabled(openableURLs.isEmpty)
         Divider()
+        if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+            // Plugin Eval runs on its own, so only the re-run and the upload
+            // need to stay reachable by hand.
+            Button("Re-run Plugin Eval", systemImage: "checkmark.seal") {
+                model.evaluateSkillWithPluginEval(path: inventory.canonicalPath)
+            }
+            .disabled(model.isSkillEvaluating)
+            Button("Review with Codex…", systemImage: "cloud") {
+                pendingConfirmation = .codexReview(inventory)
+            }
+            .disabled(model.isSkillEvaluating)
+            Divider()
+        }
         Button("Copy Path", systemImage: "doc.on.doc") {
             copyPaths(contextRows)
         }

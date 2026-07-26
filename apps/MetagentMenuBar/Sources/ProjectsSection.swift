@@ -146,23 +146,9 @@ struct ProjectsSection: View {
         let rows = filteredRows(from: allRows)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Projects")
-                        .font(.title2.weight(.semibold))
-                    Text("\(allRows.count) directories · shared skill and MCP setup")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
                 GlassSearchField(placeholder: "Search projects", text: $searchText, width: 220)
-                Button {
-                    model.refreshStatus()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.glass)
-                .help("Refresh projects")
-                .disabled(model.isRunning)
+                CountChip(text: "\(allRows.count) directories")
+                Spacer(minLength: 8)
             }
 
             if rows.isEmpty {

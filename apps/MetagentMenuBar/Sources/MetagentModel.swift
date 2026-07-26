@@ -34,6 +34,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var usageSnapshot = SkillUsageSnapshot.empty
     @Published private(set) var isUsageRefreshing = false
     @Published private(set) var usageStatusText = "Usage history not scanned"
+    @Published private(set) var isUsageIndexingStalled = false
     @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
     @Published private(set) var isSkillEvaluating = false
     @Published private(set) var skillEvaluationStatusText: String?
@@ -53,6 +54,7 @@ final class MetagentModel: ObservableObject {
     private var accumulatedSkillRemovalLines: [String] = []
     private var accumulatedSkillRemovalFailedIDs = Set<String>()
     private var isReconcilingSkillRemovals = false
+    private var autoEvaluatedPaths = Set<String>()
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -69,6 +71,52 @@ final class MetagentModel: ObservableObject {
         refreshSkillEvaluations()
         refreshStatus()
         refreshUsage()
+    }
+
+    /// Everything the app can be busy with, reported in one place, or `nil` when
+    /// it is idle and there is nothing worth saying.
+    ///
+    /// Attention states outrank work in progress, because a stalled index is
+    /// still true while an unrelated scan runs.
+    var activity: AppActivity? {
+        if isUsageIndexingStalled {
+            return .attention(usageStatusText)
+        }
+        if !isUsageRefreshing, usageSnapshot.totalFiles == 0 {
+            return .attention("No retained sessions indexed")
+        }
+        if isRunning {
+            return .working(progress: nil, label: "Scanning skills…")
+        }
+        if isUsageRefreshing {
+            return .working(progress: usageIndexingProgress, label: usageStatusText)
+        }
+        if isSkillEvaluating {
+            return .working(progress: nil, label: skillEvaluationStatusText ?? "Evaluating skills…")
+        }
+        if isMCPRefreshing {
+            return .working(progress: nil, label: "Checking MCP servers…")
+        }
+        return usageSnapshot.isBackfillComplete ? nil : .attention(usageStatusText)
+    }
+
+    var isRefreshing: Bool {
+        isRunning || isUsageRefreshing || isMCPRefreshing
+    }
+
+    /// The single reload: rescan installed skills and Doctor findings, recheck
+    /// MCP configuration, and continue indexing session history.
+    func refreshAll() {
+        refreshStatus()
+        refreshUsage()
+    }
+
+    private var usageIndexingProgress: Double? {
+        guard usageSnapshot.totalBytes > 0 else { return nil }
+        return min(1, max(
+            0,
+            Double(usageSnapshot.processedBytes) / Double(usageSnapshot.totalBytes)
+        ))
     }
 
     var problemCount: Int {
@@ -190,6 +238,7 @@ final class MetagentModel: ObservableObject {
     func refreshUsage() {
         guard !isUsageRefreshing else { return }
         isUsageRefreshing = true
+        isUsageIndexingStalled = false
         usageStatusText = usageSnapshot.totalFiles == 0 ? "Discovering Codex history…" : "Updating usage history…"
 
         Task {
@@ -215,6 +264,7 @@ final class MetagentModel: ObservableObject {
                         } else {
                             usageStatusText = "Usage backfill paused at an incomplete session record"
                         }
+                        isUsageIndexingStalled = true
                         break
                     }
                     try await Task.sleep(for: .milliseconds(500))
@@ -223,6 +273,7 @@ final class MetagentModel: ObservableObject {
                 usageStatusText = Self.usageStatus(usageSnapshot)
             } catch {
                 usageStatusText = "Usage refresh failed: \(error.localizedDescription)"
+                isUsageIndexingStalled = true
             }
             isUsageRefreshing = false
         }
@@ -230,6 +281,21 @@ final class MetagentModel: ObservableObject {
 
     func evaluateSkillWithPluginEval(path: String) {
         evaluateSkillsWithPluginEval(paths: [path])
+    }
+
+    /// Evaluates only skills with no result yet, in the background, so the score
+    /// columns fill in on their own rather than waiting on a menu command.
+    ///
+    /// Paths are recorded before the run so a skill whose evaluation fails is
+    /// not retried forever; an explicit re-run is still available per skill.
+    func evaluateMissingSkills(paths: [String]) {
+        guard !isSkillEvaluating else { return }
+        let missing = paths.filter {
+            skillEvaluations.records[$0] == nil && !autoEvaluatedPaths.contains($0)
+        }
+        guard !missing.isEmpty else { return }
+        autoEvaluatedPaths.formUnion(missing)
+        evaluateSkillsWithPluginEval(paths: missing)
     }
 
     func evaluateSkillsWithPluginEval(paths: [String]) {

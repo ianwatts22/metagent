@@ -10,6 +10,7 @@ struct MetagentPanel: View {
     @Environment(\.openWindow) private var openWindow
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
+    @State private var showsSettings = false
 
     private var directoryOptions: [DirectoryFilterOption] {
         directoryFilterOptions(
@@ -41,6 +42,9 @@ struct MetagentPanel: View {
                 self.selectedProjectRoot = nil
             }
         }
+        .sheet(isPresented: $showsSettings) {
+            SettingsView(model: model)
+        }
     }
 
     @ViewBuilder
@@ -51,7 +55,9 @@ struct MetagentPanel: View {
                     brandMark
                     directoryScopeControl
                     Spacer(minLength: 0)
+                    activityControl
                     statusFailureControl
+                    refreshControl
                     settingsControl
                 }
                 navigation
@@ -61,16 +67,51 @@ struct MetagentPanel: View {
                 brandMark
                 directoryScopeControl
                 navigation
+                activityControl
                 statusFailureControl
+                refreshControl
                 settingsControl
             }
         }
     }
 
+    /// One app-wide report on whatever is processing, so every destination
+    /// describes it the same way instead of each inventing its own phrasing.
+    @ViewBuilder
+    private var activityControl: some View {
+        if let activity = model.activity {
+            ActivityBadge(
+                activity: activity,
+                maxLabelWidth: showsOpenWindowButton ? 148 : 240
+            )
+        }
+    }
+
+    /// The one reload: rescan skills and Doctor findings, recheck MCP
+    /// configuration, and continue indexing session history.
+    private var refreshControl: some View {
+        Button {
+            model.refreshAll()
+        } label: {
+            GlassMenuLabel(
+                title: nil,
+                systemImage: "arrow.clockwise",
+                width: 44,
+                showsChevron: false
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isRefreshing)
+        .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
+        .accessibilityLabel("Reload")
+    }
+
     private var brandMark: some View {
+        // The mark is a wide glyph, so a square frame would letterbox it.
         MenuBarIcon()
-            .frame(width: 36, height: 36)
-            .padding(3)
+            .frame(width: 38, height: 38 / AppBrand.markAspectRatio)
+            .padding(.horizontal, 2)
+            .frame(height: 36)
             .help("Metagent")
             .accessibilityLabel("Metagent")
     }
@@ -125,7 +166,9 @@ struct MetagentPanel: View {
         } label: {
             GlassMenuLabel(
                 title: selectedDirectoryLabel,
-                systemImage: "scope",
+                systemImage: selectedProjectRoot == nil
+                    ? "line.3.horizontal.decrease"
+                    : "line.3.horizontal.decrease.circle.fill",
                 width: showsOpenWindowButton ? 205 : 240
             )
         }
@@ -135,18 +178,14 @@ struct MetagentPanel: View {
     }
 
     private var settingsControl: some View {
-        Menu {
-            Button("Open Configuration", systemImage: "slider.horizontal.3") {
-                model.openConfig()
-            }
-            Button("Open Logs", systemImage: "doc.text") {
-                model.openLogs()
-            }
+        Button {
+            showsSettings = true
         } label: {
             GlassMenuLabel(
                 title: nil,
                 systemImage: "gearshape",
-                width: 58
+                width: 44,
+                showsChevron: false
             )
         }
         .buttonStyle(.plain)
@@ -163,8 +202,11 @@ struct MetagentPanel: View {
         return directoryFilterLabel(directory, options: directoryOptions)
     }
 
+    /// One enclosing track holds all four destinations. Rendering them as
+    /// separate capsules the same height as the neighbouring controls made them
+    /// read as unrelated buttons rather than as a tab group.
     private var navigation: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             ForEach(PanelSection.allCases) { section in
                 SectionNavigationButton(
                     section: section,
@@ -176,6 +218,8 @@ struct MetagentPanel: View {
                 }
             }
         }
+        .padding(4)
+        .glassEffect(.regular, in: Capsule())
         .frame(maxWidth: showsOpenWindowButton ? .infinity : 620)
     }
 
@@ -237,14 +281,6 @@ struct MetagentPanel: View {
 
     private var compactFooter: some View {
         HStack(spacing: 10) {
-            if model.isRunning {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Working…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Spacer()
 
             Button {
@@ -253,15 +289,7 @@ struct MetagentPanel: View {
                 Label("Open Window", systemImage: "macwindow")
             }
             .buttonStyle(.glassProminent)
-
-            Button {
-                model.refreshStatus()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.glass)
-            .help("Refresh")
-            .disabled(model.isRunning)
+            .buttonBorderShape(.capsule)
 
             Button {
                 NSApplication.shared.terminate(nil)
@@ -288,27 +316,106 @@ struct SectionNavigationButton: View {
     let action: () -> Void
 
     var body: some View {
-        if isSelected {
-            button
-                .buttonStyle(.glassProminent)
-        } else {
-            button
-                .buttonStyle(.glass)
-        }
-    }
-
-    private var button: some View {
+        // The enclosing track already supplies the glass, so the selected tab
+        // is a solid fill rather than glass layered on glass.
         Button(action: action) {
             Label(section.title, systemImage: section.symbol)
                 .font(.callout.weight(isSelected ? .semibold : .medium))
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .frame(maxWidth: .infinity)
-                .frame(height: 34)
+                .frame(height: 30)
+                .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
                 .contentShape(Capsule())
         }
-        .buttonBorderShape(.capsule)
-        .controlSize(.regular)
+        .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// Whatever the app is doing right now, in one shape, so scanning, indexing,
+/// MCP checks, and Plugin Eval all report through the same control.
+enum AppActivity: Equatable {
+    /// Work is advancing; `progress` is nil when the total is not yet known.
+    case working(progress: Double?, label: String)
+    /// Something finished short, or never had data to work with.
+    case attention(String)
+
+    var label: String {
+        switch self {
+        case let .working(_, label): label
+        case let .attention(label): label
+        }
+    }
+
+    var needsAttention: Bool {
+        if case .attention = self { return true }
+        return false
+    }
+
+    var help: String {
+        switch self {
+        case .working:
+            return "\(label) Numbers that depend on this are provisional until it finishes."
+        case .attention:
+            return "\(label) Numbers that depend on retained session history cover only part of the corpus, so an absent read is not proof a skill went unused."
+        }
+    }
+}
+
+struct ActivityBadge: View {
+    let activity: AppActivity
+    let maxLabelWidth: CGFloat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            switch activity {
+            case let .working(progress, _):
+                if let progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            case .attention:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+
+            Text(activity.label)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: maxLabelWidth, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .glassEffect(
+            .regular.tint(activity.needsAttention ? Color.orange.opacity(0.22) : nil),
+            in: Capsule()
+        )
+        .help(activity.help)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(activity.label)
+        .accessibilityHint(activity.help)
+    }
+}
+
+/// The row count as a quiet chip beside the controls, instead of a page title
+/// restating the tab the user just clicked.
+struct CountChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.callout.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(.quaternary.opacity(0.6), in: Capsule())
+            .accessibilityLabel(text)
     }
 }
 
@@ -347,8 +454,11 @@ struct GlassMenuLabel: View {
     let title: String?
     let systemImage: String
     let width: CGFloat
+    var showsChevron = true
 
     var body: some View {
+        // With no title and no chevron the glyph is the whole control, so it
+        // centres rather than sitting against the leading edge.
         HStack(spacing: 7) {
             Image(systemName: systemImage)
                 .foregroundStyle(.secondary)
@@ -356,12 +466,18 @@ struct GlassMenuLabel: View {
                 Text(title)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                Spacer(minLength: 4)
             }
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.down")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            if showsChevron {
+                if title == nil {
+                    Spacer(minLength: 4)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .frame(maxWidth: .infinity)
         .font(.callout.weight(.medium))
         .padding(.horizontal, 11)
         .frame(width: width, height: 36)
