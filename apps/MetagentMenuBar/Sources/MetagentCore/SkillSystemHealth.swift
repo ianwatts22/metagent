@@ -206,7 +206,7 @@ public extension MetagentCore {
 
 /// A deduplicated installed skill together with the project directory it was
 /// scanned from, so dormant directories can be identified later.
-private struct HealthSkillEntry {
+struct HealthSkillEntry {
     let skill: SkillInventoryItem
     let projectRoot: String
 }
@@ -228,7 +228,7 @@ private extension Array where Element == HealthSkillEntry {
     }
 }
 
-private func canonicalHealthSkills(
+func canonicalHealthSkills(
     projects: [SkillProject],
     scope: SkillSystemHealthScope
 ) -> [HealthSkillEntry] {
@@ -287,7 +287,7 @@ private func healthCoverage(_ usage: SkillUsageSnapshot) -> SkillUsageCoverage {
         : .partial(progress: progress)
 }
 
-private func nearestRank(_ values: [Int], percentile: Double) -> Int? {
+func nearestRank(_ values: [Int], percentile: Double) -> Int? {
     guard !values.isEmpty else { return nil }
     let sorted = values.sorted()
     let rank = max(1, Int(ceil(percentile * Double(sorted.count))))

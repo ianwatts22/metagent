@@ -59,6 +59,7 @@ final class MetagentModel: ObservableObject {
     private var accumulatedSkillRemovalFailedIDs = Set<String>()
     private var isReconcilingSkillRemovals = false
     private var autoEvaluatedPaths = Set<String>()
+    private var hasCapturedHistory = false
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -733,9 +734,38 @@ final class MetagentModel: ObservableObject {
         if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
             statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
+            recordHistory(trigger: hasCapturedHistory ? .refresh : .launch)
         } else {
             statusText = "Status check failed"
             systemImage = "exclamationmark.triangle"
+        }
+    }
+
+    /// Appends one sample to the portfolio history, at most once per local day.
+    ///
+    /// A scan that failed is never recorded: a partial inventory would read as a
+    /// day when skills disappeared. The first capture of a session also seeds
+    /// whatever history can be reconstructed from creation dates, the removal
+    /// archive, and the usage event log.
+    private func recordHistory(trigger: SkillHistoryTrigger) {
+        let coreProjects = projects.map(\.coreProject)
+        let usage = usageSnapshot
+        let issues = doctorIssues
+        let mcp = mcpHealth
+        let needsBackfill = !hasCapturedHistory
+        hasCapturedHistory = true
+        Task.detached(priority: .background) {
+            if needsBackfill {
+                _ = try? MetagentCore.backfillSkillHistory(projects: coreProjects)
+            }
+            _ = try? MetagentCore.captureSkillHistory(
+                projects: coreProjects,
+                usage: usage,
+                activity: MetagentCore.scanProjectActivity(roots: coreProjects.map(\.root)),
+                doctorIssues: issues,
+                mcp: mcp,
+                trigger: trigger
+            )
         }
     }
 

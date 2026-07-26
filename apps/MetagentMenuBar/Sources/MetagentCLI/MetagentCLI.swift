@@ -27,6 +27,8 @@ struct MetagentCLI {
             try runInventory(Array(args.dropFirst()))
         case "usage":
             try runUsage(Array(args.dropFirst()))
+        case "history":
+            try runHistory(Array(args.dropFirst()))
         case "analyze":
             try runAnalyze(Array(args.dropFirst()))
         case "codebase":
@@ -456,6 +458,153 @@ struct MetagentCLI {
             printUsageHelp()
         default:
             throw CLIError.message("unknown usage command: \(command)")
+        }
+    }
+
+    private static func runHistory(_ args: [String]) throws {
+        guard let command = args.first else {
+            printHistoryHelp()
+            return
+        }
+
+        switch command {
+        case "sample":
+            let json = try parseJSONOnly(Array(args.dropFirst()), command: "history sample")
+            let report = try MetagentCore.scanPortfolio()
+            let usage = MetagentCore.loadSkillUsageSnapshot() ?? .empty
+            let capture = try MetagentCore.captureSkillHistory(
+                projects: report.projects,
+                usage: usage,
+                activity: MetagentCore.scanProjectActivity(roots: report.projects.map(\.root)),
+                doctorIssues: (try? MetagentCore.doctor().issues) ?? [],
+                trigger: .cli
+            )
+            if json {
+                try printJSON([
+                    "day": capture.day,
+                    "isNewDay": String(capture.isNewDay),
+                    "metricsWritten": String(capture.metricsWritten),
+                    "events": String(capture.events.count),
+                ])
+                return
+            }
+            print("\(capture.day): \(capture.metricsWritten) metrics\(capture.isNewDay ? " (new day)" : " (updated)")")
+            for event in capture.events {
+                print("  \(event.kind.rawValue) \(event.subjectName)")
+            }
+        case "backfill":
+            var force = false
+            var json = false
+            var index = 0
+            let flags = Array(args.dropFirst())
+            while index < flags.count {
+                switch flags[index] {
+                case "--force":
+                    force = true
+                case "--json":
+                    json = true
+                default:
+                    throw CLIError.message("unknown history backfill flag: \(flags[index])")
+                }
+                index += 1
+            }
+            let report = try MetagentCore.scanPortfolio()
+            let backfill = try MetagentCore.backfillSkillHistory(
+                projects: report.projects,
+                force: force
+            )
+            if json {
+                try printJSON([
+                    "skipped": String(backfill.skipped),
+                    "daysWritten": String(backfill.daysWritten),
+                    "installEvents": String(backfill.installEvents),
+                    "removalEvents": String(backfill.removalEvents),
+                    "earliestDay": backfill.earliestDay ?? "",
+                ])
+                return
+            }
+            if backfill.skipped {
+                print("already reconstructed; pass --force to run it again")
+                return
+            }
+            print("reconstructed \(backfill.daysWritten) days from \(backfill.earliestDay ?? "no data")")
+            print("\(backfill.installEvents) inferred installs, \(backfill.removalEvents) inferred removals")
+            for warning in backfill.warnings {
+                print("note: \(warning)")
+            }
+        case "show":
+            var metric = SkillHistoryMetric.portfolioSkills
+            var scope = SkillHistoryScope.all
+            var json = false
+            var index = 0
+            let flags = Array(args.dropFirst())
+            while index < flags.count {
+                switch flags[index] {
+                case "--metric":
+                    let raw = try readFlagValue("--metric", args: flags, index: &index)
+                    guard let parsed = SkillHistoryMetric(rawValue: raw) else {
+                        throw CLIError.message(
+                            "unknown metric: \(raw)\nknown metrics: \(SkillHistoryMetric.allCases.map(\.rawValue).joined(separator: ", "))"
+                        )
+                    }
+                    metric = parsed
+                case "--scope":
+                    let raw = try readFlagValue("--scope", args: flags, index: &index)
+                    guard let parsed = SkillHistoryScope(key: raw) else {
+                        throw CLIError.message("unknown scope: \(raw)")
+                    }
+                    scope = parsed
+                case "--json":
+                    json = true
+                default:
+                    throw CLIError.message("unknown history show flag: \(flags[index])")
+                }
+                index += 1
+            }
+            let points = try MetagentCore.skillHistorySeries(metric: metric, scope: scope)
+            if json {
+                try printJSON(points.map {
+                    ["day": $0.day, "origin": $0.origin.rawValue, "value": String($0.value)]
+                })
+                return
+            }
+            guard !points.isEmpty else {
+                print("no recorded history for \(metric.rawValue) in \(scope.key)")
+                return
+            }
+            // Reconstructed days are marked so a reader never mistakes inferred
+            // evidence for something the app watched happen.
+            for point in points {
+                let marker = point.origin == .inferred ? " ~" : ""
+                print("\(point.day)  \(point.value.formatted(.number.precision(.fractionLength(0))))\(marker)")
+            }
+            print("(~ reconstructed from creation dates, the removal archive, and session history)")
+        case "coverage":
+            let coverage = try MetagentCore.skillHistoryCoverage()
+            print("observed: \(coverage.observedDayCount) days\(coverage.firstObservedDay.map { " from \($0)" } ?? "")")
+            print("reconstructed: \(coverage.inferredDayCount) days\(coverage.firstInferredDay.map { " from \($0)" } ?? "")")
+            print("events: \(coverage.eventCount)")
+        case "events":
+            let events = try MetagentCore.skillHistoryEvents(limit: 50)
+            guard !events.isEmpty else {
+                print("no recorded events")
+                return
+            }
+            for event in events {
+                // Local calendar, matching the day buckets the samples use.
+                let day = event.occurredAt.formatted(
+                    .verbatim("\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits)",
+                              locale: nil,
+                              timeZone: .current,
+                              calendar: .current)
+                )
+                let marker = event.origin == .inferred ? " ~" : ""
+                print("\(day)  \(event.kind.rawValue)  \(event.subjectName)\(marker)")
+            }
+        case "help", "--help", "-h":
+            printHistoryHelp()
+        default:
+            throw CLIError.message("unknown history command: \(command)")
         }
     }
 
@@ -1022,6 +1171,7 @@ struct MetagentCLI {
           metagent skills <list|show|duplicates|scan|repair|doctor|remove|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
+          metagent history <sample|show|events|coverage|backfill> [flags]
           metagent analyze [--root PATH] [--json] [--details|--verbose]
           metagent codebase [--root PATH] [--json] [--long-file-threshold N]
           metagent mcp <install|status|remove> [flags]
@@ -1040,6 +1190,22 @@ struct MetagentCLI {
         Usage:
           metagent usage status [--json]
           metagent usage refresh [--max-bytes N] [--max-files N] [--json]
+        """)
+    }
+
+    private static func printHistoryHelp() {
+        print("""
+        metagent history
+
+        Usage:
+          metagent history sample [--json]
+          metagent history show [--metric NAME] [--scope all|global|project:PATH] [--json]
+          metagent history events
+          metagent history coverage
+          metagent history backfill [--force] [--json]
+
+        At most one sample is recorded per local day; repeat runs update it.
+        Days with no sample stay absent rather than being interpolated.
         """)
     }
 

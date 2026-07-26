@@ -58,6 +58,23 @@ Refresh behavior:
 - Once current, there is no continuous polling; launch or manual refresh processes newly appended session bytes.
 - Whole-directory project symlinks stay current automatically, so there is no periodic repair agent.
 
+Portfolio history:
+
+- Portfolio history is recorded to `~/Library/Application Support/Metagent/history.sqlite`, kept separate from `usage.sqlite` so a parser upgrade and its atomic index swap never put recorded history at risk.
+- A sample is written when a successful scan completes, at most once per local day. Repeat scans on the same day update that day in place, so an active session does not write dozens of rows. A failed scan is never recorded, because a partial inventory would read as a day when skills disappeared.
+- Days with no sample stay absent. Absent is rendered as a gap and never as zero or an interpolated line, because "the app was not open" and "the number was zero" are different facts.
+- Adoption metrics are omitted entirely when no session corpus is indexed. Writing zeros for an unindexed machine would later read as evidence that nothing was ever used.
+- Three tables carry the record. `history_snapshots` and `history_metrics` hold one narrow row per metric per scope per day, so adding a metric never needs a migration. `history_skill_states` is a slowly-changing dimension that writes a new row only when a skill's shape changes, which keeps it small and makes it the source for change events. `history_events` holds added, removed, renamed, content-changed, source-changed, and scope-changed transitions.
+- Change detection compares each capture against the recorded current state. The first capture seeds that state and deliberately emits no events, because every installed skill predates capture and would otherwise read as added that day.
+- A rename is proved by the canonical directory's inode, which survives the move, rather than guessed from similar content. Two unrelated skills of the same size are never paired as a rename.
+- Content change is detected from counts the inventory scan already produced, not from a content hash. Hashing every file of several hundred bundles on each scan would cost more than the signal is worth; the tradeoff is that a rewrite of identical length is missed.
+- History that predates capture is reconstructed once from the three stores that already carry timestamps: canonical directory creation dates, the `Removed Skills` archive, and the `skill_usage_events` log. Everything reconstructed is marked `inferred` and must be drawn distinguishably from what the app observed.
+- Moving a bundle into the removal archive preserves its creation date, so an archived skill supplies both ends of its lifetime and the reconstructed portfolio curve falls on removal days instead of only rising. The archive remains a recovery mechanism: history reads it as evidence and never writes to it.
+- Reconstruction uses the same deduplicated population the health summary uses, so a reconstructed count and a captured count describe the same set of skills and the seam between them is not a cliff.
+- Two limits are stated rather than hidden. Reconstructed adoption is bounded by retained session history, so reads before the corpus begins are unrecoverable and early rates understate real use. Per-day project dormancy is not reconstructable, so reconstructed rates rate every skill alive that day while captured rates exclude dormant directories; the step at the seam is a change of method, not a change in the portfolio.
+- Tokens, catalog size, scores, duplicate counts, Doctor findings, and MCP counts describe content and configuration that is overwritten in place. They have no history before capture began and are left absent for reconstructed days.
+- `metagent history sample|show|events|coverage|backfill` exposes the same paths headlessly. `history coverage` reports observed and reconstructed day counts separately.
+
 Build:
 
 ```bash
