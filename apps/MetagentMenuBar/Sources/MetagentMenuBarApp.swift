@@ -33,7 +33,7 @@ struct MetagentMenuBarApp: App {
                 .frame(width: 560, height: 640)
         } label: {
             MenuBarIcon()
-                .frame(width: 18, height: 18)
+                .frame(width: 18, height: 18 / AppBrand.markAspectRatio)
                 .accessibilityLabel("Metagent")
         }
         .menuBarExtraStyle(.window)
