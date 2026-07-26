@@ -70,7 +70,7 @@ The app targets macOS 26+ so interactive chrome—navigation, scope/filter contr
 Build a local `.app` bundle:
 
 ```bash
-scripts/build-menu-bar-app.sh
+scripts/build-app.sh
 ```
 
 The build regenerates app branding from `public/brand/logo.svg` before compiling:
@@ -88,7 +88,7 @@ dist/MetagentMenuBar.app
 Install the app where macOS and Spotlight can find it:
 
 ```bash
-scripts/install-menu-bar-app.sh --restart
+scripts/install-app.sh --restart
 ```
 
 Local installation requires an Apple Development code-signing identity. The
@@ -111,9 +111,9 @@ The installed app is written to:
 Local deployment model:
 
 - Source changes do not update a running app automatically.
-- `scripts/build-menu-bar-app.sh` rebuilds the repo-local bundle in `dist/`.
+- `scripts/build-app.sh` rebuilds the repo-local bundle in `dist/`.
 - The app bundle includes the Swift `metagent` helper under `Contents/Helpers/metagent`.
-- `scripts/install-menu-bar-app.sh` rebuilds, copies that bundle to `~/Applications`, and can launch or restart it.
+- `scripts/install-app.sh` rebuilds, copies that bundle to `~/Applications`, and can launch or restart it.
 - `--launch` opens the app after install.
 - `--restart` asks the existing app to quit and opens the installed copy.
 - `scripts/install-cli.sh` installs the Swift helper to `~/.local/bin/metagent` for headless/MCP use.
@@ -151,7 +151,7 @@ including when the same server name is awaiting approval in several projects.
 For iterative SwiftUI work, run:
 
 ```bash
-scripts/dev-menu-bar-app.sh
+scripts/dev-app.sh
 ```
 
 It watches Swift sources, package metadata, the app plist, and bundled visual

@@ -81,7 +81,7 @@ done
   fi
 )
 
-"$repo_root/scripts/build-menu-bar-app.sh" >/dev/null
+"$repo_root/scripts/build-app.sh" >/dev/null
 plutil -lint "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist" >/dev/null
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/MacOS/MetagentMenuBar"
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"

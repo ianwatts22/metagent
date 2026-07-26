@@ -8,7 +8,7 @@ configuration="debug"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/dev-menu-bar-app.sh [--release|--debug]
+  scripts/dev-app.sh [--release|--debug]
 
 Watches app sources and rebuilds, installs, and restarts Metagent on every
 change. Builds the debug configuration by default (--debug) so reloads stay
@@ -54,7 +54,7 @@ snapshot() {
 
 reload() {
   printf '\n[%s] Rebuilding (%s) and restarting Metagent...\n' "$(date '+%H:%M:%S')" "$configuration"
-  "$repo_root/scripts/install-menu-bar-app.sh" --restart
+  "$repo_root/scripts/install-app.sh" --restart
   printf '[%s] Metagent restarted. Watching for changes...\n' "$(date '+%H:%M:%S')"
 }
 

@@ -33,6 +33,6 @@ scripts/verify.sh
 ```
 
 After changes that affect the macOS app, install and restart the verified build
-with `scripts/install-menu-bar-app.sh --restart`, then confirm the running
+with `scripts/install-app.sh --restart`, then confirm the running
 process comes from `~/Applications/Metagent.app`. Use
-`scripts/dev-menu-bar-app.sh` during iterative UI work.
+`scripts/dev-app.sh` during iterative UI work.

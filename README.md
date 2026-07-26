@@ -160,7 +160,7 @@ Clone the repository, then install the app and command-line helper:
 ```bash
 git clone https://github.com/ianwatts22/metagent.git
 cd metagent
-scripts/install-menu-bar-app.sh --restart
+scripts/install-app.sh --restart
 scripts/install-cli.sh
 ```
 
@@ -170,7 +170,7 @@ The app is installed at `~/Applications/Metagent.app`; the CLI is installed at
 For development:
 
 ```bash
-scripts/dev-menu-bar-app.sh
+scripts/dev-app.sh
 ```
 
 ## Data and privacy
