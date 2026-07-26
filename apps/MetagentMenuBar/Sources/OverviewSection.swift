@@ -66,14 +66,25 @@ struct OverviewSection: View {
     }
 
     private var skillHealthSummary: some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
+        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Skill system")
-                        .font(.title3.weight(.semibold))
-                    Text(skillHealthScopeDetail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Skills")
+                        .font((isCompact ? Font.title3 : .title).weight(.semibold))
+
+                    if !isSkillHealthStale, !scopeChips.isEmpty {
+                        HStack(spacing: 5) {
+                            ForEach(scopeChips, id: \.self) { chip in
+                                Text(chip)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 4)
+                                    .background(.quaternary.opacity(0.6), in: Capsule())
+                            }
+                        }
+                        .help(scopeChipsHelp)
+                    }
                 }
 
                 Spacer(minLength: 12)
@@ -82,10 +93,11 @@ struct OverviewSection: View {
                     Button(action: openDuplicateReview) {
                         Label(
                             "Review \(skillHealth.duplicateGroupCount)",
-                            systemImage: "square.on.square"
+                            systemImage: "checklist"
                         )
                     }
                     .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
                     .help("Review duplicate and overlapping skill installations")
                 }
             }
@@ -100,72 +112,20 @@ struct OverviewSection: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
             } else if skillHealth.skillCount > 0 {
-                HStack(spacing: 8) {
-                    SkillHealthMetric(
-                        title: "30d active",
-                        value: recentActivityValue,
-                        detail: recentActivityDetail,
-                        symbol: "clock.arrow.circlepath",
-                        help: recentActivityHelp,
-                        isCompact: isCompact
-                    )
-                    SkillHealthMetric(
-                        title: "Ever observed",
-                        value: everObservedValue,
-                        detail: everObservedDetail,
-                        symbol: "eye",
-                        help: usageCoverageHelp,
-                        isCompact: isCompact
-                    )
+                GlassEffectContainer(spacing: isCompact ? 6 : 8) {
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: isCompact ? 6 : 8),
+                            count: isCompact ? 2 : 3
+                        ),
+                        spacing: isCompact ? 6 : 8
+                    ) {
+                        ForEach(metricCards) { card in
+                            SkillHealthCard(card: card, isCompact: isCompact)
+                        }
+                    }
                 }
 
-                HStack(spacing: 6) {
-                    Image(systemName: historyIndexingSymbol)
-                        .foregroundStyle(.secondary)
-                    Text(historyIndexingLabel)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .help(usageCoverageHelp)
-
-                LazyVGrid(
-                    columns: Array(
-                        repeating: GridItem(.flexible(), spacing: 16, alignment: .leading),
-                        count: 2
-                    ),
-                    spacing: 10
-                ) {
-                    SkillHealthEvidence(
-                        title: "Reads per installed skill",
-                        value: invocationDistributionText,
-                        detail: "lifetime indexed usage",
-                        help: "Lifetime reads per installed skill in indexed session history, including zero-read skills.",
-                        isCompact: isCompact
-                    )
-                    SkillHealthEvidence(
-                        title: "Skill instructions",
-                        value: "\(formatNumber(skillHealth.skillBodyTokenEstimate)) tokens",
-                        detail: "SKILL.md estimate",
-                        help: "Estimated tokens across installed SKILL.md files in the selected scope. References, scripts, and assets are excluded.",
-                        isCompact: isCompact
-                    )
-                    SkillHealthEvidence(
-                        title: "Catalog metadata",
-                        value: "\(formatNumber(skillHealth.catalogTokenEstimate)) tokens",
-                        detail: "name + description estimate",
-                        help: "A four-characters-per-token estimate for skill names and descriptions. This is a useful discovery-catalog size, not a claim that every client injects all of it on every turn.",
-                        isCompact: isCompact
-                    )
-                    SkillHealthEvidence(
-                        title: "Age",
-                        value: skillAgeText,
-                        detail: skillAgeDetail,
-                        help: "Weeks since the recorded upstream update or latest local content change. P50 is the median; P75 shows the older upper quartile. \(skillAgeDetail.capitalized).",
-                        isCompact: isCompact,
-                        showsDetailInCompact: skillHealth.ageDistribution.unknownCount > 0
-                    )
-                }
             }
         }
         .padding(isCompact ? 12 : 14)
@@ -187,129 +147,190 @@ struct OverviewSection: View {
             : .project(root: selectedProjectRoot)
     }
 
-    private var skillHealthScopeDetail: String {
-        if isSkillHealthStale {
-            return "Calculating installed-skill health"
+    /// The scope facts as short, scannable chips rather than a sentence.
+    private var scopeChips: [String] {
+        var chips = ["\(skillHealth.skillCount) installed"]
+        if skillHealth.assessedSkillCount != skillHealth.skillCount {
+            chips.append("\(skillHealth.assessedSkillCount) rated")
         }
-        guard let selectedProjectRoot else {
-            return "\(skillHealth.skillCount) installed skills across global and project scopes"
+        if skillHealth.dormantProjectCount > 0 {
+            chips.append("\(skillHealth.dormantProjectCount) dormant")
         }
-        if isGlobalRoot(selectedProjectRoot) {
-            return "\(skillHealth.skillCount) installed skills in the global scope only"
-        }
-        return "\(skillHealth.skillCount) installed skills in this directory only"
+        return chips
     }
 
-    private var historyIndexingLabel: String {
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "History indexing complete"
-        case let .updating(progress):
-            return "History indexing \(progress.formatted(.percent.precision(.fractionLength(0)))) · rebuilding"
-        case let .partial(progress):
-            return "History indexing \(progress.formatted(.percent.precision(.fractionLength(0)))) · provisional"
-        case .unavailable:
-            return "History indexing unavailable"
+    private var scopeChipsHelp: String {
+        let scope: String
+        if let selectedProjectRoot {
+            scope = isGlobalRoot(selectedProjectRoot)
+                ? "Counting the global scope only."
+                : "Counting this directory only."
+        } else {
+            scope = "Counting global and project scopes together."
         }
+        return "\(scope) \(ratedScopeHelp)"
     }
 
-    private var historyIndexingSymbol: String {
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "checkmark.circle"
-        case .updating:
-            return "arrow.triangle.2.circlepath"
-        case .partial:
-            return "circle.dotted"
-        case .unavailable:
-            return "questionmark.circle"
-        }
+    private var metricCards: [SkillHealthCardModel] {
+        [unusedCard, neverUsedCard, readsCard, instructionsCard, catalogCard, ageCard]
     }
 
-    private var recentActivityValue: String {
-        if case .unavailable = skillHealth.usageCoverage {
-            return "—"
-        }
-        return "\(skillHealth.active30dSkillCount)"
-    }
-
-    private var recentActivityDetail: String {
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "of \(skillHealth.skillCount) installed skills"
-        case .updating, .partial:
-            return "of \(skillHealth.skillCount) · provisional"
-        case .unavailable:
-            return "No indexed 30-day history"
+    /// Unused rate drives the color ramp: green under 20%, yellow under 40%,
+    /// orange under 60%, red at or above 60%.
+    private func adoptionSeverity(_ fraction: Double) -> SkillHealthSeverity {
+        guard isUsageIndexed else { return .neutral }
+        return switch fraction {
+        case ..<0.20: .good
+        case ..<0.40: .caution
+        case ..<0.60: .warning
+        default: .alert
         }
     }
 
-    private var recentActivityHelp: String {
-        let definition = "Installed skills with at least one observed read in the last 30 days."
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "\(definition) Retained session history is fully indexed."
-        case .updating, .partial:
-            return "\(definition) History indexing is incomplete, so this count is provisional."
-        case .unavailable:
-            return "\(definition) No retained session corpus is indexed, so a count would be misleading."
-        }
+    private var isUsageIndexed: Bool {
+        if case .unavailable = skillHealth.usageCoverage { return false }
+        return true
     }
 
-    private var everObservedValue: String {
-        if case .unavailable = skillHealth.usageCoverage {
-            return "—"
+    /// The share leads because it is what the rate means; the raw counts follow
+    /// quietly for anyone who wants to check the arithmetic.
+    private func rateValue(_ count: Int, fraction: Double) -> SkillHealthValue {
+        guard isUsageIndexed, skillHealth.assessedSkillCount > 0 else {
+            return SkillHealthValue(primary: "—", trailing: "not indexed")
         }
-        return skillHealth.observedFraction.formatted(
-            .percent.precision(.fractionLength(0))
+        return SkillHealthValue(
+            primary: fraction.formatted(.percent.precision(.fractionLength(0))),
+            trailing: "\(count) of \(skillHealth.assessedSkillCount)",
+            severity: adoptionSeverity(fraction)
         )
     }
 
-    private var everObservedDetail: String {
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "\(skillHealth.observedSkillCount) of \(skillHealth.skillCount) · \(skillHealth.neverObservedSkillCount) never observed"
-        case .updating, .partial:
-            return "\(skillHealth.observedSkillCount) of \(skillHealth.skillCount) so far · provisional"
-        case .unavailable:
-            return "No indexed session history"
+    private var ratedScopeHelp: String {
+        guard skillHealth.dormantSkillCount > 0 else {
+            return "All \(skillHealth.assessedSkillCount) installed skills in this scope are rated."
         }
+        return "\(skillHealth.dormantSkillCount) project skills in \(skillHealth.dormantProjectCount) directories with no agent session in the last 30 days are excluded, so dormant work does not distort the rate."
     }
 
-    private var usageCoverageHelp: String {
-        let prefix = "\(skillHealth.observedSkillCount) of \(skillHealth.skillCount) installed skills have at least one read in retained, currently indexed session history."
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "\(prefix) History indexing is complete, so \(skillHealth.neverObservedSkillCount) skills have no observed read in that history."
-        case let .updating(progress):
-            return "\(prefix) A parser upgrade is rebuilding history and is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this percentage may change."
-        case let .partial(progress):
-            return "\(prefix) Initial history indexing is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this percentage is provisional."
-        case .unavailable:
-            return "\(prefix) No retained session corpus was found, so absence of observed reads is not evidence that a skill was never used."
-        }
+    private var unusedCard: SkillHealthCardModel {
+        SkillHealthCardModel(
+            id: "unused",
+            title: "Unused, last 30 days",
+            content: .value(rateValue(
+                skillHealth.unused30dSkillCount,
+                fraction: skillHealth.unused30dFraction
+            )),
+            help: "Rated skills with no observed read in the last 30 days. \(ratedScopeHelp) \(coverageCaveat)"
+        )
     }
 
-    private var invocationDistributionText: String {
+    private var neverUsedCard: SkillHealthCardModel {
+        SkillHealthCardModel(
+            id: "never-used",
+            title: "Never used",
+            content: .value(rateValue(
+                skillHealth.neverObservedSkillCount,
+                fraction: skillHealth.neverObservedFraction
+            )),
+            help: "Rated skills with no observed read anywhere in retained, indexed session history. \(ratedScopeHelp) \(coverageCaveat)"
+        )
+    }
+
+    private var readsCard: SkillHealthCardModel {
         let distribution = skillHealth.invocationDistribution
-        return "P50 \(formatNumber(distribution.p50)) · P75 \(formatNumber(distribution.p75)) · P95 \(formatNumber(distribution.p95))"
+        // Only the median carries a health claim: a P50 of zero means most of
+        // the portfolio has never been read at all.
+        let medianSeverity: SkillHealthSeverity = !isUsageIndexed
+            ? .neutral
+            : (distribution.p50 == 0 ? .alert : (distribution.p50 < 3 ? .warning : .good))
+        return SkillHealthCardModel(
+            id: "reads",
+            title: "Lifetime reads per skill",
+            content: .segments([
+                SkillHealthSegment(
+                    id: "p50",
+                    value: SkillHealthValue(
+                        primary: formatNumber(distribution.p50),
+                        trailing: "P50",
+                        severity: medianSeverity
+                    ),
+                    label: "P50"
+                ),
+                SkillHealthSegment(
+                    id: "p75",
+                    value: SkillHealthValue(primary: formatNumber(distribution.p75), trailing: "P75"),
+                    label: "P75"
+                ),
+                SkillHealthSegment(
+                    id: "p95",
+                    value: SkillHealthValue(primary: formatNumber(distribution.p95), trailing: "P95"),
+                    label: "P95"
+                ),
+            ]),
+            help: "Lifetime reads per rated skill in indexed session history, including zero-read skills. A P50 of zero means most of the portfolio has never been read. \(coverageCaveat)"
+        )
     }
 
-    private var skillAgeText: String {
-        guard let median = skillHealth.ageDistribution.medianWeeks,
-              let p75 = skillHealth.ageDistribution.p75Weeks
-        else { return "—" }
-        if median == 0, p75 == 0 {
-            return "Updated this week"
+    private var instructionsCard: SkillHealthCardModel {
+        SkillHealthCardModel(
+            id: "instructions",
+            title: "SKILL.md instructions",
+            content: .value(SkillHealthValue(
+                primary: formatNumber(skillHealth.skillBodyTokenEstimate),
+                trailing: "tokens"
+            )),
+            help: "Estimated tokens across every installed SKILL.md in the selected scope, including dormant directories. References, scripts, and assets are excluded. Bodies load on demand, so this is inventory size rather than per-session cost."
+        )
+    }
+
+    private var catalogCard: SkillHealthCardModel {
+        let tokens = skillHealth.catalogTokenEstimate
+        return SkillHealthCardModel(
+            id: "catalog",
+            title: "Catalog metadata",
+            content: .value(SkillHealthValue(
+                primary: formatNumber(tokens),
+                trailing: "tokens",
+                severity: tokens < 10_000 ? .good : (tokens < 20_000 ? .warning : .alert)
+            )),
+            help: "A four-characters-per-token estimate for skill names and descriptions across every installed skill in scope. This is a useful discovery-catalog size, not a claim that every client injects all of it on every turn."
+        )
+    }
+
+    private var ageCard: SkillHealthCardModel {
+        let distribution = skillHealth.ageDistribution
+        return SkillHealthCardModel(
+            id: "age",
+            title: skillAgeTitle,
+            content: .value(SkillHealthValue(
+                primary: distribution.medianWeeks.map(formatAgeWeeks) ?? "—",
+                trailing: distribution.p75Weeks.map { "P75 \(formatAgeWeeks($0))" },
+                severity: distribution.medianWeeks.map {
+                    $0 < 8 ? .good : ($0 < 26 ? .caution : ($0 < 52 ? .warning : .alert))
+                } ?? .neutral
+            )),
+            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality."
+        )
+    }
+
+    private var coverageCaveat: String {
+        switch skillHealth.usageCoverage {
+        case .complete:
+            return "Retained session history is fully indexed."
+        case let .updating(progress):
+            return "A parser upgrade is rebuilding history and is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this is provisional."
+        case let .partial(progress):
+            return "Initial history indexing is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this is provisional."
+        case .unavailable:
+            return "No retained session corpus is indexed, so absence of observed reads is not evidence a skill was never used."
         }
-        return "\(formatAgeWeeks(median)) / \(formatAgeWeeks(p75))"
     }
 
-    private var skillAgeDetail: String {
+    private var skillAgeTitle: String {
         let unknown = skillHealth.ageDistribution.unknownCount
         return unknown == 0
-            ? "median / P75 age"
-            : "median / P75 age · \(unknown) unknown"
+            ? "Median time since update"
+            : "Median age · \(unknown) unknown"
     }
 
     private func formatAgeWeeks(_ weeks: Int) -> String {
@@ -327,7 +348,8 @@ struct OverviewSection: View {
             MetagentCore.skillSystemHealth(
                 projects: projects,
                 usage: usage,
-                scope: scope
+                scope: scope,
+                activity: MetagentCore.scanProjectActivity(roots: projects.map(\.root))
             )
         }.value
         guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
@@ -355,14 +377,25 @@ struct OverviewSection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MCP Connections")
                         .font(.headline)
-                    Text(mcpSummaryText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if let mcpSummaryText {
+                        Text(mcpSummaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 16)
 
-                HStack(spacing: 14) {
+                // The configured total lives with the per-client breakdown it
+                // decomposes into, rather than in the status line.
+                HStack(spacing: 13) {
+                    Text("\(scopedMCPHealth.configuredCount) configured")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+                        .frame(height: 20)
+
                     MCPClientCount(
                         client: .codex,
                         count: scopedMCPHealth.count(for: .codex)
@@ -372,22 +405,6 @@ struct OverviewSection: View {
                         count: scopedMCPHealth.count(for: .claude)
                     )
                 }
-
-                Button {
-                    model.refreshMCPHealth()
-                } label: {
-                    if model.isMCPRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.plain)
-                .frame(width: 24, height: 24)
-                .disabled(model.isMCPRefreshing)
-                .help("Refresh passive MCP configuration and sign-in evidence")
-                .accessibilityLabel("Refresh MCP status")
 
                 if !mcpDetailRows.isEmpty {
                     Button {
@@ -451,16 +468,15 @@ struct OverviewSection: View {
         })
     }
 
-    private var mcpSummaryText: String {
-        let configured = scopedMCPHealth.configuredCount
-        let attention = groupedMCPRows(scopedMCPHealth.attention).count
+    /// Silence is the healthy state: the green check already says everything is
+    /// fine, so there is nothing left to write.
+    private var mcpSummaryText: String? {
         guard scopedMCPHealth.observedAt != .distantPast else {
             return "Checking configuration…"
         }
-        if attention == 0 {
-            return "\(configured) configured · no known issues"
-        }
-        return "\(configured) configured · \(attention) \(attention == 1 ? "needs" : "need") attention"
+        let attention = groupedMCPRows(scopedMCPHealth.attention).count
+        guard attention > 0 else { return nil }
+        return "\(attention) \(attention == 1 ? "server needs" : "servers need") attention"
     }
 
     private func groupedMCPRows(_ servers: [MCPServerHealth]) -> [MCPHealthDisplayRow] {
@@ -563,15 +579,6 @@ struct OverviewSection: View {
                     }
                 }
 
-                Button {
-                    model.refreshStatus()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .frame(width: 24, height: 24)
-                .help("Refresh Doctor")
-                .disabled(model.isRunning)
             }
         }
         .padding(.horizontal, 16)
@@ -614,16 +621,16 @@ struct MCPClientCount: View {
     let count: Int
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 7) {
             if let icon = AppBrand.applicationIcon(bundleIdentifier: client.bundleIdentifier) {
                 Image(nsImage: icon)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 16, height: 16)
-                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
             Text("\(client.displayName) \(count)")
-                .font(.caption.weight(.medium))
+                .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .ignore)
@@ -692,75 +699,143 @@ struct MCPHealthRow: View {
     }
 }
 
-struct SkillHealthMetric: View {
-    let title: String
-    let value: String
-    let detail: String
-    let symbol: String
-    let help: String
-    let isCompact: Bool
+/// How strongly a metric should be judged. `neutral` means the number is
+/// informational and carries no target.
+enum SkillHealthSeverity {
+    case neutral
+    case good
+    case caution
+    case warning
+    case alert
 
-    var body: some View {
-        HStack(alignment: .top, spacing: isCompact ? 8 : 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: isCompact ? 26 : 30, height: isCompact ? 26 : 30)
-                .background(Color.accentColor.opacity(0.1), in: Circle())
-
-            VStack(alignment: .leading, spacing: isCompact ? 1 : 3) {
-                Text(title)
-                    .font((isCompact ? Font.footnote : .subheadline).weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.system(size: isCompact ? 22 : 27, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Text(detail)
-                    .font(isCompact ? .caption : .footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(isCompact ? 1 : 2)
-                    .truncationMode(.tail)
-            }
+    var tint: Color {
+        switch self {
+        case .neutral: .secondary
+        case .good: .green
+        case .caution: .yellow
+        case .warning: .orange
+        case .alert: .red
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(isCompact ? 9 : 12)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .help(help)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint(help)
+    }
+
+    var label: String {
+        switch self {
+        case .neutral: "No target"
+        case .good: "Healthy"
+        case .caution: "Worth watching"
+        case .warning: "Needs attention"
+        case .alert: "Needs action"
+        }
     }
 }
 
-struct SkillHealthEvidence: View {
+/// One headline number with an optional muted qualifier beside it.
+struct SkillHealthValue {
+    let primary: String
+    var trailing: String?
+    var severity = SkillHealthSeverity.neutral
+}
+
+/// One slice of a distribution, shown as its own tile inside a card.
+struct SkillHealthSegment: Identifiable {
+    let id: String
+    let value: SkillHealthValue
+    let label: String
+}
+
+enum SkillHealthContent {
+    case value(SkillHealthValue)
+    case segments([SkillHealthSegment])
+}
+
+struct SkillHealthCardModel: Identifiable {
+    let id: String
+    /// The title carries the whole description; there is no sub-label, because
+    /// a second line of prose mostly restated the first.
     let title: String
-    let value: String
-    let detail: String
+    let content: SkillHealthContent
     let help: String
+}
+
+struct SkillHealthCard: View {
+    let card: SkillHealthCardModel
     let isCompact: Bool
-    var showsDetailInCompact = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isCompact ? 1 : 2) {
-            Text(title)
-                .font((isCompact ? Font.caption : .footnote).weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
+        // The number leads and the label explains it, so a card reads
+        // "63% — unused, last 30 days" rather than the reverse.
+        VStack(alignment: .leading, spacing: 0) {
+            content
+
+            Text(card.title)
+                .font((isCompact ? Font.subheadline : .headline).weight(.semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
-            if !isCompact || showsDetailInCompact {
-                Text(detail)
-                    .font(isCompact ? .caption : .footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                .padding(.top, isCompact ? 5 : 7)
+        }
+        .frame(maxWidth: .infinity, minHeight: isCompact ? 52 : 68, alignment: .topLeading)
+        .padding(.horizontal, isCompact ? 11 : 13)
+        .padding(.vertical, isCompact ? 9 : 11)
+        .glassEffect(in: RoundedRectangle(cornerRadius: isCompact ? 11 : 13, style: .continuous))
+        .help(card.help)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint(card.help)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch card.content {
+        case let .value(value):
+            valueRow(value, size: isCompact ? 24 : 34)
+        case let .segments(segments):
+            HStack(spacing: isCompact ? 4 : 6) {
+                ForEach(segments) { segment in
+                    valueRow(segment.value, size: isCompact ? 19 : 25)
+                        .padding(.horizontal, isCompact ? 7 : 9)
+                        .padding(.vertical, isCompact ? 4 : 5)
+                        .background(
+                            .quaternary.opacity(0.55),
+                            in: RoundedRectangle(cornerRadius: isCompact ? 7 : 9, style: .continuous)
+                        )
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, isCompact ? 2 : 5)
-        .help(help)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint(help)
+    }
+
+    /// Every number in the card, headline or percentile, uses the same shape:
+    /// the figure, then its qualifier in muted text beside it.
+    private func valueRow(_ value: SkillHealthValue, size: CGFloat) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(value.primary)
+                .font(.system(size: size, weight: .semibold, design: .rounded))
+                .foregroundStyle(value.severity == .neutral ? Color.primary : value.severity.tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+
+            if let trailing = value.trailing {
+                Text(trailing)
+                    .font((isCompact ? Font.caption : .subheadline).weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var accessibilityText: String {
+        switch card.content {
+        case let .value(value):
+            let trailing = value.trailing.map { ", \($0)" } ?? ""
+            return "\(card.title), \(value.primary)\(trailing), \(value.severity.label)"
+        case let .segments(segments):
+            let readout = segments
+                .map { "\($0.label) \($0.value.primary)" }
+                .joined(separator: ", ")
+            return "\(card.title), \(readout)"
+        }
     }
 }
 
