@@ -16,6 +16,10 @@ let package = Package(
         .package(
             url: "https://github.com/modelcontextprotocol/swift-sdk.git",
             exact: "0.12.1"
+        ),
+        .package(
+            url: "https://github.com/sparkle-project/Sparkle.git",
+            exact: "2.9.4"
         )
     ],
     targets: [
@@ -25,7 +29,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "MetagentMenuBar",
-            dependencies: ["MetagentCore"],
+            dependencies: [
+                "MetagentCore",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources",
             exclude: [
                 "MetagentCore",

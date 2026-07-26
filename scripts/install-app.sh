@@ -9,7 +9,7 @@ launch_mode="none"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/install-menu-bar-app.sh [--launch|--restart]
+  scripts/install-app.sh [--launch|--restart]
 
 Builds the menu bar app and installs it to:
   ~/Applications/Metagent.app
@@ -44,7 +44,7 @@ while (($# > 0)); do
   esac
 done
 
-built_output="$(METAGENT_REQUIRE_STABLE_SIGNING=1 "$repo_root/scripts/build-menu-bar-app.sh")"
+built_output="$(METAGENT_REQUIRE_STABLE_SIGNING=1 "$repo_root/scripts/build-app.sh")"
 printf '%s\n' "$built_output"
 built_app="$(printf '%s\n' "$built_output" | awk 'NF { line=$0 } END { print line }')"
 

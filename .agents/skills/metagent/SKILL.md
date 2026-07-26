@@ -43,6 +43,16 @@ metagent skills duplicates [--root PATH | --global] [--json]
 metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
 ```
 
+To size a repository rather than its skills, use:
+
+```bash
+metagent codebase [--root PATH] [--long-file-threshold N] [--json]
+```
+
+It reads git-tracked files only, so ignored build output and dependencies never
+inflate the count. Read the test, documentation, generated, and long-file ratios
+before judging whether a codebase is carrying slop.
+
 `--sort` takes `name`, `score`, `invocations_30d`, `invocations_7d`,
 `total_invocations`, `last_used_at`, `updated_at`, or `token_estimate`. `list`
 and `duplicates` default to the current folder and take `--global` for the whole
@@ -53,7 +63,7 @@ projection-level record is genuinely needed.
 MCP clients can use `metagent mcp --stdio`, which exposes the same surfaces
 without a second scanner: `analyze_project`, `get_project_analysis_details`,
 `list_skills`, `list_projects`, `find_duplicate_skills`, `get_skill`,
-`doctor_project`, and `remove_skills`.
+`measure_codebase_size`, `doctor_project`, and `remove_skills`.
 
 ## Skill Removal Permission
 

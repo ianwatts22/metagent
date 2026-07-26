@@ -244,18 +244,35 @@ enum SkillTableView: String, CaseIterable, Identifiable {
     }
 }
 
+/// A segmented `Picker` wrapped in glass drew a squared selection inside the
+/// capsule and resized as labels changed. This mirrors the main navigation
+/// instead: one glass track, an accent capsule for the active view.
 struct SkillViewSelector: View {
     @Binding var selection: SkillTableView
 
     var body: some View {
-        Picker("View", selection: $selection) {
+        HStack(spacing: 3) {
             ForEach(SkillTableView.allCases) { view in
-                Text(view.title).tag(view)
+                let isSelected = selection == view
+                Button {
+                    selection = view
+                } label: {
+                    Text(view.title)
+                        .font(.callout.weight(isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .glassEffect(.regular.interactive(), in: Capsule())
+        .padding(4)
+        .glassEffect(.regular, in: Capsule())
         .accessibilityLabel("Skills view")
     }
 }

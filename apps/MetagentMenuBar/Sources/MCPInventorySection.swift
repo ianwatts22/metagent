@@ -124,16 +124,6 @@ struct MCPInventorySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("MCPs")
-                        .font(.title2.weight(.semibold))
-                    Text("\(allRows.count) servers across Codex and Claude")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
                 GlassSearchField(placeholder: "Search MCPs", text: $searchText, width: 220)
 
                 GlassSelectionMenu(
@@ -144,20 +134,9 @@ struct MCPInventorySection: View {
                     width: 165
                 )
 
-                Button {
-                    model.refreshMCPHealth()
-                } label: {
-                    if model.isMCPRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.glass)
-                .disabled(model.isMCPRefreshing)
-                .help("Refresh passive MCP inventory")
-                .accessibilityLabel("Refresh MCP inventory")
+                CountChip(text: "\(allRows.count) servers")
+
+                Spacer(minLength: 8)
             }
 
             if rows.isEmpty {

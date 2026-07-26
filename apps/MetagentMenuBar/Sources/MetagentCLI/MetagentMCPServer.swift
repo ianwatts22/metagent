@@ -56,6 +56,17 @@ enum MetagentMCPServer {
                     name: "doctor_project",
                     description: "Run Metagent's read-only skill and projection Doctor for a project folder, or for every configured root with scope \"global\".",
                     inputSchema: doctorInputSchema
+                ),
+                Tool(
+                    name: "measure_codebase_size",
+                    description: """
+                    Measure how much codebase a git repository tracks, split into code, tests, documentation, \
+                    configuration, generated output, and assets, with per-language totals and the largest files. \
+                    File discovery uses git ls-files, so ignored build output and dependencies never inflate the count. \
+                    Use it to size an unfamiliar repository, or to judge whether it carries slop: a high documentation \
+                    or generated line ratio, a low test ratio, or a large share of code sitting in very long files.
+                    """,
+                    inputSchema: codebaseSizeInputSchema
                 )
             ])
         }
@@ -133,6 +144,18 @@ enum MetagentMCPServer {
                     text = try encodeJSON(MetagentCore.doctor(options: scope == .global
                         ? .init()
                         : .init(roots: [root], maxDepth: 0, respectConfiguredIgnores: false)))
+                case "measure_codebase_size":
+                    var options = CodebaseSizeOptions()
+                    if let threshold = params.arguments?["long_file_threshold"]?.intValue {
+                        guard threshold > 0 else {
+                            throw mcpError(code: 9, "long_file_threshold must be a positive integer")
+                        }
+                        options.longFileThreshold = threshold
+                    }
+                    text = try encodeJSON(MetagentCore.measureCodebaseSize(
+                        root: root,
+                        options: options
+                    ))
                 default:
                     return .init(
                         content: [.text(
@@ -379,6 +402,20 @@ enum MetagentMCPServer {
         "properties": .object([
             "root": rootProperty,
             "scope": scopeProperty
+        ]),
+        "additionalProperties": .bool(false)
+    ])
+
+    private static let codebaseSizeInputSchema = Value.object([
+        "type": .string("object"),
+        "properties": .object([
+            "root": rootProperty,
+            "long_file_threshold": .object([
+                "type": .string("integer"),
+                "minimum": .int(1),
+                "default": .int(CodebaseSizeOptions.defaultLongFileThreshold),
+                "description": .string("Code files at or over this many lines count as long files.")
+            ])
         ]),
         "additionalProperties": .bool(false)
     ])

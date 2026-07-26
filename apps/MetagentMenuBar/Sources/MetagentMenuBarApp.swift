@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 @main
 struct MetagentMenuBarApp: App {
     @StateObject private var model = MetagentModel()
+    @StateObject private var updater = UpdaterModel()
     @State private var selectedSection = PanelSection.overview
     @State private var selectedProjectRoot: String?
 
@@ -19,6 +20,7 @@ struct MetagentMenuBarApp: App {
                 selectedProjectRoot: $selectedProjectRoot
             )
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
+                .environmentObject(updater)
         }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
@@ -31,9 +33,10 @@ struct MetagentMenuBarApp: App {
                 selectedProjectRoot: $selectedProjectRoot
             )
                 .frame(width: 560, height: 640)
+                .environmentObject(updater)
         } label: {
             MenuBarIcon()
-                .frame(width: 18, height: 18)
+                .frame(width: 18, height: 18 / AppBrand.markAspectRatio)
                 .accessibilityLabel("Metagent")
         }
         .menuBarExtraStyle(.window)

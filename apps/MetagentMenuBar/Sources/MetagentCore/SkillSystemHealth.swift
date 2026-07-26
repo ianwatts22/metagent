@@ -39,6 +39,9 @@ public struct SkillAgeDistribution: Sendable, Equatable {
 
 public struct SkillSystemHealth: Sendable, Equatable {
     public let skillCount: Int
+    public let assessedSkillCount: Int
+    public let dormantSkillCount: Int
+    public let dormantProjectCount: Int
     public let observedSkillCount: Int
     public let active30dSkillCount: Int
     public let neverObservedSkillCount: Int
@@ -51,6 +54,9 @@ public struct SkillSystemHealth: Sendable, Equatable {
 
     public init(
         skillCount: Int,
+        assessedSkillCount: Int,
+        dormantSkillCount: Int,
+        dormantProjectCount: Int,
         observedSkillCount: Int,
         active30dSkillCount: Int,
         neverObservedSkillCount: Int,
@@ -62,6 +68,9 @@ public struct SkillSystemHealth: Sendable, Equatable {
         duplicateGroupCount: Int
     ) {
         self.skillCount = skillCount
+        self.assessedSkillCount = assessedSkillCount
+        self.dormantSkillCount = dormantSkillCount
+        self.dormantProjectCount = dormantProjectCount
         self.observedSkillCount = observedSkillCount
         self.active30dSkillCount = active30dSkillCount
         self.neverObservedSkillCount = neverObservedSkillCount
@@ -75,6 +84,9 @@ public struct SkillSystemHealth: Sendable, Equatable {
 
     public static let empty = SkillSystemHealth(
         skillCount: 0,
+        assessedSkillCount: 0,
+        dormantSkillCount: 0,
+        dormantProjectCount: 0,
         observedSkillCount: 0,
         active30dSkillCount: 0,
         neverObservedSkillCount: 0,
@@ -86,9 +98,26 @@ public struct SkillSystemHealth: Sendable, Equatable {
         duplicateGroupCount: 0
     )
 
+    /// Assessed skills with no observed read in the last 30 days.
+    public var unused30dSkillCount: Int {
+        max(0, assessedSkillCount - active30dSkillCount)
+    }
+
     public var observedFraction: Double {
-        guard skillCount > 0 else { return 0 }
-        return Double(observedSkillCount) / Double(skillCount)
+        fraction(observedSkillCount)
+    }
+
+    public var unused30dFraction: Double {
+        fraction(unused30dSkillCount)
+    }
+
+    public var neverObservedFraction: Double {
+        fraction(neverObservedSkillCount)
+    }
+
+    private func fraction(_ count: Int) -> Double {
+        guard assessedSkillCount > 0 else { return 0 }
+        return Double(count) / Double(assessedSkillCount)
     }
 }
 
@@ -97,9 +126,25 @@ public extension MetagentCore {
         projects: [SkillProject],
         usage: SkillUsageSnapshot,
         scope: SkillSystemHealthScope = .all,
+        activity: ProjectActivityIndex = .unavailable,
         now: Date = Date()
     ) -> SkillSystemHealth {
-        let scopedSkills = canonicalHealthSkills(projects: projects, scope: scope)
+        let scopedEntries = canonicalHealthSkills(projects: projects, scope: scope)
+        let scopedSkills = scopedEntries.map(\.skill)
+        // Skills in directories nobody has worked in recently would otherwise
+        // inflate every adoption number. Only the unscoped portfolio view drops
+        // them: asking about one project means asking about all of its skills.
+        let dormantEntries: [HealthSkillEntry]
+        let assessedEntries: [HealthSkillEntry]
+        if case .all = scope {
+            (dormantEntries, assessedEntries) = scopedEntries.partitionedByDormancy(
+                activity: activity,
+                now: now
+            )
+        } else {
+            (dormantEntries, assessedEntries) = ([], scopedEntries)
+        }
+        let assessedSkills = assessedEntries.map(\.skill)
         let usageByPath = Dictionary(
             usage.summaries.compactMap { summary -> (String, SkillUsageSummary)? in
                 guard let path = summary.canonicalPath else { return nil }
@@ -114,7 +159,7 @@ public extension MetagentCore {
             uniquingKeysWith: preferredUsageSummary
         )
 
-        let matchedUsage = scopedSkills.map { skill -> SkillUsageSummary? in
+        let matchedUsage = assessedSkills.map { skill -> SkillUsageSummary? in
             let path = standardizedHealthPath(
                 skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
             )
@@ -133,6 +178,9 @@ public extension MetagentCore {
 
         return SkillSystemHealth(
             skillCount: scopedSkills.count,
+            assessedSkillCount: assessedSkills.count,
+            dormantSkillCount: dormantEntries.count,
+            dormantProjectCount: Set(dormantEntries.map(\.projectRoot)).count,
             observedSkillCount: matchedUsage.count { ($0?.totalInvocations ?? 0) > 0 },
             active30dSkillCount: matchedUsage.count { ($0?.invocations30d ?? 0) > 0 },
             neverObservedSkillCount: matchedUsage.count { ($0?.totalInvocations ?? 0) == 0 },
@@ -156,10 +204,34 @@ public extension MetagentCore {
     }
 }
 
-private func canonicalHealthSkills(
+/// A deduplicated installed skill together with the project directory it was
+/// scanned from, so dormant directories can be identified later.
+struct HealthSkillEntry {
+    let skill: SkillInventoryItem
+    let projectRoot: String
+}
+
+private extension Array where Element == HealthSkillEntry {
+    /// Splits project-scoped skills whose directory has gone quiet away from the
+    /// skills that should still be judged on adoption.
+    func partitionedByDormancy(
+        activity: ProjectActivityIndex,
+        now: Date
+    ) -> (dormant: [HealthSkillEntry], assessed: [HealthSkillEntry]) {
+        let dormancyByRoot = Set(map(\.projectRoot)).reduce(into: [String: Bool]()) { cache, root in
+            cache[root] = activity.isDormant(root: root, now: now)
+        }
+        let partitioned = Dictionary(grouping: self) { entry in
+            entry.skill.scope == "project" && dormancyByRoot[entry.projectRoot] == true
+        }
+        return (partitioned[true] ?? [], partitioned[false] ?? [])
+    }
+}
+
+func canonicalHealthSkills(
     projects: [SkillProject],
     scope: SkillSystemHealthScope
-) -> [SkillInventoryItem] {
+) -> [HealthSkillEntry] {
     let filtered = projects.flatMap { project in
         project.skills.filter { skill in
             guard skill.representation != "projection" else { return false }
@@ -173,25 +245,26 @@ private func canonicalHealthSkills(
                     && skill.scope == "project"
             }
         }
+        .map { HealthSkillEntry(skill: $0, projectRoot: standardizedHealthPath(project.root)) }
     }
 
     return Dictionary(
-        filtered.map { skill in
-            let path = skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
-            return (standardizedHealthPath(path), skill)
+        filtered.map { entry in
+            let path = entry.skill.canonicalPath.isEmpty ? entry.skill.path : entry.skill.canonicalPath
+            return (standardizedHealthPath(path), entry)
         },
         uniquingKeysWith: preferredHealthSkill
     )
     .values
-    .sorted()
+    .sorted { $0.skill < $1.skill }
 }
 
 private func preferredHealthSkill(
-    _ left: SkillInventoryItem,
-    _ right: SkillInventoryItem
-) -> SkillInventoryItem {
+    _ left: HealthSkillEntry,
+    _ right: HealthSkillEntry
+) -> HealthSkillEntry {
     let priority = ["canonical": 0, "versioned-cache": 1, "projection": 2]
-    return priority[left.representation, default: 3] <= priority[right.representation, default: 3]
+    return priority[left.skill.representation, default: 3] <= priority[right.skill.representation, default: 3]
         ? left
         : right
 }
@@ -214,7 +287,7 @@ private func healthCoverage(_ usage: SkillUsageSnapshot) -> SkillUsageCoverage {
         : .partial(progress: progress)
 }
 
-private func nearestRank(_ values: [Int], percentile: Double) -> Int? {
+func nearestRank(_ values: [Int], percentile: Double) -> Int? {
     guard !values.isEmpty else { return nil }
     let sorted = values.sorted()
     let rank = max(1, Int(ceil(percentile * Double(sorted.count))))

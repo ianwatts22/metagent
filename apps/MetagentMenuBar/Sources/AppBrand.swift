@@ -5,6 +5,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor enum AppBrand {
+    /// Width-to-height ratio of the wide brand glyph, so callers can size it without letterboxing.
+    static let markAspectRatio: CGFloat = 506 / 400
+
     static let menuBarIcon: NSImage? = {
         loadMenuBarIcon(in: .main) ?? loadMenuBarIcon(in: .module)
     }()
@@ -42,7 +45,8 @@ import UniformTypeIdentifiers
               let image = NSImage(contentsOf: url)
         else { return nil }
         image.isTemplate = true
-        image.size = NSSize(width: 18, height: 18)
+        // Keep the glyph's own proportions; a square size makes `scaledToFit` letterbox it.
+        image.size = NSSize(width: 18, height: 18 / markAspectRatio)
         return image
     }
 }
