@@ -8,6 +8,7 @@ struct ProjectDirectoryRow: Identifiable {
     enum LinkState: String, Comparable {
         case healthy = "Connected"
         case notApplicable = "Independent"
+        case nothingToMirror = "No shared skills"
         case missing = "Not connected"
         case separate = "Separate folder"
         case wrong = "Wrong link"
@@ -54,12 +55,16 @@ struct ProjectDirectoryRow: Identifiable {
             }
         }).count
         mcpCount = mcpHealth.projectOnly(at: directory.root).inventory.count
-        claudeState = Self.claudeLinkState(root: directory.root, isGlobal: isGlobal)
         let agentsPaths = Set(matchingProjects.flatMap { project in
             project.skills
                 .filter { $0.location == "agents" && $0.representation == "canonical" }
                 .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
         })
+        claudeState = Self.claudeLinkState(
+            root: directory.root,
+            isGlobal: isGlobal,
+            hasSharedSkills: !agentsPaths.isEmpty
+        )
         let codexPaths = Set(matchingProjects.flatMap { project in
             project.skills
                 .filter {
@@ -109,7 +114,16 @@ struct ProjectDirectoryRow: Identifiable {
         }
     }
 
-    private static func claudeLinkState(root: String, isGlobal: Bool) -> LinkState {
+    /// A missing `.claude/skills` is only a problem when there are shared
+    /// skills for it to point at. Folders that reach this table for another
+    /// reason — a project MCP server, say — have nothing to mirror, and the
+    /// Doctor never scans them, so reporting them as broken would raise an
+    /// alarm with no matching fix anywhere in the app.
+    private static func claudeLinkState(
+        root: String,
+        isGlobal: Bool,
+        hasSharedSkills: Bool
+    ) -> LinkState {
         let project = URL(fileURLWithPath: root)
         let link = project.appendingPathComponent(".claude/skills")
         let expected = project.appendingPathComponent(".agents/skills")
@@ -120,8 +134,11 @@ struct ProjectDirectoryRow: Identifiable {
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: link.path, isDirectory: &isDirectory) else {
-            return isGlobal ? .notApplicable : .missing
+            if isGlobal { return .notApplicable }
+            return hasSharedSkills ? .missing : .nothingToMirror
         }
+        // A `.claude/skills` that exists is worth describing either way: it is a
+        // real directory somebody put there, shared skills or not.
         return isDirectory.boolValue ? (isGlobal ? .notApplicable : .separate) : .wrong
     }
 }
@@ -186,7 +203,7 @@ struct ProjectsSection: View {
                         ProjectCodebaseSizeCell(size: row.codebaseSize)
                     }
                     .width(min: 72, ideal: 88)
-                    TableColumn("Claude Symlink", value: \.claudeText) { row in
+                    TableColumn("Claude symlink", value: \.claudeText) { row in
                         ProjectLinkStateCell(state: row.claudeState)
                     }
                     .width(min: 108, ideal: 118)
@@ -359,6 +376,7 @@ struct ProjectLinkStateCell: View {
         switch state {
         case .healthy: "checkmark.circle"
         case .notApplicable: "info.circle"
+        case .nothingToMirror: "circle.dashed"
         case .missing: "minus.circle"
         case .separate: "folder.badge.questionmark"
         case .wrong: "exclamationmark.triangle"
@@ -368,7 +386,7 @@ struct ProjectLinkStateCell: View {
     private var tint: Color {
         switch state {
         case .healthy: .green
-        case .notApplicable, .missing: .secondary
+        case .notApplicable, .nothingToMirror, .missing: .secondary
         case .separate, .wrong: .orange
         }
     }
@@ -377,6 +395,7 @@ struct ProjectLinkStateCell: View {
         switch state {
         case .healthy: ".claude/skills points to .agents/skills."
         case .notApplicable: "Global Claude skills are stored independently from .agents/skills. This is allowed, but the two locations do not share one canonical collection."
+        case .nothingToMirror: "This folder has no shared .agents skills, so there is nothing for Claude to link to. It appears here for its other agent configuration."
         case .missing: "Claude does not currently see this project's .agents skills."
         case .separate: ".claude/skills is an independent directory, not a shared link."
         case .wrong: ".claude/skills is linked somewhere other than .agents/skills."
