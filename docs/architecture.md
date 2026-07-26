@@ -93,6 +93,7 @@ metagent skills evaluate /absolute/path/to/skill --provider codex
 metagent usage status
 metagent usage refresh
 metagent analyze --root /absolute/path/to/project --json
+metagent codebase --root /absolute/path/to/project --json
 metagent mcp --stdio
 ```
 
@@ -124,10 +125,11 @@ The stdio server is:
 metagent mcp --stdio
 ```
 
-It uses the pinned official MCP Swift SDK and exposes seven read-only tools plus
+It uses the pinned official MCP Swift SDK and exposes eight read-only tools plus
 one gated destructive tool: `analyze_project`, `get_project_analysis_details`,
 `list_skills`, `list_projects`, `find_duplicate_skills`, `get_skill`,
-`doctor_project`, and `remove_skills`. `analyze_project` defaults to a compact
+`measure_codebase_size`, `doctor_project`, and `remove_skills`.
+`analyze_project` defaults to a compact
 schema-version-2 project-only summary: counts, usage coverage, and at most five
 prioritized findings. It deliberately excludes global plugin inventories and
 global MCP servers. `get_project_analysis_details` retrieves one project-only

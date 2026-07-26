@@ -29,6 +29,8 @@ struct MetagentCLI {
             try runUsage(Array(args.dropFirst()))
         case "analyze":
             try runAnalyze(Array(args.dropFirst()))
+        case "codebase":
+            try runCodebase(Array(args.dropFirst()))
         case "mcp":
             try runMCP(Array(args.dropFirst()))
         case "help", "--help", "-h":
@@ -455,6 +457,103 @@ struct MetagentCLI {
         default:
             throw CLIError.message("unknown usage command: \(command)")
         }
+    }
+
+    private static func runCodebase(_ args: [String]) throws {
+        var root = FileManager.default.currentDirectoryPath
+        var json = false
+        var options = CodebaseSizeOptions()
+        var index = 0
+        while index < args.count {
+            switch args[index] {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--long-file-threshold":
+                let value = try readFlagValue("--long-file-threshold", args: args, index: &index)
+                guard let threshold = Int(value), threshold > 0 else {
+                    throw CLIError.message("--long-file-threshold must be a positive integer")
+                }
+                options.longFileThreshold = threshold
+            case "--json":
+                json = true
+            case "--help", "-h":
+                print("""
+                metagent codebase
+
+                Usage:
+                  metagent codebase [--root PATH] [--json] [--long-file-threshold N]
+
+                Measures the tracked codebase of a git repository, split into code,
+                tests, documentation, configuration, generated output, and assets.
+                """)
+                return
+            default:
+                throw CLIError.message("unknown codebase flag: \(args[index])")
+            }
+            index += 1
+        }
+
+        let report = try MetagentCore.measureCodebaseSize(root: root, options: options)
+        if json {
+            try printJSON(report)
+            return
+        }
+        printCodebaseReport(report)
+    }
+
+    private static func printCodebaseReport(_ report: CodebaseSizeReport) {
+        print("root: \(report.root)")
+        guard report.isGitRepository else {
+            print("not a git repository; codebase size is only measured from tracked files")
+            return
+        }
+        print("tracked files: \(report.totalFiles.formatted())")
+        print("code lines: \(report.codeLines.formatted()) of \(report.totalLines.formatted()) counted")
+
+        print("")
+        print("breakdown")
+        for category in CodebaseFileCategory.allCases {
+            let size = report.categories[category] ?? CodebaseCategorySize()
+            guard size.files > 0 else { continue }
+            print("  \(category.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0))"
+                + "\(size.files.formatted()) files  \(size.lines.formatted()) lines")
+        }
+
+        if !report.languages.isEmpty {
+            print("")
+            print("languages")
+            for language in report.languages.prefix(8) {
+                print("  \(language.language.padding(toLength: 14, withPad: " ", startingAt: 0))"
+                    + "\(language.files.formatted()) files  \(language.lines.formatted()) lines")
+            }
+        }
+
+        let signals = report.signals
+        print("")
+        print("signals")
+        print("  tests \(percentText(signals.testLineRatio)) of code+tests"
+            + " | docs \(percentText(signals.documentationLineRatio))"
+            + " | generated \(percentText(signals.generatedLineRatio))")
+        print("  \(signals.longFileCount) file(s) at or over \(report.longFileThreshold) lines"
+            + " hold \(percentText(signals.longFileLineRatio)) of code")
+        print("  median code file \(signals.medianCodeFileLines.formatted()) lines"
+            + " | largest \(signals.largestCodeFileLines.formatted()) lines")
+
+        if !report.largestFiles.isEmpty {
+            print("")
+            print("largest files")
+            for file in report.largestFiles {
+                print("  \(file.lines.formatted()) \(file.path)")
+            }
+        }
+
+        for warning in report.warnings {
+            print("warning: \(warning)")
+        }
+    }
+
+    private static func percentText(_ ratio: Double) -> String {
+        ratio.formatted(.percent.precision(.fractionLength(0...1)))
     }
 
     private static func runAnalyze(_ args: [String]) throws {
@@ -924,6 +1023,7 @@ struct MetagentCLI {
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent analyze [--root PATH] [--json] [--details|--verbose]
+          metagent codebase [--root PATH] [--json] [--long-file-threshold N]
           metagent mcp <install|status|remove> [flags]
           metagent mcp --stdio
         """)

@@ -56,8 +56,15 @@ metagent skills duplicates --global
 metagent skills scan --root /absolute/path/to/project --json
 metagent skills doctor --root /absolute/path/to/project --json
 metagent skills evaluate /absolute/path/to/skill --provider plugin-eval --json
+metagent codebase --root /absolute/path/to/project --json
 metagent usage status --json
 ```
+
+`metagent codebase` sizes a git repository from its tracked files, split into
+code, tests, documentation, configuration, generated output, and assets. Ignored
+build output and dependencies never reach the count, so the numbers describe the
+codebase someone actually maintains — and the test, documentation, generated,
+and long-file ratios say whether it is carrying slop.
 
 `metagent skills list` is the compact, paginated view: it filters by `--name`,
 `--manager`, `--mutability`, `--min-score`, `--unused`, and
@@ -110,15 +117,15 @@ Existing agent sessions may need to be restarted before the newly registered
 server appears. Configuration and a direct handshake do not prove that a client
 has loaded, connected to, or invoked it.
 
-The server exposes seven read-only tools: compact project analysis through
+The server exposes eight read-only tools: compact project analysis through
 `analyze_project`, bounded and paginated drilldown through
 `get_project_analysis_details`, the compact paginated inventory in
 `list_skills`, the global root overview in `list_projects`, overlap groups in
-`find_duplicate_skills`, one skill's detail in `get_skill`, and
-`doctor_project`. It also exposes `remove_skills`, which is destructive: it
-defaults to `apply: false` and returns only a dry-run plan, and agents must get
-explicit user confirmation for the specific removal before applying. For
-example, ask an agent:
+`find_duplicate_skills`, one skill's detail in `get_skill`, git-tracked codebase
+size in `measure_codebase_size`, and `doctor_project`. It also exposes
+`remove_skills`, which is destructive: it defaults to `apply: false` and returns
+only a dry-run plan, and agents must get explicit user confirmation for the
+specific removal before applying. For example, ask an agent:
 
 > Use Metagent to analyze this project’s instructions, skills, MCP setup,
 > provenance, usage evidence, and Doctor findings.
