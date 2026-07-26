@@ -13,10 +13,13 @@ on:
 permissions:
   contents: write
 
+env:
+  SPARKLE_VERSION: "2.9.4"
+
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -49,21 +52,110 @@ jobs:
         working-directory: apps/MetagentMenuBar
         run: swift test --disable-sandbox
 
-      # Unsigned build. Releases are ad-hoc signed only: the repo has no Developer ID
-      # certificate, so downloads are quarantined by Gatekeeper until the user clears
-      # the attribute. See the release notes for the one-line workaround.
-      - name: Build app bundle and CLI
-        run: ./scripts/build-menu-bar-app.sh
-
-      - name: Package artifacts
-        id: package
+      # Developer ID is the only identity Gatekeeper accepts for a download, and
+      # the only one the notary service will process. It lives in a throwaway
+      # keychain so nothing leaks into the runner's login keychain.
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          version="${{ steps.meta.outputs.version }}"
-          mkdir -p artifacts
-          ditto -c -k --keepParent dist/MetagentMenuBar.app "artifacts/Metagent.zip"
-          ditto -c -k "apps/MetagentMenuBar/.build/release/metagent" "artifacts/metagent-cli.zip"
+          if [[ -z "$CERTIFICATE_P12" ]]; then
+            echo "MACOS_CERTIFICATE_P12 is not set." >&2
+            echo "Export the Developer ID Application certificate as a .p12," >&2
+            echo "base64 it, and store it as a repository secret." >&2
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          keychain_password="$(uuidgen)"
+          certificate="$RUNNER_TEMP/certificate.p12"
+
+          printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" \
+            "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm -f "$certificate"
+
+          security find-identity -v -p codesigning
+
+      - name: Build signed app bundle and CLI
+        env:
+          METAGENT_DISTRIBUTION_BUILD: "1"
+          METAGENT_VERSION: ${{ steps.meta.outputs.version }}
+          # Sparkle compares CFBundleVersion. Using the release version for it
+          # keeps the comparison monotonic and makes re-running a failed release
+          # produce an identical build rather than a spuriously newer one.
+          METAGENT_BUILD_NUMBER: ${{ steps.meta.outputs.version }}
+        run: ./scripts/build-app.sh
+
+      - name: Notarize and staple the app
+        env:
+          METAGENT_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
+          METAGENT_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          METAGENT_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: ./scripts/notarize.sh dist/MetagentMenuBar.app
+
+      # Both archives are cut from the stapled bundle, so the ticket travels
+      # with the download and Gatekeeper can clear it without a network round
+      # trip. The DMG is the human download; the zip is what Sparkle installs.
+      - name: Package disk image
+        env:
+          METAGENT_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
+          METAGENT_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          METAGENT_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ./scripts/package-dmg.sh artifacts/Metagent.dmg
+          ./scripts/notarize.sh artifacts/Metagent.dmg
+
+      - name: Package update archive and CLI
+        run: |
+          mkdir -p artifacts/updates
+          ditto -c -k --keepParent dist/MetagentMenuBar.app "artifacts/updates/Metagent.zip"
+          # The bundled helper is the signed copy; the loose build product is not.
+          ditto -c -k "dist/MetagentMenuBar.app/Contents/Helpers/metagent" "artifacts/metagent-cli.zip"
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "SPARKLE_PRIVATE_KEY is not set." >&2
+            echo "Run Sparkle's generate_keys once and store the private key as a secret." >&2
+            exit 1
+          fi
+          tag="${{ steps.meta.outputs.tag }}"
+
+          curl -sSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+
+          key_file="$RUNNER_TEMP/sparkle_ed_key"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
+            --ed-key-file "$key_file" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/" \
+            --output-path artifacts/appcast.xml \
+            artifacts/updates
+
+          rm -f "$key_file"
+          cat artifacts/appcast.xml
+
+      - name: Checksum artifacts
+        run: |
           cd artifacts
-          shasum -a 256 Metagent.zip metagent-cli.zip > checksums.txt
+          shasum -a 256 Metagent.dmg updates/Metagent.zip metagent-cli.zip > checksums.txt
           cat checksums.txt
 
       - name: Publish release
@@ -78,7 +170,27 @@ jobs:
               --prerelease
           fi
           gh release upload "$tag" \
-            artifacts/Metagent.zip \
+            artifacts/Metagent.dmg \
+            artifacts/updates/Metagent.zip \
             artifacts/metagent-cli.zip \
+            artifacts/appcast.xml \
             artifacts/checksums.txt \
             --clobber
+
+      # The feed lives on the site rather than in the release so a bad build can
+      # be pulled by editing one file, without touching the release itself.
+      - name: Publish appcast to the site
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          cp artifacts/appcast.xml public/appcast.xml
+          git add public/appcast.xml
+          if git diff --cached --quiet; then
+            echo "Appcast unchanged."
+          else
+            git commit -m "chore(release): publish appcast for $tag"
+            git push origin main
+          fi

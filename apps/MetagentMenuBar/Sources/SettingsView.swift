@@ -7,6 +7,7 @@ import SwiftUI
 /// scans, so the config file stays an escape hatch rather than the only door.
 struct SettingsView: View {
     @ObservedObject var model: MetagentModel
+    @EnvironmentObject private var updater: UpdaterModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var roots: [String] = []
@@ -99,6 +100,29 @@ struct SettingsView: View {
                 .buttonBorderShape(.capsule)
 
                 Spacer()
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AppVersion.display)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if !updater.isConfigured {
+                        Text("This build has no update feed configured.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 16)
+
+                Button("Check for Updates", systemImage: "arrow.down.circle") {
+                    updater.checkForUpdates()
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .disabled(!updater.isConfigured || !updater.canCheckForUpdates)
             }
         }
         .padding(20)

@@ -161,11 +161,104 @@ in-process hot reload, so transient UI state resets after each change.
 
 The dev loop builds the debug configuration by default so a warm reload takes
 seconds; pass `--release` to iterate against the optimized build. Installer
-builds outside the dev loop (`install-menu-bar-app.sh`, `verify.sh`) remain
+builds outside the dev loop (`install-app.sh`, `verify.sh`) remain
 release builds. For pixel-level iteration without restarting the app, open the
 package in Xcode and use the `#Preview` canvases (for example the duplicate
 review previews at the end of `MetagentMenuBarApp.swift`), which render the
 views with mock data.
 
-The local app uses a persistent development signature. Distribution signing
-and notarization remain separate future packaging work.
+The local app uses a persistent development signature. Distribution is a
+separate mode, described below.
+
+## Distribution
+
+Public downloads are a signed, notarized disk image. Updates after that first
+install are delivered in-app by Sparkle.
+
+The two halves are deliberately different formats. The DMG is the human
+download: it opens to `Metagent.app` beside an `Applications` shortcut, which is
+the install gesture people already know. The zip is what Sparkle downloads and
+swaps in place, because that is the format its installer expects.
+
+### Signing modes
+
+`scripts/build-app.sh` signs with an `Apple Development` certificate by
+default, which is enough to run the app on the machine that built it. Setting
+`METAGENT_DISTRIBUTION_BUILD=1` switches it to require a `Developer ID
+Application` certificate, the only identity Gatekeeper accepts for a download
+and the only one the notary service will process.
+
+Both modes apply the hardened runtime, so a runtime restriction surfaces during
+local development rather than in a rejected notarization log. Only distribution
+builds request Apple's secure timestamp, which keeps local builds offline-capable.
+
+Sparkle's framework carries its own nested code — two XPC services, `Autoupdate`,
+and `Updater.app`. These are signed innermost-first before the framework, the
+CLI helper, and finally the app bundle; an outer signature made first would seal
+a hash that no longer matches. The downloader XPC service is re-signed with
+`--preserve-metadata=entitlements`, per Sparkle's own guidance. Sparkle 2.9.4
+ships it without entitlements, so today that preserves an empty set; the flag is
+there so a future sandboxed build is not silently stripped.
+
+### Versioning
+
+Sparkle decides an update exists by comparing `CFBundleVersion` against the
+appcast. The checked-in `Info.plist` carries a placeholder, so distribution
+builds require `METAGENT_VERSION` and `METAGENT_BUILD_NUMBER` and refuse to
+proceed without them. The release workflow sets both from the tag, which keeps
+the comparison monotonic and makes re-running a failed release produce an
+identical build rather than a spuriously newer one.
+
+### Release pipeline
+
+`.github/workflows/release.yml` runs on a `v*` tag:
+
+1. Imports the Developer ID certificate into a throwaway keychain.
+2. Builds with `METAGENT_DISTRIBUTION_BUILD=1` and the tag's version.
+3. Notarizes and staples the app, so the ticket travels with the download and
+   Gatekeeper clears it without a network round trip.
+4. Cuts `Metagent.dmg` and `Metagent.zip` from the stapled bundle, then
+   notarizes and staples the disk image.
+5. Generates `appcast.xml` with Sparkle's `generate_appcast`, signed with the
+   EdDSA private key.
+6. Uploads everything to the release and commits `public/appcast.xml`.
+
+The feed is served from the site rather than from the release, so a bad build
+can be pulled by deleting its `<item>` and redeploying. Installed copies stop
+being offered the update immediately, without touching the release itself.
+
+Delta updates are not generated: `generate_appcast` builds them by diffing
+against older archives present in the same directory, and CI only has the new
+one. Full updates work; deltas would need prior releases downloaded first.
+
+### One-time setup
+
+Generate the Sparkle key pair once, from the same `Sparkle-<version>.tar.xz`
+the workflow downloads:
+
+```bash
+./bin/generate_keys
+```
+
+The public key goes in `apps/MetagentMenuBar/Info.plist` as `SUPublicEDKey`;
+the private key becomes the `SPARKLE_PRIVATE_KEY` repository secret. `SUFeedURL`
+in the same plist must point at the deployed `appcast.xml`. Both ship as
+`REPLACE_ME` placeholders, and a distribution build fails rather than publishing
+an app that cannot update itself.
+
+Required repository secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12` | Developer ID Application certificate, exported as `.p12` and base64-encoded |
+| `MACOS_CERTIFICATE_PASSWORD` | Password set when exporting that `.p12` |
+| `APPLE_NOTARY_ID` | Apple ID used for notarization |
+| `APPLE_NOTARY_PASSWORD` | App-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | Developer team identifier |
+| `SPARKLE_PRIVATE_KEY` | EdDSA private key from `generate_keys` |
+
+### Checking for updates by hand
+
+Settings shows the installed version and a `Check for Updates` action. When
+`SUFeedURL` is still a placeholder the app says so and stays quiet rather than
+retrying an unreachable URL in the background.

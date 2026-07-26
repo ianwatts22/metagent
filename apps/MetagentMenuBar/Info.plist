@@ -26,5 +26,18 @@
 	<string>26.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <!-- Sparkle. SUFeedURL is a placeholder until the site domain is settled; the
+       distribution build refuses to package while it still reads REPLACE_ME.
+       SUPublicEDKey is the public half of the EdDSA pair whose private half
+       lives in the login keychain and in the SPARKLE_PRIVATE_KEY secret; it is
+       not sensitive, and changing it strands every already-installed copy. -->
+  <key>SUFeedURL</key>
+  <string>https://REPLACE_ME/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>zl3LoF24+EwrHvQolcH7KRX2QqUSMpcE3zvsy9A0vFA=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
 </dict>
 </plist>

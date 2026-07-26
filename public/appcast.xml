@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparkle update feed for Metagent.
+
+  This file is regenerated and committed by .github/workflows/release.yml on
+  every tagged release. An empty channel is a valid feed and reads as "no update
+  available", which is the correct answer until the first signed release ships.
+
+  To pull a bad release: remove its <item> here and redeploy the site. Installed
+  copies stop being offered the update immediately, without touching the release.
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Metagent</title>
+    <description>Updates for Metagent</description>
+    <language>en</language>
+  </channel>
+</rss>
