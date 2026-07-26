@@ -19,24 +19,32 @@ struct ProjectDirectoryRow: Identifiable {
 
     let root: String
     let name: String
+    let isGlobal: Bool
     let skillCount: Int
     let mcpCount: Int
     let claudeState: LinkState
     let codexOnlyCount: Int
     let claudeOnlyCount: Int
     let issueCount: Int
+    let codebaseSize: CodebaseSizeReport?
 
     var id: String { root }
     var claudeText: String { claudeState.rawValue }
+    /// Unmeasured folders sort as -1 so they group at one end of the column
+    /// rather than mixing in with the genuinely smallest repositories.
+    var codeLines: Int { codebaseSize?.codeLines ?? -1 }
 
     init(
         directory: DirectoryFilterOption,
         projects: [ProjectStatus],
         mcpHealth: MCPHealthSnapshot,
-        doctorIssues: [DoctorIssue]
+        doctorIssues: [DoctorIssue],
+        codebaseSizes: [String: CodebaseSizeReport]
     ) {
         root = directory.root
-        name = directory.root == NSHomeDirectory() ? "Global" : directory.name
+        isGlobal = isGlobalRoot(directory.root)
+        name = isGlobal ? "Global" : directory.name
+        codebaseSize = codebaseSizes[standardizedDirectoryPath(directory.root)]
         let matchingProjects = projects.filter {
             standardizedDirectoryPath($0.root) == standardizedDirectoryPath(directory.root)
         }
@@ -46,10 +54,7 @@ struct ProjectDirectoryRow: Identifiable {
             }
         }).count
         mcpCount = mcpHealth.projectOnly(at: directory.root).inventory.count
-        claudeState = Self.claudeLinkState(
-            root: directory.root,
-            isGlobal: isGlobalRoot(directory.root)
-        )
+        claudeState = Self.claudeLinkState(root: directory.root, isGlobal: isGlobal)
         let agentsPaths = Set(matchingProjects.flatMap { project in
             project.skills
                 .filter { $0.location == "agents" && $0.representation == "canonical" }
@@ -81,6 +86,7 @@ struct ProjectDirectoryRow: Identifiable {
         projects: [ProjectStatus],
         mcpHealth: MCPHealthSnapshot,
         doctorIssues: [DoctorIssue],
+        codebaseSizes: [String: CodebaseSizeReport],
         selectedProjectRoot: String?
     ) -> [ProjectDirectoryRow] {
         directoryFilterOptions(
@@ -97,7 +103,8 @@ struct ProjectDirectoryRow: Identifiable {
                 directory: $0,
                 projects: projects,
                 mcpHealth: mcpHealth,
-                doctorIssues: doctorIssues
+                doctorIssues: doctorIssues,
+                codebaseSizes: codebaseSizes
             )
         }
     }
@@ -130,15 +137,19 @@ struct ProjectsSection: View {
             projects: model.projects,
             mcpHealth: model.mcpHealth,
             doctorIssues: model.doctorIssues,
+            codebaseSizes: model.codebaseSizes,
             selectedProjectRoot: selectedProjectRoot
         )
     }
 
+    /// Global is the home directory rather than a peer project, and its counts
+    /// are not comparable to a repository's. It stays pinned above the sort so
+    /// it never buries itself in the middle of the list.
     private func filteredRows(from allRows: [ProjectDirectoryRow]) -> [ProjectDirectoryRow] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return allRows
+        let matching = allRows
             .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.root.localizedCaseInsensitiveContains(query) }
-            .sorted(using: sortOrder)
+        return matching.filter(\.isGlobal) + matching.filter { !$0.isGlobal }.sorted(using: sortOrder)
     }
 
     var body: some View {
@@ -160,11 +171,7 @@ struct ProjectsSection: View {
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("Project", value: \.name) { row in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(row.name).font(.callout.weight(.medium))
-                            Text(displayUserPath(row.root)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                        .help(displayUserPath(row.root))
+                        ProjectNameCell(row: row)
                     }
                     .width(min: 260, ideal: 360)
                     TableColumn("Skills", value: \.skillCount) { row in
@@ -175,10 +182,14 @@ struct ProjectsSection: View {
                         Text(row.mcpCount.formatted()).monospacedDigit()
                     }
                     .width(min: 60, ideal: 72)
-                    TableColumn("Claude skills", value: \.claudeText) { row in
+                    TableColumn("Code", value: \.codeLines) { row in
+                        ProjectCodebaseSizeCell(size: row.codebaseSize)
+                    }
+                    .width(min: 72, ideal: 88)
+                    TableColumn("Claude Symlink", value: \.claudeText) { row in
                         ProjectLinkStateCell(state: row.claudeState)
                     }
-                    .width(min: 132, ideal: 154)
+                    .width(min: 108, ideal: 118)
                     TableColumn("Codex-only", value: \.codexOnlyCount) { row in
                         Text(row.codexOnlyCount == 0 ? "—" : row.codexOnlyCount.formatted())
                             .monospacedDigit()
@@ -227,6 +238,7 @@ struct ProjectsMenuSection: View {
             projects: model.projects,
             mcpHealth: model.mcpHealth,
             doctorIssues: model.doctorIssues,
+            codebaseSizes: model.codebaseSizes,
             selectedProjectRoot: selectedProjectRoot
         )
     }
@@ -259,14 +271,88 @@ struct ProjectsMenuSection: View {
     }
 }
 
+/// Global reads as the place everything else inherits from, so it carries the
+/// globe and its own label instead of a folder path.
+struct ProjectNameCell: View {
+    let row: ProjectDirectoryRow
+
+    var body: some View {
+        HStack(spacing: 7) {
+            if row.isGlobal {
+                Image(systemName: "globe")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.name)
+                    .font(.callout.weight(row.isGlobal ? .semibold : .medium))
+                Text(row.isGlobal ? "Applies to every project" : displayUserPath(row.root))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .help(displayUserPath(row.root))
+    }
+}
+
+/// Tracked code lines, so two projects can be compared by the part of the
+/// repository a person actually maintains.
+struct ProjectCodebaseSizeCell: View {
+    let size: CodebaseSizeReport?
+
+    var body: some View {
+        if let size {
+            Text(abbreviatedLineCount(size.codeLines))
+                .monospacedDigit()
+                .font(.callout)
+                .help(detail(size))
+        } else {
+            Text("—")
+                .foregroundStyle(.secondary)
+                .help("Codebase size is measured from git-tracked files. This folder is not a git repository.")
+        }
+    }
+
+    private func detail(_ size: CodebaseSizeReport) -> String {
+        var lines = [
+            "\(size.codeLines.formatted()) code lines across \(size.totalFiles.formatted()) tracked files",
+            "Tests \(percent(size.signals.testLineRatio)) of code and tests"
+                + " · docs \(percent(size.signals.documentationLineRatio))"
+                + " · generated \(percent(size.signals.generatedLineRatio))",
+            "\(size.signals.longFileCount) file(s) at or over \(size.longFileThreshold) lines"
+                + " hold \(percent(size.signals.longFileLineRatio)) of code"
+        ]
+        if let language = size.languages.first {
+            lines.append("Mostly \(language.language)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func percent(_ ratio: Double) -> String {
+        ratio.formatted(.percent.precision(.fractionLength(0)))
+    }
+}
+
+func abbreviatedLineCount(_ lines: Int) -> String {
+    guard lines >= 1_000 else { return lines.formatted() }
+    let thousands = Double(lines) / 1_000
+    return thousands < 100
+        ? "\(thousands.formatted(.number.precision(.fractionLength(1))))k"
+        : "\(thousands.formatted(.number.precision(.fractionLength(0))))k"
+}
+
 struct ProjectLinkStateCell: View {
     let state: ProjectDirectoryRow.LinkState
 
     var body: some View {
-        Label(state.rawValue, systemImage: symbol)
-            .font(.callout)
+        Image(systemName: symbol)
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .help(help)
+            .accessibilityLabel(state.rawValue)
     }
 
     private var symbol: String {

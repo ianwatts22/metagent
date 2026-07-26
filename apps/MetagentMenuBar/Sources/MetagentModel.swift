@@ -41,6 +41,10 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isPluginInventoryAvailable = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
+    /// Measured codebase size per standardized project root. Only git
+    /// repositories appear; everything else has no tracked codebase to size.
+    @Published private(set) var codebaseSizes: [String: CodebaseSizeReport] = [:]
+    @Published private(set) var isCodebaseSizeRefreshing = false
     @Published private(set) var skillTableRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
     @Published private(set) var isRemovingSkills = false
@@ -155,6 +159,30 @@ final class MetagentModel: ObservableObject {
                 doctor: doctor,
                 generation: generation
             )
+        }
+    }
+
+    /// Sizes every known project root that is a git repository. This walks each
+    /// repository's tracked files, so it runs off the main actor and replaces
+    /// the published map only once the whole sweep finishes.
+    func refreshCodebaseSizes() {
+        guard !isCodebaseSizeRefreshing else { return }
+        let roots = directoryFilterOptions(
+            projects: projects,
+            mcpHealth: mcpHealth,
+            doctorIssues: doctorIssues
+        ).map(\.root)
+        guard !roots.isEmpty else {
+            codebaseSizes = [:]
+            return
+        }
+
+        isCodebaseSizeRefreshing = true
+        Task {
+            codebaseSizes = await Task.detached(priority: .utility) {
+                MetagentCore.measureCodebaseSizes(roots: roots)
+            }.value
+            isCodebaseSizeRefreshing = false
         }
     }
 
@@ -699,6 +727,8 @@ final class MetagentModel: ObservableObject {
             warningCount = 0
             failureCount = 0
         }
+
+        refreshCodebaseSizes()
 
         if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
             statusText = "\(repoCount) locations, \(skillCount) skills"
