@@ -36,11 +36,17 @@ const matrix = [
   { name: "Repair and remove", app: true, cli: true, mcp: false },
 ];
 
-const sees = [
-  { name: "Instructions", copy: "Which instruction files actually apply here." },
-  { name: "Skills", copy: "What's in scope, and where it came from." },
-  { name: "Servers", copy: "Which MCP servers this project is wired to." },
-  { name: "Usage", copy: "What your agent has really been reaching for." },
+// Two different axes: the things Metagent covers, and the lenses it gives you
+// for judging them.
+const covers = [
+  { name: "Instructions", copy: "The guidance that actually applies in this folder." },
+  { name: "Skills", copy: "What's in scope, and where each one came from." },
+  { name: "MCPs", copy: "Which servers this project is wired to." },
+];
+
+const controls = [
+  { name: "Usage", copy: "What your agent really reaches for, not what you assume." },
+  { name: "Scores", copy: "Which of it earns the context it costs you." },
   { name: "Health", copy: "What's worth fixing, without invented urgency." },
 ];
 ---
@@ -89,8 +95,20 @@ const sees = [
 
   <section class="section centered">
     <h2>control context completely.</h2>
+
+    <p class="group-label">what it covers</p>
     <div class="sees-grid">
-      {sees.map((item) => (
+      {covers.map((item) => (
+        <article class="sees-card">
+          <h3>{item.name}</h3>
+          <p>{item.copy}</p>
+        </article>
+      ))}
+    </div>
+
+    <p class="group-label">how you control it</p>
+    <div class="sees-grid">
+      {controls.map((item) => (
         <article class="sees-card">
           <h3>{item.name}</h3>
           <p>{item.copy}</p>
