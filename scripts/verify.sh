@@ -246,33 +246,33 @@ ignore_projects = ["$fixture_root/workspace"]
 EOF
 
 fixture_scan="$(HOME="$fixture_root/home" "$swift_helper" skills scan --json)"
-grep -q "child-skill" <<<"$fixture_scan"
-if grep -q "old-skill" <<<"$fixture_scan"; then
+printf '%s\n' "$fixture_scan" | grep -F "child-skill" >/dev/null
+if printf '%s\n' "$fixture_scan" | grep -F "old-skill" >/dev/null; then
   echo "commented config roots were treated as active" >&2
   exit 1
 fi
-if grep -q "workspace-skill" <<<"$fixture_scan"; then
+if printf '%s\n' "$fixture_scan" | grep -F "workspace-skill" >/dev/null; then
   echo "ignored parent workspace was included as a project" >&2
   exit 1
 fi
-if grep -q "archive-skill" <<<"$fixture_scan"; then
+if printf '%s\n' "$fixture_scan" | grep -F "archive-skill" >/dev/null; then
   echo "_archive project was included in skill discovery" >&2
   exit 1
 fi
-if grep -q "nested-skill" <<<"$fixture_scan"; then
+if printf '%s\n' "$fixture_scan" | grep -F "nested-skill" >/dev/null; then
   echo "nested skill fixture was treated as a project" >&2
   exit 1
 fi
-if grep -q "directory-skill" <<<"$fixture_scan"; then
+if printf '%s\n' "$fixture_scan" | grep -F "directory-skill" >/dev/null; then
   echo "SKILL.md directory was treated as a valid skill file" >&2
   exit 1
 fi
-grep -q '"location" : "claude"' <<<"$fixture_scan"
-grep -q '"origin_kind" : "npx-skills"' <<<"$fixture_scan"
-grep -q '"manager" : "skills-cli"' <<<"$fixture_scan"
-grep -q '"mutability" : "managed-read-only"' <<<"$fixture_scan"
-grep -q '"representation" : "projection"' <<<"$fixture_scan"
-grep -q '"source" : "example' <<<"$fixture_scan"
+printf '%s\n' "$fixture_scan" | grep -F '"location" : "claude"' >/dev/null
+printf '%s\n' "$fixture_scan" | grep -F '"origin_kind" : "npx-skills"' >/dev/null
+printf '%s\n' "$fixture_scan" | grep -F '"manager" : "skills-cli"' >/dev/null
+printf '%s\n' "$fixture_scan" | grep -F '"mutability" : "managed-read-only"' >/dev/null
+printf '%s\n' "$fixture_scan" | grep -F '"representation" : "projection"' >/dev/null
+printf '%s\n' "$fixture_scan" | grep -F '"source" : "example' >/dev/null
 
 legacy_lock_root="$fixture_root/legacy-lock-project"
 mkdir -p "$legacy_lock_root/.agents/skills/root-managed" "$legacy_lock_root/.agents/skills/nested-only"
@@ -285,10 +285,10 @@ cat >"$legacy_lock_root/.agents/.skill-lock.json" <<'EOF'
 {"version":3,"skills":{"nested-only":{"source":"legacy/source","sourceType":"github","skillFolderHash":"fixture"}}}
 EOF
 legacy_lock_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$legacy_lock_root" --max-depth 0 --json)"
-test "$(jq -r '.projects[].skills[] | select(.name=="root-managed" and .location=="agents") | .manager' <<<"$legacy_lock_scan")" = "skills-cli"
-test "$(jq -r '.projects[].skills[] | select(.name=="nested-only" and .location=="agents") | .manager' <<<"$legacy_lock_scan")" = "local"
+test "$(printf '%s\n' "$legacy_lock_scan" | jq -r '.projects[].skills[] | select(.name=="root-managed" and .location=="agents") | .manager')" = "skills-cli"
+test "$(printf '%s\n' "$legacy_lock_scan" | jq -r '.projects[].skills[] | select(.name=="nested-only" and .location=="agents") | .manager')" = "local"
 legacy_lock_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$legacy_lock_root" --max-depth 0 --json)"
-grep -q 'Legacy skills lock ignored' <<<"$legacy_lock_doctor"
+printf '%s\n' "$legacy_lock_doctor" | grep -F 'Legacy skills lock ignored' >/dev/null
 
 plugin_home="$fixture_root/plugin-home"
 plugin_root="$plugin_home/.codex/plugins/cache/test-market/demo/1.2.3"
@@ -303,7 +303,7 @@ printf '%s\n' '{"installed":[{"pluginId":"demo@test-market","name":"demo","marke
 EOF
 chmod +x "$codex_stub"
 plugin_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
-test "$(jq -r '.projects[].skills[] | select(.name=="demo-skill") | [.manager,.mutability,.representation] | @tsv' <<<"$plugin_scan")" = $'codex-plugin\tmanaged-read-only\tversioned-cache'
+test "$(printf '%s\n' "$plugin_scan" | jq -r '.projects[].skills[] | select(.name=="demo-skill") | [.manager,.mutability,.representation] | @tsv')" = $'codex-plugin\tmanaged-read-only\tversioned-cache'
 
 plugin_collision_root="$fixture_root/plugin-collision"
 mkdir -p "$plugin_collision_root/.agents/skills/local-skill" "$plugin_collision_root/skills/plugin-skill"
@@ -320,29 +320,29 @@ roots = ["$plugin_collision_root"]
 max_depth = 0
 EOF
 plugin_collision_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
-jq -e '
+printf '%s\n' "$plugin_collision_scan" | jq -e '
   (.projects | length) == 1 and
   ([.projects[0].skills[].name] | sort | join(",")) == "local-skill,plugin-skill"
-' <<<"$plugin_collision_scan" >/dev/null
+' >/dev/null
 
 fixture_doctor="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills doctor --root "$fixture_root/workspace" --max-depth 4 --json)"
-if grep -q "archive-skill" <<<"$fixture_doctor"; then
+if printf '%s\n' "$fixture_doctor" | grep -F "archive-skill" >/dev/null; then
   echo "_archive project was included in Doctor findings" >&2
   exit 1
 fi
-grep -q '"repair_action" : "repair_projection"' <<<"$fixture_doctor"
+printf '%s\n' "$fixture_doctor" | grep -F '"repair_action" : "repair_projection"' >/dev/null
 
 symlink_ignore_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/workspace" --ignore-project "$fixture_root/workspace-link" --max-depth 0 --json)"
-if grep -q "workspace-skill" <<<"$symlink_ignore_scan"; then
+if printf '%s\n' "$symlink_ignore_scan" | grep -F "workspace-skill" >/dev/null; then
   echo "symlinked ignore project path was not honored" >&2
   exit 1
 fi
 
 agents_root_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/workspace/.agents" --max-depth 0 --json)"
-grep -q "workspace-skill" <<<"$agents_root_scan"
+printf '%s\n' "$agents_root_scan" | grep -F "workspace-skill" >/dev/null
 
 skills_root_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/workspace/.agents/skills" --max-depth 0 --json)"
-grep -q "workspace-skill" <<<"$skills_root_scan"
+printf '%s\n' "$skills_root_scan" | grep -F "workspace-skill" >/dev/null
 
 mkdir -p \
   "$fixture_root/home/code_projects/.agents/skills/home-parent" \
@@ -370,14 +370,14 @@ struct Probe {
 SWIFT
 swiftc "$app_source"/Sources/MetagentCore/*.swift "$home_probe" -lsqlite3 -o "$fixture_root/scan-home-probe"
 home_scan="$(HOME="$fixture_root/home" "$fixture_root/scan-home-probe")"
-grep -q -- "$normalized_fixture_root/home/code_projects/home-child" <<<"$home_scan"
-if grep -qx -- "$normalized_fixture_root/home/code_projects" <<<"$home_scan"; then
+printf '%s\n' "$home_scan" | grep -F -- "$normalized_fixture_root/home/code_projects/home-child" >/dev/null
+if printf '%s\n' "$home_scan" | grep -Fx -- "$normalized_fixture_root/home/code_projects" >/dev/null; then
   echo "ignored home parent was included in scanHomeSkills" >&2
   exit 1
 fi
 nested_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/home/code_projects" --max-depth 3 --json)"
-grep -q "home-parent" <<<"$nested_scan"
-grep -q "home-child" <<<"$nested_scan"
+printf '%s\n' "$nested_scan" | grep -F "home-parent" >/dev/null
+printf '%s\n' "$nested_scan" | grep -F "home-child" >/dev/null
 
 cache_home="$fixture_root/cache-home"
 mkdir -p \
@@ -394,8 +394,8 @@ HOME="$cache_home" "$swift_helper" skills scan --json >/dev/null
 HOME="$cache_home" "$swift_helper" skills scan --root "$cache_home/scoped" --max-depth 0 --json >/dev/null
 cache_db="$cache_home/Library/Application Support/Metagent/inventory.sqlite"
 cache_json="$(sqlite3 "$cache_db" "SELECT json FROM inventory_snapshots WHERE id = 1;")"
-grep -q "cache-full" <<<"$cache_json"
-if grep -q "cache-scoped" <<<"$cache_json"; then
+printf '%s\n' "$cache_json" | grep -F "cache-full" >/dev/null
+if printf '%s\n' "$cache_json" | grep -F "cache-scoped" >/dev/null; then
   echo "scoped scan replaced the shared inventory cache" >&2
   exit 1
 fi
@@ -430,39 +430,7 @@ cat >"$uninstall_root/skills-lock.json" <<'EOF'
 }
 EOF
 uninstall_probe="$fixture_root/uninstall-probe.swift"
-cat >"$uninstall_probe" <<'SWIFT'
-import Darwin
-import Foundation
-
-// Drives the single public removal entrance:
-//   <root> <skill[,skill]> apply|plan|refuse
-// `refuse` applies with manager-owned removal disallowed.
-@main
-struct Probe {
-    static func main() {
-        let projectRoot = CommandLine.arguments[1]
-        let targets = CommandLine.arguments[2]
-            .split(separator: ",")
-            .map { SkillRemovalTarget.canonical(projectRoot: projectRoot, skillName: String($0)) }
-        let mode = CommandLine.arguments.dropFirst(3).first
-        let report = MetagentCore.removeSkills(
-            targets: targets,
-            apply: mode == "apply" || mode == "refuse",
-            allowManagedRemoval: mode != "refuse"
-        )
-        print(report.outcomes.flatMap(\.lines).joined(separator: "\n"))
-        guard report.failures.isEmpty else {
-            FileHandle.standardError.write(Data(
-                report.failures
-                    .map { "\($0.skillName): \($0.message)" }
-                    .joined(separator: "\n")
-                    .utf8
-            ))
-            exit(1)
-        }
-    }
-}
-SWIFT
+cp "$repo_root/scripts/fixtures/uninstall-probe.swift" "$uninstall_probe"
 swiftc "$app_source"/Sources/MetagentCore/*.swift "$uninstall_probe" -lsqlite3 -o "$fixture_root/uninstall-probe"
 managed_uninstall_output="$fixture_root/managed-uninstall.out"
 expect_failure 'npx --yes skills remove remove-me --yes' "$managed_uninstall_output" -- \
@@ -478,39 +446,7 @@ test -L "$uninstall_root/.claude/skills"
 grep -q '"remove-me"' "$uninstall_root/skills-lock.json"
 
 npx_stub="$fixture_root/npx-stub"
-cat >"$npx_stub" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-target_root="$PWD"
-lock_path="$target_root/skills-lock.json"
-if [[ " ${*} " == *" --global "* ]]; then
-  target_root="$HOME"
-  lock_path="${XDG_STATE_HOME:-$HOME/.agents}/skills/.skill-lock.json"
-fi
-[[ -z "${METAGENT_NPX_LOG:-}" ]] || printf '%s\n' "$*" >>"$METAGENT_NPX_LOG"
-for skill_name in "${@:4}"; do
-  [[ "$skill_name" == "--yes" || "$skill_name" == "--global" ]] && continue
-  mv "$target_root/.agents/skills/$skill_name" "$target_root/.agents/skills/.removed-$skill_name"
-  if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
-    mv "$target_root/.codex/skills/$skill_name" "$target_root/.codex/skills/.removed-$skill_name"
-  fi
-  if [[ "${METAGENT_NPX_LEAVE_LOCK:-}" != "1" ]]; then
-    jq --arg skill "$skill_name" 'del(.skills[$skill])' "$lock_path" >"$lock_path.next"
-    mv "$lock_path.next" "$lock_path"
-  fi
-  if [[ "${METAGENT_NPX_FAIL_AFTER_FIRST:-}" == "1" ]]; then
-    exit 42
-  fi
-  if [[ "${METAGENT_NPX_CORRUPT_AFTER_FIRST:-}" == "1" ]]; then
-    printf '{not-json' >"$lock_path"
-    exit 42
-  fi
-  if [[ "${METAGENT_NPX_PARTIAL_SUCCESS_CORRUPT:-}" == "1" ]]; then
-    printf '{not-json' >"$lock_path"
-    exit 0
-  fi
-done
-SH
+cp "$repo_root/scripts/fixtures/npx-remove-stub.sh" "$npx_stub"
 chmod +x "$npx_stub"
 HOME="$fixture_root/home" METAGENT_NPX="$npx_stub" "$fixture_root/uninstall-probe" "$uninstall_root" remove-me apply >/dev/null
 test ! -e "$uninstall_root/.agents/skills/remove-me"
@@ -652,10 +588,10 @@ cat >"$global_xdg/skills/.skill-lock.json" <<'EOF'
 }
 EOF
 global_scan="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills scan --root "$global_home" --max-depth 0 --json)"
-grep -q '"name" : "global-managed"' <<<"$global_scan"
-grep -q '"origin_kind" : "npx-skills"' <<<"$global_scan"
+printf '%s\n' "$global_scan" | grep -F '"name" : "global-managed"' >/dev/null
+printf '%s\n' "$global_scan" | grep -F '"origin_kind" : "npx-skills"' >/dev/null
 global_doctor="$(HOME="$global_home" XDG_STATE_HOME="$global_xdg" "$swift_helper" skills doctor --json)"
-jq -e '([.issues[] | select(.severity != "OK")] | length) == 0' <<<"$global_doctor" >/dev/null
+printf '%s\n' "$global_doctor" | jq -e '([.issues[] | select(.severity != "OK")] | length) == 0' >/dev/null
 global_uninstall_output="$fixture_root/global-uninstall.out"
 expect_failure 'npx --yes skills remove global-managed --yes --global' "$global_uninstall_output" -- \
   env HOME="$global_home" XDG_STATE_HOME="$global_xdg" \
@@ -682,12 +618,12 @@ make_skill "$fixture_root/prune-root/app/.agents/skills/app-skill" "app-skill" "
 make_skill "$fixture_root/prune-root/build/generated/.agents/skills/built" "built" "built"
 make_skill "$fixture_root/prune-root/vendor/dependency/.agents/skills/vendored" "vendored" "vendored"
 prune_scan="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills scan --root "$fixture_root/prune-root" --max-depth 4 --json)"
-grep -q "app-skill" <<<"$prune_scan"
-if grep -q "built" <<<"$prune_scan"; then
+printf '%s\n' "$prune_scan" | grep -F "app-skill" >/dev/null
+if printf '%s\n' "$prune_scan" | grep -F "built" >/dev/null; then
   echo "build skill fixture was treated as a project" >&2
   exit 1
 fi
-if grep -q "vendored" <<<"$prune_scan"; then
+if printf '%s\n' "$prune_scan" | grep -F "vendored" >/dev/null; then
   echo "vendor skill fixture was treated as a project" >&2
   exit 1
 fi
@@ -719,7 +655,7 @@ mkdir -p "$install_home/.cargo/bin"
 printf -- "#!/usr/bin/env bash\nexit 42\n" >"$install_home/.cargo/bin/metagent"
 chmod +x "$install_home/.cargo/bin/metagent"
 install_output="$(HOME="$install_home" PATH="$install_home/.cargo/bin:$PATH" "$repo_root/scripts/install-cli.sh")"
-grep -q -- "Installed metagent to $install_home/.cargo/bin/metagent" <<<"$install_output"
+printf '%s\n' "$install_output" | grep -F -- "Installed metagent to $install_home/.cargo/bin/metagent" >/dev/null
 HOME="$install_home" "$install_home/.cargo/bin/metagent" --help >/dev/null
 
 unreadable_config_home="$fixture_root/unreadable-config-home"
@@ -736,10 +672,10 @@ repair_project="$fixture_root/repair-project"
 mkdir -p "$repair_project/.agents/skills/native-skill"
 make_skill "$repair_project/.agents/skills/native-skill" "native-skill" "native"
 repair_preview="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0)"
-grep -q "would create .claude/skills symlink" <<<"$repair_preview"
+printf '%s\n' "$repair_preview" | grep -F "would create .claude/skills symlink" >/dev/null
 test ! -e "$repair_project/.claude/skills"
 repair_apply="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0 --apply)"
-grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$repair_apply"
+printf '%s\n' "$repair_apply" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
 test -L "$repair_project/.claude/skills"
 test "$(readlink "$repair_project/.claude/skills")" = "../.agents/skills"
 test -f "$repair_project/.claude/skills/native-skill/SKILL.md"
@@ -758,7 +694,7 @@ mkdir -p "$shared_claude_project/.agents/skills/shared-test" "$shared_claude_tar
 make_skill "$shared_claude_project/.agents/skills/shared-test" "shared-test" "shared"
 ln -s "$shared_claude_target" "$shared_claude_project/.claude"
 shared_claude_output="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$shared_claude_project" --max-depth 0 --apply)"
-grep -q "refusing to modify its shared target" <<<"$shared_claude_output"
+printf '%s\n' "$shared_claude_output" | grep -F "refusing to modify its shared target" >/dev/null
 test ! -e "$shared_claude_target/skills"
 
 wrong_link_project="$fixture_root/wrong-link-project"
@@ -766,9 +702,9 @@ mkdir -p "$wrong_link_project/.agents/skills/wrong-link-skill" "$wrong_link_proj
 make_skill "$wrong_link_project/.agents/skills/wrong-link-skill" "wrong-link-skill" "wrong link"
 ln -s ../somewhere-else "$wrong_link_project/.claude/skills"
 wrong_link_preview="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0)"
-grep -q "would replace wrong .claude/skills symlink" <<<"$wrong_link_preview"
+printf '%s\n' "$wrong_link_preview" | grep -F "would replace wrong .claude/skills symlink" >/dev/null
 wrong_link_apply="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply)"
-grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$wrong_link_apply"
+printf '%s\n' "$wrong_link_apply" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
 test "$(readlink "$wrong_link_project/.claude/skills")" = "../.agents/skills"
 
 conflict_project="$fixture_root/conflict-project"
@@ -776,8 +712,8 @@ mkdir -p "$conflict_project/.agents/skills/canonical-skill" "$conflict_project/.
 make_skill "$conflict_project/.agents/skills/canonical-skill" "canonical-skill" "canonical"
 printf -- "keep me\n" >"$conflict_project/.claude/skills/claude-only/SKILL.md"
 conflict_output="$("$swift_helper" skills repair --root "$conflict_project" --max-depth 0 --apply)"
-grep -q "moved 1 skill(s) into .agents/skills: claude-only" <<<"$conflict_output"
-grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$conflict_output"
+printf '%s\n' "$conflict_output" | grep -F "moved 1 skill(s) into .agents/skills: claude-only" >/dev/null
+printf '%s\n' "$conflict_output" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
 test -L "$conflict_project/.claude/skills"
 test "$(readlink "$conflict_project/.claude/skills")" = "../.agents/skills"
 test -f "$conflict_project/.agents/skills/claude-only/SKILL.md"
