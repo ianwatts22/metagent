@@ -5,7 +5,7 @@ Metagent exposes four related signals because they answer different questions:
 - **Quality** is the stable aggregate of available structural and evaluator evidence, excluding usage.
 - **Utility** combines Quality with observed adoption from retained Codex history.
 - **Plugin Eval** is the score and grade emitted by the installed `plugin-eval` CLI. Metagent does not reproduce or reinterpret its formula.
-- **Codex review** is an optional model judgment against a fixed rubric. It only runs after confirmation. Metagent copies up to 1 MiB of the selected skill into an isolated temporary directory, embeds its text in the review request, disables Codex tools and user configuration, confines local file access with the macOS sandbox, and sends the copied skill contents to OpenAI. It uses ChatGPT.app's native Codex binary by default; `METAGENT_CODEX` may point to another native executable.
+- **Codex review** is an optional model judgment against a fixed rubric. It only runs after confirmation. Metagent runs Codex read-only inside the skill's project (or, for global skills, from the home directory) and points it at the skill by path, so Codex reads the skill and its surroundings itself and the judgment reflects fit and overlap, not the skill in a vacuum. User configuration is ignored, writes and the obvious credential stores are blocked by the macOS sandbox, and what Codex reads is sent to OpenAI. It uses ChatGPT.app's native Codex binary by default; `METAGENT_CODEX` may point to another native executable.
 
 None of these scores authorizes automatic removal or modification.
 
@@ -56,8 +56,9 @@ and provenance are less ambiguous.
 
 ## Utility
 
-Utility weights Quality at 70% and observed adoption at 30%. It is intended for
-retention and prioritization decisions, where both intrinsic quality and
+Utility weights Quality at 70% and observed adoption at 30%, then subtracts any
+active advisory penalty (see Advisories below, capped at −15). It is intended
+for retention and prioritization decisions, where both intrinsic quality and
 demonstrated use matter.
 
 ### Observed adoption — 40 points
@@ -71,10 +72,47 @@ When retained-history coverage is incomplete and no usage is linked, adoption re
 
 Quality, Utility, and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
 
-`Weeks old` is shown as lifecycle evidence but does not currently reduce either
-score. A stable skill may remain correct for months. A future freshness penalty
-should require stronger evidence—such as a newer managed version, a broken tool
-or API reference, or detected divergence—not the passage of time alone.
+`Weeks old` is shown as lifecycle evidence but does not by itself reduce either
+score. A stable skill may remain correct for months. Freshness only costs
+points through an advisory (below), which requires stronger evidence — such as
+a tracked model release after the skill's last change — not the passage of time
+alone.
+
+## Advisories
+
+Advisories are Metagent-authored findings, separate from evaluator deductions.
+They record that the world changed after the skill — not that the content is
+defective — so they lower Utility (review priority), never Quality, and each
+one states how it clears. The combined advisory penalty is capped at −15
+Utility.
+
+### Model-release staleness
+
+Metagent polls the community model database at https://models.dev/api.json (no
+auth) at most once per day, caching to
+`~/Library/Application Support/Metagent/model-releases-v1.json`. A failed poll
+keeps the cache. Only significant releases are kept: text-output models whose
+id does not read as a size, speed, or modality variant (`-mini`, `-flash`,
+`-realtime`, embeddings, and similar are dropped). Tracked providers default to
+Anthropic and OpenAI and are configurable in Settings.
+
+A skill whose last recorded change predates the newest tracked release gets the
+advisory at a flat −15 Utility: the review is equally pending the day after a
+release and a month later, and elapsed time never scores on its own. Skills
+with no update timestamp get no advisory; staleness is an ordering claim and
+needs a date to stand on.
+
+The advisory's remediation is deliberately directional: newer frontier models
+need less prescription, so the review should look first for guidance to
+delete, not add — over-describing and over-prescribing solutions can limit the
+model.
+
+The advisory clears when the skill changes after the newest tracked release,
+or when it is explicitly marked reviewed (Score Analysis → "Mark Reviewed — No
+Changes Needed"). Affirmations persist in
+`~/Library/Application Support/Metagent/model-release-affirmations-v1.json`.
+If a later review then finds real over-prescription, that lands on Quality
+through Plugin Eval's own deductions, as usual.
 
 Plugin Eval remains evaluator-owned and may return a different letter for the same numeric score. Its current fixed bands are A ≥93, B ≥85, C ≥70, D ≥55, otherwise F; Metagent preserves that returned grade rather than silently reinterpreting it.
 
@@ -109,7 +147,7 @@ Codex assigns component scores that sum to 100:
 - safety and operability: 15
 - maintainability: 15
 
-Metagent invokes `codex exec` with an ephemeral session, a read-only sandbox, a strict JSON output schema, and a five-minute timeout. It serializes a bounded copy of the skill as untrusted evidence and runs Codex from a separate empty working directory so bundled instructions are not discovered as agent policy. Metagent calculates the grade from Codex's component total using the shared grade bands.
+Metagent invokes `codex exec` with an ephemeral session, a read-only sandbox, a strict JSON output schema, and a ten-minute timeout. The review is by reference: the prompt names the skill's path and Codex reads the skill and its surroundings itself with read-only tools, from the skill's project root (global skills run from the home directory so every skills location is visible). This lets the review judge fit with project conventions, duplication against sibling skills, and trigger collisions. The prompt frames everything Codex reads as untrusted evidence, never instructions; an OS-level `sandbox-exec` profile independently blocks all writes outside the review's temporary directory and denies the obvious credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, Keychains, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`). Selecting several skills reviews them all in one Codex session — one chat in Codex history, one review object returned per skill, each hash-checked and stored independently so a single bad skill fails alone. The review is contextual by design, so its score can legitimately change when the surrounding context changes, not only when the skill does. Metagent calculates the grade from Codex's component total using the shared grade bands.
 
 ## CLI
 

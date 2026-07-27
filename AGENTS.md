@@ -33,6 +33,9 @@ scripts/verify.sh
 ```
 
 After changes that affect the macOS app, install and restart the verified build
-with `scripts/install-app.sh --restart`, then confirm the running
-process comes from `~/Applications/Metagent.app`. Use
-`scripts/dev-app.sh` during iterative UI work.
+with `scripts/install-app.sh --restart`, then confirm the running dev
+process comes from `~/Applications/Metagent Dev.app`. Use
+`scripts/dev-app.sh` during iterative UI work. Never write to
+`~/Applications/Metagent.app` — that is the production install from
+metagent.sh, updated only by Sparkle (see `docs/menu-bar.md`, "Release
+channels").

@@ -13,45 +13,69 @@ struct SettingsView: View {
     @State private var roots: [String] = []
     @State private var ignoreProjects: [String] = []
     @State private var maxDepth = 6
+    @State private var trackedProviders: Set<String> = []
     @State private var loadError: String?
     @State private var saveError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Settings")
-                        .font(.title2.weight(.semibold))
-                    Text(displayUserPath(MetagentCore.userConfigPath().path))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+        // The header stays pinned and everything below scrolls: the form is
+        // taller than the compact panel, and a sheet with no scroll view clips
+        // its top with no way to reach it.
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Settings")
+                            .font(.title2.weight(.semibold))
+                        Text(displayUserPath(MetagentCore.userConfigPath().path))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    Spacer()
+
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .keyboardShortcut(.cancelAction)
+
+                    Button("Save") {
+                        save()
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .keyboardShortcut(.defaultAction)
+                }
+
+                if let message = loadError ?? saveError {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
                         .textSelection(.enabled)
                 }
-
-                Spacer()
-
-                Button("Cancel") {
-                    dismiss()
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-                .keyboardShortcut(.cancelAction)
-
-                Button("Save") {
-                    save()
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.capsule)
-                .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
 
-            if let message = loadError ?? saveError {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
+            ScrollView {
+                settingsForm
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 20)
             }
+        }
+        .frame(width: 560, height: 600)
+        .task {
+            load()
+        }
+    }
 
+    private var settingsForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
             PathListEditor(
                 title: "Scan roots",
                 detail: "Directories searched for projects. Leaving this empty falls back to the built-in defaults.",
@@ -81,6 +105,36 @@ struct SettingsView: View {
                     Text("\(maxDepth)")
                         .font(.body.monospacedDigit())
                         .frame(minWidth: 22, alignment: .trailing)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Model release providers")
+                        .font(.headline)
+                    Text("Skills unreviewed since a tracked provider's frontier release get a review advisory and a bounded Utility penalty.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 6
+                ) {
+                    ForEach(MetagentCore.selectableModelProviders, id: \.key) { provider in
+                        Toggle(provider.name, isOn: Binding(
+                            get: { trackedProviders.contains(provider.key) },
+                            set: { isTracked in
+                                if isTracked {
+                                    trackedProviders.insert(provider.key)
+                                } else {
+                                    trackedProviders.remove(provider.key)
+                                }
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                    }
                 }
             }
 
@@ -138,6 +192,7 @@ struct SettingsView: View {
             roots = config.roots.uniqued()
             ignoreProjects = config.ignoreProjects.uniqued()
             maxDepth = config.maxDepth
+            trackedProviders = Set(model.trackedModelProviders)
             loadError = nil
         } catch {
             loadError = error.localizedDescription
@@ -151,6 +206,9 @@ struct SettingsView: View {
                 maxDepth: maxDepth,
                 ignoreProjects: ignoreProjects
             ))
+            model.setTrackedModelProviders(
+                MetagentCore.selectableModelProviders.map(\.key).filter(trackedProviders.contains)
+            )
             model.refreshStatus()
             dismiss()
         } catch {

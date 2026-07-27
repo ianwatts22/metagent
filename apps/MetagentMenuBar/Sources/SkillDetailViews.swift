@@ -202,7 +202,9 @@ struct SkillInfoView: View {
             )
         }
         .sheet(item: $scoreDetailsRow) { currentRow in
-            SkillScoreGuidanceView(row: currentRow)
+            SkillScoreGuidanceView(row: currentRow) {
+                model.affirmModelReleaseReview(canonicalPath: currentRow.canonicalPath)
+            }
         }
         .sheet(isPresented: $showsReader) {
             SkillReaderView(
@@ -435,7 +437,9 @@ struct SkillReaderView: View {
             }
         }
         .sheet(item: $scoreDetailsRow) { currentRow in
-            SkillScoreGuidanceView(row: currentRow)
+            SkillScoreGuidanceView(row: currentRow) {
+                model.affirmModelReleaseReview(canonicalPath: currentRow.canonicalPath)
+            }
         }
     }
 
@@ -728,11 +732,13 @@ struct ScoreExplanationView: View {
 
 struct SkillScoreGuidanceView: View {
     let row: InventorySkillRow
+    var onAffirmModelReleases: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @State private var didAffirmModelReleases = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
+            HStack(alignment: .center, spacing: 18) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Score details")
                         .font(.title2.weight(.semibold))
@@ -740,21 +746,78 @@ struct SkillScoreGuidanceView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                headlineScore("Quality", row.metagentScoreText, row.metagentScoreTint)
+                headlineScore("Utility", row.portfolioScoreText, row.portfolioScoreTint)
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
 
             Form {
                 fixFirstSection
+                advisoriesSection
                 scoreSummarySection
-                managementSection
-                pluginEvalSection
-                codexReviewSection
+                evidenceSection
             }
             .formStyle(.grouped)
         }
         .padding(22)
         .frame(width: 760, height: 760)
+    }
+
+    private func headlineScore(_ label: String, _ value: String, _ tint: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.monospacedDigit().weight(.semibold))
+                .foregroundStyle(tint)
+        }
+    }
+
+    @ViewBuilder
+    private var advisoriesSection: some View {
+        if !row.advisories.isEmpty {
+            Section("Advisories · Metagent") {
+                ForEach(row.advisories) { advisory in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(advisory.message)
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer()
+                            Text(didAffirmModelReleases ? "cleared" : "−\(advisory.utilityPenalty) Utility")
+                                .font(.callout.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(didAffirmModelReleases ? .green : .orange)
+                        }
+                        Text("Metagent advisory · \(advisory.category) · \(advisory.severity)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(advisory.remediation.enumerated()), id: \.offset) { _, step in
+                            Label(step, systemImage: "arrow.turn.down.right")
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(advisory.clearance)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 3)
+                }
+                if let onAffirmModelReleases {
+                    Button(
+                        didAffirmModelReleases
+                            ? "Marked Reviewed"
+                            : "Mark Reviewed — No Changes Needed"
+                    ) {
+                        onAffirmModelReleases()
+                        didAffirmModelReleases = true
+                    }
+                    .disabled(didAffirmModelReleases)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -781,6 +844,22 @@ struct SkillScoreGuidanceView: View {
                     }
                     .padding(.vertical, 3)
                 }
+            } else if !codexFeedback.isEmpty {
+                ForEach(Array(codexFeedback.prefix(3).enumerated()), id: \.offset) { index, item in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text("\(index + 1).")
+                                .font(.headline)
+                            markdownText(item)
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text("Codex feedback")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
             } else if let codexRecommendation {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(codexRecommendation)
@@ -804,35 +883,93 @@ struct SkillScoreGuidanceView: View {
     }
 
     private var scoreSummarySection: some View {
-        Section("Score reconciliation") {
-            LabeledContent("Quality") {
-                scoreBadge(row.metagentScoreText, tint: row.metagentScoreTint)
+        Section("How the numbers combine") {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Quality")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(qualityCalculation)
+                    .font(.callout.monospacedDigit())
+                    .textSelection(.enabled)
             }
-            Text(qualityCalculation)
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            LabeledContent("Utility") {
-                scoreBadge(row.portfolioScoreText, tint: row.portfolioScoreTint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Utility")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(utilityCalculation)
+                    .font(.callout.monospacedDigit())
+                    .textSelection(.enabled)
             }
-            Text(utilityCalculation)
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
-            Text("Quality is static. Utility adds observed adoption and can change as usage changes.")
+            Text("Quality is static content quality. Utility adds observed adoption and subtracts active advisories.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private var managementSection: some View {
-        Section("Management confidence · Metagent") {
-            LabeledContent(
-                "Normalized score",
-                value: "\(row.metagentScore.structuralScore)/100 · 20% Quality weight"
-            )
+    /// Full ledgers stay available but collapsed, so the sheet reads
+    /// top-to-bottom as: what to do, the two numbers, then optional depth.
+    private var evidenceSection: some View {
+        Section("Evidence") {
+            DisclosureGroup {
+                managementContent
+            } label: {
+                evidenceGroupLabel(
+                    "Management confidence",
+                    detail: "\(row.metagentScore.structuralScore)/100 · 20% of Quality"
+                )
+            }
+
+            if let evaluation = row.pluginEval, !row.pluginEvalIsStale {
+                DisclosureGroup {
+                    pluginEvalContent(evaluation)
+                } label: {
+                    evidenceGroupLabel(
+                        "Plugin Eval",
+                        detail: "\(evaluation.score) \(evaluation.grade) · \(evaluation.riskLevel) risk · \(evaluatedDateText(evaluation.evaluatedAt))"
+                    )
+                }
+            } else {
+                evidenceGroupLabel(
+                    "Plugin Eval",
+                    detail: row.pluginEvalIsStale
+                        ? "stale — the skill changed after its saved result"
+                        : "not run"
+                )
+            }
+
+            if let review = row.codexReview, !row.codexReviewIsStale {
+                DisclosureGroup {
+                    codexReviewContent(review)
+                } label: {
+                    evidenceGroupLabel(
+                        "Codex review",
+                        detail: "\(review.score) \(review.grade.rawValue) · \(evaluatedDateText(review.evaluatedAt))"
+                    )
+                }
+            } else {
+                evidenceGroupLabel(
+                    "Codex review",
+                    detail: row.codexReviewIsStale
+                        ? "stale — the skill changed after its saved result"
+                        : "not run · optional, excluded from Quality"
+                )
+            }
+        }
+    }
+
+    private func evidenceGroupLabel(_ title: String, detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.body.weight(.medium))
+            Spacer()
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var managementContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(row.metagentScore.components.filter { $0.id != "adoption" }, id: \.id) { component in
                 VStack(alignment: .leading, spacing: 3) {
                     LabeledContent(
@@ -849,94 +986,99 @@ struct SkillScoreGuidanceView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var pluginEvalSection: some View {
-        Section("Plugin Eval evidence") {
-            if row.pluginEvalIsStale {
-                staleEvaluationLabel("Plugin Eval")
-            } else if let evaluation = row.pluginEval {
-                LabeledContent("Result", value: "\(evaluation.score) \(evaluation.grade) · \(evaluation.riskLevel) risk")
-                LabeledContent("Evaluator", value: "plugin-eval \(evaluation.toolVersion)")
-                LabeledContent("Evaluated", value: evaluatedDateText(evaluation.evaluatedAt))
-                LabeledContent("Content", value: "Current")
-                    .foregroundStyle(.green)
-
-                if evaluation.deductions.isEmpty {
-                    Text("Plugin Eval returned no point deductions.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(evaluation.deductions, id: \.id) { deduction in
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(deduction.message)
-                                    .font(.headline)
-                                Spacer()
-                                Text("−\(formatPenalty(deduction.penalty))")
-                                    .font(.callout.monospacedDigit().weight(.semibold))
-                                    .foregroundStyle(deduction.penalty > 0 ? .orange : .secondary)
-                            }
-                            Text("\(deduction.category) · \(deduction.severity) · \(deduction.status)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ForEach(Array(deduction.remediation.enumerated()), id: \.offset) { _, step in
-                                Label(step, systemImage: "arrow.turn.down.right")
-                                    .font(.callout)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+    private func pluginEvalContent(_ evaluation: PluginEvalSkillAssessment) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if evaluation.deductions.isEmpty {
+                Text("Plugin Eval returned no point deductions.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(evaluation.deductions, id: \.id) { deduction in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(deduction.message)
+                                .font(.callout.weight(.medium))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer()
+                            Text("−\(formatPenalty(deduction.penalty))")
+                                .font(.callout.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(deduction.penalty > 0 ? .orange : .secondary)
                         }
-                        .padding(.vertical, 3)
+                        Text("\(deduction.category) · \(deduction.severity)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(deduction.remediation.enumerated()), id: \.offset) { _, step in
+                            Label(step, systemImage: "arrow.turn.down.right")
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
-            } else {
-                missingEvaluationLabel(
-                    "No current Plugin Eval result",
-                    detail: "Run Plugin Eval to get deterministic deductions and remediation for this content."
-                )
             }
+            Text("plugin-eval \(evaluation.toolVersion) · content current")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(.vertical, 4)
     }
 
-    @ViewBuilder
-    private var codexReviewSection: some View {
-        Section("Codex review evidence") {
-            if row.codexReviewIsStale {
-                staleEvaluationLabel("Codex review")
-            } else if let review = row.codexReview {
-                LabeledContent("Result", value: "\(review.score) \(review.grade.rawValue)")
-                LabeledContent("Evaluator", value: "Codex")
-                LabeledContent("Evaluated", value: evaluatedDateText(review.evaluatedAt))
-                LabeledContent("Content", value: "Current")
-                    .foregroundStyle(.green)
-
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 5) {
-                    codexDimensionRow("Trigger and scope", review.dimensions.triggerAndScope, 25)
-                    codexDimensionRow("Workflow effectiveness", review.dimensions.workflowEffectiveness, 25)
-                    codexDimensionRow("Progressive disclosure", review.dimensions.progressiveDisclosure, 20)
-                    codexDimensionRow("Safety and operability", review.dimensions.safetyAndOperability, 15)
-                    codexDimensionRow("Maintainability", review.dimensions.maintainability, 15)
-                }
-
-                evidenceText("Summary", review.summary)
-                if !review.strengths.isEmpty {
-                    evidenceList("Strengths", review.strengths, symbol: "plus.circle")
-                }
-                if !review.risks.isEmpty {
-                    evidenceList("Risks", review.risks, symbol: "exclamationmark.triangle")
-                }
-                evidenceText("Recommendation", review.recommendation)
-            } else {
-                missingEvaluationLabel(
-                    "No current Codex review",
-                    detail: "Codex review is optional and excluded from Quality until you explicitly run it."
-                )
+    private func codexReviewContent(_ review: CodexSkillReview) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 5) {
+                codexDimensionRow("Trigger and scope", review.dimensions.triggerAndScope, 25)
+                codexDimensionRow("Workflow effectiveness", review.dimensions.workflowEffectiveness, 25)
+                codexDimensionRow("Progressive disclosure", review.dimensions.progressiveDisclosure, 20)
+                codexDimensionRow("Safety and operability", review.dimensions.safetyAndOperability, 15)
+                codexDimensionRow("Maintainability", review.dimensions.maintainability, 15)
             }
+            evidenceText("Summary", review.summary)
+            if let feedback = review.feedback, !feedback.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Improvement feedback")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(feedback.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "arrow.turn.down.right")
+                                .font(.caption)
+                            markdownText(item)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            if !review.strengths.isEmpty {
+                evidenceList("Strengths", review.strengths, symbol: "plus.circle")
+            }
+            if !review.risks.isEmpty {
+                evidenceList("Risks", review.risks, symbol: "exclamationmark.triangle")
+            }
+            evidenceText("Recommendation", review.recommendation)
         }
+        .padding(.vertical, 4)
     }
 
     private var fixFirstDeductions: ArraySlice<PluginEvalDeduction> {
         (row.pluginEval?.prioritizedDeductions ?? []).prefix(3)
+    }
+
+    private var codexFeedback: [String] {
+        row.codexReview?.feedback ?? []
+    }
+
+    /// Feedback items are model-authored markdown; render inline styling and
+    /// fall back to the raw string when parsing fails.
+    private func markdownText(_ value: String) -> Text {
+        if let attributed = try? AttributedString(
+            markdown: value,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return Text(attributed)
+        }
+        return Text(value)
     }
 
     private var codexRecommendation: String? {
@@ -967,7 +1109,9 @@ struct SkillScoreGuidanceView: View {
                 ? Int((Double(component.score) / Double(component.maximum) * 100).rounded())
                 : nil
         } ?? 0
-        return "Quality \(row.metagentStaticScore)×70% + adoption \(adoptionScore)×30% = \(row.utilityScore)"
+        let penalty = row.advisoryUtilityPenalty
+        let advisoryTerm = penalty > 0 ? " − advisories \(penalty)" : ""
+        return "Quality \(row.metagentStaticScore)×70% + adoption \(adoptionScore)×30%\(advisoryTerm) = \(row.utilityScore)"
     }
 
     private func scoreBadge(_ value: String, tint: Color) -> some View {

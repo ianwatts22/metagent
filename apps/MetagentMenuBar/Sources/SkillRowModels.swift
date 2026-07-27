@@ -217,7 +217,7 @@ struct UsageSkillRow: Identifiable, Sendable {
 enum InventoryConfirmation: Identifiable {
     case removal([InventorySkillRow])
     case archive([InventorySkillRow])
-    case codexReview(InventorySkillRow)
+    case codexReview([InventorySkillRow])
 
     var id: String {
         switch self {
@@ -225,8 +225,8 @@ enum InventoryConfirmation: Identifiable {
             "removal:" + rows.map(\.id).sorted().joined(separator: ",")
         case let .archive(rows):
             "archive:" + rows.map(\.id).sorted().joined(separator: ",")
-        case let .codexReview(row):
-            "codex-review:\(row.id)"
+        case let .codexReview(rows):
+            "codex-review:" + rows.map(\.id).sorted().joined(separator: ",")
         }
     }
 }
@@ -702,11 +702,15 @@ struct InventorySkillRow: Identifiable, Sendable {
     let codexReview: CodexSkillReview?
     let pluginEvalIsStale: Bool
     let codexReviewIsStale: Bool
+    var advisories: [SkillAdvisory] = []
 
     static func rows(
         from projects: [ProjectStatus],
         usage: SkillUsageSnapshot,
-        evaluations: SkillEvaluationSnapshot
+        evaluations: SkillEvaluationSnapshot,
+        modelReleases: ModelReleaseSnapshot = .empty,
+        releaseAffirmations: [String: Date] = [:],
+        trackedModelProviders: [String] = MetagentCore.defaultTrackedModelProviders
     ) -> [InventorySkillRow] {
         let usageByPath = Dictionary(grouping: usage.summaries.compactMap { summary -> (String, SkillUsageSummary)? in
             guard let canonicalPath = summary.canonicalPath else { return nil }
@@ -749,7 +753,13 @@ struct InventorySkillRow: Identifiable, Sendable {
                     pluginEval: evaluationsByPath[canonicalPath]?.pluginEval,
                     codexReview: evaluationsByPath[canonicalPath]?.codexReview,
                     pluginEvalIsStale: evaluations.stalePluginEvalPaths.contains(canonicalPath),
-                    codexReviewIsStale: evaluations.staleCodexReviewPaths.contains(canonicalPath)
+                    codexReviewIsStale: evaluations.staleCodexReviewPaths.contains(canonicalPath),
+                    advisories: MetagentCore.modelReleaseAdvisory(
+                        skillUpdatedAt: skill.updatedAt.flatMap(parseISO8601Date),
+                        affirmedAt: releaseAffirmations[canonicalPath],
+                        releases: modelReleases.releases,
+                        trackedProviders: trackedModelProviders
+                    ).map { [$0] } ?? []
                 )
             }
         }
@@ -863,7 +873,17 @@ struct InventorySkillRow: Identifiable, Sendable {
         )
     }
     var metagentStaticGrade: SkillGrade { .forScore(metagentStaticScore) }
-    var utilityScore: Int { metagentScore.utilityScore(qualityScore: metagentStaticScore) }
+    /// Total active advisory penalty, capped so advisories stay a bounded
+    /// review nag rather than a second scoring system.
+    var advisoryUtilityPenalty: Int {
+        min(15, advisories.reduce(0) { $0 + max(0, $1.utilityPenalty) })
+    }
+    var utilityScore: Int {
+        metagentScore.utilityScore(
+            qualityScore: metagentStaticScore,
+            advisoryPenalty: advisoryUtilityPenalty
+        )
+    }
     var utilityGrade: SkillGrade { .forScore(utilityScore) }
     var metagentScoreText: String { "\(metagentStaticScore) \(metagentStaticGrade.rawValue)" }
     var metagentScoreTint: Color { scoreTint(metagentStaticGrade) }
@@ -884,7 +904,10 @@ struct InventorySkillRow: Identifiable, Sendable {
         let adoptionText = adoption.map {
             "Observed adoption: \($0.score)/\($0.maximum) — \($0.explanation)"
         } ?? "Observed adoption: unavailable"
-        return "Utility combines Quality at 70% with observed adoption at 30%.\nQuality: \(metagentStaticScore)/100\n\(adoptionText)"
+        let advisoryText = advisories.isEmpty
+            ? ""
+            : "\n" + advisories.map { "Advisory (−\($0.utilityPenalty)): \($0.message)" }.joined(separator: "\n")
+        return "Utility combines Quality at 70% with observed adoption at 30%, minus active advisories.\nQuality: \(metagentStaticScore)/100\n\(adoptionText)\(advisoryText)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }

@@ -15,14 +15,6 @@ func copyToPasteboard(_ text: String) {
     pasteboard.setString(text, forType: .string)
 }
 
-struct SkillOpeningApplication: Identifiable {
-    let url: URL
-    let name: String
-    let icon: NSImage
-
-    var id: String { url.path }
-}
-
 func skillDirectoryURLs(for rows: [SkillTableRow]) -> [URL] {
     rows.filter { $0.inventory != nil }.compactMap(\.canonicalPath).compactMap { path in
         let url = URL(fileURLWithPath: path).standardizedFileURL
@@ -39,29 +31,6 @@ func skillFileURLs(for rows: [SkillTableRow]) -> [URL] {
         let file = directory.appendingPathComponent("SKILL.md")
         return FileManager.default.fileExists(atPath: file.path) ? file : nil
     }
-}
-
-@MainActor func applicationsForOpening(_ urls: [URL]) -> [SkillOpeningApplication] {
-    guard let firstURL = urls.first else { return [] }
-    let candidateSets = urls.map { url in
-        Set(NSWorkspace.shared.urlsForApplications(toOpen: url).map { $0.standardizedFileURL.path })
-    }
-    let commonPaths = candidateSets.dropFirst().reduce(candidateSets[0]) { $0.intersection($1) }
-    return NSWorkspace.shared.urlsForApplications(toOpen: firstURL)
-        .filter { commonPaths.contains($0.standardizedFileURL.path) }
-        .map { applicationURL in
-            let bundle = Bundle(url: applicationURL)
-            let name = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
-                ?? applicationURL.deletingPathExtension().lastPathComponent
-            return SkillOpeningApplication(
-                url: applicationURL,
-                name: name,
-                icon: NSWorkspace.shared.icon(forFile: applicationURL.path)
-            )
-        }
-        .uniqued(by: \.id)
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 }
 
 @MainActor func openSkillFiles(_ urls: [URL]) {

@@ -16,6 +16,7 @@ struct InventorySection: View {
     @State private var pendingConfirmation: InventoryConfirmation?
     @State private var inspectedSkill: InventorySkillRow?
     @State private var viewedSkill: InventorySkillRow?
+    @State private var scoreAnalysisSkill: InventorySkillRow?
     @State private var iconTarget: InventorySkillRow?
     @State private var selectedDuplicateGroupID: String?
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
@@ -518,12 +519,16 @@ struct InventorySection: View {
                     },
                     secondaryButton: .cancel()
                 )
-            case let .codexReview(row):
+            case let .codexReview(rows):
+                let names = rows.prefix(4).map(\.skillName).joined(separator: ", ")
+                let suffix = rows.count > 4 ? ", …" : ""
                 return Alert(
-                    title: Text("Review \(row.skillName) with Codex?"),
-                    message: Text("Metagent will copy this skill into an isolated temporary directory, disable Codex tools and user configuration, and send the copied contents to OpenAI for an ephemeral review. The skill and other local files cannot be edited or read by the review."),
-                    primaryButton: .default(Text("Run Review")) {
-                        model.reviewSkillWithCodex(path: row.canonicalPath)
+                    title: Text(rows.count == 1
+                        ? "Review \(rows[0].skillName) with Codex?"
+                        : "Review \(rows.count) skills with Codex?"),
+                    message: Text("\(names)\(suffix)\n\nCodex reviews each skill in context: it can read the surrounding project and sibling skills (read-only, nothing is edited) to judge fit and overlap, and what it reads is sent to OpenAI for an ephemeral review. A multi-skill selection is reviewed in one Codex session."),
+                    primaryButton: .default(Text(rows.count == 1 ? "Run Review" : "Run \(rows.count) Reviews")) {
+                        model.reviewSkillsWithCodex(rows.map { (path: $0.canonicalPath, projectRoot: $0.projectRoot) })
                     },
                     secondaryButton: .cancel()
                 )
@@ -534,6 +539,11 @@ struct InventorySection: View {
         }
         .sheet(item: $viewedSkill) { row in
             SkillReaderView(model: model, row: row)
+        }
+        .sheet(item: $scoreAnalysisSkill) { row in
+            SkillScoreGuidanceView(row: row) {
+                model.affirmModelReleaseReview(canonicalPath: row.canonicalPath)
+            }
         }
         .sheet(item: $iconTarget) { row in
             SkillIconEditorView(model: model, row: row)
@@ -572,13 +582,15 @@ struct InventorySection: View {
         let paths = contextRows.compactMap(\.canonicalPath)
         let openableURLs = skillDirectoryURLs(for: contextRows)
         let skillFiles = skillFileURLs(for: contextRows)
-        let openWithApplications = applicationsForOpening(openableURLs)
         if contextRows.count == 1, let inventory = contextRows.first?.inventory {
             Button("View Skill", systemImage: "doc.text.magnifyingglass") {
                 viewedSkill = inventory
             }
             Button("Get Info", systemImage: "info.circle") {
                 inspectedSkill = inventory
+            }
+            Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
+                scoreAnalysisSkill = inventory
             }
             Button(
                 inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
@@ -589,24 +601,10 @@ struct InventorySection: View {
             .disabled(!inventory.canEditIcon)
             Divider()
         }
-        Button("Open", systemImage: "folder") {
+        Button("Show in Finder", systemImage: "folder") {
             openSkillDirectories(openableURLs)
         }
         .disabled(openableURLs.isEmpty)
-        Menu("Open With", systemImage: "square.and.arrow.up") {
-            ForEach(openWithApplications) { application in
-                Button {
-                    openSkillDirectories(openableURLs, with: application.url)
-                } label: {
-                    Label {
-                        Text(application.name)
-                    } icon: {
-                        Image(nsImage: application.icon)
-                    }
-                }
-            }
-        }
-        .disabled(openableURLs.isEmpty || openWithApplications.isEmpty)
         Button("Open SKILL.md", systemImage: "doc.text") {
             openSkillFiles(skillFiles)
         }
@@ -616,24 +614,22 @@ struct InventorySection: View {
         }
         .disabled(openableURLs.isEmpty)
         Divider()
-        if contextRows.count == 1, let inventory = contextRows.first?.inventory {
-            // Plugin Eval runs on its own, so only the re-run and the upload
-            // need to stay reachable by hand.
-            Button("Re-run Plugin Eval", systemImage: "checkmark.seal") {
-                model.evaluateSkillWithPluginEval(path: inventory.canonicalPath)
-            }
-            .disabled(model.isRunning || model.isSkillEvaluating)
-            Button("Review with Codex…", systemImage: "cloud") {
-                pendingConfirmation = .codexReview(inventory)
-            }
-            .disabled(model.isRunning || model.isSkillEvaluating)
-            Divider()
+        let reviewableRows = contextRows.compactMap(\.inventory)
+        Button(
+            reviewableRows.count > 1
+                ? "Review \(reviewableRows.count) with Codex…"
+                : "Review with Codex…",
+            systemImage: "cloud"
+        ) {
+            pendingConfirmation = .codexReview(reviewableRows)
         }
+        .disabled(model.isRunning || model.isSkillEvaluating || reviewableRows.isEmpty)
+        Divider()
         Button("Copy Path", systemImage: "doc.on.doc") {
             copyPaths(contextRows)
         }
         .disabled(paths.isEmpty)
-        Button("Copy to Improve", systemImage: "wand.and.sparkles") {
+        Button("Copy Improvement Instructions", systemImage: "wand.and.sparkles") {
             copyToImprove(contextRows)
         }
         .disabled(paths.isEmpty)
@@ -680,11 +676,17 @@ struct InventorySection: View {
         let usage = model.usageSnapshot
         let evaluations = model.skillEvaluations
         let pluginInventoryAvailable = model.isPluginInventoryAvailable
+        let modelReleases = model.modelReleases
+        let releaseAffirmations = model.releaseAffirmations
+        let trackedModelProviders = model.trackedModelProviders
         let rows = await Task.detached(priority: .utility) {
             let inventoryRows = InventorySkillRow.rows(
                 from: projects,
                 usage: usage,
-                evaluations: evaluations
+                evaluations: evaluations,
+                modelReleases: modelReleases,
+                releaseAffirmations: releaseAffirmations,
+                trackedModelProviders: trackedModelProviders
             )
             let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill.coreSkill })
             return SkillTableRow.rows(

@@ -52,6 +52,8 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var skillTableRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
     @Published private(set) var isRemovingSkills = false
+    @Published private(set) var modelReleases = ModelReleaseSnapshot.empty
+    @Published private(set) var releaseAffirmations: [String: Date] = [:]
 
     private let fileManager = FileManager.default
     private var statusRefreshGeneration = 0
@@ -80,8 +82,60 @@ final class MetagentModel: ObservableObject {
             usageSnapshot = usage
             usageStatusText = Self.usageStatus(usage)
         }
+        modelReleases = MetagentCore.loadModelReleaseSnapshot()
+        releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
         refreshStatus()
         refreshUsage()
+        refreshModelReleases()
+    }
+
+    /// Provider keys whose releases trigger skill-review advisories. Stored as
+    /// a comma-separated default so Settings and the model read one value.
+    var trackedModelProviders: [String] {
+        guard let stored = UserDefaults.standard.string(forKey: Self.trackedModelProvidersKey) else {
+            return MetagentCore.defaultTrackedModelProviders
+        }
+        // "none" records a deliberate opt-out; a missing value means defaults.
+        if stored == "none" { return [] }
+        let keys = stored.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
+        return keys.isEmpty ? MetagentCore.defaultTrackedModelProviders : keys
+    }
+
+    static let trackedModelProvidersKey = "metagent.model-releases.providers.v1"
+
+    func setTrackedModelProviders(_ providers: [String]) {
+        UserDefaults.standard.set(
+            providers.isEmpty ? "none" : providers.joined(separator: ","),
+            forKey: Self.trackedModelProvidersKey
+        )
+        skillTableRevision += 1
+    }
+
+    /// Polls models.dev at most once a day; the catalog is small and the poll
+    /// falls back to the cached snapshot when offline.
+    func refreshModelReleases() {
+        Task {
+            let snapshot = await MetagentCore.refreshModelReleaseSnapshot()
+            if snapshot != modelReleases {
+                modelReleases = snapshot
+                skillTableRevision += 1
+            }
+        }
+    }
+
+    /// Records that a skill was reviewed against current models with no
+    /// changes needed, clearing its release-staleness advisory.
+    func affirmModelReleaseReview(canonicalPath: String) {
+        do {
+            try MetagentCore.affirmModelReleaseReview(canonicalPath: canonicalPath)
+            releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
+            skillTableRevision += 1
+        } catch {
+            lastOutputTitle = "Mark reviewed failed"
+            lastOutputLines = [error.localizedDescription]
+        }
     }
 
     /// Everything the app can be busy with, reported in one place, or `nil` when
@@ -151,7 +205,10 @@ final class MetagentModel: ObservableObject {
         return InventorySkillRow.rows(
             from: projects,
             usage: usageSnapshot,
-            evaluations: skillEvaluations
+            evaluations: skillEvaluations,
+            modelReleases: modelReleases,
+            releaseAffirmations: releaseAffirmations,
+            trackedModelProviders: trackedModelProviders
         ).first {
             standardizedDirectoryPath($0.canonicalPath) == targetPath
         }
@@ -419,20 +476,52 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func reviewSkillWithCodex(path: String) {
-        guard !isRunning, !isSkillEvaluating else { return }
+    func reviewSkillWithCodex(path: String, projectRoot: String? = nil) {
+        reviewSkillsWithCodex([(path: path, projectRoot: projectRoot)])
+    }
+
+    /// Reviews every selected skill in a single Codex session, so a batch
+    /// leaves one chat in the user's Codex history rather than one per skill.
+    func reviewSkillsWithCodex(_ targets: [(path: String, projectRoot: String?)]) {
+        guard !isRunning, !isSkillEvaluating, !targets.isEmpty else { return }
         isSkillEvaluating = true
-        skillEvaluationStatusText = "Codex is reviewing \(URL(fileURLWithPath: path).lastPathComponent)…"
+        skillEvaluationStatusText = targets.count == 1
+            ? "Codex is reviewing \(URL(fileURLWithPath: targets[0].path).lastPathComponent)…"
+            : "Codex is reviewing \(targets.count) skills in one session…"
+        // Project skills are reviewed inside their project; global skills are
+        // reviewed from the home directory so every skills location and the
+        // rest of the local setup is visible context.
+        let coreTargets = targets.map { target in
+            (
+                path: target.path,
+                contextRoot: {
+                    if let projectRoot = target.projectRoot, !isGlobalRoot(projectRoot) {
+                        return projectRoot
+                    }
+                    return NSHomeDirectory()
+                }() as String?
+            )
+        }
         Task {
             do {
-                let record = try await Task.detached(priority: .utility) {
-                    try MetagentCore.reviewSkillWithCodex(at: path)
+                let outcome = try await Task.detached(priority: .utility) {
+                    try MetagentCore.reviewSkillsWithCodexSession(targets: coreTargets)
                 }.value
                 var snapshot = skillEvaluations
-                snapshot.applyCodexReviewResult(record)
+                for record in outcome.records {
+                    snapshot.applyCodexReviewResult(record)
+                }
                 skillEvaluations = snapshot
                 skillTableRevision += 1
-                skillEvaluationStatusText = "Codex review complete"
+                if outcome.failures.isEmpty {
+                    skillEvaluationStatusText = targets.count == 1
+                        ? "Codex review complete"
+                        : "Codex reviews complete (\(outcome.records.count))"
+                } else {
+                    let first = outcome.failures[0]
+                    let name = URL(fileURLWithPath: first.path).lastPathComponent
+                    skillEvaluationStatusText = "Codex review finished · \(outcome.failures.count) failed · \(name): \(first.message)"
+                }
             } catch {
                 skillEvaluationStatusText = "Codex review failed: \(error.localizedDescription)"
             }
