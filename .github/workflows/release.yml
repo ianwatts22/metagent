@@ -168,7 +168,7 @@ jobs:
             gh release create "$tag" \
               --title "Metagent $tag" \
               --generate-notes \
-              --prerelease
+              --latest
           fi
           gh release upload "$tag" \
             artifacts/Metagent.dmg \
