@@ -201,7 +201,8 @@ The strict complete gate remains:
 scripts/verify.sh
 ```
 
-Each lane prints stage timing and shows the tail of the exact failed-stage log.
+Each lane prints stage timing, surfaces warnings from successful stages, and
+shows the tail of the exact failed-stage log.
 Set `METAGENT_VERIFY_KEEP_LOGS=1` to preserve successful stage logs for diagnosis.
 
 Swift builds may need a writable module cache in sandboxed agent environments:

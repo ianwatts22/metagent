@@ -823,7 +823,25 @@ run_stage() {
   set -e
 
   if (( status == 0 )); then
-    printf '✓ %s · %ss\n' "$label" "$((SECONDS - started_at))"
+    local warnings
+    warnings="$(
+      grep -Ei \
+        '(^|[[:space:]:])(warning|warnings|skipping|skipped|unsigned)([[:space:]:.]|$)|not suitable for local installation' \
+        "$log_file" \
+        || true
+    )"
+    if [[ -n "$warnings" ]]; then
+      local warning_count
+      warning_count="$(awk 'END { print NR }' <<<"$warnings")"
+      printf '⚠ %s · %ss · completed with warnings\n' "$label" "$((SECONDS - started_at))"
+      awk 'NR <= 5' <<<"$warnings"
+      if (( warning_count > 5 )); then
+        printf '… %s more warning(s); rerun with METAGENT_VERIFY_KEEP_LOGS=1 for the full log\n' \
+          "$((warning_count - 5))"
+      fi
+    else
+      printf '✓ %s · %ss\n' "$label" "$((SECONDS - started_at))"
+    fi
     return
   fi
 

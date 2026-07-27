@@ -17,6 +17,13 @@ struct OverviewSection: View {
     @State private var isSkillHealthLoading = true
     @State private var loadedSkillHealthRefreshID: String?
     @State private var historyTrends = SkillHistoryTrends.empty
+    @AppStorage("metagent.overview.trend-range.v1") private var storedTrendRange = HistoryRange.month.rawValue
+
+    /// How far back the sparklines and deltas look. This governs the charts
+    /// only: no metric's own definition changes with it.
+    private var trendRange: HistoryRange {
+        HistoryRange(rawValue: storedTrendRange) ?? .month
+    }
 
     var body: some View {
         ScrollView(.vertical) {
@@ -90,6 +97,14 @@ struct OverviewSection: View {
 
                 Spacer(minLength: 12)
 
+                // Shown whenever any history exists, not only when the current
+                // range happens to yield a trend. Gating on the latter would
+                // hide the control the moment a narrow range came back empty,
+                // leaving no way to widen it again.
+                if !isCompact, !isSkillHealthStale, historyTrends.coverage.hasAnyRecord {
+                    trendRangeControl
+                }
+
                 if !isSkillHealthStale, skillHealth.duplicateGroupCount > 0 {
                     Button(action: openDuplicateReview) {
                         Label(
@@ -125,7 +140,8 @@ struct OverviewSection: View {
                             SkillHealthCard(
                                 card: card,
                                 isCompact: isCompact,
-                                trendCoverage: historyTrends.coverage
+                                trendCoverage: historyTrends.coverage,
+                                trendRange: trendRange
                             )
                         }
                     }
@@ -137,8 +153,35 @@ struct OverviewSection: View {
         .cardBackground()
     }
 
+    /// The word "Trend" carries the whole distinction: the picker sets how far
+    /// back the lines look, not what any card counts. Without it, "30d" sitting
+    /// above a card titled "Unused, last 30 days" reads as the same 30 days.
+    private var trendRangeControl: some View {
+        HStack(spacing: 7) {
+            Text("Trend")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            Picker("Trend range", selection: $storedTrendRange) {
+                ForEach(HistoryRange.overviewCases) { range in
+                    Text(range.title).tag(range.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 184)
+        }
+        .help(trendRangeHelp)
+        .accessibilityLabel("Trend range")
+        .accessibilityValue(trendRange.phrase)
+    }
+
+    private var trendRangeHelp: String {
+        "How far back the lines and deltas on these cards look, currently \(trendRange.phrase). This changes the charts only; each card still counts exactly what its title says."
+    }
+
     private var skillHealthRefreshID: String {
-        "\(model.skillTableRevision):\(selectedProjectRoot ?? "all")"
+        "\(model.skillTableRevision):\(selectedProjectRoot ?? "all"):\(trendRange.rawValue)"
     }
 
     private var isSkillHealthStale: Bool {
@@ -383,6 +426,7 @@ struct OverviewSection: View {
         let scope = skillHealthScope
         let historyScope = skillHistoryScope
         let historyMetrics = overviewTrendMetrics
+        let windowDays = trendRange.days
         let (health, trends) = await Task.detached(priority: .utility) {
             (
                 MetagentCore.skillSystemHealth(
@@ -394,7 +438,7 @@ struct OverviewSection: View {
                 (try? MetagentCore.skillHistoryTrends(
                     metrics: historyMetrics,
                     scope: historyScope,
-                    windowDays: 30
+                    windowDays: windowDays
                 )) ?? .empty
             )
         }.value
@@ -822,6 +866,7 @@ struct SkillHealthCard: View {
     let card: SkillHealthCardModel
     let isCompact: Bool
     var trendCoverage = SkillHistoryCoverage.empty
+    var trendRange = HistoryRange.month
 
     /// The line follows the number's own status colour when the metric carries a
     /// judgment, so a card never says "healthy" in the figure and something else
@@ -838,6 +883,21 @@ struct SkillHealthCard: View {
     /// magnitude, not a precise measurement.
     private var deltaFormatter: (Double) -> String {
         { $0.formatted(.number.precision(.fractionLength(0))) }
+    }
+
+    /// The metric's own explanation, then a separate sentence for the line
+    /// beneath it. Keeping them apart is the point: a card whose title says
+    /// "last 30 days" and whose chart spans 90 needs both stated, not merged.
+    private var helpText: String {
+        guard let trend = card.trend, trend.isPlottable else { return card.help }
+        var sentence = "The line covers \(trendRange.phrase)"
+        if let baselineDay = trend.baselineDay {
+            sentence += ", compared against \(baselineDay)"
+        }
+        sentence += trend.includesInferred
+            ? ". Dashed stretches are reconstructed rather than recorded."
+            : "."
+        return "\(card.help) \(sentence)"
     }
 
     var body: some View {
@@ -871,6 +931,15 @@ struct SkillHealthCard: View {
                 Group {
                     if trend.isPlottable {
                         HistorySparkline(points: HistoryPlot.points(trend.points), tint: trendTint)
+                            // The line's own window, stated where the line is.
+                            // Without it a sparkline under "Unused, last 30
+                            // days" reads as if the title set its range.
+                            .overlay(alignment: .bottomTrailing) {
+                                Text(trendRange.title)
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.trailing, 1)
+                            }
                     } else {
                         HistoryTrendPlaceholder(coverage: trendCoverage)
                     }
@@ -882,7 +951,7 @@ struct SkillHealthCard: View {
         .padding(.horizontal, isCompact ? 11 : 13)
         .padding(.vertical, isCompact ? 9 : 11)
         .glassEffect(in: RoundedRectangle(cornerRadius: isCompact ? 11 : 13, style: .continuous))
-        .help(card.help)
+        .help(helpText)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityHint(card.help)

@@ -179,6 +179,13 @@ public struct SkillHistoryCoverage: Sendable, Equatable {
     public let inferredDayCount: Int
     public let eventCount: Int
 
+    /// Whether anything at all has been recorded, regardless of the window a
+    /// caller happens to be looking at. A control that appears only when the
+    /// current window has data would vanish the moment someone narrowed it.
+    public var hasAnyRecord: Bool {
+        observedDayCount > 0 || inferredDayCount > 0
+    }
+
     public static let empty = SkillHistoryCoverage(
         firstObservedDay: nil,
         lastObservedDay: nil,

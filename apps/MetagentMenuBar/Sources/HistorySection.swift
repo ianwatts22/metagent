@@ -2,8 +2,14 @@ import Charts
 import MetagentCore
 import SwiftUI
 
-/// How far back the History view looks.
+/// How far back a history chart looks.
+///
+/// This is the window of the *chart*, not of any metric. "Unused, last 30 days"
+/// counts skills unread in a trailing 30-day window on every day it is measured;
+/// changing this range changes how many of those daily measurements are drawn,
+/// never what any of them mean.
 enum HistoryRange: String, CaseIterable, Identifiable {
+    case week
     case month
     case quarter
     case year
@@ -13,6 +19,7 @@ enum HistoryRange: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .week: "7d"
         case .month: "30d"
         case .quarter: "90d"
         case .year: "1y"
@@ -20,14 +27,30 @@ enum HistoryRange: String, CaseIterable, Identifiable {
         }
     }
 
+    /// How the window reads in a sentence, for labels and help text.
+    var phrase: String {
+        switch self {
+        case .week: "the last 7 days"
+        case .month: "the last 30 days"
+        case .quarter: "the last 90 days"
+        case .year: "the last year"
+        case .all: "all recorded history"
+        }
+    }
+
     var days: Int {
         switch self {
+        case .week: 7
         case .month: 30
         case .quarter: 90
         case .year: 365
         case .all: 3_650
         }
     }
+
+    /// The ranges the Overview offers. The full-page view adds a year; six small
+    /// sparklines gain nothing from a fifth choice.
+    static let overviewCases: [HistoryRange] = [.week, .month, .quarter, .all]
 }
 
 /// One charted metric on the History page.
@@ -116,7 +139,8 @@ struct HistorySection: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: isCompact ? 168 : 200)
+            .frame(width: isCompact ? 200 : 240)
+            .help("How far back these charts look, currently \(range.phrase). This changes the charts only; each metric still counts exactly what its title says.")
         }
         .padding(.horizontal, isCompact ? 12 : 14)
         .padding(.top, isCompact ? 10 : 12)

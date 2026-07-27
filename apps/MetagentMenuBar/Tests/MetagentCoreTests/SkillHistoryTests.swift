@@ -543,6 +543,34 @@ struct SkillHistoryTests {
         #expect(Set(events.map(\.id)) == ["observed", "replacement"])
     }
 
+    @Test("reports having a record even when the current window shows no trend")
+    func coverageOutlivesTheWindow() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        for day in ["2026-06-01T09:00:00Z", "2026-06-02T09:00:00Z"] {
+            _ = try MetagentCore.captureSkillHistory(
+                projects: [project(root: root, skills: [skill(name: "alpha", root: root)])],
+                usage: usage([]),
+                trigger: .refresh,
+                now: date(day),
+                calendar: calendar,
+                databasePath: databasePath
+            )
+        }
+        // A 7-day window well after the recorded days has nothing to plot, but
+        // history plainly exists. A range control gated on the window alone
+        // would disappear here and strand the user at that range.
+        let narrow = try MetagentCore.skillHistoryTrends(
+            metrics: [.portfolioSkills],
+            windowDays: 7,
+            now: date("2026-07-20T12:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        #expect(!narrow.hasTrend)
+        #expect(narrow.coverage.hasAnyRecord)
+    }
+
     @Test("reports observed and reconstructed coverage separately")
     func reportsCoverage() throws {
         let databasePath = try temporaryDatabase()
