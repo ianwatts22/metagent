@@ -146,7 +146,7 @@ jobs:
           "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
             --ed-key-file "$key_file" \
             --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/" \
-            --output-path artifacts/appcast.xml \
+            -o artifacts/appcast.xml \
             artifacts/updates
 
           rm -f "$key_file"
