@@ -349,7 +349,7 @@ final class MetagentModel: ObservableObject {
     /// Paths are recorded before the run so a skill whose evaluation fails is
     /// not retried forever; an explicit re-run is still available per skill.
     func evaluateMissingSkills(paths: [String]) {
-        guard !isSkillEvaluating else { return }
+        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
         let missing = paths.filter {
             skillEvaluations.records[$0] == nil && !autoEvaluatedPaths.contains($0)
         }
@@ -359,7 +359,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func evaluateSkillsWithPluginEval(paths: [String]) {
-        guard !isSkillEvaluating else { return }
+        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
         let uniquePaths = Array(Set(paths)).sorted()
         guard !uniquePaths.isEmpty else { return }
         skillEvaluationRefreshGeneration += 1
@@ -402,7 +402,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func reviewSkillWithCodex(path: String) {
-        guard !isSkillEvaluating else { return }
+        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
         skillEvaluationRefreshGeneration += 1
         isSkillEvaluating = true
         skillEvaluationStatusText = "Codex is reviewing \(URL(fileURLWithPath: path).lastPathComponent)…"
