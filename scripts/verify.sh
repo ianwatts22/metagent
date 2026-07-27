@@ -769,8 +769,11 @@ mkdir -p "$conflict_project/.agents/skills/canonical-skill" "$conflict_project/.
 make_skill "$conflict_project/.agents/skills/canonical-skill" "canonical-skill" "canonical"
 printf -- "keep me\n" >"$conflict_project/.claude/skills/claude-only/SKILL.md"
 conflict_output="$("$swift_helper" skills repair --root "$conflict_project" --max-depth 0 --apply)"
-grep -q "manual review: .claude/skills exists and is not a symlink" <<<"$conflict_output"
-test ! -L "$conflict_project/.claude/skills"
+grep -q "moved 1 skill(s) into .agents/skills: claude-only" <<<"$conflict_output"
+grep -q "repaired: .claude/skills -> ../.agents/skills" <<<"$conflict_output"
+test -L "$conflict_project/.claude/skills"
+test "$(readlink "$conflict_project/.claude/skills")" = "../.agents/skills"
+test -f "$conflict_project/.agents/skills/claude-only/SKILL.md"
 test -f "$conflict_project/.claude/skills/claude-only/SKILL.md"
 
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF
