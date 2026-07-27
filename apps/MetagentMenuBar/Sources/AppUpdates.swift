@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import MetagentCore
 import Sparkle
 import SwiftUI
 
@@ -20,16 +21,18 @@ final class UpdaterModel: ObservableObject {
 
     init() {
         let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
-        isConfigured = !(feedURL?.contains("REPLACE_ME") ?? true)
+        let startupPolicy = AppUpdateStartupPolicy(feedURL: feedURL)
+        isConfigured = startupPolicy.isConfigured
+        startupPolicy.repairLegacyAutomaticChecksPreference(in: .standard)
 
         controller = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: false,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
 
-        if !isConfigured {
-            controller.updater.automaticallyChecksForUpdates = false
+        if isConfigured {
+            controller.startUpdater()
         }
 
         canCheckForUpdates = controller.updater.canCheckForUpdates

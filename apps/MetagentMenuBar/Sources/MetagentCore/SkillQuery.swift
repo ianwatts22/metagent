@@ -641,7 +641,7 @@ extension MetagentCore {
         }
         var byPath: [String: (root: String, skill: SkillInventoryItem)] = [:]
         for entry in flattened {
-            let key = standardizedQueryPath(
+            let key = canonicalExistingPath(
                 entry.skill.canonicalPath.isEmpty ? entry.skill.path : entry.skill.canonicalPath
             )
             if byPath[key] == nil { byPath[key] = entry }
@@ -653,7 +653,7 @@ extension MetagentCore {
                 similarity: group.similarity,
                 skillName: group.skillName,
                 members: group.members.map { member in
-                    let matched = byPath[standardizedQueryPath(member.canonicalPath)]
+                    let matched = byPath[canonicalExistingPath(member.canonicalPath)]
                     return SkillDuplicateMember(
                         name: matched?.skill.name ?? group.skillName,
                         path: matched?.skill.path ?? member.canonicalPath,
@@ -873,7 +873,7 @@ struct SkillUsageIndex {
                 guard let canonicalPath = summary.canonicalPath, !canonicalPath.isEmpty else {
                     return nil
                 }
-                return (standardizedQueryPath(canonicalPath), summary)
+                return (canonicalExistingPath(canonicalPath), summary)
             },
             by: \.0
         ).compactMapValues { values in
@@ -889,31 +889,19 @@ struct SkillUsageIndex {
 
     func summary(for skill: SkillInventoryItem) -> SkillUsageSummary? {
         let path = skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
-        return byCanonicalPath[standardizedQueryPath(path)]
+        return byCanonicalPath[canonicalExistingPath(path)]
             ?? byIdentity["\(skill.name):\(skill.scope)"]
     }
 
     func summary(forCanonicalPath path: String) -> SkillUsageSummary? {
-        byCanonicalPath[standardizedQueryPath(path)]
+        byCanonicalPath[canonicalExistingPath(path)]
     }
-}
-
-// MARK: - Path helpers
-
-/// Local reimplementation: the equivalent helpers in SkillOverlap.swift and
-/// ProjectAnalysis.swift are file-private and cannot be shared without editing them.
-func standardizedQueryPath(_ path: String) -> String {
-    let url = URL(fileURLWithPath: path).standardizedFileURL
-    if fileManager.fileExists(atPath: url.path) {
-        return url.resolvingSymlinksInPath().standardizedFileURL.path
-    }
-    return url.path
 }
 
 private func skillDirectoriesMatch(_ skill: SkillInventoryItem, _ directory: URL) -> Bool {
-    let target = standardizedQueryPath(directory.path)
-    if standardizedQueryPath(skill.path) == target { return true }
-    return !skill.canonicalPath.isEmpty && standardizedQueryPath(skill.canonicalPath) == target
+    let target = canonicalExistingPath(directory.path)
+    if canonicalExistingPath(skill.path) == target { return true }
+    return !skill.canonicalPath.isEmpty && canonicalExistingPath(skill.canonicalPath) == target
 }
 
 private func inferredSkillProjectRoot(_ skillDirectory: URL) -> URL? {

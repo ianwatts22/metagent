@@ -72,10 +72,15 @@ public extension MetagentCore {
 }
 
 /// Claude Code names each session directory after the project root with every
-/// path separator, dot, and underscore folded to `-`.
+/// non-ASCII-alphanumeric character folded to `-`.
 func sessionDirectoryName(for standardizedRoot: String) -> String {
-    String(standardizedRoot.map { character in
-        ["/", ".", "_"].contains(String(character)) ? "-" : character
+    String(standardizedRoot.unicodeScalars.map { scalar in
+        switch scalar.value {
+        case 48...57, 65...90, 97...122:
+            Character(String(scalar))
+        default:
+            "-"
+        }
     })
 }
 

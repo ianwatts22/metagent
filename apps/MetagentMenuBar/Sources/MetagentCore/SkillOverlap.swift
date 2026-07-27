@@ -29,7 +29,7 @@ extension MetagentCore {
         let canonicalSkills = Dictionary(
             skills
                 .filter { $0.representation != "projection" }
-                .map { (standardizedSkillPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
+                .map { (canonicalExistingPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
             uniquingKeysWith: preferredOverlapItem
         ).values
 
@@ -62,14 +62,14 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
     guard let first = skills.first else { return nil }
 
     let documents = Dictionary(uniqueKeysWithValues: skills.map { skill in
-        let path = standardizedSkillPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
+        let path = canonicalExistingPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
         return (path, comparableSkillDocument(at: path))
     })
     let pairSimilarities = skills.enumerated().flatMap { index, left in
         skills.dropFirst(index + 1).map { right in
             documentSimilarity(
-                documents[standardizedSkillPath(left.canonicalPath.isEmpty ? left.path : left.canonicalPath)] ?? nil,
-                documents[standardizedSkillPath(right.canonicalPath.isEmpty ? right.path : right.canonicalPath)] ?? nil
+                documents[canonicalExistingPath(left.canonicalPath.isEmpty ? left.path : left.canonicalPath)] ?? nil,
+                documents[canonicalExistingPath(right.canonicalPath.isEmpty ? right.path : right.canonicalPath)] ?? nil
             )
         }
     }
@@ -82,10 +82,10 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
                 .filter { $0.manager != "codex-plugin" }
                 .map { standalone in
                     documentSimilarity(
-                        documents[standardizedSkillPath(
+                        documents[canonicalExistingPath(
                             plugin.canonicalPath.isEmpty ? plugin.path : plugin.canonicalPath
                         )] ?? nil,
-                        documents[standardizedSkillPath(
+                        documents[canonicalExistingPath(
                             standalone.canonicalPath.isEmpty ? standalone.path : standalone.canonicalPath
                         )] ?? nil
                     )
@@ -116,12 +116,12 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
         kind: kind,
         similarity: similarity,
         members: skills.map { skill in
-            let canonicalPath = standardizedSkillPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
+            let canonicalPath = canonicalExistingPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
             let memberDocument = documents[canonicalPath] ?? nil
             let pluginSimilarity = skills
                 .filter { $0.manager == "codex-plugin" }
                 .map { plugin in
-                    let pluginPath = standardizedSkillPath(
+                    let pluginPath = canonicalExistingPath(
                         plugin.canonicalPath.isEmpty ? plugin.path : plugin.canonicalPath
                     )
                     return documentSimilarity(memberDocument, documents[pluginPath] ?? nil)
@@ -168,14 +168,6 @@ private func documentSimilarity(_ left: ComparableSkillDocument?, _ right: Compa
 
 private func normalizedSkillName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-}
-
-private func standardizedSkillPath(_ path: String) -> String {
-    let url = URL(fileURLWithPath: path).standardizedFileURL
-    if FileManager.default.fileExists(atPath: url.path) {
-        return url.resolvingSymlinksInPath().standardizedFileURL.path
-    }
-    return url.path
 }
 
 private func preferredOverlapItem(_ left: SkillInventoryItem, _ right: SkillInventoryItem) -> SkillInventoryItem {

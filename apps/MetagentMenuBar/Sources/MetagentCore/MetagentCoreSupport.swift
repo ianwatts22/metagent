@@ -47,6 +47,16 @@ func canonicalProjectPath(_ url: URL) -> String {
     url.resolvingSymlinksInPath().standardizedFileURL.path
 }
 
+/// Stable identity for a path that may not exist yet. Existing paths resolve
+/// symlinks; missing paths retain their standardized intended location.
+func canonicalExistingPath(_ path: String) -> String {
+    let url = URL(fileURLWithPath: path).standardizedFileURL
+    if fileManager.fileExists(atPath: url.path) {
+        return url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+    return url.path
+}
+
 struct SubprocessResult {
     var status: Int32
     var standardOutput: Data
