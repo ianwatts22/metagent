@@ -78,6 +78,16 @@ Portfolio history:
 - Tokens, catalog size, scores, duplicate counts, Doctor findings, and MCP counts describe content and configuration that is overwritten in place. They have no history before capture began and are left absent for reconstructed days.
 - `metagent history sample|show|events|coverage|backfill` exposes the same paths headlessly. `history coverage` reports observed and reconstructed day counts separately.
 
+History surfaces:
+
+- Three surfaces read the recorded series, at three altitudes: the Overview cards say which way each number is moving, the `History` destination says what the portfolio has been doing, and Get Info says what happened to one skill.
+- Each Overview metric card gains a delta against the oldest day in the 30-day window and a sparkline beneath it. The delta names the day it compared against rather than claiming an exact window it may not have, because a machine that was closed for a week has no 30-day-ago sample. A single recorded day shows no delta at all: one value is a value, not a trend, and a zero delta there would be comparing a day against itself.
+- Direction is not judgment. Each card says whether rising is good, so fewer unused skills reads green and a growing catalog reads orange, while inventory size and median age stay neutral because they carry no target. The sparkline follows the number's own status colour, so a card never says one thing in the figure and another in the line beside it.
+- The compact menu bar panel omits sparklines. The trend is supporting detail and the number is the fact, so the small surface keeps the number at full size instead of shrinking it to fit a line.
+- The `History` destination shares the top-level directory scope and adds a 30d/90d/1y/All range control. It charts installed skills, skills not being read, and instruction and catalog size, then lists recorded changes grouped by day. Grouping is deliberate: fifty individual rows from one install session is noise, while "Jul 16 · added 6" is the fact. A day expands to its individual changes, each showing the evidence it came from.
+- Gaps are drawn as gaps everywhere. Each run of consecutive recorded days is its own line segment, so days with no sample are visibly empty rather than joined through with a line nobody measured. Reconstructed stretches are dashed and dimmed so inferred evidence never reads as observed.
+- Get Info gains a Timeline section for the selected skill: when it was installed, how many times it changed and when it last changed, whether it was removed, and the individual events with their evidence. This is the view that changes a keep-or-remove decision, because it shows a skill installed in April, read twice, and untouched since.
+
 Build:
 
 ```bash

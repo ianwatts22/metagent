@@ -350,6 +350,98 @@ struct SkillHistoryTests {
         #expect(try value(.adoptionNeverObserved) == Double(expected.neverObservedSkillCount))
     }
 
+    @Test("reads several metrics in one pass with deltas against the window")
+    func readsTrends() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        for (day, count) in [("2026-07-18T09:00:00Z", 1), ("2026-07-20T09:00:00Z", 3)] {
+            let skills = (0 ..< count).map { skill(name: "s\($0)", root: root) }
+            _ = try MetagentCore.captureSkillHistory(
+                projects: [project(root: root, skills: skills)],
+                usage: usage([]),
+                trigger: .refresh,
+                now: date(day),
+                calendar: calendar,
+                databasePath: databasePath
+            )
+        }
+        let trends = try MetagentCore.skillHistoryTrends(
+            metrics: [.portfolioSkills, .tokensSkillBody],
+            windowDays: 30,
+            now: date("2026-07-20T12:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        let portfolio = trends[.portfolioSkills]
+        #expect(portfolio.latest == 3)
+        #expect(portfolio.baseline == 1)
+        #expect(portfolio.change == 2)
+        #expect(portfolio.baselineDay == "2026-07-18")
+        #expect(trends.hasTrend)
+        #expect(trends[.tokensSkillBody].points.count == 2)
+    }
+
+    @Test("reports no change when only one day is recorded")
+    func singleDayHasNoTrend() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [skill(name: "alpha", root: root)])],
+            usage: usage([]),
+            trigger: .launch,
+            now: date("2026-07-20T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        let trends = try MetagentCore.skillHistoryTrends(
+            metrics: [.portfolioSkills],
+            windowDays: 30,
+            now: date("2026-07-20T12:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        // One value is a value, not a trend; a delta here would compare a day
+        // against itself and always read as zero change.
+        #expect(trends[.portfolioSkills].latest == 1)
+        #expect(trends[.portfolioSkills].change == nil)
+        #expect(!trends[.portfolioSkills].isPlottable)
+        #expect(!trends.hasTrend)
+    }
+
+    @Test("returns one skill's own recorded events")
+    func readsSkillTimeline() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [
+                skill(name: "alpha", root: root),
+                skill(name: "beta", root: root),
+            ])],
+            usage: usage([]),
+            trigger: .launch,
+            now: date("2026-07-20T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [
+                skill(name: "alpha", root: root, bodyTokens: 900),
+            ])],
+            usage: usage([]),
+            trigger: .refresh,
+            now: date("2026-07-21T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        let timeline = try MetagentCore.skillHistoryTimeline(
+            skillKey: "\(root)/.agents/skills/alpha",
+            databasePath: databasePath
+        )
+        #expect(timeline.count == 1)
+        #expect(timeline[0].kind == .contentChanged)
+        #expect(timeline[0].subjectName == "alpha")
+    }
+
     @Test("reports observed and reconstructed coverage separately")
     func reportsCoverage() throws {
         let databasePath = try temporaryDatabase()

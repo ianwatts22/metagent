@@ -563,6 +563,75 @@ final class SkillHistoryStore {
         return points
     }
 
+    /// Reads several metrics' series in one statement, grouped by metric.
+    func series(
+        metrics: [SkillHistoryMetric],
+        scopeKey: String,
+        since: Date?
+    ) throws -> [SkillHistoryMetric: [SkillHistoryPoint]] {
+        guard !metrics.isEmpty else { return [:] }
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        let placeholders = Array(repeating: "?", count: metrics.count).joined(separator: ", ")
+        var sql = """
+        SELECT m.metric, s.day, s.captured_at, s.origin, m.value
+        FROM history_snapshots s
+        JOIN history_metrics m ON m.snapshot_id = s.id
+        WHERE m.scope = ? AND m.metric IN (\(placeholders))
+        """
+        if since != nil {
+            sql += " AND s.day >= ?"
+        }
+        sql += " ORDER BY m.metric, s.day;"
+        var statement: OpaquePointer?
+        try prepare(db, sql, &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, scopeKey)
+        for (offset, metric) in metrics.enumerated() {
+            bindText(statement, Int32(2 + offset), metric.rawValue)
+        }
+        if let since {
+            bindText(statement, Int32(2 + metrics.count), historyDay(since))
+        }
+        var grouped: [SkillHistoryMetric: [SkillHistoryPoint]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let metric = columnText(statement, 0).flatMap(SkillHistoryMetric.init(rawValue:)),
+                  let day = columnText(statement, 1)
+            else { continue }
+            let capturedAt = columnText(statement, 2)
+                .flatMap(MetagentCore.parseSkillUsageTimestamp) ?? Date.distantPast
+            let origin = columnText(statement, 3)
+                .flatMap(SkillHistoryOrigin.init(rawValue:)) ?? .observed
+            grouped[metric, default: []].append(SkillHistoryPoint(
+                day: day,
+                capturedAt: capturedAt,
+                origin: origin,
+                value: sqlite3_column_double(statement, 4)
+            ))
+        }
+        return grouped
+    }
+
+    /// Every recorded event for one skill, newest first.
+    func events(forSubject subjectKey: String) throws -> [SkillHistoryEvent] {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        var statement: OpaquePointer?
+        try prepare(db, """
+        SELECT event_id, occurred_at, kind, subject_key, subject_name, scope, origin, detail
+        FROM history_events
+        WHERE subject_key = ?
+        ORDER BY occurred_at DESC, event_id DESC;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, subjectKey)
+        return readEvents(statement)
+    }
+
     func events(since: Date?, limit: Int) throws -> [SkillHistoryEvent] {
         var db: OpaquePointer?
         try open(&db)
@@ -585,6 +654,12 @@ final class SkillHistoryStore {
             index += 1
         }
         sqlite3_bind_int64(statement, index, Int64(max(1, limit)))
+        return readEvents(statement)
+    }
+
+    /// Both event queries select the same columns in the same order, so they
+    /// share one decoder rather than repeating the column indices.
+    private func readEvents(_ statement: OpaquePointer?) -> [SkillHistoryEvent] {
         var events: [SkillHistoryEvent] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let id = columnText(statement, 0),

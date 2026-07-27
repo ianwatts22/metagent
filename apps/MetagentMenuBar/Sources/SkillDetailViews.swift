@@ -146,6 +146,8 @@ struct SkillInfoView: View {
                         showsScoreExplanation = true
                     }
                 }
+
+                SkillTimelineSection(skillPath: currentSkillPath)
             }
             .formStyle(.grouped)
 

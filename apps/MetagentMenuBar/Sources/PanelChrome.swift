@@ -246,6 +246,12 @@ struct MetagentPanel: View {
                     openMainWindow()
                 }
             }
+        case .history:
+            HistorySection(
+                model: model,
+                isCompact: showsOpenWindowButton,
+                selectedProjectRoot: selectedProjectRoot
+            )
         case .skills:
             if showsOpenWindowButton {
                 SkillsMenuSection(
@@ -522,6 +528,7 @@ where Option: Hashable & Identifiable {
 
 enum PanelSection: String, CaseIterable, Identifiable {
     case overview
+    case history
     case skills
     case mcps
     case projects
@@ -531,6 +538,7 @@ enum PanelSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .overview: "Overview"
+        case .history: "History"
         case .skills: "Skills"
         case .mcps: "MCPs"
         case .projects: "Projects"
@@ -540,6 +548,7 @@ enum PanelSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .overview: "gauge"
+        case .history: "chart.xyaxis.line"
         case .skills: "sparkles"
         case .mcps: "server.rack"
         case .projects: "folder"

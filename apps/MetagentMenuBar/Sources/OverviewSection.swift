@@ -16,6 +16,7 @@ struct OverviewSection: View {
     @State private var skillHealth = SkillSystemHealth.empty
     @State private var isSkillHealthLoading = true
     @State private var loadedSkillHealthRefreshID: String?
+    @State private var historyTrends = SkillHistoryTrends.empty
 
     var body: some View {
         ScrollView(.vertical) {
@@ -121,7 +122,11 @@ struct OverviewSection: View {
                         spacing: isCompact ? 6 : 8
                     ) {
                         ForEach(metricCards) { card in
-                            SkillHealthCard(card: card, isCompact: isCompact)
+                            SkillHealthCard(
+                                card: card,
+                                isCompact: isCompact,
+                                trendCoverage: historyTrends.coverage
+                            )
                         }
                     }
                 }
@@ -175,6 +180,19 @@ struct OverviewSection: View {
         [unusedCard, neverUsedCard, readsCard, instructionsCard, catalogCard, ageCard]
     }
 
+    /// Exactly the metrics the six cards draw, so the history read stays scoped
+    /// to what is shown rather than pulling every recorded series.
+    private var overviewTrendMetrics: [SkillHistoryMetric] {
+        [
+            .adoptionUnused30d,
+            .adoptionNeverObserved,
+            .readsP50,
+            .tokensSkillBody,
+            .tokensCatalog,
+            .ageMedianWeeks,
+        ]
+    }
+
     /// Unused rate drives the color ramp: green under 20%, yellow under 40%,
     /// orange under 60%, red at or above 60%.
     private func adoptionSeverity(_ fraction: Double) -> SkillHealthSeverity {
@@ -220,7 +238,9 @@ struct OverviewSection: View {
                 skillHealth.unused30dSkillCount,
                 fraction: skillHealth.unused30dFraction
             )),
-            help: "Rated skills with no observed read in the last 30 days. \(ratedScopeHelp) \(coverageCaveat)"
+            help: "Rated skills with no observed read in the last 30 days. \(ratedScopeHelp) \(coverageCaveat)",
+            trend: historyTrends[.adoptionUnused30d],
+            risingIsGood: false
         )
     }
 
@@ -232,7 +252,9 @@ struct OverviewSection: View {
                 skillHealth.neverObservedSkillCount,
                 fraction: skillHealth.neverObservedFraction
             )),
-            help: "Rated skills with no observed read anywhere in retained, indexed session history. \(ratedScopeHelp) \(coverageCaveat)"
+            help: "Rated skills with no observed read anywhere in retained, indexed session history. \(ratedScopeHelp) \(coverageCaveat)",
+            trend: historyTrends[.adoptionNeverObserved],
+            risingIsGood: false
         )
     }
 
@@ -267,7 +289,9 @@ struct OverviewSection: View {
                     label: "P95"
                 ),
             ]),
-            help: "Lifetime reads per rated skill in indexed session history, including zero-read skills. A P50 of zero means most of the portfolio has never been read. \(coverageCaveat)"
+            help: "Lifetime reads per rated skill in indexed session history, including zero-read skills. A P50 of zero means most of the portfolio has never been read. \(coverageCaveat)",
+            trend: historyTrends[.readsP50],
+            risingIsGood: true
         )
     }
 
@@ -279,7 +303,8 @@ struct OverviewSection: View {
                 primary: formatNumber(skillHealth.skillBodyTokenEstimate),
                 trailing: "tokens"
             )),
-            help: "Estimated tokens across every installed SKILL.md in the selected scope, including dormant directories. References, scripts, and assets are excluded. Bodies load on demand, so this is inventory size rather than per-session cost."
+            help: "Estimated tokens across every installed SKILL.md in the selected scope, including dormant directories. References, scripts, and assets are excluded. Bodies load on demand, so this is inventory size rather than per-session cost.",
+            trend: historyTrends[.tokensSkillBody]
         )
     }
 
@@ -293,7 +318,9 @@ struct OverviewSection: View {
                 trailing: "tokens",
                 severity: tokens < 10_000 ? .good : (tokens < 20_000 ? .warning : .alert)
             )),
-            help: "A four-characters-per-token estimate for skill names and descriptions across every installed skill in scope. This is a useful discovery-catalog size, not a claim that every client injects all of it on every turn."
+            help: "A four-characters-per-token estimate for skill names and descriptions across every installed skill in scope. This is a useful discovery-catalog size, not a claim that every client injects all of it on every turn.",
+            trend: historyTrends[.tokensCatalog],
+            risingIsGood: false
         )
     }
 
@@ -309,7 +336,8 @@ struct OverviewSection: View {
                     $0 < 8 ? .good : ($0 < 26 ? .caution : ($0 < 52 ? .warning : .alert))
                 } ?? .neutral
             )),
-            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality."
+            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality.",
+            trend: historyTrends[.ageMedianWeeks]
         )
     }
 
@@ -344,18 +372,37 @@ struct OverviewSection: View {
         let projects = model.projects.map(\.coreProject)
         let usage = model.usageSnapshot
         let scope = skillHealthScope
-        let health = await Task.detached(priority: .utility) {
-            MetagentCore.skillSystemHealth(
-                projects: projects,
-                usage: usage,
-                scope: scope,
-                activity: MetagentCore.scanProjectActivity(roots: projects.map(\.root))
+        let historyScope = skillHistoryScope
+        let historyMetrics = overviewTrendMetrics
+        let (health, trends) = await Task.detached(priority: .utility) {
+            (
+                MetagentCore.skillSystemHealth(
+                    projects: projects,
+                    usage: usage,
+                    scope: scope,
+                    activity: MetagentCore.scanProjectActivity(roots: projects.map(\.root))
+                ),
+                (try? MetagentCore.skillHistoryTrends(
+                    metrics: historyMetrics,
+                    scope: historyScope,
+                    windowDays: 30
+                )) ?? .empty
             )
         }.value
         guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
         skillHealth = health
+        historyTrends = trends
         loadedSkillHealthRefreshID = refreshID
         isSkillHealthLoading = false
+    }
+
+    /// The history scope mirrors the directory menu: no selection means the
+    /// whole portfolio, the global root means global only.
+    private var skillHistoryScope: SkillHistoryScope {
+        guard let selectedProjectRoot else { return .all }
+        return isGlobalRoot(selectedProjectRoot)
+            ? .global
+            : .project(root: selectedProjectRoot)
     }
 
     private var mcpConnections: some View {
@@ -755,11 +802,34 @@ struct SkillHealthCardModel: Identifiable {
     let title: String
     let content: SkillHealthContent
     let help: String
+    /// The recorded movement of this metric, when history has enough days.
+    var trend: SkillHistoryTrend?
+    /// Whether a rising line is a good outcome. `nil` means the metric carries
+    /// no direction worth judging, such as inventory size.
+    var risingIsGood: Bool?
 }
 
 struct SkillHealthCard: View {
     let card: SkillHealthCardModel
     let isCompact: Bool
+    var trendCoverage = SkillHistoryCoverage.empty
+
+    /// The line follows the number's own status colour when the metric carries a
+    /// judgment, so a card never says "healthy" in the figure and something else
+    /// in the line beside it.
+    private var trendTint: Color {
+        if case let .value(value) = card.content, value.severity != .neutral {
+            return value.severity.tint
+        }
+        return .secondary
+    }
+
+    /// Percentage metrics read as whole points; counts and tokens read as
+    /// counts. Both drop the fraction, because a delta is a direction with a
+    /// magnitude, not a precise measurement.
+    private var deltaFormatter: (Double) -> String {
+        { $0.formatted(.number.precision(.fractionLength(0))) }
+    }
 
     var body: some View {
         // The number leads and the label explains it, so a card reads
@@ -767,11 +837,37 @@ struct SkillHealthCard: View {
         VStack(alignment: .leading, spacing: 0) {
             content
 
-            Text(card.title)
-                .font((isCompact ? Font.subheadline : .headline).weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.top, isCompact ? 5 : 7)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(card.title)
+                    .font((isCompact ? Font.subheadline : .headline).weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: 0)
+
+                if let trend = card.trend, let change = trend.change {
+                    HistoryDelta(
+                        change: change,
+                        baselineDay: trend.baselineDay,
+                        risingIsGood: card.risingIsGood,
+                        formatter: deltaFormatter
+                    )
+                }
+            }
+            .padding(.top, isCompact ? 5 : 7)
+
+            // The trend is supporting detail, so the compact panel drops it
+            // rather than shrinking the number that carries the fact.
+            if !isCompact, let trend = card.trend {
+                Group {
+                    if trend.isPlottable {
+                        HistorySparkline(points: HistoryPlot.points(trend.points), tint: trendTint)
+                    } else {
+                        HistoryTrendPlaceholder(coverage: trendCoverage)
+                    }
+                }
+                .padding(.top, 5)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: isCompact ? 52 : 68, alignment: .topLeading)
         .padding(.horizontal, isCompact ? 11 : 13)
