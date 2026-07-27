@@ -184,8 +184,11 @@ jobs:
           tag="${{ steps.meta.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
+          # Tag-triggered checkouts are detached and shallow. Fetch main into an
+          # explicit remote-tracking ref before creating the local branch.
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          git checkout -B main origin/main
           cp artifacts/appcast.xml public/appcast.xml
           git add public/appcast.xml
           if git diff --cached --quiet; then
