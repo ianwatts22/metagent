@@ -149,6 +149,12 @@ struct MetagentCLI {
             try runSkillShow(Array(args.dropFirst()))
         case "remove":
             try runSkillRemoval(Array(args.dropFirst()))
+        case "archive":
+            try runSkillArchive(Array(args.dropFirst()))
+        case "restore":
+            try runSkillRestore(Array(args.dropFirst()))
+        case "archived":
+            try runArchivedSkillList(Array(args.dropFirst()))
         case "evaluate":
             try runSkillEvaluation(Array(args.dropFirst()))
         case "help", "--help", "-h":
@@ -366,6 +372,117 @@ struct MetagentCLI {
         }
         if report.outcomes.contains(where: { !$0.succeeded }) {
             throw CLIError.message("skills remove could not complete every target")
+        }
+    }
+
+    private static func runSkillArchive(_ args: [String]) throws {
+        var skillNames: [String] = []
+        var root: String?
+        var apply = false
+        var json = false
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            switch arg {
+            case "--root":
+                root = try readFlagValue("--root", args: args, index: &index)
+            case "--apply":
+                apply = true
+            case "--json":
+                json = true
+            default:
+                guard !arg.hasPrefix("--") else {
+                    throw CLIError.message("unknown skills archive flag: \(arg)")
+                }
+                skillNames.append(arg)
+            }
+            index += 1
+        }
+        guard !skillNames.isEmpty else {
+            throw CLIError.message("skills archive requires at least one skill name")
+        }
+
+        let projectRoot = root ?? FileManager.default.currentDirectoryPath
+        let targets = try skillNames.map { skillName -> SkillRemovalTarget in
+            guard let target = try MetagentCore.resolveSkillRemovalTarget(
+                projectRoot: projectRoot,
+                skillName: skillName
+            ) else {
+                throw CLIError.message("no archivable skill named \(skillName) in \(projectRoot)")
+            }
+            return target
+        }
+
+        let report = MetagentCore.archiveSkills(targets: targets, apply: apply)
+        if json {
+            try printJSON(report)
+        } else {
+            printSkillArchiveReport(report)
+        }
+        if report.outcomes.contains(where: { !$0.succeeded }) {
+            throw CLIError.message("skills archive could not complete every target")
+        }
+    }
+
+    private static func runSkillRestore(_ args: [String]) throws {
+        var skillNames: [String] = []
+        var json = false
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            switch arg {
+            case "--json":
+                json = true
+            default:
+                guard !arg.hasPrefix("--") else {
+                    throw CLIError.message("unknown skills restore flag: \(arg)")
+                }
+                skillNames.append(arg)
+            }
+            index += 1
+        }
+        guard !skillNames.isEmpty else {
+            throw CLIError.message("skills restore requires at least one archived skill name")
+        }
+
+        var reports: [SkillRestoreReport] = []
+        var failures: [String] = []
+        for skillName in skillNames {
+            do {
+                reports.append(try MetagentCore.restoreArchivedSkill(named: skillName))
+            } catch {
+                failures.append("\(skillName): \(error.localizedDescription)")
+            }
+        }
+        if json {
+            try printJSON(reports)
+        } else {
+            for report in reports {
+                print("\(report.skillName)")
+                for line in report.lines { print("  \(line)") }
+            }
+        }
+        for failure in failures {
+            FileHandle.standardError.writeLine("error: \(failure)")
+        }
+        guard failures.isEmpty else {
+            throw CLIError.message("skills restore could not complete every target")
+        }
+    }
+
+    private static func runArchivedSkillList(_ args: [String]) throws {
+        let json = try parseJSONOnly(args, command: "skills archived")
+        let archived = MetagentCore.listArchivedSkills()
+        if json {
+            try printJSON(archived)
+            return
+        }
+        guard !archived.isEmpty else {
+            print("no archived skills")
+            return
+        }
+        for entry in archived {
+            print("\(entry.skillName)\t\(entry.archivedAt)\t\(entry.skillPath)")
         }
     }
 
@@ -1150,6 +1267,20 @@ struct MetagentCLI {
         }
     }
 
+    private static func printSkillArchiveReport(_ report: SkillArchiveBatchReport) {
+        print(report.apply ? "skills archive: applied" : "skills archive: dry run")
+        for outcome in report.outcomes {
+            print("")
+            print("\(outcome.target.displayName) [\(outcome.target.method.rawValue)]")
+            for line in outcome.lines { print("  \(line)") }
+            if let failureMessage = outcome.failureMessage { print("  error: \(failureMessage)") }
+        }
+        if !report.apply {
+            print("")
+            print("run again with --apply to set these skills aside; restore brings them back")
+        }
+    }
+
     private static func columnWidth(_ values: [String], minimum: Int) -> Int {
         max(minimum, values.map(\.count).max() ?? minimum)
     }
@@ -1193,7 +1324,7 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <list|show|duplicates|scan|repair|doctor|remove|evaluate> [flags]
+          metagent skills <list|show|duplicates|scan|repair|doctor|remove|archive|restore|archived|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent history <sample|show|events|coverage|backfill> [flags]
@@ -1250,14 +1381,19 @@ struct MetagentCLI {
           metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
+          metagent skills archive NAME [NAME...] [--root PATH] [--apply] [--json]
+          metagent skills restore NAME [NAME...] [--json]
+          metagent skills archived [--json]
           metagent skills evaluate PATH [--provider plugin-eval|codex|all] [--json]
 
-        list, duplicates, and remove default to the current folder; list and
-        duplicates take --global for the whole portfolio, the same scope bare
-        `skills doctor` reads. --sort accepts: \(skillSortKeyList).
+        list, duplicates, remove, and archive default to the current folder;
+        list and duplicates take --global for the whole portfolio, the same
+        scope bare `skills doctor` reads. --sort accepts: \(skillSortKeyList).
 
-        remove is a dry run unless --apply is supplied. Applying moves the skill
-        into recovery state rather than deleting it outright.
+        remove and archive are dry runs unless --apply is supplied. remove moves
+        the skill into recovery state rather than deleting it outright. archive
+        sets it aside in the Archived Skills folder so every agent runtime stops
+        seeing it; restore puts it back exactly where it was.
         """)
     }
 

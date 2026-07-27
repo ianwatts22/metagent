@@ -345,6 +345,37 @@ struct InventorySection: View {
         }
         .help("Location and which skill sources are visible")
         .buttonStyle(.plain)
+
+        if !model.archivedSkills.isEmpty {
+            archivedSkillsMenu
+        }
+    }
+
+    /// Appears only while something is set aside, so the toolbar carries no
+    /// extra chrome in the common case of an empty archive.
+    private var archivedSkillsMenu: some View {
+        Menu {
+            Section("Archived skills") {
+                ForEach(model.archivedSkills) { entry in
+                    Button("Restore \(entry.skillName)") {
+                        model.restoreArchivedSkill(named: entry.skillName)
+                    }
+                    .disabled(model.isRunning)
+                }
+            }
+            Divider()
+            Button("Show Archive in Finder") {
+                NSWorkspace.shared.open(MetagentCore.archivedSkillsRoot())
+            }
+        } label: {
+            GlassMenuLabel(
+                title: "Archived · \(model.archivedSkills.count)",
+                systemImage: "archivebox",
+                width: 128
+            )
+        }
+        .help("Skills set aside in Metagent's Archived Skills folder. No agent runtime sees them until restored.")
+        .buttonStyle(.plain)
     }
 
     var body: some View {
@@ -473,6 +504,20 @@ struct InventorySection: View {
                     },
                     secondaryButton: .cancel()
                 )
+            case let .archive(rows):
+                let requests = rows.compactMap(\.archiveRequest)
+                let names = rows.prefix(6).map(\.skillName).joined(separator: ", ")
+                let suffix = rows.count > 6 ? ", …" : ""
+                return Alert(
+                    title: Text(requests.count == 1 ? "Archive selected skill?" : "Archive \(requests.count) selected skills?"),
+                    message: Text("\(names)\(suffix)\n\nArchiving moves the skill and its projection links into Metagent's Archived Skills folder, so no agent runtime sees it until you restore it. Nothing is deleted; Restore puts everything back exactly where it was."),
+                    primaryButton: .default(Text(requests.count == 1 ? "Archive" : "Archive \(requests.count) Skills")) {
+                        if model.archiveSkills(requests) {
+                            selection.removeAll()
+                        }
+                    },
+                    secondaryButton: .cancel()
+                )
             case let .codexReview(row):
                 return Alert(
                     title: Text("Review \(row.skillName) with Codex?"),
@@ -593,6 +638,14 @@ struct InventorySection: View {
         }
         .disabled(paths.isEmpty)
         Divider()
+        let archivableRows = contextRows.compactMap(\.inventory).filter { $0.archiveRequest != nil }
+        Button(
+            archivableRows.count > 1 ? "Archive \(archivableRows.count) Items…" : "Archive…",
+            systemImage: "archivebox"
+        ) {
+            pendingConfirmation = .archive(archivableRows)
+        }
+        .disabled(archivableRows.isEmpty || model.isRunning)
         Button(
             removableRows.count > 1 ? "Remove \(removableRows.count) Items…" : "Remove…",
             systemImage: "trash",

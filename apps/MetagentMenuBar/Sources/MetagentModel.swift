@@ -48,6 +48,7 @@ final class MetagentModel: ObservableObject {
     /// repositories appear; everything else has no tracked codebase to size.
     @Published private(set) var codebaseSizes: [String: CodebaseSizeReport] = [:]
     @Published private(set) var isCodebaseSizeRefreshing = false
+    @Published private(set) var archivedSkills: [ArchivedSkill] = []
     @Published private(set) var skillTableRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
     @Published private(set) var isRemovingSkills = false
@@ -164,6 +165,7 @@ final class MetagentModel: ObservableObject {
         statusRefreshGeneration += 1
         let generation = statusRefreshGeneration
         isRunning = true
+        refreshArchivedSkills()
         refreshMCPHealth()
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
@@ -528,6 +530,58 @@ final class MetagentModel: ObservableObject {
         } completion: { [weak self] result in
             guard let report = result.doctorReport else { return }
             self?.applyDoctorReport(report)
+        }
+    }
+
+    func refreshArchivedSkills() {
+        archivedSkills = MetagentCore.listArchivedSkills()
+    }
+
+    /// Sets skills aside in the Archived Skills folder. Unlike removal this is
+    /// always a plain file move, so one operation covers the whole batch and a
+    /// status refresh picks up the result.
+    @discardableResult
+    func archiveSkills(_ requests: [SkillRemovalRequest]) -> Bool {
+        guard !requests.isEmpty else { return false }
+        return runOperation(
+            title: requests.count == 1 ? "Archive skill" : "Archive \(requests.count) skills",
+            runningText: requests.count == 1
+                ? "Archiving \(requests[0].displayName)…"
+                : "Archiving \(requests.count) skills…"
+        ) {
+            let report = MetagentCore.archiveSkills(targets: requests, apply: true)
+            return CommandOutcome(
+                succeeded: report.outcomes.allSatisfy(\.succeeded),
+                lines: report.outcomes.flatMap { outcome in
+                    ["\(outcome.target.displayName):"]
+                        + outcome.lines.map { "  \($0)" }
+                        + (outcome.failureMessage.map { ["  error: \($0)"] } ?? [])
+                },
+                repairPreview: nil
+            )
+        } completion: { [weak self] _ in
+            self?.refreshArchivedSkills()
+            self?.refreshStatus()
+        }
+    }
+
+    /// Brings an archived skill back to its recorded canonical path and
+    /// projections, then refreshes inventory so it reappears in the table.
+    @discardableResult
+    func restoreArchivedSkill(named skillName: String) -> Bool {
+        runOperation(
+            title: "Restore skill",
+            runningText: "Restoring \(skillName)…"
+        ) {
+            let report = try MetagentCore.restoreArchivedSkill(named: skillName)
+            return CommandOutcome(
+                succeeded: true,
+                lines: report.lines,
+                repairPreview: nil
+            )
+        } completion: { [weak self] _ in
+            self?.refreshArchivedSkills()
+            self?.refreshStatus()
         }
     }
 

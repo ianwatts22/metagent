@@ -216,12 +216,15 @@ struct UsageSkillRow: Identifiable, Sendable {
 
 enum InventoryConfirmation: Identifiable {
     case removal([InventorySkillRow])
+    case archive([InventorySkillRow])
     case codexReview(InventorySkillRow)
 
     var id: String {
         switch self {
         case let .removal(rows):
             "removal:" + rows.map(\.id).sorted().joined(separator: ",")
+        case let .archive(rows):
+            "archive:" + rows.map(\.id).sorted().joined(separator: ",")
         case let .codexReview(row):
             "codex-review:\(row.id)"
         }
@@ -917,6 +920,15 @@ struct InventorySkillRow: Identifiable, Sendable {
             skill: skill.coreSkill,
             variants: variants.map(\.coreSkill)
         )
+    }
+    /// Archiving is a pure file move, so only unmanaged file-backed skills
+    /// qualify; managed skills and plugins keep their remove-only path.
+    var archiveRequest: SkillRemovalRequest? {
+        guard let request = removalRequest,
+              request.method != .codexPlugin,
+              !["skills-cli", "dotagents"].contains(skill.manager)
+        else { return nil }
+        return request
     }
     func matches(_ query: String) -> Bool {
         [

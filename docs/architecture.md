@@ -75,6 +75,21 @@ This cache contains evaluator summaries, rubric breakdowns, provider versions,
 timestamps, and canonical skill-content hashes. The scoring contract and
 provider boundaries are documented in [skill-scoring.md](skill-scoring.md).
 
+Removed and archived skills live in sibling folders:
+
+```text
+~/Library/Application Support/Metagent/Removed Skills/<uuid>/
+~/Library/Application Support/Metagent/Archived Skills/<skill>/
+```
+
+`Removed Skills` is the per-removal recovery record. `Archived Skills` holds
+skills deliberately set aside for on/off testing: each entry carries the moved
+bundle, its projection links, and an `ARCHIVE.json` manifest of original paths
+that `metagent skills restore` replays. The folders stay separate because the
+history backfill reads `Removed Skills` as evidence of permanent removal, and
+an archived skill is expected back (see
+[skill-provenance.md](skill-provenance.md), "Archiving").
+
 ## Helper Boundary
 
 The Swift `metagent` helper exists for non-GUI entry points:

@@ -62,6 +62,8 @@ public enum SkillHistoryOrigin: String, Sendable, Equatable {
 public enum SkillHistoryEventKind: String, Sendable, Equatable, CaseIterable {
     case added
     case removed
+    case archived
+    case restored
     case renamed
     case contentChanged = "content-changed"
     case sourceChanged = "source-changed"
@@ -338,7 +340,8 @@ public extension MetagentCore {
             trigger: trigger,
             origin: .observed,
             metrics: metrics,
-            states: states
+            states: states,
+            archivedSkillKeys: archivedSkillHistoryKeys()
         )
     }
 
@@ -472,7 +475,8 @@ final class SkillHistoryStore {
         trigger: SkillHistoryTrigger,
         origin: SkillHistoryOrigin,
         metrics: [(scope: String, metric: SkillHistoryMetric, value: Double)],
-        states: [SkillHistoryState]?
+        states: [SkillHistoryState]?,
+        archivedSkillKeys: Set<String> = []
     ) throws -> SkillHistoryCaptureReport {
         var db: OpaquePointer?
         try open(&db)
@@ -517,7 +521,8 @@ final class SkillHistoryStore {
                     db,
                     states: states,
                     at: capturedAt,
-                    origin: origin
+                    origin: origin,
+                    archivedSkillKeys: archivedSkillKeys
                 )
             }
             try exec(db, "COMMIT;")
@@ -822,7 +827,8 @@ final class SkillHistoryStore {
         _ db: OpaquePointer?,
         states: [SkillHistoryState],
         at capturedAt: Date,
-        origin: SkillHistoryOrigin
+        origin: SkillHistoryOrigin,
+        archivedSkillKeys: Set<String> = []
     ) throws -> [SkillHistoryEvent] {
         let timestamp = iso8601Formatter.string(from: capturedAt)
         let previous = try currentStates(db)
@@ -865,8 +871,10 @@ final class SkillHistoryStore {
         for key in removedKeys.sorted() where !renamedFrom.values.contains(key) {
             guard let state = previous[key] else { continue }
             try closeState(db, skillKey: key, validTo: timestamp)
+            // A skill whose canonical path sits in the archive right now was
+            // set aside, not removed; the entry is expected back.
             events.append(makeEvent(
-                kind: .removed,
+                kind: archivedSkillKeys.contains(key) ? .archived : .removed,
                 at: capturedAt,
                 state: state,
                 origin: origin
@@ -888,7 +896,16 @@ final class SkillHistoryStore {
                 continue
             }
             try insertState(db, state: state, validFrom: timestamp, origin: origin)
-            events.append(makeEvent(kind: .added, at: capturedAt, state: state, origin: origin))
+            // A reappearance whose last disappearance was an archive is that
+            // archive coming back, however the files travelled.
+            let cameBackFromArchive = try lastDisappearanceKind(db, subjectKey: key) == .archived
+                && !archivedSkillKeys.contains(key)
+            events.append(makeEvent(
+                kind: cameBackFromArchive ? .restored : .added,
+                at: capturedAt,
+                state: state,
+                origin: origin
+            ))
         }
 
         for key in Set(incoming.keys).intersection(previous.keys).sorted() {
@@ -952,6 +969,24 @@ final class SkillHistoryStore {
             origin: origin,
             detail: detail
         )
+    }
+
+    /// The kind of the most recent event that took this subject off the board,
+    /// used to tell a restore apart from a fresh install.
+    private func lastDisappearanceKind(
+        _ db: OpaquePointer?,
+        subjectKey: String
+    ) throws -> SkillHistoryEventKind? {
+        var statement: OpaquePointer?
+        try prepare(db, """
+        SELECT kind FROM history_events
+        WHERE subject_key = ? AND kind IN ('removed', 'archived')
+        ORDER BY occurred_at DESC, event_id DESC LIMIT 1;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, subjectKey)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return columnText(statement, 0).flatMap(SkillHistoryEventKind.init(rawValue:))
     }
 
     private func currentStates(_ db: OpaquePointer?) throws -> [String: SkillHistoryState] {

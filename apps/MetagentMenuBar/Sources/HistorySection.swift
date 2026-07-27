@@ -458,6 +458,8 @@ extension SkillHistoryEventKind {
         switch self {
         case .added: "added"
         case .removed: "removed"
+        case .archived: "archived"
+        case .restored: "restored"
         case .renamed: "renamed"
         case .contentChanged: "edited"
         case .sourceChanged: "resourced"
@@ -469,6 +471,8 @@ extension SkillHistoryEventKind {
         switch self {
         case .added: .green
         case .removed: .orange
+        case .archived: .brown
+        case .restored: .mint
         case .renamed: .blue
         case .contentChanged: .purple
         case .sourceChanged: .teal

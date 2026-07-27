@@ -65,6 +65,44 @@ For a skills CLI package, Metagent first copies the bundle and applicable lock f
 
 Codex system, Codex-installed, and plugin-cache skills remain read-only and cannot be removed through Metagent.
 
+## Archiving
+
+Archiving sets a skill aside without removing it, for testing how agents
+perform with a skill on versus off. Because every runtime (Claude Code, Codex,
+and any other `.agents` consumer) discovers skills by directory presence, the
+move disables the skill uniformly — no per-runtime toggles.
+
+Preview, apply, list, and restore:
+
+```bash
+metagent skills archive SKILL --root PROJECT
+metagent skills archive SKILL --root PROJECT --apply
+metagent skills archived
+metagent skills restore SKILL
+```
+
+Applying moves the canonical bundle and its per-skill projection links to
+`~/Library/Application Support/Metagent/Archived Skills/SKILL/`, alongside an
+`ARCHIVE.json` manifest recording every original path. Restore replays the
+manifest: the bundle returns to its canonical path and each projection link
+goes back where it was, then the archive entry is cleared. Because the bundle
+returns to the same canonical path, saved evaluations re-attach on restore.
+
+Only pure-file-move targets are eligible: canonical local bundles and
+standalone `.codex`/`.claude` bundles. Managed skills (skills-cli, dotagents)
+and Codex plugins are refused, because archiving them would desync their
+manager state.
+
+Skill history records these transitions as `archived` and `restored` events,
+distinct from `removed` and `added`. The archive lives beside — not inside —
+`Removed Skills`, so the history backfill never mistakes a parked skill for a
+permanent removal.
+
+The menu bar app offers Archive… in the skill context menu, and an
+"Archived · N" toolbar menu (visible only while the archive is non-empty) for
+restoring. The MCP server exposes the same operations as `archive_skills`,
+`restore_skill`, and `list_archived_skills`.
+
 ## Agent access
 
 Analyze one project's agent setup:
