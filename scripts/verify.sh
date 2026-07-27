@@ -288,9 +288,7 @@ cat >"$codex_stub" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 dd if=/dev/zero bs=131072 count=1 2>/dev/null | tr '\0' x >&2
-cat <<'JSON'
-{"installed":[{"pluginId":"demo@test-market","name":"demo","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_root"}}]}
-JSON
+printf '%s\n' '{"installed":[{"pluginId":"demo@test-market","name":"demo","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_root"}}]}'
 EOF
 chmod +x "$codex_stub"
 plugin_scan="$(HOME="$plugin_home" METAGENT_CODEX="$codex_stub" "$swift_helper" inventory --json)"
@@ -303,9 +301,7 @@ make_skill "$plugin_collision_root/skills/plugin-skill" "plugin-skill" "plugin"
 cat >"$codex_stub" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-cat <<'JSON'
-{"installed":[{"pluginId":"collision@test-market","name":"collision","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_collision_root"}}]}
-JSON
+printf '%s\n' '{"installed":[{"pluginId":"collision@test-market","name":"collision","marketplaceName":"test-market","version":"1.2.3","installed":true,"enabled":true,"source":{"path":"$plugin_collision_root"}}]}'
 EOF
 mkdir -p "$plugin_home/.config/metagent"
 cat >"$plugin_home/.config/metagent/config.toml" <<EOF
