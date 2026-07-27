@@ -154,8 +154,9 @@ jobs:
 
       - name: Checksum artifacts
         run: |
+          cp artifacts/updates/Metagent.zip artifacts/Metagent.zip
           cd artifacts
-          shasum -a 256 Metagent.dmg updates/Metagent.zip metagent-cli.zip > checksums.txt
+          shasum -a 256 Metagent.dmg Metagent.zip metagent-cli.zip > checksums.txt
           cat checksums.txt
 
       - name: Publish release
@@ -171,7 +172,7 @@ jobs:
           fi
           gh release upload "$tag" \
             artifacts/Metagent.dmg \
-            artifacts/updates/Metagent.zip \
+            artifacts/Metagent.zip \
             artifacts/metagent-cli.zip \
             artifacts/appcast.xml \
             artifacts/checksums.txt \
