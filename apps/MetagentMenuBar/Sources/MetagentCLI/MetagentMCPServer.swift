@@ -182,7 +182,7 @@ enum MetagentMCPServer {
             }
         }
 
-        let transport = StdioTransport()
+        let transport = await SerializingStdioTransport.wrapping(StdioTransport())
         try await server.start(transport: transport)
         await server.waitUntilCompleted()
     }

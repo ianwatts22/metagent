@@ -1,10 +1,100 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import select
 import subprocess
 import sys
 import time
+
+
+def send_messages(process: subprocess.Popen[bytes], messages: list[dict]) -> None:
+    assert process.stdin is not None
+    for message in messages:
+        process.stdin.write((json.dumps(message) + "\n").encode())
+    process.stdin.flush()
+
+
+def read_responses(
+    process: subprocess.Popen[bytes],
+    pending_output: bytearray,
+    expected_response_ids: set[int],
+    timeout: float,
+) -> dict[int, dict]:
+    assert process.stdout is not None
+    responses = {}
+    deadline = time.time() + timeout
+    while time.time() < deadline and not expected_response_ids.issubset(responses):
+        while b"\n" in pending_output:
+            newline_index = pending_output.index(b"\n")
+            line = bytes(pending_output[:newline_index]).strip()
+            del pending_output[: newline_index + 1]
+            if not line:
+                continue
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "MCP server interleaved concurrent JSON-RPC responses "
+                    f"(invalid line of {len(line)} bytes)"
+                ) from error
+            if "id" in response:
+                responses[response["id"]] = response
+
+        if expected_response_ids.issubset(responses):
+            break
+
+        ready, _, _ = select.select([process.stdout], [], [], 0.5)
+        if not ready:
+            continue
+        chunk = os.read(process.stdout.fileno(), 65_536)
+        if not chunk:
+            break
+        pending_output.extend(chunk)
+
+    missing_response_ids = expected_response_ids - responses.keys()
+    if missing_response_ids:
+        raise RuntimeError(
+            f"MCP verifier timed out waiting for response IDs: {sorted(missing_response_ids)}"
+        )
+    return responses
+
+
+def stress_concurrent_responses(
+    process: subprocess.Popen[bytes], pending_output: bytearray
+) -> None:
+    requests_per_round = 64
+    for round_index in range(3):
+        first_id = 1_000 + round_index * requests_per_round
+        expected_ids = set(range(first_id, first_id + requests_per_round))
+        send_messages(
+            process,
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/list",
+                    "params": {},
+                }
+                for request_id in sorted(expected_ids)
+            ],
+        )
+
+        # Let concurrent handlers fill the stdout pipe before reading. This
+        # forces the transport through partial writes and EAGAIN instead of
+        # accidentally testing only the single-write fast path.
+        time.sleep(0.1)
+        responses = read_responses(
+            process,
+            pending_output,
+            expected_ids,
+            timeout=30,
+        )
+        for request_id, response in responses.items():
+            if "result" not in response or "tools" not in response["result"]:
+                raise RuntimeError(
+                    f"MCP stress response {request_id} was not a tools/list result"
+                )
 
 
 def main() -> int:
@@ -16,8 +106,7 @@ def main() -> int:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+        bufsize=0,
     )
     messages = [
         {
@@ -76,32 +165,16 @@ def main() -> int:
             },
         },
     ]
-    assert process.stdin is not None
-    assert process.stdout is not None
-    for message in messages:
-        process.stdin.write(json.dumps(message) + "\n")
-    process.stdin.flush()
-
-    responses = {}
+    send_messages(process, messages)
+    pending_output = bytearray()
     try:
         expected_response_ids = {1, 2, 3, 4, 5, 6, 7}
-        deadline = time.time() + 30
-        while time.time() < deadline and not expected_response_ids.issubset(responses):
-            ready, _, _ = select.select([process.stdout], [], [], 0.5)
-            if not ready:
-                continue
-            line = process.stdout.readline().strip()
-            if not line:
-                continue
-            response = json.loads(line)
-            if "id" in response:
-                responses[response["id"]] = response
-
-        missing_response_ids = expected_response_ids - responses.keys()
-        if missing_response_ids:
-            raise RuntimeError(
-                f"MCP verifier timed out waiting for response IDs: {sorted(missing_response_ids)}"
-            )
+        responses = read_responses(
+            process,
+            pending_output,
+            expected_response_ids,
+            timeout=30,
+        )
 
         tools = {tool["name"] for tool in responses[2]["result"]["tools"]}
         required = {
@@ -150,6 +223,10 @@ def main() -> int:
             raise RuntimeError(
                 f"MCP project details returned an unclear invalid-section error: {invalid_section_text}"
             )
+
+        stress_concurrent_responses(process, pending_output)
+
+        assert process.stdin is not None
         process.stdin.close()
         process.wait(timeout=5)
         if process.returncode != 0:
