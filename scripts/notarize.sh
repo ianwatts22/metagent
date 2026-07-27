@@ -47,7 +47,9 @@ fi
 
 cleanup_zip=""
 cleanup() {
-  [[ -n "$cleanup_zip" ]] && rm -f "$cleanup_zip"
+  if [[ -n "$cleanup_zip" ]]; then
+    rm -f "$cleanup_zip"
+  fi
 }
 trap cleanup EXIT
 
