@@ -331,14 +331,32 @@ public enum MetagentCore {
                     repairAction: .repairProjection
                 ))
             } else if fileManager.fileExists(atPath: claudeSkills.path) {
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(claudeSkills.path) exists but is not a symlink",
-                    summary: "Claude skills path is a real directory",
-                    projectRoot: project.root,
-                    category: .projection,
-                    guidance: "Review and explicitly migrate this directory before replacing it with a symlink."
-                ))
+                // Offer Repair only when the move is actually possible, so the
+                // button never appears on a case that would refuse to run.
+                switch planClaudeSkillsMigration(claudeSkills: claudeSkills, canonicalSkills: expectedSkills) {
+                case .migrate(let moves, _):
+                    issues.append(.init(
+                        severity: .warning,
+                        message: "\(claudeSkills.path) exists but is not a symlink",
+                        summary: "Claude skills path is a real directory",
+                        projectRoot: project.root,
+                        category: .projection,
+                        guidance: moves.isEmpty
+                            ? "Run Repair to replace this empty directory with a link to .agents/skills."
+                            : "Run Repair to move \(moves.count) skill(s) into .agents/skills and link Claude at them: "
+                                + "\(moves.joined(separator: ", ")). Review the preview first.",
+                        repairAction: .repairProjection
+                    ))
+                case .blocked(let reason):
+                    issues.append(.init(
+                        severity: .warning,
+                        message: "\(claudeSkills.path) exists but is not a symlink",
+                        summary: "Claude skills path is a real directory",
+                        projectRoot: project.root,
+                        category: .projection,
+                        guidance: "Metagent cannot migrate this automatically: \(reason)."
+                    ))
+                }
             } else {
                 issues.append(.init(
                     severity: .warning,
