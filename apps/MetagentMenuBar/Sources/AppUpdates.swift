@@ -45,6 +45,7 @@ final class UpdaterModel: ObservableObject {
     }
 
     func checkForUpdates() {
+        guard isConfigured, canCheckForUpdates else { return }
         controller.checkForUpdates(nil)
     }
 }

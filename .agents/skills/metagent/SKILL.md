@@ -49,9 +49,10 @@ To size a repository rather than its skills, use:
 metagent codebase [--root PATH] [--long-file-threshold N] [--json]
 ```
 
-It reads git-tracked files only, so ignored build output and dependencies never
-inflate the count. Read the test, documentation, generated, and long-file ratios
-before judging whether a codebase is carrying slop.
+It reads files listed by git, so untracked ignored build output and dependencies
+do not inflate the count. Generated output that was committed still counts. Read
+the test, documentation, generated, and long-file ratios before judging whether
+a codebase is carrying slop.
 
 `--sort` takes `name`, `score`, `invocations_30d`, `invocations_7d`,
 `total_invocations`, `last_used_at`, `updated_at`, or `token_estimate`. `list`

@@ -14,7 +14,16 @@ public extension MetagentCore {
 
 extension MetagentCore {
     static func saveUserConfig(_ config: MetagentConfig, at path: URL) throws {
-        let existing = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+        let existing: String
+        if fileManager.fileExists(atPath: path.path) {
+            do {
+                existing = try String(contentsOf: path, encoding: .utf8)
+            } catch {
+                throw configError("failed reading \(path.path): \(error.localizedDescription)")
+            }
+        } else {
+            existing = ""
+        }
         var text = renderedManagedConfig(config)
         let preserved = configTextDroppingManagedKeys(existing)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,9 +60,23 @@ private func renderedStringArray(key: String, values: [String]) -> String {
 }
 
 private func escapedTomlString(_ value: String) -> String {
-    value
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
+    var escaped = ""
+    for scalar in value.unicodeScalars {
+        switch scalar.value {
+        case 0x08: escaped += "\\b"
+        case 0x09: escaped += "\\t"
+        case 0x0A: escaped += "\\n"
+        case 0x0C: escaped += "\\f"
+        case 0x0D: escaped += "\\r"
+        case 0x22: escaped += "\\\""
+        case 0x5C: escaped += "\\\\"
+        case 0x00...0x1F, 0x7F:
+            escaped += String(format: "\\u%04X", scalar.value)
+        default:
+            escaped.unicodeScalars.append(scalar)
+        }
+    }
+    return escaped
 }
 
 /// Drops each managed assignment, including the continuation lines of an array
@@ -61,21 +84,123 @@ private func escapedTomlString(_ value: String) -> String {
 private func configTextDroppingManagedKeys(_ text: String) -> String {
     var kept: [String] = []
     var openArrayDepth = 0
+    var isTopLevel = true
+    var userValueContext = TOMLValueContext()
 
     for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        if userValueContext.isContinuing {
+            kept.append(String(line))
+            userValueContext.consume(line)
+            continue
+        }
         let code = stripTomlComment(line)
         if openArrayDepth > 0 {
             openArrayDepth += bracketDelta(code)
             continue
         }
-        guard managedConfigKeys.contains(where: { assignsKey($0, in: code) }) else {
+        if isTomlTableHeader(code) {
+            isTopLevel = false
             kept.append(String(line))
+            continue
+        }
+        guard isTopLevel,
+              managedConfigKeys.contains(where: { assignsKey($0, in: code) })
+        else {
+            kept.append(String(line))
+            userValueContext.consume(line)
             continue
         }
         openArrayDepth = max(0, bracketDelta(code))
     }
 
     return kept.joined(separator: "\n")
+}
+
+private func isTomlTableHeader(_ code: String) -> Bool {
+    let trimmed = code.trimmingCharacters(in: .whitespaces)
+    return trimmed.hasPrefix("[") && trimmed.hasSuffix("]")
+}
+
+/// Tracks multiline user-owned values so content that merely looks like a table
+/// header cannot change the scope of later managed assignments.
+private struct TOMLValueContext {
+    private var arrayDepth = 0
+    private var multilineQuote: Character?
+
+    var isContinuing: Bool {
+        arrayDepth > 0 || multilineQuote != nil
+    }
+
+    mutating func consume(_ line: Substring) {
+        let characters = Array(line)
+        var quote: Character?
+        var escaped = false
+        var index = 0
+
+        while index < characters.count {
+            let character = characters[index]
+            if let activeMultilineQuote = multilineQuote {
+                if character == activeMultilineQuote,
+                   hasTripleQuote(at: index, in: characters),
+                   activeMultilineQuote == "'" || !isEscaped(at: index, in: characters)
+                {
+                    self.multilineQuote = nil
+                    index += 3
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if let activeQuote = quote {
+                if activeQuote == "\"", escaped {
+                    escaped = false
+                } else if activeQuote == "\"", character == "\\" {
+                    escaped = true
+                } else if character == activeQuote {
+                    quote = nil
+                }
+                index += 1
+                continue
+            }
+            if character == "#" {
+                break
+            }
+            if character == "\"" || character == "'" {
+                if hasTripleQuote(at: index, in: characters) {
+                    multilineQuote = character
+                    index += 3
+                } else {
+                    quote = character
+                    index += 1
+                }
+                continue
+            }
+            if character == "[" {
+                arrayDepth += 1
+            } else if character == "]" {
+                arrayDepth = max(0, arrayDepth - 1)
+            }
+            index += 1
+        }
+    }
+}
+
+private func hasTripleQuote(at index: Int, in characters: [Character]) -> Bool {
+    index + 2 < characters.count
+        && characters[index] == characters[index + 1]
+        && characters[index] == characters[index + 2]
+}
+
+private func isEscaped(at index: Int, in characters: [Character]) -> Bool {
+    guard index > 0 else { return false }
+    var backslashCount = 0
+    var cursor = index - 1
+    while characters[cursor] == "\\" {
+        backslashCount += 1
+        guard cursor > 0 else { break }
+        cursor -= 1
+    }
+    return backslashCount % 2 == 1
 }
 
 private func assignsKey(_ key: String, in code: String) -> Bool {

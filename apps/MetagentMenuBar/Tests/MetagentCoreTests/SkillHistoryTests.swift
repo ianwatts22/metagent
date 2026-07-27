@@ -87,6 +87,27 @@ struct SkillHistoryTests {
         )
     }
 
+    @Test("project scopes normalize roots when parsed or queried")
+    func projectScopesNormalizeRoots() throws {
+        let rawRoot = "/Users/tester/code/../code/project/."
+        let expectedRoot = "/Users/tester/code/project"
+        let parsed = try #require(SkillHistoryScope(key: "project:\(rawRoot)"))
+        #expect(parsed == .project(root: expectedRoot))
+        #expect(parsed.key == "project:\(expectedRoot)")
+        #expect(parsed.healthScope == .project(root: expectedRoot))
+        #expect(SkillHistoryScope.project(root: rawRoot).healthScope == .project(root: expectedRoot))
+    }
+
+    @Test("trend queries report the effective clamped window")
+    func trendWindowIsClamped() throws {
+        let trends = try MetagentCore.skillHistoryTrends(
+            metrics: [.portfolioSkills],
+            windowDays: 0,
+            databasePath: temporaryDatabase()
+        )
+        #expect(trends.windowDays == 1)
+    }
+
     @Test("records at most one sample per local day and updates it in place")
     func dayBucketing() throws {
         let databasePath = try temporaryDatabase()
@@ -440,6 +461,86 @@ struct SkillHistoryTests {
         #expect(timeline.count == 1)
         #expect(timeline[0].kind == .contentChanged)
         #expect(timeline[0].subjectName == "alpha")
+    }
+
+    @Test("scoped event limits apply after selecting the scope")
+    func scopedEventLimit() throws {
+        let databasePath = try temporaryDatabase()
+        let store = try SkillHistoryStore(path: databasePath)
+        let projectScope = SkillHistoryScope.project(root: "/Users/tester/project")
+        let base = date("2026-07-20T09:00:00Z")
+        let globalEvents = (0 ..< 405).map { index in
+            SkillHistoryEvent(
+                id: "global-\(index)",
+                occurredAt: base.addingTimeInterval(Double(index + 10)),
+                kind: .added,
+                subjectKey: "/Users/tester/.agents/skills/global-\(index)",
+                subjectName: "global-\(index)",
+                scopeKey: SkillHistoryScope.global.key,
+                origin: .observed
+            )
+        }
+        let projectEvents = (0 ..< 3).map { index in
+            SkillHistoryEvent(
+                id: "project-\(index)",
+                occurredAt: base.addingTimeInterval(Double(index)),
+                kind: .added,
+                subjectKey: "/Users/tester/project/.agents/skills/project-\(index)",
+                subjectName: "project-\(index)",
+                scopeKey: projectScope.key,
+                origin: .observed
+            )
+        }
+        try store.insertEvents(globalEvents + projectEvents)
+
+        let events = try MetagentCore.skillHistoryEvents(
+            scope: projectScope,
+            limit: 2,
+            databasePath: databasePath
+        )
+        #expect(events.map(\.id) == ["project-2", "project-1"])
+    }
+
+    @Test("replacing inferred events preserves observed history")
+    func replacesInferredEvents() throws {
+        let databasePath = try temporaryDatabase()
+        let store = try SkillHistoryStore(path: databasePath)
+        let timestamp = date("2026-07-20T09:00:00Z")
+        let observed = SkillHistoryEvent(
+            id: "observed",
+            occurredAt: timestamp,
+            kind: .added,
+            subjectKey: "/observed",
+            subjectName: "observed",
+            scopeKey: SkillHistoryScope.global.key,
+            origin: .observed
+        )
+        let stale = SkillHistoryEvent(
+            id: "stale",
+            occurredAt: timestamp,
+            kind: .added,
+            subjectKey: "/stale",
+            subjectName: "stale",
+            scopeKey: SkillHistoryScope.global.key,
+            origin: .inferred
+        )
+        let replacement = SkillHistoryEvent(
+            id: "replacement",
+            occurredAt: timestamp,
+            kind: .added,
+            subjectKey: "/replacement",
+            subjectName: "replacement",
+            scopeKey: SkillHistoryScope.global.key,
+            origin: .inferred
+        )
+        try store.insertEvents([observed, stale])
+        try store.replaceEvents(origin: .inferred, with: [replacement])
+
+        let events = try MetagentCore.skillHistoryEvents(
+            limit: 10,
+            databasePath: databasePath
+        )
+        #expect(Set(events.map(\.id)) == ["observed", "replacement"])
     }
 
     @Test("reports observed and reconstructed coverage separately")

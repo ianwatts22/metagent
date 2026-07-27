@@ -101,7 +101,8 @@ public extension MetagentCore {
         databasePath: String? = nil
     ) throws -> SkillHistoryTrends {
         let store = try SkillHistoryStore(path: databasePath)
-        let since = calendar.date(byAdding: .day, value: -max(1, windowDays), to: now)
+        let effectiveWindowDays = max(1, windowDays)
+        let since = calendar.date(byAdding: .day, value: -effectiveWindowDays, to: now)
         let series = try store.series(
             metrics: metrics,
             scopeKey: scope.key,
@@ -120,7 +121,7 @@ public extension MetagentCore {
         }
         return SkillHistoryTrends(
             scope: scope,
-            windowDays: windowDays,
+            windowDays: effectiveWindowDays,
             trends: trends,
             coverage: try store.coverage()
         )
@@ -135,4 +136,3 @@ public extension MetagentCore {
             .events(forSubject: standardizedHistoryPath(skillKey))
     }
 }
-

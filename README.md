@@ -60,11 +60,11 @@ metagent codebase --root /absolute/path/to/project --json
 metagent usage status --json
 ```
 
-`metagent codebase` sizes a git repository from its tracked files, split into
-code, tests, documentation, configuration, generated output, and assets. Ignored
-build output and dependencies never reach the count, so the numbers describe the
-codebase someone actually maintains — and the test, documentation, generated,
-and long-file ratios say whether it is carrying slop.
+`metagent codebase` sizes a git repository from the files git lists, split into
+code, tests, documentation, configuration, generated output, and assets.
+Untracked ignored build output and dependencies do not reach the count; generated
+output that was committed still does. The test, documentation, generated, and
+long-file ratios show whether the maintained repository is carrying slop.
 
 `metagent skills list` is the compact, paginated view: it filters by `--name`,
 `--manager`, `--mutability`, `--min-score`, `--unused`, and

@@ -61,6 +61,26 @@ struct ConfigWriterTests {
         #expect(try parsedConfig(at: path).roots == [awkward])
     }
 
+    @Test("control characters in paths survive a round trip")
+    func escapesControlCharacters() throws {
+        let path = try temporaryConfigPath()
+        let awkward = "/tmp/line\nbreak\ttab\rcarriage\u{7F}"
+        try MetagentCore.saveUserConfig(MetagentConfig(roots: [awkward]), at: path)
+        #expect(try parsedConfig(at: path).roots == [awkward])
+    }
+
+    @Test("a read failure never replaces an existing config")
+    func readFailureDoesNotOverwriteConfig() throws {
+        let path = try temporaryConfigPath()
+        let invalidUTF8 = Data([0xFF, 0xFE, 0xFD])
+        try invalidUTF8.write(to: path)
+
+        #expect(throws: Error.self) {
+            try MetagentCore.saveUserConfig(MetagentConfig(roots: ["/replacement"]), at: path)
+        }
+        #expect(try Data(contentsOf: path) == invalidUTF8)
+    }
+
     @Test("rewriting twice is stable")
     func repeatedSavesAreStable() throws {
         let path = try temporaryConfigPath()
@@ -88,6 +108,60 @@ struct ConfigWriterTests {
         #expect(written.contains("custom_future_key = \"preserve me\""))
         #expect(!written.contains("/old/[unfinished"))
         #expect(!written.contains("/old/]literal"))
+    }
+
+    @Test("managed key names inside a table remain user-owned")
+    func preservesManagedNamesInsideTables() throws {
+        let path = try temporaryConfigPath()
+        try """
+        roots = ["/old/root"]
+
+        [plugin]
+        roots = ["/plugin/root"]
+        max_depth = 99
+        ignore_projects = ["/plugin/ignored"]
+        """.write(to: path, atomically: true, encoding: .utf8)
+
+        try MetagentCore.saveUserConfig(
+            MetagentConfig(roots: ["/new/root"], maxDepth: 3, ignoreProjects: []),
+            at: path
+        )
+
+        let written = try String(contentsOf: path, encoding: .utf8)
+        #expect(!written.contains("/old/root"))
+        #expect(written.contains("[plugin]"))
+        #expect(written.contains("roots = [\"/plugin/root\"]"))
+        #expect(written.contains("max_depth = 99"))
+        #expect(written.contains("ignore_projects = [\"/plugin/ignored\"]"))
+    }
+
+    @Test("table-like lines inside multiline values do not hide later managed keys")
+    func tableLikeMultilineContentDoesNotChangeScope() throws {
+        let path = try temporaryConfigPath()
+        try #"""
+        custom_matrix = [
+          [1, 2]
+        ]
+        custom_banner = """
+        [plugin]
+        """
+        roots = ["/old/root"]
+        max_depth = 9
+        """#.write(to: path, atomically: true, encoding: .utf8)
+
+        try MetagentCore.saveUserConfig(
+            MetagentConfig(roots: ["/new/root"], maxDepth: 3),
+            at: path
+        )
+
+        let written = try String(contentsOf: path, encoding: .utf8)
+        #expect(written.contains("custom_matrix = ["))
+        #expect(written.contains("[1, 2]"))
+        #expect(written.contains("[plugin]"))
+        #expect(!written.contains("/old/root"))
+        #expect(!written.contains("max_depth = 9"))
+        #expect(try parsedConfig(at: path).roots == ["/new/root"])
+        #expect(try parsedConfig(at: path).maxDepth == 3)
     }
 
     /// Reads the file back through the same parsing helpers `loadUserConfig`

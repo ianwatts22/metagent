@@ -135,8 +135,8 @@ struct SettingsView: View {
     private func load() {
         do {
             let config = try MetagentCore.loadUserConfig()
-            roots = config.roots
-            ignoreProjects = config.ignoreProjects
+            roots = config.roots.uniqued()
+            ignoreProjects = config.ignoreProjects.uniqued()
             maxDepth = config.maxDepth
             loadError = nil
         } catch {

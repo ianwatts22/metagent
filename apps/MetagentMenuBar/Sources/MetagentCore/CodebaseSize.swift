@@ -203,9 +203,16 @@ public extension MetagentCore {
                 longFileThreshold: options.longFileThreshold
             )
         }
+        guard options.timeout > 0 else {
+            throw codebaseTimeoutError(rootURL)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + options.timeout
 
         var warnings: [String] = []
-        var relativePaths = try trackedFilePaths(root: rootURL, timeout: options.timeout)
+        var relativePaths = try trackedFilePaths(
+            root: rootURL,
+            timeout: max(0.001, deadline - ProcessInfo.processInfo.systemUptime)
+        )
         if relativePaths.count > options.maximumFiles {
             warnings.append(
                 "measured the first \(options.maximumFiles) of \(relativePaths.count) tracked files"
@@ -222,11 +229,17 @@ public extension MetagentCore {
         var unreadableCount = 0
 
         for relativePath in relativePaths {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw codebaseTimeoutError(rootURL)
+            }
             let category = categorize(relativePath: relativePath)
             let fileURL = rootURL.appendingPathComponent(relativePath)
             let lines = countableCategories.contains(category)
                 ? lineCount(at: fileURL, maximumBytes: options.maximumFileBytes)
                 : 0
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw codebaseTimeoutError(rootURL)
+            }
             if lines == nil {
                 unreadableCount += 1
             }
@@ -331,6 +344,12 @@ public extension MetagentCore {
             }
         }
     }
+}
+
+private func codebaseTimeoutError(_ root: URL) -> NSError {
+    NSError(domain: "MetagentCodebaseSize", code: 2, userInfo: [
+        NSLocalizedDescriptionKey: "codebase measurement timed out in \(root.path)",
+    ])
 }
 
 /// Categories whose lines are worth reading off disk. Assets are counted as

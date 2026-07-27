@@ -24,7 +24,9 @@ public enum SkillHistoryScope: Sendable, Equatable, Hashable {
         case "global": self = .global
         default:
             guard key.hasPrefix("project:") else { return nil }
-            self = .project(root: String(key.dropFirst("project:".count)))
+            self = .project(root: standardizedHistoryPath(
+                String(key.dropFirst("project:".count))
+            ))
         }
     }
 
@@ -32,7 +34,7 @@ public enum SkillHistoryScope: Sendable, Equatable, Hashable {
         switch self {
         case .all: .all
         case .global: .global(root: homeURL().standardizedFileURL.path)
-        case let .project(root): .project(root: root)
+        case let .project(root): .project(root: standardizedHistoryPath(root))
         }
     }
 }
@@ -348,10 +350,15 @@ public extension MetagentCore {
 
     static func skillHistoryEvents(
         since: Date? = nil,
+        scope: SkillHistoryScope? = nil,
         limit: Int = 200,
         databasePath: String? = nil
     ) throws -> [SkillHistoryEvent] {
-        try SkillHistoryStore(path: databasePath).events(since: since, limit: limit)
+        try SkillHistoryStore(path: databasePath).events(
+            since: since,
+            scopeKey: scope?.key,
+            limit: limit
+        )
     }
 
     static func skillHistoryCoverage(databasePath: String? = nil) throws -> SkillHistoryCoverage {
@@ -632,7 +639,7 @@ final class SkillHistoryStore {
         return readEvents(statement)
     }
 
-    func events(since: Date?, limit: Int) throws -> [SkillHistoryEvent] {
+    func events(since: Date?, scopeKey: String?, limit: Int) throws -> [SkillHistoryEvent] {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
@@ -641,8 +648,15 @@ final class SkillHistoryStore {
         SELECT event_id, occurred_at, kind, subject_key, subject_name, scope, origin, detail
         FROM history_events
         """
+        var predicates: [String] = []
         if since != nil {
-            sql += " WHERE occurred_at >= ?"
+            predicates.append("occurred_at >= ?")
+        }
+        if scopeKey != nil {
+            predicates.append("scope = ?")
+        }
+        if !predicates.isEmpty {
+            sql += " WHERE \(predicates.joined(separator: " AND "))"
         }
         sql += " ORDER BY occurred_at DESC, event_id DESC LIMIT ?;"
         var statement: OpaquePointer?
@@ -651,6 +665,10 @@ final class SkillHistoryStore {
         var index: Int32 = 1
         if let since {
             bindText(statement, index, iso8601Formatter.string(from: since))
+            index += 1
+        }
+        if let scopeKey {
+            bindText(statement, index, scopeKey)
             index += 1
         }
         sqlite3_bind_int64(statement, index, Int64(max(1, limit)))
@@ -764,17 +782,30 @@ final class SkillHistoryStore {
         }
     }
 
-    func deleteEvents(origin: SkillHistoryOrigin) throws {
+    /// Replaces one origin's event set as a transaction. A failed reconstruction
+    /// therefore leaves the previous inferred timeline intact.
+    func replaceEvents(origin: SkillHistoryOrigin, with events: [SkillHistoryEvent]) throws {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
         try createSchema(db)
-        var statement: OpaquePointer?
-        try prepare(db, "DELETE FROM history_events WHERE origin = ?;", &statement)
-        defer { sqlite3_finalize(statement) }
-        bindText(statement, 1, origin.rawValue)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw databaseError(db, "delete \(origin.rawValue) events")
+        try exec(db, "BEGIN IMMEDIATE;")
+        do {
+            var statement: OpaquePointer?
+            try prepare(db, "DELETE FROM history_events WHERE origin = ?;", &statement)
+            bindText(statement, 1, origin.rawValue)
+            let status = sqlite3_step(statement)
+            sqlite3_finalize(statement)
+            guard status == SQLITE_DONE else {
+                throw databaseError(db, "delete \(origin.rawValue) events")
+            }
+            for event in events {
+                try insertEvent(db, event)
+            }
+            try exec(db, "COMMIT;")
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
         }
     }
 
@@ -1108,11 +1139,20 @@ final class SkillHistoryStore {
 
     private func open(_ db: inout OpaquePointer?) throws {
         guard sqlite3_open(path.path, &db) == SQLITE_OK else {
-            throw databaseError(db, "open \(path.path)")
+            let error = databaseError(db, "open \(path.path)")
+            sqlite3_close(db)
+            db = nil
+            throw error
         }
-        try exec(db, "PRAGMA journal_mode=WAL;")
-        try exec(db, "PRAGMA synchronous=NORMAL;")
-        try exec(db, "PRAGMA busy_timeout=2500;")
+        do {
+            try exec(db, "PRAGMA journal_mode=WAL;")
+            try exec(db, "PRAGMA synchronous=NORMAL;")
+            try exec(db, "PRAGMA busy_timeout=2500;")
+        } catch {
+            sqlite3_close(db)
+            db = nil
+            throw error
+        }
     }
 
     private func createSchema(_ db: OpaquePointer?) throws {

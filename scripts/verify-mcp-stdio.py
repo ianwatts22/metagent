@@ -165,9 +165,9 @@ def main() -> int:
             },
         },
     ]
-    send_messages(process, messages)
     pending_output = bytearray()
     try:
+        send_messages(process, messages)
         expected_response_ids = {1, 2, 3, 4, 5, 6, 7}
         responses = read_responses(
             process,

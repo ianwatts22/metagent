@@ -92,11 +92,6 @@ public extension MetagentCore {
                 warnings: []
             )
         }
-        // Version 1 keyed archived removals to an assumed `.agents` path.
-        // Rebuilding without clearing those inferred events leaves both the old
-        // and corrected path-based IDs in the timeline.
-        try store.deleteEvents(origin: .inferred)
-
         var warnings: [String] = []
         let usageSnapshot = MetagentCore.loadSkillUsageSnapshot(databasePath: usageDatabasePath)
         let usageIndexIsComplete = usageSnapshot?.isBackfillComplete == true
@@ -149,6 +144,7 @@ public extension MetagentCore {
         let usageCoverageStartsAt = dayCounts.map(\.day).min()
 
         guard !reconstructed.isEmpty || !dayCounts.isEmpty else {
+            try store.replaceEvents(origin: .inferred, with: [])
             try markBackfillComplete()
             return SkillHistoryBackfillReport(
                 daysWritten: 0,
@@ -181,6 +177,7 @@ public extension MetagentCore {
         .compactMap { $0 }
         .min()
         guard let firstDay = [earliestSignal, windowStart].compactMap({ $0 }).max() else {
+            try store.replaceEvents(origin: .inferred, with: [])
             try markBackfillComplete()
             return SkillHistoryBackfillReport(
                 daysWritten: 0,
@@ -279,21 +276,28 @@ public extension MetagentCore {
             reconstructed.map { ($0.key, scopeKey($0)) },
             uniquingKeysWith: { first, _ in first }
         )
-        let changeEvents = gitLifetimes.values.flatMap { lifetime in
-            lifetime.changedOn.map { day in
+        let changeEvents = gitLifetimes.values.flatMap { lifetime -> [SkillHistoryEvent] in
+            guard let scopeKey = scopeByKey[lifetime.skillKey] else { return [] }
+            return lifetime.changedOn.map { day in
                 SkillHistoryEvent(
                     id: "content-changed:\(lifetime.skillKey):inferred:\(day)",
                     occurredAt: middayOf(day, calendar: calendar) ?? now,
                     kind: .contentChanged,
                     subjectKey: lifetime.skillKey,
                     subjectName: lifetime.name,
-                    scopeKey: scopeByKey[lifetime.skillKey] ?? SkillHistoryScope.global.key,
+                    scopeKey: scopeKey,
                     origin: .inferred,
                     detail: ["evidence": "git history"]
                 )
             }
         }
-        try store.insertEvents(installEvents + removalEvents + changeEvents)
+        // Version 1 keyed archived removals to an assumed `.agents` path.
+        // Replace the whole inferred event set atomically so corrected path IDs
+        // cannot coexist with stale rows, and a failed write keeps the old set.
+        try store.replaceEvents(
+            origin: .inferred,
+            with: installEvents + removalEvents + changeEvents
+        )
         try markBackfillComplete()
         if let usageCoverageStartsAt {
             try store.setMetadata("usage_coverage_starts_at", usageCoverageStartsAt)

@@ -153,7 +153,7 @@ struct HistoryDelta: View {
     }
 
     private var isFlat: Bool {
-        change == 0
+        formatter(abs(change)) == formatter(0)
     }
 
     private var symbol: String {

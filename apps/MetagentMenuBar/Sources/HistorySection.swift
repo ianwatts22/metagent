@@ -302,13 +302,16 @@ struct HistorySection: View {
                 windowDays: days
             )) ?? .empty
             let since = Calendar.current.date(byAdding: .day, value: -days, to: Date())
-            let events = (try? MetagentCore.skillHistoryEvents(since: since, limit: 400)) ?? []
+            let events = (try? MetagentCore.skillHistoryEvents(
+                since: since,
+                scope: scope == .all ? nil : scope,
+                limit: 400
+            )) ?? []
             return (trends, events)
         }.value
         guard !Task.isCancelled, refreshID == self.refreshID else { return }
         trends = loaded.0
-        // Events carry their own scope, so the directory filter applies here too.
-        events = loaded.1.filter { scope == .all || $0.scopeKey == scope.key }
+        events = loaded.1
         loadedRefreshID = refreshID
         isLoading = false
     }

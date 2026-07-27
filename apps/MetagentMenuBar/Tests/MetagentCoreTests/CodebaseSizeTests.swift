@@ -96,6 +96,20 @@ final class CodebaseSizeTests: XCTestCase {
         XCTAssertEqual(report.codeLines, 0)
     }
 
+    func testRejectsExpiredMeasurementDeadline() throws {
+        let root = try makeTemporaryGitRepository()
+        try write("let a = 1\n", to: root, "main.swift")
+        try commitEverything(in: root)
+
+        XCTAssertThrowsError(try MetagentCore.measureCodebaseSize(
+            root: root.path,
+            options: CodebaseSizeOptions(timeout: 0)
+        )) { error in
+            XCTAssertEqual((error as NSError).domain, "MetagentCodebaseSize")
+            XCTAssertEqual((error as NSError).code, 2)
+        }
+    }
+
     func testBatchMeasurementSkipsFoldersWithoutGit() throws {
         let repository = try makeTemporaryGitRepository()
         try write("let a = 1\n", to: repository, "main.swift")

@@ -432,7 +432,33 @@ func parseStringArrayBody(_ body: String, key: String) throws -> [String] {
             let character = body[index]
             index = body.index(after: index)
             if escaped {
-                value.append(character)
+                switch character {
+                case "b": value.append("\u{08}")
+                case "t": value.append("\t")
+                case "n": value.append("\n")
+                case "f": value.append("\u{0C}")
+                case "r": value.append("\r")
+                case "\"": value.append("\"")
+                case "\\": value.append("\\")
+                case "u", "U":
+                    let count = character == "u" ? 4 : 8
+                    var digits = ""
+                    for _ in 0 ..< count {
+                        guard index < body.endIndex else {
+                            throw configError("\(key) must be a TOML string array")
+                        }
+                        digits.append(body[index])
+                        index = body.index(after: index)
+                    }
+                    guard let scalarValue = UInt32(digits, radix: 16),
+                          let scalar = UnicodeScalar(scalarValue)
+                    else {
+                        throw configError("\(key) must be a TOML string array")
+                    }
+                    value.unicodeScalars.append(scalar)
+                default:
+                    throw configError("\(key) must be a TOML string array")
+                }
                 escaped = false
                 continue
             }

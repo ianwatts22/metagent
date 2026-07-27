@@ -292,4 +292,4 @@ Required repository secrets:
 
 Settings shows the installed version and a `Check for Updates` action. When
 `SUFeedURL` is still a placeholder the app says so and stays quiet rather than
-retrying an unreachable URL in the background.
+contacting an invalid URL in the background.
