@@ -146,7 +146,7 @@ struct SkillInfoView: View {
                         Button("Score details and improvements…") {
                             scoreDetailsRow = currentScoreRow
                         }
-                    } else if model.isRunning || model.isSkillEvaluating || model.isSkillEvaluationRefreshing {
+                    } else if model.isRunning || model.isSkillEvaluating {
                         ProgressView("Refreshing scores…")
                     } else {
                         Text("Scores are unavailable for the current skill.")
@@ -221,7 +221,7 @@ struct SkillInfoView: View {
     }
 
     private var currentScoreRow: InventorySkillRow? {
-        guard !model.isRunning, !model.isSkillEvaluating, !model.isSkillEvaluationRefreshing else {
+        guard !model.isRunning, !model.isSkillEvaluating else {
             return nil
         }
         return model.inventorySkillRow(canonicalPath: currentSkillPath)
@@ -465,7 +465,7 @@ struct SkillReaderView: View {
     }
 
     private var currentScoreRow: InventorySkillRow? {
-        guard !model.isRunning, !model.isSkillEvaluating, !model.isSkillEvaluationRefreshing else {
+        guard !model.isRunning, !model.isSkillEvaluating else {
             return nil
         }
         return model.inventorySkillRow(canonicalPath: currentSkillPath)

@@ -577,11 +577,11 @@ struct InventorySection: View {
             Button("Re-run Plugin Eval", systemImage: "checkmark.seal") {
                 model.evaluateSkillWithPluginEval(path: inventory.canonicalPath)
             }
-            .disabled(model.isSkillEvaluating)
+            .disabled(model.isRunning || model.isSkillEvaluating)
             Button("Review with Codex…", systemImage: "cloud") {
                 pendingConfirmation = .codexReview(inventory)
             }
-            .disabled(model.isSkillEvaluating)
+            .disabled(model.isRunning || model.isSkillEvaluating)
             Divider()
         }
         Button("Copy Path", systemImage: "doc.on.doc") {

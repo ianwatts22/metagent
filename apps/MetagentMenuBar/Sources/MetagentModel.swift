@@ -37,7 +37,6 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isUsageIndexingStalled = false
     @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
     @Published private(set) var isSkillEvaluating = false
-    @Published private(set) var isSkillEvaluationRefreshing = false
     @Published private(set) var skillEvaluationStatusText: String?
     @Published private(set) var isPluginInventoryAvailable = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
@@ -51,7 +50,6 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isRemovingSkills = false
 
     private let fileManager = FileManager.default
-    private var skillEvaluationRefreshGeneration = 0
     private var statusRefreshGeneration = 0
     private var statusRefreshQueued = false
     private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
@@ -78,7 +76,6 @@ final class MetagentModel: ObservableObject {
             usageSnapshot = usage
             usageStatusText = Self.usageStatus(usage)
         }
-        refreshSkillEvaluations()
         refreshStatus()
         refreshUsage()
     }
@@ -142,7 +139,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func inventorySkillRow(canonicalPath: String) -> InventorySkillRow? {
-        guard !isRunning, !isSkillEvaluating, !isSkillEvaluationRefreshing else { return nil }
+        guard !isRunning, !isSkillEvaluating else { return nil }
         let targetPath = standardizedDirectoryPath(canonicalPath)
         return InventorySkillRow.rows(
             from: projects,
@@ -154,7 +151,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func refreshStatus() {
-        guard !isRunning else {
+        guard !isRunning, !isSkillEvaluating else {
             statusRefreshQueued = true
             return
         }
@@ -170,24 +167,33 @@ final class MetagentModel: ObservableObject {
             async let doctorResult = Task.detached {
                 Result { try MetagentCore.doctor() }
             }.value
+            async let evaluationResult = Task.detached(priority: .utility) {
+                MetagentCore.loadSkillEvaluationSnapshot()
+            }.value
             let (scan, homeScan, pluginScan) = await Self.scanInventory()
             let doctor = await doctorResult
+            let evaluations = await evaluationResult
 
             applyStatus(
                 scan: scan,
                 homeScan: homeScan,
                 pluginScan: pluginScan,
                 doctor: doctor,
+                evaluations: evaluations,
                 generation: generation
             )
         }
     }
 
-    private func finishRunningOperation() {
-        isRunning = false
+    private func runQueuedStatusRefreshIfNeeded() {
         guard statusRefreshQueued else { return }
         statusRefreshQueued = false
         refreshStatus()
+    }
+
+    private func finishRunningOperation() {
+        isRunning = false
+        runQueuedStatusRefreshIfNeeded()
     }
 
     /// Sizes every known project root that is a git repository. This walks each
@@ -349,7 +355,7 @@ final class MetagentModel: ObservableObject {
     /// Paths are recorded before the run so a skill whose evaluation fails is
     /// not retried forever; an explicit re-run is still available per skill.
     func evaluateMissingSkills(paths: [String]) {
-        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
+        guard !isRunning, !isSkillEvaluating else { return }
         let missing = paths.filter {
             skillEvaluations.records[$0] == nil && !autoEvaluatedPaths.contains($0)
         }
@@ -359,10 +365,9 @@ final class MetagentModel: ObservableObject {
     }
 
     func evaluateSkillsWithPluginEval(paths: [String]) {
-        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
+        guard !isRunning, !isSkillEvaluating else { return }
         let uniquePaths = Array(Set(paths)).sorted()
         guard !uniquePaths.isEmpty else { return }
-        skillEvaluationRefreshGeneration += 1
         isSkillEvaluating = true
         skillEvaluationStatusText = uniquePaths.count == 1
             ? "Running Plugin Eval…"
@@ -398,12 +403,12 @@ final class MetagentModel: ObservableObject {
                 skillEvaluationStatusText = "Plugin Eval finished · \(failedSkillNames.count) failed: \(preview)\(suffix)\(detail)"
             }
             isSkillEvaluating = false
+            runQueuedStatusRefreshIfNeeded()
         }
     }
 
     func reviewSkillWithCodex(path: String) {
-        guard !isSkillEvaluating, !isSkillEvaluationRefreshing else { return }
-        skillEvaluationRefreshGeneration += 1
+        guard !isRunning, !isSkillEvaluating else { return }
         isSkillEvaluating = true
         skillEvaluationStatusText = "Codex is reviewing \(URL(fileURLWithPath: path).lastPathComponent)…"
         Task {
@@ -420,6 +425,7 @@ final class MetagentModel: ObservableObject {
                 skillEvaluationStatusText = "Codex review failed: \(error.localizedDescription)"
             }
             isSkillEvaluating = false
+            runQueuedStatusRefreshIfNeeded()
         }
     }
 
@@ -705,9 +711,11 @@ final class MetagentModel: ObservableObject {
         homeScan: Result<SkillScanReport, Error>,
         pluginScan: Result<SkillScanReport, Error>,
         doctor: Result<DoctorReport, Error>,
+        evaluations: SkillEvaluationSnapshot,
         generation: Int
     ) {
         guard generation == statusRefreshGeneration else { return }
+        skillEvaluations = evaluations
         lastRunText = Self.timestamp()
 
         let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
@@ -769,9 +777,7 @@ final class MetagentModel: ObservableObject {
             systemImage = "exclamationmark.triangle"
         }
 
-        refreshSkillEvaluations {
-            self.finishRunningOperation()
-        }
+        finishRunningOperation()
     }
 
     /// Appends one sample to the portfolio history, at most once per local day.
@@ -846,26 +852,6 @@ final class MetagentModel: ObservableObject {
             Result { try MetagentCore.scanCodexPlugins() }
         }.value
         return await (scanResult, homeScanResult, pluginScanResult)
-    }
-
-    private func refreshSkillEvaluations(completion: (() -> Void)? = nil) {
-        guard !isSkillEvaluating else {
-            completion?()
-            return
-        }
-        skillEvaluationRefreshGeneration += 1
-        let generation = skillEvaluationRefreshGeneration
-        isSkillEvaluationRefreshing = true
-        Task {
-            let snapshot = await Task.detached(priority: .utility) {
-                MetagentCore.loadSkillEvaluationSnapshot()
-            }.value
-            guard generation == skillEvaluationRefreshGeneration else { return }
-            skillEvaluations = snapshot
-            skillTableRevision += 1
-            isSkillEvaluationRefreshing = false
-            completion?()
-        }
     }
 
     @discardableResult
