@@ -1,6 +1,27 @@
 import Foundation
 import MetagentCore
 
+private struct HistorySampleOutput: Encodable {
+    let day: String
+    let isNewDay: Bool
+    let metricsWritten: Int
+    let events: Int
+}
+
+private struct HistoryBackfillOutput: Encodable {
+    let skipped: Bool
+    let daysWritten: Int
+    let installEvents: Int
+    let removalEvents: Int
+    let earliestDay: String?
+}
+
+private struct HistoryPointOutput: Encodable {
+    let day: String
+    let origin: String
+    let value: Double
+}
+
 @main
 struct MetagentCLI {
     static func main() {
@@ -480,12 +501,12 @@ struct MetagentCLI {
                 trigger: .cli
             )
             if json {
-                try printJSON([
-                    "day": capture.day,
-                    "isNewDay": String(capture.isNewDay),
-                    "metricsWritten": String(capture.metricsWritten),
-                    "events": String(capture.events.count),
-                ])
+                try printJSON(HistorySampleOutput(
+                    day: capture.day,
+                    isNewDay: capture.isNewDay,
+                    metricsWritten: capture.metricsWritten,
+                    events: capture.events.count
+                ))
                 return
             }
             print("\(capture.day): \(capture.metricsWritten) metrics\(capture.isNewDay ? " (new day)" : " (updated)")")
@@ -514,13 +535,13 @@ struct MetagentCLI {
                 force: force
             )
             if json {
-                try printJSON([
-                    "skipped": String(backfill.skipped),
-                    "daysWritten": String(backfill.daysWritten),
-                    "installEvents": String(backfill.installEvents),
-                    "removalEvents": String(backfill.removalEvents),
-                    "earliestDay": backfill.earliestDay ?? "",
-                ])
+                try printJSON(HistoryBackfillOutput(
+                    skipped: backfill.skipped,
+                    daysWritten: backfill.daysWritten,
+                    installEvents: backfill.installEvents,
+                    removalEvents: backfill.removalEvents,
+                    earliestDay: backfill.earliestDay
+                ))
                 return
             }
             if backfill.skipped {
@@ -564,7 +585,11 @@ struct MetagentCLI {
             let points = try MetagentCore.skillHistorySeries(metric: metric, scope: scope)
             if json {
                 try printJSON(points.map {
-                    ["day": $0.day, "origin": $0.origin.rawValue, "value": String($0.value)]
+                    HistoryPointOutput(
+                        day: $0.day,
+                        origin: $0.origin.rawValue,
+                        value: $0.value
+                    )
                 })
                 return
             }

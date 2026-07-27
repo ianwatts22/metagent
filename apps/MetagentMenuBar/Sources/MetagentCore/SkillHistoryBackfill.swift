@@ -106,7 +106,10 @@ public extension MetagentCore {
 
         var dayCounts: [SkillUsageDayCount] = []
         do {
-            dayCounts = try skillUsageDailyCounts(databasePath: usageDatabasePath)
+            dayCounts = try skillUsageDailyCounts(
+                databasePath: usageDatabasePath,
+                calendar: calendar
+            )
         } catch {
             warnings.append("usage history unavailable: \(error.localizedDescription)")
         }

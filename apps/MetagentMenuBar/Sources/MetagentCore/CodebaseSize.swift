@@ -240,11 +240,11 @@ public extension MetagentCore {
                 languageTotals[language, default: CodebaseCategorySize()].add(lines: counted)
             }
 
-            if category == .code {
-                codeFileLines.append(counted)
-                if counted >= options.longFileThreshold {
+            if category == .code, let lines {
+                codeFileLines.append(lines)
+                if lines >= options.longFileThreshold {
                     longFileCount += 1
-                    longFileLines += counted
+                    longFileLines += lines
                 }
             }
 
@@ -384,7 +384,7 @@ private func lineCount(at url: URL, maximumBytes: Int) -> Int? {
     guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return nil }
     guard size > 0 else { return 0 }
     guard size <= maximumBytes else { return nil }
-    guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+    guard let data = try? Data(contentsOf: url) else { return nil }
     return data.withUnsafeBytes { buffer -> Int? in
         guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else { return nil }
         var newlines = 0

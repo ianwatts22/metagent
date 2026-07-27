@@ -213,8 +213,11 @@ struct OverviewSection: View {
     /// The share leads because it is what the rate means; the raw counts follow
     /// quietly for anyone who wants to check the arithmetic.
     private func rateValue(_ count: Int, fraction: Double) -> SkillHealthValue {
-        guard isUsageIndexed, skillHealth.assessedSkillCount > 0 else {
+        guard isUsageIndexed else {
             return SkillHealthValue(primary: "—", trailing: "not indexed")
+        }
+        guard skillHealth.assessedSkillCount > 0 else {
+            return SkillHealthValue(primary: "—", trailing: "none rated")
         }
         return SkillHealthValue(
             primary: fraction.formatted(.percent.precision(.fractionLength(0))),
@@ -224,6 +227,12 @@ struct OverviewSection: View {
     }
 
     private var ratedScopeHelp: String {
+        guard isUsageIndexed else {
+            return "Usage is not indexed, so adoption rates are unavailable."
+        }
+        guard skillHealth.assessedSkillCount > 0 else {
+            return "No installed skills in this scope are rated."
+        }
         guard skillHealth.dormantSkillCount > 0 else {
             return "All \(skillHealth.assessedSkillCount) installed skills in this scope are rated."
         }

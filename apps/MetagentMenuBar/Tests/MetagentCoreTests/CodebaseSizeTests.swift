@@ -68,6 +68,23 @@ final class CodebaseSizeTests: XCTestCase {
         XCTAssertEqual(report.largestFiles.first?.path, "Sources/Long.swift")
     }
 
+    func testUnreadableCodeFilesDoNotSkewFileSizeSignals() throws {
+        let root = try makeTemporaryGitRepository()
+        try write("one\ntwo\n", to: root, "Sources/Readable.swift")
+        try write(String(repeating: "line\n", count: 100), to: root, "Sources/TooLarge.swift")
+        try commitEverything(in: root)
+
+        let report = try MetagentCore.measureCodebaseSize(
+            root: root.path,
+            options: CodebaseSizeOptions(maximumFileBytes: 20)
+        )
+
+        XCTAssertEqual(report.codeLines, 2)
+        XCTAssertEqual(report.signals.medianCodeFileLines, 2)
+        XCTAssertEqual(report.signals.largestCodeFileLines, 2)
+        XCTAssertEqual(report.warnings, ["1 tracked file(s) could not be read as text"])
+    }
+
     func testReportsFolderWithoutGitAsUnmeasured() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-codebase-tests")
         try write("let a = 1\n", to: root, "main.swift")

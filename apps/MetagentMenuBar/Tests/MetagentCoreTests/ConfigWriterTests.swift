@@ -71,6 +71,25 @@ struct ConfigWriterTests {
         #expect(try String(contentsOf: path, encoding: .utf8) == first)
     }
 
+    @Test("brackets inside quoted array values do not consume later settings")
+    func quotedBracketsDoNotChangeArrayDepth() throws {
+        let path = try temporaryConfigPath()
+        try """
+        roots = [
+          "/old/[unfinished",
+          '/old/]literal'
+        ]
+        custom_future_key = "preserve me"
+        """.write(to: path, atomically: true, encoding: .utf8)
+
+        try MetagentCore.saveUserConfig(MetagentConfig(roots: ["/new/root"]), at: path)
+
+        let written = try String(contentsOf: path, encoding: .utf8)
+        #expect(written.contains("custom_future_key = \"preserve me\""))
+        #expect(!written.contains("/old/[unfinished"))
+        #expect(!written.contains("/old/]literal"))
+    }
+
     /// Reads the file back through the same parsing helpers `loadUserConfig`
     /// uses, without depending on the process-wide home directory.
     private func parsedConfig(at path: URL) throws -> MetagentConfig {

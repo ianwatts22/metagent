@@ -88,11 +88,32 @@ private func assignsKey(_ key: String, in code: String) -> Bool {
 }
 
 private func bracketDelta(_ code: String) -> Int {
-    code.reduce(0) { depth, character in
+    var depth = 0
+    var quote: Character?
+    var escaped = false
+
+    for character in code {
+        if let activeQuote = quote {
+            if activeQuote == "\"", escaped {
+                escaped = false
+            } else if activeQuote == "\"", character == "\\" {
+                escaped = true
+            } else if character == activeQuote {
+                quote = nil
+            }
+            continue
+        }
+
+        if character == "\"" || character == "'" {
+            quote = character
+            continue
+        }
+
         switch character {
-        case "[": depth + 1
-        case "]": depth - 1
-        default: depth
+        case "[": depth += 1
+        case "]": depth -= 1
+        default: break
         }
     }
+    return depth
 }

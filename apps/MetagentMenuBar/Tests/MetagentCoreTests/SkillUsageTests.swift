@@ -9,6 +9,42 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertNotNil(MetagentCore.parseSkillUsageTimestamp("2026-07-19T12:00:00Z"))
     }
 
+    func testDailyCountsUseHistoryCalendarAndSkipInvalidTimestamps() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path)
+        let path = fixture.root.appendingPathComponent("workspace/.agents/skills/demo").path
+        try fixture.executeSQL("""
+        INSERT INTO skill_usage_events (
+          event_id, skill_id, skill_name, canonical_path, scope, occurred_at,
+          session_id, turn_id, cwd, evidence, invocation_kind, confidence,
+          source_path, call_id
+        ) VALUES
+          ('one', 'project:demo', 'demo', '\(path)', 'project', '2026-07-20T06:30:00Z',
+           'session', 'turn', '\(fixture.root.path)', 'session_backfill', 'skill_file_read',
+           'observed', '/tmp/one', 'one'),
+          ('two', 'project:demo', 'demo', '\(path)', 'project', '2026-07-20T08:30:00Z',
+           'session', 'turn', '\(fixture.root.path)', 'session_backfill', 'skill_file_read',
+           'observed', '/tmp/two', 'two'),
+          ('empty', 'project:demo', 'demo', '\(path)', 'project', '',
+           'session', 'turn', '\(fixture.root.path)', 'session_backfill', 'skill_file_read',
+           'observed', '/tmp/empty', 'empty'),
+          ('malformed', 'project:demo', 'demo', '\(path)', 'project', 'not-a-date',
+           'session', 'turn', '\(fixture.root.path)', 'session_backfill', 'skill_file_read',
+           'observed', '/tmp/malformed', 'malformed');
+        """)
+        var pacific = Calendar(identifier: .gregorian)
+        pacific.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+
+        let counts = try MetagentCore.skillUsageDailyCounts(
+            databasePath: fixture.database.path,
+            calendar: pacific
+        )
+
+        XCTAssertEqual(counts.map(\.day), ["2026-07-19", "2026-07-20"])
+        XCTAssertEqual(counts.map(\.count), [1, 1])
+    }
+
     func testIncrementalBackfillPreservesRepeatedReadsWithoutDoubleCountingRescans() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

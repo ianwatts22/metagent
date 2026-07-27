@@ -30,6 +30,10 @@ if [[ -z "$signing_identity" ]]; then
   identity_count="$(awk 'NF { count += 1 } END { print count + 0 }' <<<"$detected_identities")"
   if [[ "$identity_count" == "1" ]]; then
     signing_identity="$detected_identities"
+  elif [[ "$identity_count" -gt 1 ]]; then
+    echo "Multiple Developer ID Application identities found." >&2
+    echo "Set METAGENT_CODE_SIGN_IDENTITY to the intended certificate hash." >&2
+    exit 1
   fi
 fi
 

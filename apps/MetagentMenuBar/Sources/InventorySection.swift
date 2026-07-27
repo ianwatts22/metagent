@@ -272,8 +272,8 @@ struct InventorySection: View {
     /// How many of the tucked-away controls are off their default, so the menu
     /// can say so without the user opening it.
     private var activeAdvancedFilterCount: Int {
-        var count = hiddenSources.isEmpty ? 0 : 1
-        if scopeFilter != SkillScopeFilter.allCases[0] { count += 1 }
+        var count = hiddenSources == [.notInstalled] ? 0 : 1
+        if scopeFilter != .all { count += 1 }
         return count
     }
 

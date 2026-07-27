@@ -74,7 +74,7 @@ public struct SkillUsageSnapshot: Codable, Sendable, Equatable {
     )
 }
 
-/// One skill's observed reads on one UTC day.
+/// One skill's observed reads on one calendar day.
 public struct SkillUsageDayCount: Codable, Sendable, Equatable {
     public let canonicalPath: String?
     public let skillID: String
@@ -112,8 +112,11 @@ public extension MetagentCore {
 
     /// Per-day observed reads for every skill identity in the event log, used to
     /// reconstruct adoption history for dates that predate history capture.
-    static func skillUsageDailyCounts(databasePath: String? = nil) throws -> [SkillUsageDayCount] {
-        try SkillUsageStore(path: databasePath).dailyCounts()
+    static func skillUsageDailyCounts(
+        databasePath: String? = nil,
+        calendar: Calendar = .current
+    ) throws -> [SkillUsageDayCount] {
+        try SkillUsageStore(path: databasePath).dailyCounts(calendar: calendar)
     }
 
     static func parseSkillUsageTimestamp(_ value: String) -> Date? {
@@ -133,6 +136,13 @@ public extension MetagentCore {
 private let skillUsageParserVersion = 15
 private let skillUsageEventsTable = "skill_usage_events"
 private let skillUsageSourcesTable = "skill_usage_sources"
+
+private struct SkillUsageDayKey: Hashable {
+    let canonicalPath: String
+    let skillID: String
+    let day: String
+}
+
 private let skillUsageMetadataTable = "skill_usage_metadata"
 private let previousSkillUsageEventsTable = "skill_usage_events_previous"
 private let previousSkillUsageSourcesTable = "skill_usage_sources_previous"
@@ -337,12 +347,13 @@ private final class SkillUsageStore {
         }
     }
 
-    /// Per-day read counts for every observed skill identity.
+    /// Per-day read counts for every observed skill identity, grouped with the
+    /// same local calendar the history store uses for its snapshots.
     ///
     /// The event log is the only store that already carries a timestamp on every
     /// row, so it is the one source history can reconstruct backwards rather
-    /// than only accumulate forwards. Days are UTC because `occurred_at` is.
-    func dailyCounts() throws -> [SkillUsageDayCount] {
+    /// than only accumulate forwards.
+    func dailyCounts(calendar: Calendar) throws -> [SkillUsageDayCount] {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
@@ -354,28 +365,42 @@ private final class SkillUsageStore {
         SELECT
           CASE WHEN canonical_path != '' THEN canonical_path ELSE '' END,
           skill_id,
-          substr(occurred_at, 1, 10),
-          COUNT(*)
+          occurred_at
         FROM \(table)
-        GROUP BY 1, 2, 3
-        ORDER BY 3;
+        WHERE trim(occurred_at) != ''
+          AND julianday(occurred_at) IS NOT NULL
+        ORDER BY occurred_at;
         """
         var statement: OpaquePointer?
         try prepare(db, sql, &statement)
         defer { sqlite3_finalize(statement) }
-        var counts: [SkillUsageDayCount] = []
+        var grouped: [SkillUsageDayKey: Int] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
             let canonicalPath = sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? ""
             let skillID = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
-            guard let day = sqlite3_column_text(statement, 2).map({ String(cString: $0) }) else { continue }
-            counts.append(SkillUsageDayCount(
-                canonicalPath: canonicalPath.isEmpty ? nil : canonicalPath,
+            guard let occurredAt = sqlite3_column_text(statement, 2).map({ String(cString: $0) }),
+                  let date = MetagentCore.parseSkillUsageTimestamp(occurredAt)
+            else { continue }
+            let key = SkillUsageDayKey(
+                canonicalPath: canonicalPath,
                 skillID: skillID,
-                day: day,
-                count: Int(sqlite3_column_int64(statement, 3))
-            ))
+                day: historyDay(date, calendar: calendar)
+            )
+            grouped[key, default: 0] += 1
         }
-        return counts
+        return grouped
+            .map { key, count in
+                SkillUsageDayCount(
+                    canonicalPath: key.canonicalPath.isEmpty ? nil : key.canonicalPath,
+                    skillID: key.skillID,
+                    day: key.day,
+                    count: count
+                )
+            }
+            .sorted {
+                ($0.day, $0.canonicalPath ?? "", $0.skillID)
+                    < ($1.day, $1.canonicalPath ?? "", $1.skillID)
+            }
     }
 
     private func snapshot(_ db: OpaquePointer?) throws -> SkillUsageSnapshot {

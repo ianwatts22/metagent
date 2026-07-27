@@ -328,7 +328,7 @@ struct ProjectCodebaseSizeCell: View {
         } else {
             Text("—")
                 .foregroundStyle(.secondary)
-                .help("Codebase size is measured from git-tracked files. This folder is not a git repository.")
+                .help("Codebase size has not been measured for this project.")
         }
     }
 
