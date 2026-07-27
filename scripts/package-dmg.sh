@@ -73,16 +73,19 @@ tiffutil \
 mkdir -p "$(dirname "$output")"
 rm -f "$output"
 
+# Finder can reserve vertical room for its tab/path bars even when the DMG asks
+# it to hide the toolbar and status bar. Give the outer window enough height to
+# show the entire 424×260 background without a scrollbar.
 create-dmg \
   --volname "$volume_name" \
   --volicon "$app_bundle/Contents/Resources/AppIcon.icns" \
   --background "$background_tiff" \
   --window-pos 180 120 \
-  --window-size 384 260 \
+  --window-size 424 320 \
   --text-size 11 \
   --icon-size 76 \
-  --icon "Metagent.app" 86 145 \
-  --app-drop-link 292 145 \
+  --icon "Metagent.app" 106 145 \
+  --app-drop-link 318 145 \
   --no-internet-enable \
   --hdiutil-retries 10 \
   --overwrite \
