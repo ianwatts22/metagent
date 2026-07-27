@@ -126,8 +126,7 @@ jobs:
 
       - name: Package update archive and CLI
         run: |
-          mkdir -p artifacts/updates
-          ditto -c -k --keepParent dist/MetagentMenuBar.app "artifacts/updates/Metagent.zip"
+          ./scripts/package-update.sh "artifacts/updates/Metagent.zip"
           # The bundled helper is the signed copy; the loose build product is not.
           ditto -c -k "dist/MetagentMenuBar.app/Contents/Helpers/metagent" "artifacts/metagent-cli.zip"
 

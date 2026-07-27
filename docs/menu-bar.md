@@ -248,7 +248,9 @@ identical build rather than a spuriously newer one.
 3. Notarizes and staples the app, so the ticket travels with the download and
    Gatekeeper clears it without a network round trip.
 4. Cuts `Metagent.dmg` and `Metagent.zip` from the stapled bundle, then
-   notarizes and staples the disk image.
+   notarizes and staples the disk image. Both public packages contain
+   `Metagent.app`; the internal build-directory name is never exposed because
+   Sparkle uses the installed filename to locate the replacement bundle.
 5. Generates `appcast.xml` with Sparkle's `generate_appcast`, signed with the
    EdDSA private key.
 6. Uploads everything to the release and commits `public/appcast.xml`.
