@@ -241,7 +241,12 @@ img {
   gap: 0.7rem;
   justify-content: center;
   margin-top: 2.2rem;
-}.hero-shot {
+}/* The picture only swaps sources; layout-wise the img stays the flex child. */
+.hero picture {
+  display: contents;
+}
+
+.hero-shot {
   width: min(100%, 1060px);
   height: auto;
   margin-top: 3rem;
