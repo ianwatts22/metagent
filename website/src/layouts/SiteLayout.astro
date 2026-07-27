@@ -21,7 +21,8 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#f4f4f4" />
+    <meta name="theme-color" content="#f4f4f4" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#131313" media="(prefers-color-scheme: dark)" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
@@ -45,7 +46,10 @@ const {
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <a class="brand" href="/" aria-label="Metagent home">
-        <img src="/brand/combomark.svg" alt="Metagent" width="1984" height="500" />
+        <picture>
+          <source srcset="/brand/combomark-dark.svg" media="(prefers-color-scheme: dark)" />
+          <img src="/brand/combomark.svg" alt="Metagent" width="2374" height="500" />
+        </picture>
       </a>
 
       <a
