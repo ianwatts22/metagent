@@ -152,6 +152,14 @@ if [[ "$channel" == "dev" ]]; then
     || /usr/libexec/PlistBuddy \
       -c "Set :MetagentBuildCommit $git_sha" \
       "$contents/Info.plist"
+fi
+
+# Only versioned builds carry an update feed. An unversioned bundle claims the
+# checked-in 0.1.0/1, which sits below every published release, so a live feed
+# would eventually let Sparkle "update" it to an older shipped version. This
+# covers the dev channel and also the prod-branded bundle verify leaves in
+# dist/, which is one accidental double-click from the same trap.
+if [[ -z "${METAGENT_VERSION:-}" ]]; then
   for feed_key in SUFeedURL SUPublicEDKey SUEnableAutomaticChecks; do
     /usr/libexec/PlistBuddy -c "Delete :$feed_key" "$contents/Info.plist" 2>/dev/null || true
   done
@@ -188,10 +196,16 @@ if [[ "$distribution" == "1" ]]; then
     fi
   done
 fi
-cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
 # Assets.car carries the macOS 26 icon appearance variants; CFBundleIconName
-# in Info.plist is what makes the system read them.
-cp "$app_source/Sources/Resources/Assets.car" "$resources/Assets.car"
+# in Info.plist is what makes the system read them. The dev channel ships the
+# amber variant so Dock and app switcher distinguish the two apps at a glance.
+if [[ "$channel" == "dev" ]]; then
+  cp "$app_source/Sources/Resources/AppIcon-Dev.icns" "$resources/AppIcon.icns"
+  cp "$app_source/Sources/Resources/Assets-Dev.car" "$resources/Assets.car"
+else
+  cp "$app_source/Sources/Resources/AppIcon.icns" "$resources/AppIcon.icns"
+  cp "$app_source/Sources/Resources/Assets.car" "$resources/Assets.car"
+fi
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"
 cp "$app_source/Sources/Resources/Lucide/LICENSE" "$resources/Lucide-LICENSE.txt"
 cp "$app_source/Sources/Resources/Lucide/sprite.svg" "$resources/Lucide-sprite.svg"

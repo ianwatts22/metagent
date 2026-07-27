@@ -52,11 +52,16 @@ final class UpdaterModel: ObservableObject {
 
 /// The installed version, as the user would read it in About: marketing version
 /// first, build number beside it because that is what Sparkle actually compares.
+/// Dev builds have no meaningful version, so they name their commit instead —
+/// the one identifier that says exactly which code is running.
 enum AppVersion {
     static var display: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
         let build = info?["CFBundleVersion"] as? String ?? "0"
+        if let commit = info?["MetagentBuildCommit"] as? String, !commit.isEmpty {
+            return "Version \(short) · \(commit)"
+        }
         return "Version \(short) (\(build))"
     }
 }

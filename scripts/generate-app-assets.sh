@@ -14,6 +14,10 @@ resources_dir="$repo_root/apps/MetagentMenuBar/Sources/Resources"
 
 app_icon="$resources_dir/AppIcon.icns"
 app_assets="$resources_dir/Assets.car"
+# The dev channel ships the same glyph on an amber background so the two apps
+# are tellable apart in the Dock and app switcher, not only in the menu bar.
+dev_app_icon="$resources_dir/AppIcon-Dev.icns"
+dev_app_assets="$resources_dir/Assets-Dev.car"
 menu_bar_svg="$resources_dir/MenuBarIconTemplate.svg"
 menu_bar_pdf="$resources_dir/MenuBarIconTemplate.pdf"
 
@@ -66,6 +70,30 @@ xcrun actool "$icon_build/AppIcon.icon" \
 
 write_if_changed "$icon_build/out/AppIcon.icns" "$app_icon"
 write_if_changed "$icon_build/out/Assets.car" "$app_assets"
+
+# Dev icon: a separately authored Icon Composer document (the rough-ink
+# rendition of the glyph), compiled through the identical pipeline so the dev
+# channel keeps the full set of macOS 26 appearance variants.
+dev_icon_document="$repo_root/metagent-icon-dev.icon"
+if [[ ! -d "$dev_icon_document" ]]; then
+  echo "Missing dev Icon Composer document: $dev_icon_document" >&2
+  exit 1
+fi
+
+dev_icon_build="$tmpdir/dev-icon-build"
+mkdir -p "$dev_icon_build/out"
+cp -R "$dev_icon_document" "$dev_icon_build/AppIcon.icon"
+
+xcrun actool "$dev_icon_build/AppIcon.icon" \
+  --compile "$dev_icon_build/out" \
+  --platform macosx \
+  --minimum-deployment-target 26.0 \
+  --app-icon AppIcon \
+  --output-partial-info-plist "$dev_icon_build/partial.plist" \
+  >/dev/null
+
+write_if_changed "$dev_icon_build/out/AppIcon.icns" "$dev_app_icon"
+write_if_changed "$dev_icon_build/out/Assets.car" "$dev_app_assets"
 
 generated_menu_bar_svg="$tmpdir/MenuBarIconTemplate.svg"
 awk '

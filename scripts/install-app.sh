@@ -90,8 +90,19 @@ case "$launch_mode" in
     open "$installed_app"
     ;;
   restart)
+    # The polite quit can fail silently (Apple Events can report "User
+    # canceled"), leaving a stale process running on top of the replaced
+    # bundle. Verify the exit and escalate, or every watch-loop "restart"
+    # keeps the old code alive while claiming success.
     osascript -e 'tell application id "com.ianwatts.metagent.menu-bar.dev" to quit' >/dev/null 2>&1 || true
-    sleep 0.5
+    for _ in 1 2 3 4 5 6; do
+      pgrep -f "$installed_app/Contents/MacOS" >/dev/null || break
+      sleep 0.5
+    done
+    if pgrep -f "$installed_app/Contents/MacOS" >/dev/null; then
+      pkill -f "$installed_app/Contents/MacOS" || true
+      sleep 0.5
+    fi
     open "$installed_app"
     ;;
 esac
