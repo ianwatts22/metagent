@@ -141,14 +141,16 @@ The installed app is written to:
 ~/Applications/Metagent.app
 ```
 
-Local deployment model:
+Two-channel deployment model:
 
+- Production is `~/Applications/Metagent.app`: installed from the metagent.sh DMG and mutated only by Sparkle. No local script writes to that path. Its artifacts come only from CI — a `v*` tag builds, signs, notarizes, uploads to GitHub Releases, and updates the appcast — and `build-app.sh` already refuses distribution builds without an explicit version, while `package-update.sh` refuses to package a dev-channel bundle.
+- Development is `~/Applications/Metagent Dev.app`: bundle ID `com.ianwatts.metagent.menu-bar.dev`, name `Metagent Dev`, version `0.0.0-dev` with the build commit recorded in `MetagentBuildCommit`, and a badge dot on the menu bar glyph so two otherwise identical icons stay tellable apart. Every Sparkle key is deleted from dev builds; the startup policy treats a missing feed as unconfigured and never starts the updater. This is what makes the split load-bearing rather than cosmetic: a local build is stamped below every public release, so a dev build carrying the live feed would eventually be "updated" back to an older shipped version by its own updater.
+- The distinct bundle ID means the two apps never share a running-instance identity, defaults domain, or login-item registration, and both can run at once. The cost is one-time: fresh folder-access grants and fresh UI preferences for the dev app.
+- Both channels intentionally share `~/Library/Application Support/Metagent/`. The CLI shares it already, every input is machine-global, the stores are built for mixed access (WAL, file locks, additive schemas, the usage parser's generation swap), and building features against real data is the point of the dev channel. The discipline this buys into: schema changes must stay additive or use the generation-swap pattern, never rewrite-in-place.
 - Source changes do not update a running app automatically.
-- `scripts/build-app.sh` rebuilds the repo-local bundle in `dist/`.
+- `scripts/build-app.sh` rebuilds the repo-local bundle in `dist/`; `METAGENT_CHANNEL=dev` produces the dev identity.
 - The app bundle includes the Swift `metagent` helper under `Contents/Helpers/metagent`.
-- `scripts/install-app.sh` rebuilds, copies that bundle to `~/Applications`, and can launch or restart it.
-- `--launch` opens the app after install.
-- `--restart` asks the existing app to quit and opens the installed copy.
+- `scripts/install-app.sh` builds the dev channel and installs `~/Applications/Metagent Dev.app`; `--launch` opens it, `--restart` replaces the running dev instance. `scripts/dev-app.sh` wraps this in a watch loop.
 - `scripts/install-cli.sh` installs the Swift helper to `~/.local/bin/metagent` for headless/MCP use.
 
 The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row keeps its left-hand text to a health statement and moves the configured total to the right, beside the per-client counts it decomposes into. It only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral. The icon-only refresh action exposes its meaning through a tooltip and accessibility label; the checked-at timestamp is intentionally omitted as low-signal chrome.

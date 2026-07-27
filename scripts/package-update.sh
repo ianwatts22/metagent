@@ -18,6 +18,17 @@ if [[ ! -d "$app_bundle" ]]; then
   exit 1
 fi
 
+# A dev-channel bundle must never reach the public feed: it carries the wrong
+# identity and no update path of its own.
+bundle_identifier="$(
+  /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app_bundle/Contents/Info.plist" 2>/dev/null || true
+)"
+if [[ "$bundle_identifier" == *.dev ]]; then
+  echo "Refusing to package a dev-channel bundle ($bundle_identifier) for Sparkle." >&2
+  echo "Rebuild without METAGENT_CHANNEL=dev." >&2
+  exit 1
+fi
+
 temp_root="$(mktemp -d)"
 cleanup() {
   rm -rf "$temp_root"

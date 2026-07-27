@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_dir="${METAGENT_APPLICATIONS_DIR:-$HOME/Applications}"
-installed_app="$install_dir/Metagent.app"
+installed_app="$install_dir/Metagent Dev.app"
 launch_mode="none"
 
 usage() {
@@ -11,8 +11,13 @@ usage() {
 Usage:
   scripts/install-app.sh [--launch|--restart]
 
-Builds the menu bar app and installs it to:
-  ~/Applications/Metagent.app
+Builds the DEV channel of the menu bar app and installs it to:
+  ~/Applications/Metagent Dev.app
+
+The production app at ~/Applications/Metagent.app is installed from
+https://metagent.sh and updated by Sparkle. This script never touches it:
+local builds carry the .dev bundle ID, a dev version stamp, and no update
+feed, so the two apps coexist and neither can overwrite the other.
 
 Options:
   --launch    Open the installed app after installing.
@@ -44,7 +49,7 @@ while (($# > 0)); do
   esac
 done
 
-built_output="$(METAGENT_REQUIRE_STABLE_SIGNING=1 "$repo_root/scripts/build-app.sh")"
+built_output="$(METAGENT_REQUIRE_STABLE_SIGNING=1 METAGENT_CHANNEL=dev "$repo_root/scripts/build-app.sh")"
 printf '%s\n' "$built_output"
 built_app="$(printf '%s\n' "$built_output" | awk 'NF { line=$0 } END { print line }')"
 
@@ -57,7 +62,7 @@ mkdir -p "$install_dir"
 
 backup_app=""
 if [[ -e "$installed_app" ]]; then
-  backup_app="$install_dir/.Metagent.app.previous-$(date +%Y%m%d%H%M%S)"
+  backup_app="$install_dir/.Metagent Dev.app.previous-$(date +%Y%m%d%H%M%S)"
   mv "$installed_app" "$backup_app"
 fi
 
@@ -85,7 +90,7 @@ case "$launch_mode" in
     open "$installed_app"
     ;;
   restart)
-    osascript -e 'tell application id "com.ianwatts.metagent.menu-bar" to quit' >/dev/null 2>&1 || true
+    osascript -e 'tell application id "com.ianwatts.metagent.menu-bar.dev" to quit' >/dev/null 2>&1 || true
     sleep 0.5
     open "$installed_app"
     ;;

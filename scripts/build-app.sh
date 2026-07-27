@@ -15,6 +15,24 @@ configuration="${METAGENT_BUILD_CONFIGURATION:-release}"
 # app on this machine. Public downloads need Developer ID, because that is the
 # only identity Gatekeeper accepts and the only one notarization will process.
 distribution="${METAGENT_DISTRIBUTION_BUILD:-0}"
+# The channel decides what the bundle claims to be. `release` is the shipping
+# identity; `dev` builds a separate app ("Metagent Dev", bundle ID suffixed
+# .dev, no Sparkle feed) so a locally installed build can never collide with
+# the website-installed copy or be rolled back by its updater.
+channel="${METAGENT_CHANNEL:-release}"
+
+case "$channel" in
+  release|dev) ;;
+  *)
+    echo "Invalid METAGENT_CHANNEL: $channel (expected release or dev)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$distribution" == "1" && "$channel" == "dev" ]]; then
+  echo "A distribution build cannot use the dev channel." >&2
+  exit 1
+fi
 
 case "$configuration" in
   release|debug) ;;
@@ -112,6 +130,32 @@ mkdir -p "$macos" "$helpers" "$frameworks" "$resources"
 cp "$app_source/.build/$configuration/MetagentMenuBar" "$macos/MetagentMenuBar"
 cp "$app_source/.build/$configuration/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
+
+if [[ "$channel" == "dev" ]]; then
+  # A dev build is a different app, not an older version of the real one.
+  # Distinct bundle ID: never shares defaults, login-item registration, or a
+  # running-instance identity with prod, so both can run side by side.
+  # No feed keys: AppUpdateStartupPolicy treats a missing SUFeedURL as
+  # unconfigured and never starts Sparkle, so the public appcast (whose build
+  # numbers always exceed a local build's) can never "update" a dev install
+  # back to an older release.
+  git_sha="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  /usr/libexec/PlistBuddy \
+    -c "Set :CFBundleIdentifier com.ianwatts.metagent.menu-bar.dev" \
+    -c "Set :CFBundleName Metagent Dev" \
+    -c "Set :CFBundleShortVersionString 0.0.0-dev" \
+    -c "Set :CFBundleVersion 0" \
+    "$contents/Info.plist"
+  /usr/libexec/PlistBuddy \
+    -c "Add :MetagentBuildCommit string $git_sha" \
+    "$contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy \
+      -c "Set :MetagentBuildCommit $git_sha" \
+      "$contents/Info.plist"
+  for feed_key in SUFeedURL SUPublicEDKey SUEnableAutomaticChecks; do
+    /usr/libexec/PlistBuddy -c "Delete :$feed_key" "$contents/Info.plist" 2>/dev/null || true
+  done
+fi
 
 # Sparkle decides an update exists by comparing CFBundleVersion against the
 # appcast, so shipping the checked-in placeholder on every release would leave
