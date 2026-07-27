@@ -15,12 +15,29 @@ app_bundle="$repo_root/dist/MetagentMenuBar.app"
 output="${1:-$repo_root/artifacts/Metagent.dmg}"
 volume_name="Metagent"
 signing_identity="${METAGENT_CODE_SIGN_IDENTITY:-}"
+background_png="$repo_root/public/brand/dmg-background.png"
+background_2x_png="$repo_root/public/brand/dmg-background@2x.png"
 
 if [[ ! -d "$app_bundle" ]]; then
   echo "No app bundle at $app_bundle." >&2
   echo "Run scripts/build-app.sh first." >&2
   exit 1
 fi
+
+for required_command in create-dmg tiffutil; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    echo "Missing required packaging tool: $required_command" >&2
+    echo "Install the release tools with: brew install create-dmg" >&2
+    exit 1
+  fi
+done
+
+for background_asset in "$background_png" "$background_2x_png"; do
+  if [[ ! -f "$background_asset" ]]; then
+    echo "No disk image background at $background_asset." >&2
+    exit 1
+  fi
+done
 
 if [[ -z "$signing_identity" ]]; then
   detected_identities="$(
@@ -37,28 +54,40 @@ if [[ -z "$signing_identity" ]]; then
   fi
 fi
 
-staging="$(mktemp -d)"
+temp_root="$(mktemp -d)"
+staging="$temp_root/source"
+background_tiff="$temp_root/dmg-background.tiff"
 cleanup() {
-  rm -rf "$staging"
+  rm -rf "$temp_root"
 }
 trap cleanup EXIT
 
 # The bundle is named for its executable on disk, but users should see the
 # product name, which is also where install-app.sh puts it.
+mkdir -p "$staging"
 /usr/bin/ditto "$app_bundle" "$staging/Metagent.app"
-ln -s /Applications "$staging/Applications"
+tiffutil \
+  -cathidpicheck "$background_png" "$background_2x_png" \
+  -out "$background_tiff"
 
 mkdir -p "$(dirname "$output")"
 rm -f "$output"
 
-hdiutil create \
-  -volname "$volume_name" \
-  -srcfolder "$staging" \
-  -fs HFS+ \
-  -format UDZO \
-  -imagekey zlib-level=9 \
-  -ov \
-  "$output"
+create-dmg \
+  --volname "$volume_name" \
+  --volicon "$app_bundle/Contents/Resources/AppIcon.icns" \
+  --background "$background_tiff" \
+  --window-pos 180 120 \
+  --window-size 384 260 \
+  --text-size 11 \
+  --icon-size 76 \
+  --icon "Metagent.app" 86 145 \
+  --app-drop-link 292 145 \
+  --no-internet-enable \
+  --hdiutil-retries 10 \
+  --overwrite \
+  "$output" \
+  "$staging"
 
 if [[ -n "$signing_identity" ]]; then
   # Signing the image itself is what lets Gatekeeper vouch for the download

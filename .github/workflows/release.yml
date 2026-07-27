@@ -46,7 +46,7 @@ jobs:
         run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
 
       - name: Install asset tooling
-        run: brew install librsvg
+        run: brew install create-dmg librsvg
 
       - name: Cache SwiftPM
         uses: actions/cache@v4

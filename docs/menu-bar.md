@@ -293,3 +293,17 @@ Required repository secrets:
 Settings shows the installed version and a `Check for Updates` action. When
 `SUFeedURL` is still a placeholder the app says so and stays quiet rather than
 contacting an invalid URL in the background.
+
+Configured release builds use Sparkle's standard update behavior: Metagent
+checks in the background once per day, presents the native update dialog when
+a release is available, and lets the user opt into automatic download and
+installation. The Settings action remains available for an immediate manual
+check.
+
+The public disk image combines the compact
+`public/brand/dmg-background.png` and
+`public/brand/dmg-background@2x.png` artwork into one Retina TIFF, places
+Metagent beside an Applications shortcut, and gives people the standard
+drag-to-install path. `create-dmg` is installed by the release workflow and is
+required for local release packaging; `librsvg` remains a release dependency
+for generating the app's menu-bar artwork.
