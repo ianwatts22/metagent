@@ -60,6 +60,9 @@ final class MetagentModel: ObservableObject {
     private var isReconcilingSkillRemovals = false
     private var autoEvaluatedPaths = Set<String>()
     private var hasCapturedHistory = false
+    private var hasAttemptedHistoryBackfill = false
+    private var historyBackfillAwaitingCompleteUsage = false
+    private var pendingHistoryTrigger: SkillHistoryTrigger?
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -305,6 +308,10 @@ final class MetagentModel: ObservableObject {
                 isUsageIndexingStalled = true
             }
             isUsageRefreshing = false
+            if let trigger = pendingHistoryTrigger {
+                pendingHistoryTrigger = nil
+                recordHistory(trigger: trigger)
+            }
         }
     }
 
@@ -748,14 +755,31 @@ final class MetagentModel: ObservableObject {
     /// whatever history can be reconstructed from creation dates, the removal
     /// archive, and the usage event log.
     private func recordHistory(trigger: SkillHistoryTrigger) {
+        // Inventory and usage refresh concurrently. Backfill reads the usage
+        // database directly, so starting it while indexing is in flight can
+        // reconstruct against a partial corpus. Queue the capture until the
+        // indexer reaches its terminal state; the core also leaves an incomplete
+        // backfill eligible to retry after a stall or an indexing failure.
+        guard !isUsageRefreshing else {
+            if pendingHistoryTrigger != .launch {
+                pendingHistoryTrigger = trigger
+            }
+            return
+        }
         let coreProjects = projects.map(\.coreProject)
         let usage = usageSnapshot
         let issues = doctorIssues
         let mcp = mcpHealth
-        let needsBackfill = !hasCapturedHistory
+        let shouldBackfill = !hasAttemptedHistoryBackfill
+            || (historyBackfillAwaitingCompleteUsage && usage.isBackfillComplete)
+        hasAttemptedHistoryBackfill = true
+        historyBackfillAwaitingCompleteUsage = !usage.isBackfillComplete
         hasCapturedHistory = true
         Task.detached(priority: .background) {
-            if needsBackfill {
+            if shouldBackfill {
+                // An incomplete first pass is retried when this session's usage
+                // snapshot transitions to complete. Machines with no session
+                // corpus do not rebuild the same history on every refresh.
                 _ = try? MetagentCore.backfillSkillHistory(projects: coreProjects)
             }
             _ = try? MetagentCore.captureSkillHistory(

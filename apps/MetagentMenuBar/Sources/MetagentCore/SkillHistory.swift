@@ -764,6 +764,20 @@ final class SkillHistoryStore {
         }
     }
 
+    func deleteEvents(origin: SkillHistoryOrigin) throws {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        var statement: OpaquePointer?
+        try prepare(db, "DELETE FROM history_events WHERE origin = ?;", &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, origin.rawValue)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw databaseError(db, "delete \(origin.rawValue) events")
+        }
+    }
+
     // MARK: State folding
 
     private func applyStates(

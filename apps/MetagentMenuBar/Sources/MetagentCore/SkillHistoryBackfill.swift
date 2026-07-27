@@ -35,11 +35,28 @@ struct ReconstructedSkill: Sendable, Equatable {
     let key: String
     let name: String
     let scope: String
+    let projectRoot: String?
     let installedOn: String
     let removedOn: String?
+
+    init(
+        key: String,
+        name: String,
+        scope: String,
+        projectRoot: String? = nil,
+        installedOn: String,
+        removedOn: String?
+    ) {
+        self.key = key
+        self.name = name
+        self.scope = scope
+        self.projectRoot = projectRoot
+        self.installedOn = installedOn
+        self.removedOn = removedOn
+    }
 }
 
-private let historyBackfillVersion = 1
+private let historyBackfillVersion = 2
 private let historyBackfillVersionKey = "backfill_version"
 private let historyBackfillWindowDays = 400
 
@@ -75,8 +92,23 @@ public extension MetagentCore {
                 warnings: []
             )
         }
+        // Version 1 keyed archived removals to an assumed `.agents` path.
+        // Rebuilding without clearing those inferred events leaves both the old
+        // and corrected path-based IDs in the timeline.
+        try store.deleteEvents(origin: .inferred)
 
         var warnings: [String] = []
+        let usageSnapshot = MetagentCore.loadSkillUsageSnapshot(databasePath: usageDatabasePath)
+        let usageIndexIsComplete = usageSnapshot?.isBackfillComplete == true
+        if !usageIndexIsComplete {
+            warnings.append(
+                "Usage history is still indexing. Reconstructed usage may be partial, and the backfill will retry after indexing completes."
+            )
+        }
+        func markBackfillComplete() throws {
+            guard usageIndexIsComplete else { return }
+            try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
+        }
         let archiveRoot = removalArchive ?? homeURL().standardizedFileURL
             .appendingPathComponent("Library/Application Support/Metagent/Removed Skills")
         let gitLifetimes = gitSkillLifetimes(projects: projects)
@@ -93,7 +125,8 @@ public extension MetagentCore {
         let archiveKeys = Set(archiveRemovals.map(\.key))
         let removals = archiveRemovals + gitOnlyRemovals(
             gitLifetimes: gitLifetimes,
-            installedKeys: Set(installedByKey.keys)
+            installedKeys: Set(installedByKey.keys),
+            projects: projects
         ).filter { !archiveKeys.contains($0.key) }
         let reconstructed = installed + removals.filter { removal in
             // A skill installed again at the same path has two separate
@@ -116,7 +149,7 @@ public extension MetagentCore {
         let usageCoverageStartsAt = dayCounts.map(\.day).min()
 
         guard !reconstructed.isEmpty || !dayCounts.isEmpty else {
-            try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
+            try markBackfillComplete()
             return SkillHistoryBackfillReport(
                 daysWritten: 0,
                 installEvents: 0,
@@ -148,7 +181,7 @@ public extension MetagentCore {
         .compactMap { $0 }
         .min()
         guard let firstDay = [earliestSignal, windowStart].compactMap({ $0 }).max() else {
-            try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
+            try markBackfillComplete()
             return SkillHistoryBackfillReport(
                 daysWritten: 0,
                 installEvents: 0,
@@ -165,9 +198,7 @@ public extension MetagentCore {
             // Today belongs to the live capture path, which has the real
             // content metrics; an inferred row would only be overwritten.
             guard day != today else { continue }
-            let alive = reconstructed.filter { skill in
-                skill.installedOn <= day && (skill.removedOn.map { day < $0 } ?? true)
-            }
+            let alive = reconstructedSkillsAlive(on: day, from: reconstructed)
             guard !alive.isEmpty else { continue }
             let metrics = reconstructedMetrics(
                 alive: alive,
@@ -191,11 +222,13 @@ public extension MetagentCore {
 
         func scopeKey(_ skill: ReconstructedSkill) -> String {
             skill.scope == "project"
-                ? SkillHistoryScope.project(root: projectRootForSkill(skill.key)).key
+                ? SkillHistoryScope.project(
+                    root: skill.projectRoot ?? projectRootForSkill(skill.key)
+                ).key
                 : SkillHistoryScope.global.key
         }
 
-        let installEvents = installed.map { skill in
+        let currentInstallEvents = installed.map { skill in
             let fromGit = gitLifetimes[skill.key]?.installedOn == skill.installedOn
             return SkillHistoryEvent(
                 id: "added:\(skill.key):inferred",
@@ -208,6 +241,24 @@ public extension MetagentCore {
                 detail: ["evidence": fromGit ? "git history" : "directory creation date"]
             )
         }
+        // Removed skills also had an installation. Preserve both ends of their
+        // lifetime so a historical skill's timeline does not begin with a
+        // removal. The removal day is part of the ID because one path can be
+        // removed and reinstalled more than once.
+        let historicalInstallEvents = removals.map { skill in
+            let fromGit = gitLifetimes[skill.key]?.installedOn == skill.installedOn
+            return SkillHistoryEvent(
+                id: "added:\(skill.key):inferred:\(skill.installedOn):\(skill.removedOn ?? "")",
+                occurredAt: middayOf(skill.installedOn, calendar: calendar) ?? now,
+                kind: .added,
+                subjectKey: skill.key,
+                subjectName: skill.name,
+                scopeKey: scopeKey(skill),
+                origin: .inferred,
+                detail: ["evidence": fromGit ? "git history" : "removal archive"]
+            )
+        }
+        let installEvents = currentInstallEvents + historicalInstallEvents
         let removalEvents = removals.compactMap { skill -> SkillHistoryEvent? in
             guard let removedOn = skill.removedOn else { return nil }
             let fromGit = gitLifetimes[skill.key]?.removedOn == removedOn
@@ -243,7 +294,7 @@ public extension MetagentCore {
             }
         }
         try store.insertEvents(installEvents + removalEvents + changeEvents)
-        try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
+        try markBackfillComplete()
         if let usageCoverageStartsAt {
             try store.setMetadata("usage_coverage_starts_at", usageCoverageStartsAt)
         }
@@ -286,10 +337,17 @@ func reconstructedMetrics(
 ) -> [(scope: String, metric: SkillHistoryMetric, value: Double)] {
     var metrics: [(scope: String, metric: SkillHistoryMetric, value: Double)] = []
     let windowStart = day30DaysBefore(day, calendar: calendar)
-    let byScope: [(SkillHistoryScope, [ReconstructedSkill])] = [
+    var byScope: [(SkillHistoryScope, [ReconstructedSkill])] = [
         (.all, alive),
         (.global, alive.filter { $0.scope != "project" }),
     ]
+    let projectSkills = Dictionary(
+        grouping: alive.filter { $0.scope == "project" },
+        by: { $0.projectRoot ?? projectRootForSkill($0.key) }
+    )
+    byScope.append(contentsOf: projectSkills.keys.sorted().map { root in
+        (.project(root: root), projectSkills[root] ?? [])
+    })
 
     for (scope, skills) in byScope where !skills.isEmpty {
         metrics.append((scope.key, .portfolioSkills, Double(skills.count)))
@@ -324,6 +382,19 @@ func reconstructedMetrics(
     return metrics
 }
 
+/// The lifetime predicate used by the backfill for every reconstructed day.
+///
+/// Removal days are exclusive: a skill moved to recovery on June 1 existed
+/// through May 31, while a replacement installed on June 1 starts that day.
+func reconstructedSkillsAlive(
+    on day: String,
+    from skills: [ReconstructedSkill]
+) -> [ReconstructedSkill] {
+    skills.filter { skill in
+        skill.installedOn <= day && (skill.removedOn.map { day < $0 } ?? true)
+    }
+}
+
 /// Installed skills that still exist, dated by git where the skills directory is
 /// tracked and by directory creation time everywhere else.
 ///
@@ -355,6 +426,7 @@ func reconstructedInstalls(
             key: key,
             name: skill.name,
             scope: skill.scope,
+            projectRoot: skill.scope == "project" ? entry.projectRoot : nil,
             installedOn: installedOn,
             removedOn: nil
         )
@@ -369,20 +441,29 @@ func reconstructedInstalls(
 /// to it and visible here.
 func gitOnlyRemovals(
     gitLifetimes: [String: GitSkillLifetime],
-    installedKeys: Set<String>
+    installedKeys: Set<String>,
+    projects: [SkillProject] = []
 ) -> [ReconstructedSkill] {
     gitLifetimes.values.compactMap { lifetime -> ReconstructedSkill? in
         guard let removedOn = lifetime.removedOn,
               !installedKeys.contains(lifetime.skillKey),
               let installedOn = lifetime.installedOn
         else { return nil }
+        let matchedRoot = projects
+            .filter {
+                let skillsDir = standardizedHistoryPath($0.skillsDir)
+                return lifetime.skillKey == skillsDir
+                    || lifetime.skillKey.hasPrefix(skillsDir + "/")
+            }
+            .max { $0.skillsDir.count < $1.skillsDir.count }
+            .map { standardizedHistoryPath($0.root) }
+        let isGlobal = matchedRoot == homeURL().standardizedFileURL.path
+        let projectRoot = isGlobal ? nil : matchedRoot
         return ReconstructedSkill(
             key: lifetime.skillKey,
             name: lifetime.name,
-            scope: lifetime.skillKey.contains("/.agents/skills/")
-                && !lifetime.skillKey.hasPrefix(homeURL().standardizedFileURL.path + "/.agents/")
-                ? "project"
-                : "global",
+            scope: matchedRoot == nil || isGlobal ? "global" : "project",
+            projectRoot: projectRoot,
             installedOn: min(installedOn, removedOn),
             removedOn: removedOn
         )
@@ -426,8 +507,37 @@ func reconstructedRemovals(
         else { continue }
         let projectURL = URL(fileURLWithPath: project)
         let isGlobal = standardizedHistoryPath(project) == homeURL().standardizedFileURL.path
+        func inventorySnapshot(named name: String) -> RemovalInventorySnapshot? {
+            guard let data = try? Data(contentsOf: entry.appendingPathComponent(name)) else {
+                return nil
+            }
+            return try? JSONDecoder().decode(RemovalInventorySnapshot.self, from: data)
+        }
+        let beforeSnapshot = inventorySnapshot(named: "before.json")
+        let afterSnapshot = inventorySnapshot(named: "after.json")
+        let remainingCanonicalPaths = Set(
+            afterSnapshot?.matchingCopies
+                .filter { $0.representation == "canonical" }
+                .map { standardizedHistoryPath($0.path) } ?? []
+        )
+        let removedCanonicalPaths = beforeSnapshot?.matchingCopies
+            .filter {
+                $0.representation == "canonical"
+                    && !remainingCanonicalPaths.contains(standardizedHistoryPath($0.path))
+            }
+            .map(\.path) ?? []
+        let recordedCanonicalPath = removedCanonicalPaths.count == 1
+            ? removedCanonicalPaths[0]
+            : beforeSnapshot?.matchingCopies
+                .filter { $0.representation == "canonical" }
+                .sorted {
+                    let priority = ["agents": 0, "codex": 1, "claude": 2]
+                    return priority[$0.location, default: 3] < priority[$1.location, default: 3]
+                }
+                .first?.path
         let key = standardizedHistoryPath(
-            projectURL.appendingPathComponent(".agents/skills/\(name)").path
+            recordedCanonicalPath
+                ?? projectURL.appendingPathComponent(".agents/skills/\(name)").path
         )
         let removedOn = historyDay(removedDate, calendar: calendar)
         let archivedBundle = entry.appendingPathComponent(name).path
@@ -437,6 +547,7 @@ func reconstructedRemovals(
             key: key,
             name: name,
             scope: isGlobal ? "global" : "project",
+            projectRoot: isGlobal ? nil : standardizedHistoryPath(project),
             installedOn: min(installedOn, removedOn),
             removedOn: removedOn
         ))

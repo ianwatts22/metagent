@@ -471,7 +471,7 @@ struct SkillHistoryBackfillTests {
 
     @Test("counts a removed skill for the days it was actually installed")
     func removedSkillsSpanTheirLifetime() {
-        let alive = [
+        let skills = [
             ReconstructedSkill(
                 key: "/Users/tester/.agents/skills/alpha",
                 name: "alpha",
@@ -480,13 +480,9 @@ struct SkillHistoryBackfillTests {
                 removedOn: "2026-06-01"
             ),
         ]
-        let onlyBefore = alive.filter { skill in
-            skill.installedOn <= "2026-05-15" && (skill.removedOn.map { "2026-05-15" < $0 } ?? true)
-        }
+        let onlyBefore = reconstructedSkillsAlive(on: "2026-05-15", from: skills)
         #expect(onlyBefore.count == 1)
-        let afterRemoval = alive.filter { skill in
-            skill.installedOn <= "2026-06-15" && (skill.removedOn.map { "2026-06-15" < $0 } ?? true)
-        }
+        let afterRemoval = reconstructedSkillsAlive(on: "2026-06-15", from: skills)
         #expect(afterRemoval.isEmpty)
     }
 
@@ -517,6 +513,140 @@ struct SkillHistoryBackfillTests {
         // is later than the recorded removal; the lifetime is clamped rather
         // than inverted.
         #expect(removals[0].installedOn <= removals[0].removedOn!)
+    }
+
+    @Test("uses the recorded canonical path for an archived skill")
+    func archivedSkillUsesRecordedCanonicalPath() throws {
+        let archive = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-archive-\(UUID().uuidString)")
+        let entry = archive.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: entry.appendingPathComponent("legacy"),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: archive) }
+        try """
+        project=/Users/tester/code/sample
+        skill=legacy
+        removed_at=2026-06-04T10:00:00Z
+        """.write(
+            to: entry.appendingPathComponent("REMOVAL.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        {
+          "phase": "before",
+          "capturedAt": "2026-06-04T10:00:00Z",
+          "projectRoot": "/Users/tester/code/sample",
+          "skillName": "legacy",
+          "canonicalSkillCount": 1,
+          "matchingCopies": [
+            {
+              "path": "/Users/tester/code/sample/.codex/skills/legacy",
+              "location": "codex",
+              "manager": "local",
+              "representation": "canonical"
+            }
+          ]
+        }
+        """.write(
+            to: entry.appendingPathComponent("before.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let removals = reconstructedRemovals(archive: archive, calendar: calendar)
+        #expect(removals.first?.key == "/Users/tester/code/sample/.codex/skills/legacy")
+    }
+
+    @Test("uses the canonical copy that disappeared from the removal snapshot")
+    func archivedSkillUsesRemovedCanonicalPath() throws {
+        let archive = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-archive-\(UUID().uuidString)")
+        let entry = archive.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: entry.appendingPathComponent("legacy"),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: archive) }
+        try """
+        project=/Users/tester/code/sample
+        skill=legacy
+        removed_at=2026-06-04T10:00:00Z
+        """.write(
+            to: entry.appendingPathComponent("REMOVAL.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        func snapshot(phase: String, copies: String) -> String {
+            """
+            {
+              "phase": "\(phase)",
+              "capturedAt": "2026-06-04T10:00:00Z",
+              "projectRoot": "/Users/tester/code/sample",
+              "skillName": "legacy",
+              "canonicalSkillCount": 2,
+              "matchingCopies": [\(copies)]
+            }
+            """
+        }
+        let codex = """
+        {"path":"/Users/tester/code/sample/.codex/skills/legacy","location":"codex","manager":"local","representation":"canonical"}
+        """
+        let claude = """
+        {"path":"/Users/tester/code/sample/.claude/skills/legacy","location":"claude","manager":"local","representation":"canonical"}
+        """
+        try snapshot(phase: "before", copies: "\(claude),\(codex)").write(
+            to: entry.appendingPathComponent("before.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try snapshot(phase: "after", copies: claude).write(
+            to: entry.appendingPathComponent("after.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let removals = reconstructedRemovals(archive: archive, calendar: calendar)
+        #expect(removals.first?.key == "/Users/tester/code/sample/.codex/skills/legacy")
+    }
+
+    @Test("emits both ends of a removed skill's historical lifetime")
+    func removedSkillEmitsInstallAndRemovalEvents() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-archive-events-\(UUID().uuidString)")
+        let archive = root.appendingPathComponent("archive")
+        let entry = archive.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: entry.appendingPathComponent("legacy"),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try """
+        project=/Users/tester/code/sample
+        skill=legacy
+        removed_at=2026-06-04T10:00:00Z
+        """.write(
+            to: entry.appendingPathComponent("REMOVAL.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let databasePath = root.appendingPathComponent("history.sqlite").path
+
+        let report = try MetagentCore.backfillSkillHistory(
+            projects: [],
+            usageDatabasePath: root.appendingPathComponent("usage.sqlite").path,
+            removalArchive: archive,
+            now: ISO8601DateFormatter().date(from: "2026-06-10T12:00:00Z")!,
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        #expect(report.installEvents == 1)
+        #expect(report.removalEvents == 1)
+        let events = try MetagentCore.skillHistoryEvents(databasePath: databasePath)
+        #expect(events.map(\.kind.rawValue).sorted() == ["added", "removed"])
+        #expect(events.allSatisfy { $0.subjectName == "legacy" && $0.origin == .inferred })
     }
 
     @Test("reconstructs adoption from timestamped reads only")
@@ -556,6 +686,117 @@ struct SkillHistoryBackfillTests {
         #expect(value(.adoptionActive30d) == 1)
         #expect(value(.adoptionNeverObserved) == 1)
         #expect(value(.adoptionUnused30d) == 1)
+    }
+
+    @Test("reconstructs metrics for each project scope")
+    func reconstructsProjectScopeMetrics() {
+        let alive = [
+            ReconstructedSkill(
+                key: "/repo-one/.agents/skills/alpha",
+                name: "alpha",
+                scope: "project",
+                installedOn: "2026-05-01",
+                removedOn: nil
+            ),
+            ReconstructedSkill(
+                key: "/repo-two/.codex/skills/vendor/beta",
+                name: "beta",
+                scope: "project",
+                projectRoot: "/repo-two",
+                installedOn: "2026-05-01",
+                removedOn: nil
+            ),
+        ]
+        let metrics = reconstructedMetrics(
+            alive: alive,
+            day: "2026-06-20",
+            readsByKeyDay: [
+                "/repo-one/.agents/skills/alpha": ["2026-06-10": 2],
+            ],
+            hasUsageCorpus: true,
+            calendar: calendar
+        )
+        func value(_ metric: SkillHistoryMetric, root: String) -> Double? {
+            metrics.first {
+                $0.scope == SkillHistoryScope.project(root: root).key
+                    && $0.metric == metric
+            }?.value
+        }
+        #expect(value(.portfolioSkills, root: "/repo-one") == 1)
+        #expect(value(.adoptionObserved, root: "/repo-one") == 1)
+        #expect(value(.portfolioSkills, root: "/repo-two") == 1)
+        #expect(value(.adoptionNeverObserved, root: "/repo-two") == 1)
+    }
+
+    @Test("keeps an incomplete usage backfill eligible to retry")
+    func incompleteUsageBackfillRetries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-history-retry-\(UUID().uuidString)")
+        let skillDirectory = root.appendingPathComponent(".agents/skills/alpha")
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "---\nname: alpha\ndescription: fixture\n---\n".write(
+            to: skillDirectory.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let usageDatabase = root.appendingPathComponent("usage.sqlite").path
+        let historyDatabase = root.appendingPathComponent("history.sqlite").path
+        let project = SkillProject(
+            root: root.path,
+            skillsDir: root.appendingPathComponent(".agents/skills").path,
+            validSkills: ["alpha"],
+            skills: [.fixture(
+                name: "alpha",
+                path: skillDirectory.path,
+                originKind: "project-local",
+                scope: "project",
+                authority: "local"
+            )]
+        )
+
+        _ = MetagentCore.loadSkillUsageSnapshot(databasePath: usageDatabase)
+        let partial = try MetagentCore.backfillSkillHistory(
+            projects: [project],
+            usageDatabasePath: usageDatabase,
+            now: Date().addingTimeInterval(86_400),
+            calendar: calendar,
+            databasePath: historyDatabase
+        )
+        #expect(!partial.skipped)
+        #expect(try SkillHistoryStore(path: historyDatabase).metadata("backfill_version") == nil)
+
+        try "{}\n".write(
+            to: sessions.appendingPathComponent("rollout.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let refreshed = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: usageDatabase,
+            maxBytes: 1_024,
+            maxFiles: 10
+        ))
+        #expect(refreshed.snapshot.isBackfillComplete)
+
+        let completed = try MetagentCore.backfillSkillHistory(
+            projects: [project],
+            usageDatabasePath: usageDatabase,
+            now: Date().addingTimeInterval(86_400),
+            calendar: calendar,
+            databasePath: historyDatabase
+        )
+        #expect(!completed.skipped)
+        let skipped = try MetagentCore.backfillSkillHistory(
+            projects: [project],
+            usageDatabasePath: usageDatabase,
+            now: Date().addingTimeInterval(86_400),
+            calendar: calendar,
+            databasePath: historyDatabase
+        )
+        #expect(skipped.skipped)
     }
 
     @Test("records no adoption metrics when the usage corpus is missing")
@@ -672,12 +913,46 @@ struct SkillHistoryBackfillTests {
         ]
         let removals = gitOnlyRemovals(
             gitLifetimes: lifetimes,
-            installedKeys: ["/repo/.agents/skills/present"]
+            installedKeys: ["/repo/.agents/skills/present"],
+            projects: [SkillProject(
+                root: "/repo",
+                skillsDir: "/repo/.agents/skills",
+                validSkills: [],
+                skills: []
+            )]
         )
         #expect(removals.count == 1)
         #expect(removals[0].name == "gone")
+        #expect(removals[0].scope == "project")
+        #expect(removals[0].projectRoot == "/repo")
         #expect(removals[0].installedOn == "2026-03-01")
         #expect(removals[0].removedOn == "2026-05-01")
+    }
+
+    @Test("keeps git removals from the home skill directory global")
+    func gitHomeRemovalIsGlobal() {
+        let home = homeURL().standardizedFileURL.path
+        let skillKey = "\(home)/.agents/skills/gone"
+        let removals = gitOnlyRemovals(
+            gitLifetimes: [
+                skillKey: GitSkillLifetime(
+                    skillKey: skillKey,
+                    name: "gone",
+                    installedOn: "2026-03-01",
+                    removedOn: "2026-05-01",
+                    changedOn: []
+                ),
+            ],
+            installedKeys: [],
+            projects: [SkillProject(
+                root: home,
+                skillsDir: "\(home)/.agents/skills",
+                validSkills: [],
+                skills: []
+            )]
+        )
+        #expect(removals.first?.scope == "global")
+        #expect(removals.first?.projectRoot == nil)
     }
 
     @Test("does not report a skill as removed when git shows it still installed")
