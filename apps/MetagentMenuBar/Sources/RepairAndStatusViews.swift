@@ -248,6 +248,7 @@ struct RepairProjectView: View {
                     Image(systemName: "arrow.up.right.square")
                 }
                 .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
                 .help("Open Project")
             }
 

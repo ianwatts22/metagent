@@ -38,6 +38,9 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
     @Published private(set) var isSkillEvaluating = false
     @Published private(set) var skillEvaluationStatusText: String?
+    /// Fraction complete for a multi-skill Plugin Eval run; nil when the run
+    /// has no meaningful total (single skill, Codex review).
+    @Published private(set) var skillEvaluationProgress: Double?
     @Published private(set) var isPluginInventoryAvailable = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
@@ -99,7 +102,10 @@ final class MetagentModel: ObservableObject {
             return .working(progress: usageIndexingProgress, label: usageStatusText)
         }
         if isSkillEvaluating {
-            return .working(progress: nil, label: skillEvaluationStatusText ?? "Evaluating skills…")
+            return .working(
+                progress: skillEvaluationProgress,
+                label: skillEvaluationStatusText ?? "Evaluating skills…"
+            )
         }
         if isMCPRefreshing {
             return .working(progress: nil, label: "Checking MCP servers…")
@@ -372,6 +378,7 @@ final class MetagentModel: ObservableObject {
         skillEvaluationStatusText = uniquePaths.count == 1
             ? "Running Plugin Eval…"
             : "Running Plugin Eval for \(uniquePaths.count) skills…"
+        skillEvaluationProgress = uniquePaths.count == 1 ? nil : 0
 
         Task {
             var failedSkillNames: [String] = []
@@ -388,12 +395,14 @@ final class MetagentModel: ObservableObject {
                     skillEvaluationStatusText = uniquePaths.count == 1
                         ? "Plugin Eval complete"
                         : "Plugin Eval \(index + 1) of \(uniquePaths.count)"
+                    skillEvaluationProgress = Double(index + 1) / Double(uniquePaths.count)
                 } catch {
                     failedSkillNames.append(URL(fileURLWithPath: path).lastPathComponent)
                     if firstFailureDetail == nil {
                         firstFailureDetail = error.localizedDescription
                     }
                     skillEvaluationStatusText = "Plugin Eval \(index + 1) of \(uniquePaths.count) · \(failedSkillNames.count) failed"
+                    skillEvaluationProgress = Double(index + 1) / Double(uniquePaths.count)
                 }
             }
             if !failedSkillNames.isEmpty {
@@ -402,6 +411,7 @@ final class MetagentModel: ObservableObject {
                 let detail = firstFailureDetail.map { " · \($0)" } ?? ""
                 skillEvaluationStatusText = "Plugin Eval finished · \(failedSkillNames.count) failed: \(preview)\(suffix)\(detail)"
             }
+            skillEvaluationProgress = nil
             isSkillEvaluating = false
             runQueuedStatusRefreshIfNeeded()
         }

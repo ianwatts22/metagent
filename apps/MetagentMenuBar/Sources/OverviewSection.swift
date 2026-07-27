@@ -66,9 +66,6 @@ struct OverviewSection: View {
         VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
             skillHealthSummary
             mcpConnections
-            if doctorActionCount > 0 {
-                cleanupStatus
-            }
         }
         .frame(maxWidth: .infinity, alignment: .top)
     }
@@ -147,6 +144,13 @@ struct OverviewSection: View {
                     }
                 }
 
+            }
+
+            // Cleanup belongs to the skill corpus, so it lives inside this
+            // card instead of dangling below the MCP row as its own section.
+            if doctorActionCount > 0 {
+                Divider()
+                cleanupStatus
             }
         }
         .padding(isCompact ? 12 : 14)
@@ -681,9 +685,8 @@ struct OverviewSection: View {
 
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .cardBackground()
+        .padding(.horizontal, 2)
+        .padding(.vertical, 3)
     }
 
     private var healthMessage: String {

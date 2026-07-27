@@ -75,35 +75,39 @@ struct MetagentPanel: View {
         }
     }
 
-    /// One app-wide report on whatever is processing, so every destination
-    /// describes it the same way instead of each inventing its own phrasing.
+    /// Attention states only; work in progress reports through the refresh
+    /// slot instead, so the control line never grows a second capsule.
     @ViewBuilder
     private var activityControl: some View {
-        if let activity = model.activity {
-            ActivityBadge(
-                activity: activity,
-                maxLabelWidth: showsOpenWindowButton ? 148 : 240
-            )
+        if let activity = model.activity, activity.needsAttention {
+            ActivityBadge(activity: activity)
         }
     }
 
     /// The one reload: rescan skills and Doctor findings, recheck MCP
-    /// configuration, and continue indexing session history.
+    /// configuration, and continue indexing session history. While work is
+    /// running the button gives its slot to the progress indicator — reload
+    /// would be a no-op then anyway.
+    @ViewBuilder
     private var refreshControl: some View {
-        Button {
-            model.refreshAll()
-        } label: {
-            GlassMenuLabel(
-                title: nil,
-                systemImage: "arrow.clockwise",
-                width: 44,
-                showsChevron: false
-            )
+        if let activity = model.activity, !activity.needsAttention {
+            ActivityBadge(activity: activity)
+        } else {
+            Button {
+                model.refreshAll()
+            } label: {
+                GlassMenuLabel(
+                    title: nil,
+                    systemImage: "arrow.clockwise",
+                    width: 36,
+                    showsChevron: false
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isRefreshing)
+            .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
+            .accessibilityLabel("Reload")
         }
-        .buttonStyle(.plain)
-        .disabled(model.isRefreshing)
-        .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
-        .accessibilityLabel("Reload")
     }
 
     private var brandMark: some View {
@@ -129,9 +133,9 @@ struct MetagentPanel: View {
                     .frame(width: 20)
             }
             .buttonStyle(.glass)
-            .buttonBorderShape(.capsule)
+            .buttonBorderShape(.circle)
             .controlSize(.regular)
-            .frame(width: 42, height: 36)
+            .frame(width: 36, height: 36)
             .help("\(model.statusText). Open logs.")
             .accessibilityLabel("\(model.statusText). Open logs.")
         }
@@ -184,7 +188,7 @@ struct MetagentPanel: View {
             GlassMenuLabel(
                 title: nil,
                 systemImage: "gearshape",
-                width: 44,
+                width: 36,
                 showsChevron: false
             )
         }
@@ -303,6 +307,7 @@ struct MetagentPanel: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .help("Quit Metagent")
         }
     }
@@ -370,10 +375,11 @@ enum AppActivity: Equatable {
 
 struct ActivityBadge: View {
     let activity: AppActivity
-    let maxLabelWidth: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
+        // Just the indicator: the label lives in the tooltip so a long report
+        // like "Plugin Eval 13 of 107" cannot crowd out the tab strip.
+        Group {
             switch activity {
             case let .working(progress, _):
                 if let progress {
@@ -388,18 +394,11 @@ struct ActivityBadge: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
-
-            Text(activity.label)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: maxLabelWidth, alignment: .leading)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
+        .frame(width: 36, height: 36)
         .glassEffect(
             .regular.tint(activity.needsAttention ? Color.orange.opacity(0.22) : nil),
-            in: Capsule()
+            in: Circle()
         )
         .help(activity.help)
         .accessibilityElement(children: .combine)
@@ -463,32 +462,42 @@ struct GlassMenuLabel: View {
     var showsChevron = true
 
     var body: some View {
-        // With no title and no chevron the glyph is the whole control, so it
-        // centres rather than sitting against the leading edge.
-        HStack(spacing: 7) {
+        // With no title and no chevron the glyph is the whole control: a true
+        // circle, since a 44-wide capsule reads as squashed next to real text
+        // controls.
+        if title == nil, !showsChevron {
             Image(systemName: systemImage)
                 .foregroundStyle(.secondary)
-            if let title {
-                Text(title)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-            }
-            if showsChevron {
-                if title == nil {
+                .font(.callout.weight(.medium))
+                .frame(width: 36, height: 36)
+                .contentShape(Circle())
+                .glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            HStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                if let title {
+                    Text(title)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Spacer(minLength: 4)
                 }
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if showsChevron {
+                    if title == nil {
+                        Spacer(minLength: 4)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(maxWidth: .infinity)
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 11)
+            .frame(width: width, height: 36)
+            .contentShape(Capsule())
+            .glassEffect(.regular.interactive(), in: Capsule())
         }
-        .frame(maxWidth: .infinity)
-        .font(.callout.weight(.medium))
-        .padding(.horizontal, 11)
-        .frame(width: width, height: 36)
-        .contentShape(Capsule())
-        .glassEffect(.regular.interactive(), in: Capsule())
     }
 }
 

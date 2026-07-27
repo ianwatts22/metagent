@@ -372,6 +372,7 @@ struct DuplicateCandidateCard: View {
                     Image(systemName: "info.circle")
                 }
                 .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
                 .help("Get Info")
                 Spacer()
                 if canRemove {
