@@ -523,6 +523,90 @@ struct SkillHistoryBackfillTests {
         #expect(series[0].origin == .observed)
     }
 
+    @Test("parses name-status output into per-file changes")
+    func parsesGitLog() {
+        let output = """
+        C|abc123|2026-07-24
+
+        A\tskills/alpha/SKILL.md
+        D\tskills/beta/SKILL.md
+        C|def456|2026-07-20
+
+        M\tskills/alpha/references/guide.md
+        """
+        let changes = parseGitSkillLog(output)
+        #expect(changes.count == 3)
+        #expect(changes[0] == GitChange(day: "2026-07-24", status: "A", path: "skills/alpha/SKILL.md"))
+        #expect(changes[1] == GitChange(day: "2026-07-24", status: "D", path: "skills/beta/SKILL.md"))
+        #expect(changes[2].day == "2026-07-20")
+        #expect(changes[2].status == "M")
+    }
+
+    @Test("splits a rename into a deletion and an addition")
+    func parsesRenameAsDeleteAndAdd() {
+        let output = """
+        C|abc123|2026-07-24
+
+        R100\tskills/old-name/SKILL.md\tskills/new-name/SKILL.md
+        """
+        let changes = parseGitSkillLog(output)
+        #expect(changes.count == 2)
+        #expect(changes[0] == GitChange(day: "2026-07-24", status: "D", path: "skills/old-name/SKILL.md"))
+        #expect(changes[1] == GitChange(day: "2026-07-24", status: "A", path: "skills/new-name/SKILL.md"))
+    }
+
+    @Test("ignores output before the first commit header")
+    func ignoresHeaderlessChanges() {
+        #expect(parseGitSkillLog("M\tskills/alpha/SKILL.md").isEmpty)
+    }
+
+    @Test("surfaces git deletions the removal archive never recorded")
+    func gitFindsRemovalsTheArchiveMissed() {
+        let lifetimes = [
+            "/repo/.agents/skills/gone": GitSkillLifetime(
+                skillKey: "/repo/.agents/skills/gone",
+                name: "gone",
+                installedOn: "2026-03-01",
+                removedOn: "2026-05-01",
+                changedOn: []
+            ),
+            "/repo/.agents/skills/present": GitSkillLifetime(
+                skillKey: "/repo/.agents/skills/present",
+                name: "present",
+                installedOn: "2026-03-01",
+                removedOn: nil,
+                changedOn: ["2026-04-02"]
+            ),
+        ]
+        let removals = gitOnlyRemovals(
+            gitLifetimes: lifetimes,
+            installedKeys: ["/repo/.agents/skills/present"]
+        )
+        #expect(removals.count == 1)
+        #expect(removals[0].name == "gone")
+        #expect(removals[0].installedOn == "2026-03-01")
+        #expect(removals[0].removedOn == "2026-05-01")
+    }
+
+    @Test("does not report a skill as removed when git shows it still installed")
+    func skipsStillInstalledSkills() {
+        let lifetimes = [
+            "/repo/.agents/skills/alpha": GitSkillLifetime(
+                skillKey: "/repo/.agents/skills/alpha",
+                name: "alpha",
+                installedOn: "2026-03-01",
+                removedOn: "2026-05-01",
+                changedOn: []
+            ),
+        ]
+        // Present on disk now, so the recorded deletion was undone by a later
+        // re-add that predates the scan.
+        #expect(gitOnlyRemovals(
+            gitLifetimes: lifetimes,
+            installedKeys: ["/repo/.agents/skills/alpha"]
+        ).isEmpty)
+    }
+
     @Test("day arithmetic stays stable across a daylight saving transition")
     func dayRangeAcrossDSTShift() {
         var pacific = Calendar(identifier: .gregorian)

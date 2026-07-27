@@ -79,9 +79,22 @@ public extension MetagentCore {
         var warnings: [String] = []
         let archiveRoot = removalArchive ?? homeURL().standardizedFileURL
             .appendingPathComponent("Library/Application Support/Metagent/Removed Skills")
-        let removals = reconstructedRemovals(archive: archiveRoot)
-        let installed = reconstructedInstalls(projects: projects, calendar: calendar)
+        let gitLifetimes = gitSkillLifetimes(projects: projects)
+        let archiveRemovals = reconstructedRemovals(archive: archiveRoot)
+        let installed = reconstructedInstalls(
+            projects: projects,
+            gitLifetimes: gitLifetimes,
+            calendar: calendar
+        )
         let installedByKey = Dictionary(installed.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        // Git sees deletions the archive never recorded; the archive sees
+        // removals in directories git does not track. Together they cover more
+        // than either alone, deduplicated by skill key.
+        let archiveKeys = Set(archiveRemovals.map(\.key))
+        let removals = archiveRemovals + gitOnlyRemovals(
+            gitLifetimes: gitLifetimes,
+            installedKeys: Set(installedByKey.keys)
+        ).filter { !archiveKeys.contains($0.key) }
         let reconstructed = installed + removals.filter { removal in
             // A skill installed again at the same path has two separate
             // lifetimes. Both are kept, but only when the earlier one closed
@@ -173,36 +186,60 @@ public extension MetagentCore {
             daysWritten += 1
         }
 
+        func scopeKey(_ skill: ReconstructedSkill) -> String {
+            skill.scope == "project"
+                ? SkillHistoryScope.project(root: projectRootForSkill(skill.key)).key
+                : SkillHistoryScope.global.key
+        }
+
         let installEvents = installed.map { skill in
-            SkillHistoryEvent(
+            let fromGit = gitLifetimes[skill.key]?.installedOn == skill.installedOn
+            return SkillHistoryEvent(
                 id: "added:\(skill.key):inferred",
                 occurredAt: middayOf(skill.installedOn, calendar: calendar) ?? now,
                 kind: .added,
                 subjectKey: skill.key,
                 subjectName: skill.name,
-                scopeKey: skill.scope == "project"
-                    ? SkillHistoryScope.project(root: projectRootForSkill(skill.key)).key
-                    : SkillHistoryScope.global.key,
+                scopeKey: scopeKey(skill),
                 origin: .inferred,
-                detail: ["evidence": "directory creation date"]
+                detail: ["evidence": fromGit ? "git history" : "directory creation date"]
             )
         }
         let removalEvents = removals.compactMap { skill -> SkillHistoryEvent? in
             guard let removedOn = skill.removedOn else { return nil }
+            let fromGit = gitLifetimes[skill.key]?.removedOn == removedOn
             return SkillHistoryEvent(
                 id: "removed:\(skill.key):inferred:\(removedOn)",
                 occurredAt: middayOf(removedOn, calendar: calendar) ?? now,
                 kind: .removed,
                 subjectKey: skill.key,
                 subjectName: skill.name,
-                scopeKey: skill.scope == "project"
-                    ? SkillHistoryScope.project(root: projectRootForSkill(skill.key)).key
-                    : SkillHistoryScope.global.key,
+                scopeKey: scopeKey(skill),
                 origin: .inferred,
-                detail: ["evidence": "removal archive"]
+                detail: ["evidence": fromGit ? "git history" : "removal archive"]
             )
         }
-        try store.insertEvents(installEvents + removalEvents)
+        // Content changes have no filesystem equivalent: a skill's edit history
+        // simply did not exist before capture unless git kept it.
+        let scopeByKey = Dictionary(
+            reconstructed.map { ($0.key, scopeKey($0)) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let changeEvents = gitLifetimes.values.flatMap { lifetime in
+            lifetime.changedOn.map { day in
+                SkillHistoryEvent(
+                    id: "content-changed:\(lifetime.skillKey):inferred:\(day)",
+                    occurredAt: middayOf(day, calendar: calendar) ?? now,
+                    kind: .contentChanged,
+                    subjectKey: lifetime.skillKey,
+                    subjectName: lifetime.name,
+                    scopeKey: scopeByKey[lifetime.skillKey] ?? SkillHistoryScope.global.key,
+                    origin: .inferred,
+                    detail: ["evidence": "git history"]
+                )
+            }
+        }
+        try store.insertEvents(installEvents + removalEvents + changeEvents)
         try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
         if let usageCoverageStartsAt {
             try store.setMetadata("usage_coverage_starts_at", usageCoverageStartsAt)
@@ -284,19 +321,21 @@ func reconstructedMetrics(
     return metrics
 }
 
-/// Installed skills that still exist, dated by directory creation time.
+/// Installed skills that still exist, dated by git where the skills directory is
+/// tracked and by directory creation time everywhere else.
 ///
 /// The population is taken from the same deduplication the health summary uses,
 /// so a reconstructed count and a captured count describe the same set of
 /// skills. Measuring a narrower population before capture began would put a
 /// cliff at the seam that looks like a real event.
 ///
-/// APFS records a birth time for every directory, and a skill bundle is created
-/// once when it is installed, so this is a direct install date rather than an
-/// estimate. Bundles restored from a backup, copied between machines, or
-/// extracted into a versioned plugin cache carry that later date instead.
+/// Git is preferred because it dates the commit that introduced a skill.
+/// `st_birthtime` only says when these bytes reached this disk, which a restore,
+/// a clone, or a plugin-cache extraction all reset to the wrong day. Where git
+/// has nothing to say, birthtime is still better than no date at all.
 func reconstructedInstalls(
     projects: [SkillProject],
+    gitLifetimes: [String: GitSkillLifetime] = [:],
     calendar: Calendar = .current
 ) -> [ReconstructedSkill] {
     var installs: [String: ReconstructedSkill] = [:]
@@ -305,16 +344,47 @@ func reconstructedInstalls(
         let key = standardizedHistoryPath(
             skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
         )
-        guard installs[key] == nil, let created = creationDate(ofDirectory: key) else { continue }
+        guard installs[key] == nil else { continue }
+        let installedOn = gitLifetimes[key]?.installedOn
+            ?? creationDate(ofDirectory: key).map { historyDay($0, calendar: calendar) }
+        guard let installedOn else { continue }
         installs[key] = ReconstructedSkill(
             key: key,
             name: skill.name,
             scope: skill.scope,
-            installedOn: historyDay(created, calendar: calendar),
+            installedOn: installedOn,
             removedOn: nil
         )
     }
     return installs.values.sorted { $0.key < $1.key }
+}
+
+/// Skills git recorded as deleted that no longer exist on disk.
+///
+/// The removal archive only knows about removals the app performed. Anything
+/// deleted by hand, by another tool, or before the archive existed is invisible
+/// to it and visible here.
+func gitOnlyRemovals(
+    gitLifetimes: [String: GitSkillLifetime],
+    installedKeys: Set<String>
+) -> [ReconstructedSkill] {
+    gitLifetimes.values.compactMap { lifetime -> ReconstructedSkill? in
+        guard let removedOn = lifetime.removedOn,
+              !installedKeys.contains(lifetime.skillKey),
+              let installedOn = lifetime.installedOn
+        else { return nil }
+        return ReconstructedSkill(
+            key: lifetime.skillKey,
+            name: lifetime.name,
+            scope: lifetime.skillKey.contains("/.agents/skills/")
+                && !lifetime.skillKey.hasPrefix(homeURL().standardizedFileURL.path + "/.agents/")
+                ? "project"
+                : "global",
+            installedOn: min(installedOn, removedOn),
+            removedOn: removedOn
+        )
+    }
+    .sorted { $0.key < $1.key }
 }
 
 /// Removals recorded by the recovery archive. The archive exists to restore a

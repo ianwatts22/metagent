@@ -344,7 +344,7 @@ func isGitRepository(_ root: URL) -> Bool {
     fileManager.fileExists(atPath: root.appendingPathComponent(".git").path)
 }
 
-private func gitExecutable() throws -> URL {
+func gitExecutable() throws -> URL {
     guard let path = firstExecutableCandidate(
         named: "git",
         environmentOverride: "METAGENT_GIT",
