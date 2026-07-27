@@ -143,6 +143,61 @@ final class SkillEvaluationTests: XCTestCase {
         XCTAssertEqual(SkillGrade.forScore(59), .f)
     }
 
+    func testPluginEvalPrioritizesProviderDeductionsByPenaltyThenSeverity() {
+        let assessment = PluginEvalSkillAssessment(
+            score: 83,
+            grade: "C",
+            riskLevel: "medium",
+            riskReasons: [],
+            deductions: [
+                PluginEvalDeduction(
+                    id: "info",
+                    category: "coverage",
+                    severity: "info",
+                    status: "info",
+                    message: "Add coverage evidence.",
+                    penalty: 0.25,
+                    remediation: ["Generate a coverage artifact."]
+                ),
+                PluginEvalDeduction(
+                    id: "warning",
+                    category: "budget",
+                    severity: "warning",
+                    status: "warn",
+                    message: "Reduce the invocation budget.",
+                    penalty: 4.5,
+                    remediation: ["Move detail into references."]
+                ),
+                PluginEvalDeduction(
+                    id: "failure",
+                    category: "links",
+                    severity: "error",
+                    status: "fail",
+                    message: "Repair the broken link.",
+                    penalty: 4.5,
+                    remediation: ["Update the relative path."]
+                ),
+                PluginEvalDeduction(
+                    id: "resolved",
+                    category: "metadata",
+                    severity: "error",
+                    status: "resolved",
+                    message: "Already fixed.",
+                    penalty: 10,
+                    remediation: []
+                ),
+            ],
+            toolVersion: "test",
+            evaluatedAt: "2026-07-20T00:00:00Z",
+            contentHash: "hash"
+        )
+
+        XCTAssertEqual(
+            assessment.prioritizedDeductions.map(\.id),
+            ["failure", "warning", "info"]
+        )
+    }
+
     func testPersistedCodexGradeMigratesToCurrentBands() throws {
         let data = Data("""
         {
@@ -441,7 +496,10 @@ final class SkillEvaluationTests: XCTestCase {
         XCTAssertNotNil(relocatedSnapshot.records.values.first?.codexReview)
 
         try writeSkillFixture(at: movedSkill, description: "changed")
-        XCTAssertTrue(MetagentCore.loadSkillEvaluationSnapshot(path: store).records.isEmpty)
+        let staleSnapshot = MetagentCore.loadSkillEvaluationSnapshot(path: store)
+        XCTAssertTrue(staleSnapshot.records.isEmpty)
+        XCTAssertTrue(staleSnapshot.stalePluginEvalPaths.contains(movedSkill.path))
+        XCTAssertTrue(staleSnapshot.staleCodexReviewPaths.contains(movedSkill.path))
     }
 
     private func makeSkill(path: String = "/tmp/project/.agents/skills/demo") -> SkillInventoryItem {

@@ -90,6 +90,15 @@ plugin-eval analyze <canonical-skill-directory> --format json
 
 The persisted record includes the returned score, grade, risk, deductions, evaluator version, evaluation time, and a hash of the canonical skill contents. Cached results are invalidated when that content changes, and cross-process cache updates are serialized so app and helper evaluations cannot overwrite one another. If the executable is unavailable or fails, Metagent reports that state instead of substituting its own logic.
 
+View Skill and Get Info expose the complete current evidence behind these
+scores. The detail view reconciles the normalized Quality and Utility formulas,
+shows every management-confidence component, lists each Plugin Eval penalty and
+its provider-authored remediation, and includes the Codex rubric dimensions,
+summary, strengths, risks, and recommendation when available. Its **Fix first**
+list ranks current Plugin Eval deductions by point penalty and then severity;
+Metagent does not generate replacement findings. If installed content changes,
+the old evaluator result is marked stale and excluded until it is run again.
+
 ## Codex review rubric
 
 Codex assigns component scores that sum to 100:

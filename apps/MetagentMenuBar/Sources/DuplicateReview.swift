@@ -496,7 +496,9 @@ private enum DuplicateReviewPreviewData {
             variants: project.skills,
             metagentScore: MetagentSkillScore(score: 78, confidence: .medium, components: []),
             pluginEval: nil,
-            codexReview: nil
+            codexReview: nil,
+            pluginEvalIsStale: false,
+            codexReviewIsStale: false
         )
         return SkillTableRow(
             inventory: inventory,

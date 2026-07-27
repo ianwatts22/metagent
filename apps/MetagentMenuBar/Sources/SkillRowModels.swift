@@ -697,6 +697,8 @@ struct InventorySkillRow: Identifiable, Sendable {
     let metagentScore: MetagentSkillScore
     let pluginEval: PluginEvalSkillAssessment?
     let codexReview: CodexSkillReview?
+    let pluginEvalIsStale: Bool
+    let codexReviewIsStale: Bool
 
     static func rows(
         from projects: [ProjectStatus],
@@ -742,7 +744,9 @@ struct InventorySkillRow: Identifiable, Sendable {
                         usageCoverageComplete: usage.isBackfillComplete
                     ),
                     pluginEval: evaluationsByPath[canonicalPath]?.pluginEval,
-                    codexReview: evaluationsByPath[canonicalPath]?.codexReview
+                    codexReview: evaluationsByPath[canonicalPath]?.codexReview,
+                    pluginEvalIsStale: evaluations.stalePluginEvalPaths.contains(canonicalPath),
+                    codexReviewIsStale: evaluations.staleCodexReviewPaths.contains(canonicalPath)
                 )
             }
         }
@@ -888,6 +892,9 @@ struct InventorySkillRow: Identifiable, Sendable {
         pluginEval.flatMap { SkillGrade(rawValue: $0.grade.uppercased()) }.map(scoreTint)
     }
     var pluginEvalHelp: String {
+        if pluginEvalIsStale {
+            return "The saved Plugin Eval result is stale because the installed skill changed. Re-run Plugin Eval for current evidence."
+        }
         guard let pluginEval else { return "Not evaluated. Use Evaluate → Run Plugin Eval." }
         return "Plugin Eval \(pluginEval.toolVersion) · \(pluginEval.riskLevel) risk\nA separate static evaluator that starts at 100 and deducts for concrete findings such as invalid frontmatter, weak trigger descriptions, broken links, excessive token budgets, and missing progressive disclosure. Its number supplies 60% of Quality when present; 60% is not its internal formula.\nThe letter uses Plugin Eval's stricter absolute bands: A 93+, B 85+, C 70+, D 55+. It is not relative.\n\(pluginEval.riskReasons.joined(separator: "\n"))"
     }
@@ -898,6 +905,9 @@ struct InventorySkillRow: Identifiable, Sendable {
     var codexReviewSortValue: Int { codexReview?.score ?? -1 }
     var codexReviewTint: Color? { codexReview.map { scoreTint($0.grade) } }
     var codexReviewHelp: String {
+        if codexReviewIsStale {
+            return "The saved Codex review is stale because the installed skill changed. Run a new review for current evidence."
+        }
         guard let codexReview else { return "Not reviewed. Use Evaluate → Review with Codex." }
         return "Absolute grades: A 90+, B 80+, C 70+, D 60+, F below 60.\n\(codexReview.summary)\nNext: \(codexReview.recommendation)"
     }

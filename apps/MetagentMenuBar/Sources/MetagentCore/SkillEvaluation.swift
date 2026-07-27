@@ -121,6 +121,24 @@ public struct PluginEvalSkillAssessment: Codable, Equatable, Sendable {
     public let toolVersion: String
     public let evaluatedAt: String
     public let contentHash: String
+
+    /// Provider-authored findings ordered by the largest available point loss,
+    /// then by severity. Metagent does not invent or rewrite recommendations.
+    public var prioritizedDeductions: [PluginEvalDeduction] {
+        deductions
+            .filter { $0.penalty > 0 && !["pass", "resolved"].contains($0.status.lowercased()) }
+            .sorted {
+                if $0.penalty != $1.penalty {
+                    return $0.penalty > $1.penalty
+                }
+                let leftSeverity = pluginEvalSeverityRank($0.severity)
+                let rightSeverity = pluginEvalSeverityRank($1.severity)
+                if leftSeverity != rightSeverity {
+                    return leftSeverity > rightSeverity
+                }
+                return $0.id < $1.id
+            }
+    }
 }
 
 public struct CodexReviewDimensions: Codable, Equatable, Sendable {
@@ -210,9 +228,37 @@ public struct SkillEvaluationRecord: Codable, Equatable, Identifiable, Sendable 
 
 public struct SkillEvaluationSnapshot: Codable, Equatable, Sendable {
     public var records: [String: SkillEvaluationRecord]
+    /// Paths whose cached Plugin Eval result no longer matches installed content.
+    /// This diagnostic is computed while loading and is not persisted.
+    public var stalePluginEvalPaths: Set<String>
+    /// Paths whose cached Codex review no longer matches installed content.
+    /// This diagnostic is computed while loading and is not persisted.
+    public var staleCodexReviewPaths: Set<String>
 
-    public init(records: [String: SkillEvaluationRecord] = [:]) {
+    public init(
+        records: [String: SkillEvaluationRecord] = [:],
+        stalePluginEvalPaths: Set<String> = [],
+        staleCodexReviewPaths: Set<String> = []
+    ) {
         self.records = records
+        self.stalePluginEvalPaths = stalePluginEvalPaths
+        self.staleCodexReviewPaths = staleCodexReviewPaths
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case records
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        records = try container.decode([String: SkillEvaluationRecord].self, forKey: .records)
+        stalePluginEvalPaths = []
+        staleCodexReviewPaths = []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(records, forKey: .records)
     }
 }
 
@@ -418,6 +464,16 @@ private struct CodexReviewResponse: Decodable {
     let recommendation: String
 }
 
+private func pluginEvalSeverityRank(_ severity: String) -> Int {
+    switch severity.lowercased() {
+    case "critical", "error": 4
+    case "high", "fail", "failure": 3
+    case "medium", "warning", "warn": 2
+    case "low", "info", "informational": 1
+    default: 0
+    }
+}
+
 func computeSkillEvaluationContentHash(_ skillDir: URL) throws -> String {
     let fileManager = FileManager.default
     let root = skillDir.resolvingSymlinksInPath().standardizedFileURL
@@ -494,6 +550,8 @@ private final class SkillEvaluationStore {
         let snapshot = try JSONDecoder().decode(SkillEvaluationSnapshot.self, from: Data(contentsOf: path))
         guard validatingContent else { return snapshot }
         var records: [String: SkillEvaluationRecord] = [:]
+        var stalePluginEvalPaths = Set<String>()
+        var staleCodexReviewPaths = Set<String>()
         for cachedRecord in snapshot.records.values {
             let canonicalPath = URL(fileURLWithPath: cachedRecord.canonicalPath)
                 .resolvingSymlinksInPath()
@@ -506,14 +564,22 @@ private final class SkillEvaluationStore {
             let skillURL = URL(fileURLWithPath: canonicalPath)
             do {
                 let currentHash = try computeSkillEvaluationContentHash(skillURL)
-                if record.pluginEval?.contentHash != currentHash {
+                if let pluginEval = record.pluginEval, pluginEval.contentHash != currentHash {
+                    stalePluginEvalPaths.insert(canonicalPath)
                     record.pluginEval = nil
                 }
-                if record.codexReview?.contentHash != currentHash {
+                if let codexReview = record.codexReview, codexReview.contentHash != currentHash {
+                    staleCodexReviewPaths.insert(canonicalPath)
                     record.codexReview = nil
                 }
             } catch {
                 if FileManager.default.fileExists(atPath: skillURL.path) {
+                    if record.pluginEval != nil {
+                        stalePluginEvalPaths.insert(canonicalPath)
+                    }
+                    if record.codexReview != nil {
+                        staleCodexReviewPaths.insert(canonicalPath)
+                    }
                     record.pluginEval = nil
                     record.codexReview = nil
                 }
@@ -521,7 +587,11 @@ private final class SkillEvaluationStore {
             guard record.pluginEval != nil || record.codexReview != nil else { continue }
             records[canonicalPath] = mergeEvaluationRecords(records[canonicalPath], record)
         }
-        return SkillEvaluationSnapshot(records: records)
+        return SkillEvaluationSnapshot(
+            records: records,
+            stalePluginEvalPaths: stalePluginEvalPaths,
+            staleCodexReviewPaths: staleCodexReviewPaths
+        )
     }
 
     func update(

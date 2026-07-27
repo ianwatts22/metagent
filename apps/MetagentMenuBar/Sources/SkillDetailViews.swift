@@ -95,7 +95,7 @@ struct SkillInfoView: View {
     let row: InventorySkillRow
     @Environment(\.dismiss) private var dismiss
     @State private var showsIconEditor = false
-    @State private var showsScoreExplanation = false
+    @State private var showsScoreDetails = false
     @State private var showsReader = false
     @State private var updatedSkillName: String?
     @State private var updatedSkillPath: String?
@@ -142,8 +142,8 @@ struct SkillInfoView: View {
                     LabeledContent("Plugin Eval", value: row.pluginEvalText)
                     LabeledContent("Utility", value: row.portfolioScoreText)
                     LabeledContent("Codex", value: row.codexReviewText)
-                    Button("How scores work…") {
-                        showsScoreExplanation = true
+                    Button("Score details and improvements…") {
+                        showsScoreDetails = true
                     }
                 }
 
@@ -194,8 +194,8 @@ struct SkillInfoView: View {
                 skillName: updatedSkillName ?? row.skillName
             )
         }
-        .sheet(isPresented: $showsScoreExplanation) {
-            ScoreExplanationView()
+        .sheet(isPresented: $showsScoreDetails) {
+            SkillScoreGuidanceView(row: row)
         }
         .sheet(isPresented: $showsReader) {
             SkillReaderView(
@@ -233,6 +233,7 @@ struct SkillReaderView: View {
     @State private var showsPortablePathConfirmation = false
     @State private var actionMessage: String?
     @State private var isCheckingPortablePaths = false
+    @State private var showsScoreDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -244,17 +245,22 @@ struct SkillReaderView: View {
                 pathIsSelectable: true
             ) {
                 if document != nil {
-                    Button(isEditing ? "Reading" : "Edit") {
-                        if isEditing {
-                            cancelEditing()
-                        } else {
-                            beginEditing()
+                    HStack(spacing: 8) {
+                        Button("Scores", systemImage: "chart.bar.doc.horizontal") {
+                            showsScoreDetails = true
                         }
+                        Button(isEditing ? "Reading" : "Edit") {
+                            if isEditing {
+                                cancelEditing()
+                            } else {
+                                beginEditing()
+                            }
+                        }
+                        .disabled(!row.canEditDocument || isSaving || isCheckingPortablePaths)
+                        .help(row.canEditDocument
+                            ? (isEditing ? "Discard unsaved edits and return to the reader." : "Edit this local SKILL.md.")
+                            : "This skill is managed by \(row.skill.tableOriginText) and is read-only here.")
                     }
-                    .disabled(!row.canEditDocument || isSaving || isCheckingPortablePaths)
-                    .help(row.canEditDocument
-                        ? (isEditing ? "Discard unsaved edits and return to the reader." : "Edit this local SKILL.md.")
-                        : "This skill is managed by \(row.skill.tableOriginText) and is read-only here.")
                 }
             }
 
@@ -411,6 +417,9 @@ struct SkillReaderView: View {
             if let scan = portablePathScan {
                 Text(portablePathConfirmationMessage(scan))
             }
+        }
+        .sheet(isPresented: $showsScoreDetails) {
+            SkillScoreGuidanceView(row: row)
         }
     }
 
@@ -690,5 +699,315 @@ struct ScoreExplanationView: View {
         }
         .padding(22)
         .frame(width: 680, height: 690)
+    }
+}
+
+struct SkillScoreGuidanceView: View {
+    let row: InventorySkillRow
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Score details")
+                        .font(.title2.weight(.semibold))
+                    Text(row.skillName)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            Form {
+                fixFirstSection
+                scoreSummarySection
+                managementSection
+                pluginEvalSection
+                codexReviewSection
+            }
+            .formStyle(.grouped)
+        }
+        .padding(22)
+        .frame(width: 760, height: 760)
+    }
+
+    @ViewBuilder
+    private var fixFirstSection: some View {
+        Section("Fix first") {
+            if !fixFirstDeductions.isEmpty {
+                ForEach(Array(fixFirstDeductions.enumerated()), id: \.element.id) { index, deduction in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("\(index + 1). \(deduction.message)")
+                                .font(.headline)
+                            Spacer()
+                            Text("−\(formatPenalty(deduction.penalty))")
+                                .font(.callout.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        Text("Plugin Eval · \(deduction.category) · \(deduction.severity)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let firstStep = deduction.remediation.first {
+                            Text(firstStep)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            } else if let codexRecommendation {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(codexRecommendation)
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Codex review recommendation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if row.pluginEvalIsStale || row.codexReviewIsStale {
+                Label(
+                    "The skill changed after its saved evaluation. Re-run the stale evaluator before acting on its advice.",
+                    systemImage: "clock.badge.exclamationmark"
+                )
+                .foregroundStyle(.orange)
+            } else {
+                Text("No evaluator returned an actionable improvement for the current skill.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var scoreSummarySection: some View {
+        Section("Score reconciliation") {
+            LabeledContent("Quality") {
+                scoreBadge(row.metagentScoreText, tint: row.metagentScoreTint)
+            }
+            Text(qualityCalculation)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            LabeledContent("Utility") {
+                scoreBadge(row.portfolioScoreText, tint: row.portfolioScoreTint)
+            }
+            Text(utilityCalculation)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text("Quality is static. Utility adds observed adoption and can change as usage changes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var managementSection: some View {
+        Section("Management confidence · Metagent") {
+            LabeledContent(
+                "Normalized score",
+                value: "\(row.metagentScore.structuralScore)/100 · 20% Quality weight"
+            )
+            ForEach(row.metagentScore.components.filter { $0.id != "adoption" }, id: \.id) { component in
+                VStack(alignment: .leading, spacing: 3) {
+                    LabeledContent(
+                        component.label,
+                        value: "\(component.score)/\(component.maximum)"
+                    )
+                    Text(component.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("This ledger measures whether Metagent can safely identify and manage the skill. It does not judge the instructions.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var pluginEvalSection: some View {
+        Section("Plugin Eval evidence") {
+            if row.pluginEvalIsStale {
+                staleEvaluationLabel("Plugin Eval")
+            } else if let evaluation = row.pluginEval {
+                LabeledContent("Result", value: "\(evaluation.score) \(evaluation.grade) · \(evaluation.riskLevel) risk")
+                LabeledContent("Evaluator", value: "plugin-eval \(evaluation.toolVersion)")
+                LabeledContent("Evaluated", value: evaluatedDateText(evaluation.evaluatedAt))
+                LabeledContent("Content", value: "Current")
+                    .foregroundStyle(.green)
+
+                if evaluation.deductions.isEmpty {
+                    Text("Plugin Eval returned no point deductions.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(evaluation.deductions, id: \.id) { deduction in
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(deduction.message)
+                                    .font(.headline)
+                                Spacer()
+                                Text("−\(formatPenalty(deduction.penalty))")
+                                    .font(.callout.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(deduction.penalty > 0 ? .orange : .secondary)
+                            }
+                            Text("\(deduction.category) · \(deduction.severity) · \(deduction.status)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(deduction.remediation.enumerated()), id: \.offset) { _, step in
+                                Label(step, systemImage: "arrow.turn.down.right")
+                                    .font(.callout)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+            } else {
+                missingEvaluationLabel(
+                    "No current Plugin Eval result",
+                    detail: "Run Plugin Eval to get deterministic deductions and remediation for this content."
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var codexReviewSection: some View {
+        Section("Codex review evidence") {
+            if row.codexReviewIsStale {
+                staleEvaluationLabel("Codex review")
+            } else if let review = row.codexReview {
+                LabeledContent("Result", value: "\(review.score) \(review.grade.rawValue)")
+                LabeledContent("Evaluator", value: "Codex")
+                LabeledContent("Evaluated", value: evaluatedDateText(review.evaluatedAt))
+                LabeledContent("Content", value: "Current")
+                    .foregroundStyle(.green)
+
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 5) {
+                    codexDimensionRow("Trigger and scope", review.dimensions.triggerAndScope, 25)
+                    codexDimensionRow("Workflow effectiveness", review.dimensions.workflowEffectiveness, 25)
+                    codexDimensionRow("Progressive disclosure", review.dimensions.progressiveDisclosure, 20)
+                    codexDimensionRow("Safety and operability", review.dimensions.safetyAndOperability, 15)
+                    codexDimensionRow("Maintainability", review.dimensions.maintainability, 15)
+                }
+
+                evidenceText("Summary", review.summary)
+                if !review.strengths.isEmpty {
+                    evidenceList("Strengths", review.strengths, symbol: "plus.circle")
+                }
+                if !review.risks.isEmpty {
+                    evidenceList("Risks", review.risks, symbol: "exclamationmark.triangle")
+                }
+                evidenceText("Recommendation", review.recommendation)
+            } else {
+                missingEvaluationLabel(
+                    "No current Codex review",
+                    detail: "Codex review is optional and excluded from Quality until you explicitly run it."
+                )
+            }
+        }
+    }
+
+    private var fixFirstDeductions: ArraySlice<PluginEvalDeduction> {
+        (row.pluginEval?.prioritizedDeductions ?? []).prefix(3)
+    }
+
+    private var codexRecommendation: String? {
+        guard fixFirstDeductions.isEmpty,
+              let value = row.codexReview?.recommendation.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else { return nil }
+        return value
+    }
+
+    private var qualityCalculation: String {
+        var inputs = [("Management", row.metagentScore.structuralScore, 20)]
+        if let pluginEval = row.pluginEval {
+            inputs.insert(("Plugin Eval", pluginEval.score, 60), at: 0)
+        }
+        if let codexReview = row.codexReview {
+            inputs.append(("Codex", codexReview.score, 20))
+        }
+        let weight = inputs.reduce(0) { $0 + $1.2 }
+        let terms = inputs.map { "\($0.0) \($0.1)×\($0.2)" }.joined(separator: " + ")
+        return "(\(terms)) ÷ \(weight) = \(row.metagentStaticScore)"
+    }
+
+    private var utilityCalculation: String {
+        let adoption = row.metagentScore.components.first { $0.id == "adoption" }
+        let adoptionScore = adoption.flatMap { component in
+            component.maximum > 0
+                ? Int((Double(component.score) / Double(component.maximum) * 100).rounded())
+                : nil
+        } ?? 0
+        return "Quality \(row.metagentStaticScore)×70% + adoption \(adoptionScore)×30% = \(row.utilityScore)"
+    }
+
+    private func scoreBadge(_ value: String, tint: Color) -> some View {
+        Text(value)
+            .font(.callout.monospacedDigit().weight(.semibold))
+            .foregroundStyle(tint)
+    }
+
+    private func staleEvaluationLabel(_ provider: String) -> some View {
+        Label(
+            "\(provider) is stale because the installed content changed. Its old result is excluded from every displayed score.",
+            systemImage: "clock.badge.exclamationmark"
+        )
+        .foregroundStyle(.orange)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func missingEvaluationLabel(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func codexDimensionRow(_ label: String, _ score: Int, _ maximum: Int) -> some View {
+        GridRow {
+            Text(label)
+            Text("\(score)/\(maximum)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func evidenceText(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func evidenceList(_ label: String, _ values: [String], symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(Array(values.enumerated()), id: \.offset) { _, value in
+                Label(value, systemImage: symbol)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func evaluatedDateText(_ value: String) -> String {
+        parseISO8601Date(value)?.formatted(date: .abbreviated, time: .shortened) ?? value
+    }
+
+    private func formatPenalty(_ penalty: Double) -> String {
+        penalty.formatted(.number.precision(.fractionLength(0...2)))
     }
 }
