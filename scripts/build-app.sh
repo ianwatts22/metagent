@@ -212,7 +212,8 @@ if [[ -n "$signing_identity" ]]; then
   fi
   if [[ "$distribution" == "1" ]]; then
     # Catch a missing hardened runtime here instead of in a notarization log.
-    if ! codesign --display --verbose=2 "$app_bundle" 2>&1 | grep -q "flags=.*runtime"; then
+    signature_details="$(codesign --display --verbose=2 "$app_bundle" 2>&1)"
+    if ! grep -q "flags=.*runtime" <<<"$signature_details"; then
       echo "Distribution builds must carry the hardened runtime." >&2
       exit 1
     fi
