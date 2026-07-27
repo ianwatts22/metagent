@@ -1,18 +1,15 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-  Sparkle update feed for Metagent.
-
-  This file is regenerated and committed by .github/workflows/release.yml on
-  every tagged release. An empty channel is a valid feed and reads as "no update
-  available", which is the correct answer until the first signed release ships.
-
-  To pull a bad release: remove its <item> here and redeploy the site. Installed
-  copies stop being offered the update immediately, without touching the release.
--->
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Metagent</title>
-    <description>Updates for Metagent</description>
-    <language>en</language>
-  </channel>
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>MetagentMenuBar</title>
+        <item>
+            <title>0.2.0</title>
+            <pubDate>Mon, 27 Jul 2026 04:10:29 +0000</pubDate>
+            <sparkle:version>0.2.0</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/ianwatts22/metagent/releases/download/v0.2.0/Metagent.zip" length="8495195" type="application/octet-stream" sparkle:edSignature="8v6NcOFe/Fkzs36Q/pAbRqLd+q1H9IgxGvGJhMlhLcEtRLadtIMWEV9l/OzoYg6IM1ETUFovKAC46uvBJ5e2BA=="/>
+        </item>
+    </channel>
 </rss>
