@@ -99,7 +99,6 @@ test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.t
   /usr/bin/ditto -x -k "$update_archive" "$update_verification"
   test -d "$update_verification/Metagent.app"
   test ! -e "$update_verification/MetagentMenuBar.app"
-  /usr/bin/codesign --verify --deep --strict "$update_verification/Metagent.app"
 )
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null

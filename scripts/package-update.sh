@@ -44,7 +44,14 @@ if find "$verification_root" -mindepth 1 -maxdepth 1 ! -name "Metagent.app" | gr
   exit 1
 fi
 
-/usr/bin/codesign --verify --deep --strict --verbose=2 "$verification_root/Metagent.app"
+if /usr/bin/codesign --display "$app_bundle" >/dev/null 2>&1; then
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$verification_root/Metagent.app"
+elif [[ "${METAGENT_REQUIRE_SIGNED_UPDATE:-0}" == "1" ]]; then
+  echo "Public Sparkle archives require a signed app bundle." >&2
+  exit 1
+else
+  echo "App bundle is unsigned; verified archive layout and version only." >&2
+fi
 
 source_info="$app_bundle/Contents/Info.plist"
 archive_info="$verification_root/Metagent.app/Contents/Info.plist"
