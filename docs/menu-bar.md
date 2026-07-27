@@ -272,9 +272,10 @@ the workflow downloads:
 
 The public key goes in `apps/MetagentMenuBar/Info.plist` as `SUPublicEDKey`;
 the private key becomes the `SPARKLE_PRIVATE_KEY` repository secret. `SUFeedURL`
-in the same plist must point at the deployed `appcast.xml`. Both ship as
-`REPLACE_ME` placeholders, and a distribution build fails rather than publishing
-an app that cannot update itself.
+in the same plist must point at the deployed `appcast.xml`. The checked-in app
+now carries the production public key and feed URL; the distribution guard still
+rejects missing or placeholder values rather than publishing an app that cannot
+update itself.
 
 Required repository secrets:
 
