@@ -207,6 +207,21 @@ outside the repository. See [architecture](docs/architecture.md),
 
 ## Verify
 
+Use the fast lane while iterating:
+
+```bash
+scripts/verify-fast.sh
+```
+
+Run focused integration or release packaging checks when those surfaces change:
+
+```bash
+scripts/verify-integration.sh
+scripts/verify-release.sh
+```
+
+Before pushing a finished change, run the complete gate:
+
 ```bash
 scripts/verify.sh
 ```

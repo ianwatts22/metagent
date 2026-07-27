@@ -66,14 +66,19 @@ write_stale_lock() {
 EOF
 }
 
-cd "$repo_root"
+verify_shell_syntax() {
 for shell_script in "$repo_root"/scripts/*.sh; do
   bash -n "$shell_script"
 done
+}
 
-(
+verify_swift_build() (
   cd "$app_source"
   swift build --disable-sandbox
+)
+
+verify_swift_tests() (
+  cd "$app_source"
   if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
     swift test --disable-sandbox
   else
@@ -81,6 +86,7 @@ done
   fi
 )
 
+verify_release_bundle() {
 "$repo_root/scripts/build-app.sh" >/dev/null
 plutil -lint "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist" >/dev/null
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/MacOS/MetagentMenuBar"
@@ -89,7 +95,9 @@ test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-LICENSE.t
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-sprite.svg"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-tags.json"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.txt"
-(
+}
+
+verify_update_archive() (
   update_fixture="$(mktemp -d /private/tmp/metagent-update-verify.XXXXXX)"
   update_archive="$update_fixture/Metagent.zip"
   update_verification="$update_fixture/unpacked"
@@ -100,6 +108,8 @@ test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.t
   test -d "$update_verification/Metagent.app"
   test ! -e "$update_verification/MetagentMenuBar.app"
 )
+
+verify_helper_smoke() {
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
 "$swift_helper" skills --help >/dev/null
@@ -114,8 +124,13 @@ test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-VERSION.t
     ' >/dev/null
 "$swift_helper" analyze --root "$repo_root" --json --details \
   | jq -e '.schema_version == 1 and (.skills.projects | length) > 0' >/dev/null
-python3 "$repo_root/scripts/verify-mcp-stdio.py" "$swift_helper" "$repo_root"
+}
 
+verify_mcp_protocol() {
+python3 "$repo_root/scripts/verify-mcp-stdio.py" "$swift_helper" "$repo_root"
+}
+
+verify_manager_fixtures() (
 fixture_root="$(mktemp -d /private/tmp/metagent-verify.XXXXXX)"
 normalized_fixture_root="${fixture_root/#\/private\/tmp/\/tmp}"
 cleanup_fixture() {
@@ -735,4 +750,137 @@ expect_failure "roots must be a TOML string array" "$bare_array_output" -- \
   env HOME="$fixture_root/home" "$swift_helper" skills repair --apply
 test ! -e "$fixture_root/default/.claude/skills"
 
-echo "metagent verification passed"
+)
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/verify.sh [--fast|--integration|--release]
+
+Without a lane, runs the complete release gate.
+  --fast         Shell syntax, Swift build, and Swift tests
+  --integration  Helper smoke checks, MCP stress, and disposable manager fixtures
+  --release      App bundle, resources, signatures, and Sparkle archive
+EOF
+}
+
+lane="all"
+case "${1:-}" in
+  "")
+    ;;
+  --fast)
+    lane="fast"
+    ;;
+  --integration)
+    lane="integration"
+    ;;
+  --release)
+    lane="release"
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown verification lane: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if (( $# > 1 )); then
+  echo "Only one verification lane may be selected" >&2
+  usage >&2
+  exit 2
+fi
+
+log_root="${METAGENT_VERIFY_LOG_DIR:-$(mktemp -d /private/tmp/metagent-verify-logs.XXXXXX)}"
+keep_logs="${METAGENT_VERIFY_KEEP_LOGS:-0}"
+mkdir -p "$log_root"
+stage_number=0
+swift_built=false
+
+run_stage() {
+  local label="$1" timeout_hint="$2"
+  shift 2
+  local started_at=$SECONDS
+  local slug log_file
+  stage_number=$((stage_number + 1))
+  slug="$(printf '%s' "$label" | tr '[:upper:] ' '[:lower:]-' | tr -cd '[:alnum:]-')"
+  log_file="$log_root/$(printf '%02d' "$stage_number")-$slug.log"
+
+  printf '▶ %s' "$label"
+  if [[ -n "$timeout_hint" ]]; then
+    printf ' · expected %s' "$timeout_hint"
+  fi
+  printf '\n'
+
+  set +e
+  (
+    set -e
+    "$@"
+  ) >"$log_file" 2>&1
+  local status=$?
+  set -e
+
+  if (( status == 0 )); then
+    printf '✓ %s · %ss\n' "$label" "$((SECONDS - started_at))"
+    return
+  fi
+
+  printf '✗ %s · failed after %ss\n' "$label" "$((SECONDS - started_at))" >&2
+  tail -80 "$log_file" >&2
+  printf 'Full log: %s\n' "$log_file" >&2
+  return "$status"
+}
+
+run_fast_lane() {
+  run_stage "Shell syntax" "<5s" verify_shell_syntax
+  run_stage "Swift build" "<10s incremental" verify_swift_build
+  swift_built=true
+  run_stage "Swift tests" "<30s" verify_swift_tests
+}
+
+ensure_swift_build() {
+  if [[ "$swift_built" == false ]]; then
+    run_stage "Swift build prerequisite" "<10s incremental" verify_swift_build
+    swift_built=true
+  fi
+}
+
+run_integration_lane() {
+  ensure_swift_build
+  run_stage "CLI and analysis smoke checks" "<15s" verify_helper_smoke
+  run_stage "MCP protocol and concurrency stress" "<2m" verify_mcp_protocol
+  run_stage "Disposable manager fixtures" "<45s" verify_manager_fixtures
+}
+
+run_release_lane() {
+  run_stage "App bundle and signatures" "<30s incremental" verify_release_bundle
+  run_stage "Sparkle update archive" "<15s" verify_update_archive
+}
+
+cd "$repo_root"
+case "$lane" in
+  fast)
+    run_fast_lane
+    ;;
+  integration)
+    run_integration_lane
+    ;;
+  release)
+    run_release_lane
+    ;;
+  all)
+    run_fast_lane
+    run_integration_lane
+    run_release_lane
+    ;;
+esac
+
+if [[ "$keep_logs" == "1" ]]; then
+  printf 'Verification logs: %s\n' "$log_root"
+elif [[ -z "${METAGENT_VERIFY_LOG_DIR:-}" ]]; then
+  rm -rf "$log_root"
+fi
+
+printf 'metagent verification passed (%s lane)\n' "$lane"
