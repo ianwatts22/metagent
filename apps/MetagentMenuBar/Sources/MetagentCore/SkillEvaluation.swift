@@ -260,6 +260,16 @@ public struct SkillEvaluationSnapshot: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(records, forKey: .records)
     }
+
+    public mutating func applyPluginEvalResult(_ record: SkillEvaluationRecord) {
+        records[record.canonicalPath] = record
+        stalePluginEvalPaths.remove(record.canonicalPath)
+    }
+
+    public mutating func applyCodexReviewResult(_ record: SkillEvaluationRecord) {
+        records[record.canonicalPath] = record
+        staleCodexReviewPaths.remove(record.canonicalPath)
+    }
 }
 
 public extension MetagentCore {

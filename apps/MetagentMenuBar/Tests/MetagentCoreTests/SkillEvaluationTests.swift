@@ -198,6 +198,60 @@ final class SkillEvaluationTests: XCTestCase {
         )
     }
 
+    func testApplyingFreshEvaluatorResultsClearsOnlyThatProvidersStaleMarker() {
+        let path = "/tmp/project/.agents/skills/demo"
+        let pluginEval = PluginEvalSkillAssessment(
+            score: 93,
+            grade: "A",
+            riskLevel: "low",
+            riskReasons: [],
+            deductions: [],
+            toolVersion: "test",
+            evaluatedAt: "2026-07-27T00:00:00Z",
+            contentHash: "current"
+        )
+        let codexReview = CodexSkillReview(
+            score: 90,
+            dimensions: CodexReviewDimensions(
+                triggerAndScope: 23,
+                workflowEffectiveness: 23,
+                progressiveDisclosure: 18,
+                safetyAndOperability: 13,
+                maintainability: 13
+            ),
+            summary: "Current review.",
+            strengths: [],
+            risks: [],
+            recommendation: "No change.",
+            evaluatedAt: "2026-07-27T00:00:00Z",
+            contentHash: "current"
+        )
+        var snapshot = SkillEvaluationSnapshot(
+            stalePluginEvalPaths: [path],
+            staleCodexReviewPaths: [path]
+        )
+
+        snapshot.applyPluginEvalResult(SkillEvaluationRecord(
+            canonicalPath: path,
+            pluginEval: pluginEval,
+            codexReview: nil
+        ))
+
+        XCTAssertNotNil(snapshot.records[path]?.pluginEval)
+        XCTAssertFalse(snapshot.stalePluginEvalPaths.contains(path))
+        XCTAssertTrue(snapshot.staleCodexReviewPaths.contains(path))
+
+        snapshot.applyCodexReviewResult(SkillEvaluationRecord(
+            canonicalPath: path,
+            pluginEval: pluginEval,
+            codexReview: codexReview
+        ))
+
+        XCTAssertNotNil(snapshot.records[path]?.codexReview)
+        XCTAssertFalse(snapshot.stalePluginEvalPaths.contains(path))
+        XCTAssertFalse(snapshot.staleCodexReviewPaths.contains(path))
+    }
+
     func testPersistedCodexGradeMigratesToCurrentBands() throws {
         let data = Data("""
         {

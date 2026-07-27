@@ -353,7 +353,7 @@ final class MetagentModel: ObservableObject {
                         try MetagentCore.evaluateSkillWithPluginEval(at: path)
                     }.value
                     var snapshot = skillEvaluations
-                    snapshot.records[record.canonicalPath] = record
+                    snapshot.applyPluginEvalResult(record)
                     skillEvaluations = snapshot
                     skillTableRevision += 1
                     skillEvaluationStatusText = uniquePaths.count == 1
@@ -388,7 +388,7 @@ final class MetagentModel: ObservableObject {
                     try MetagentCore.reviewSkillWithCodex(at: path)
                 }.value
                 var snapshot = skillEvaluations
-                snapshot.records[record.canonicalPath] = record
+                snapshot.applyCodexReviewResult(record)
                 skillEvaluations = snapshot
                 skillTableRevision += 1
                 skillEvaluationStatusText = "Codex review complete"
