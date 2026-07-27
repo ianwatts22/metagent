@@ -32,8 +32,15 @@ jobs:
           else
             tag="${GITHUB_REF_NAME}"
           fi
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tag must be numeric SemVer (for example, v0.2.0)." >&2
+            exit 1
+          fi
+          build_number="$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
@@ -91,10 +98,11 @@ jobs:
         env:
           METAGENT_DISTRIBUTION_BUILD: "1"
           METAGENT_VERSION: ${{ steps.meta.outputs.version }}
-          # Sparkle compares CFBundleVersion. Using the release version for it
-          # keeps the comparison monotonic and makes re-running a failed release
-          # produce an identical build rather than a spuriously newer one.
-          METAGENT_BUILD_NUMBER: ${{ steps.meta.outputs.version }}
+          # Sparkle compares CFBundleVersion, not the user-facing version. Map
+          # numeric SemVer to a monotonically increasing integer so 0.2.0 is
+          # newer than the historical build number 1, while release retries
+          # remain deterministic.
+          METAGENT_BUILD_NUMBER: ${{ steps.meta.outputs.build_number }}
         run: ./scripts/build-app.sh
 
       - name: Notarize and staple the app
