@@ -95,7 +95,7 @@ struct SkillInfoView: View {
     let row: InventorySkillRow
     @Environment(\.dismiss) private var dismiss
     @State private var showsIconEditor = false
-    @State private var showsScoreDetails = false
+    @State private var scoreDetailsRow: InventorySkillRow?
     @State private var showsReader = false
     @State private var updatedSkillName: String?
     @State private var updatedSkillPath: String?
@@ -143,8 +143,9 @@ struct SkillInfoView: View {
                     LabeledContent("Utility", value: row.portfolioScoreText)
                     LabeledContent("Codex", value: row.codexReviewText)
                     Button("Score details and improvements…") {
-                        showsScoreDetails = true
+                        showScoreDetails()
                     }
+                    .disabled(updatedSkillPath != nil && model.isRunning)
                 }
 
                 SkillTimelineSection(skillPath: currentSkillPath)
@@ -194,8 +195,8 @@ struct SkillInfoView: View {
                 skillName: updatedSkillName ?? row.skillName
             )
         }
-        .sheet(isPresented: $showsScoreDetails) {
-            SkillScoreGuidanceView(row: row)
+        .sheet(item: $scoreDetailsRow) { currentRow in
+            SkillScoreGuidanceView(row: currentRow)
         }
         .sheet(isPresented: $showsReader) {
             SkillReaderView(
@@ -211,6 +212,11 @@ struct SkillInfoView: View {
 
     private var currentSkillPath: String {
         updatedSkillPath ?? row.canonicalPath
+    }
+
+    private func showScoreDetails() {
+        scoreDetailsRow = model.inventorySkillRow(canonicalPath: currentSkillPath)
+            ?? (updatedSkillPath == nil ? row : nil)
     }
 }
 
@@ -233,7 +239,7 @@ struct SkillReaderView: View {
     @State private var showsPortablePathConfirmation = false
     @State private var actionMessage: String?
     @State private var isCheckingPortablePaths = false
-    @State private var showsScoreDetails = false
+    @State private var scoreDetailsRow: InventorySkillRow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -247,8 +253,9 @@ struct SkillReaderView: View {
                 if document != nil {
                     HStack(spacing: 8) {
                         Button("Scores", systemImage: "chart.bar.doc.horizontal") {
-                            showsScoreDetails = true
+                            showScoreDetails()
                         }
+                        .disabled(renamedSkillPath != nil && model.isRunning)
                         Button(isEditing ? "Reading" : "Edit") {
                             if isEditing {
                                 cancelEditing()
@@ -418,8 +425,8 @@ struct SkillReaderView: View {
                 Text(portablePathConfirmationMessage(scan))
             }
         }
-        .sheet(isPresented: $showsScoreDetails) {
-            SkillScoreGuidanceView(row: row)
+        .sheet(item: $scoreDetailsRow) { currentRow in
+            SkillScoreGuidanceView(row: currentRow)
         }
     }
 
@@ -446,6 +453,11 @@ struct SkillReaderView: View {
                     || cleanDescription != (document.description ?? "")
                     || draftBody != document.bodyMarkdown
             )
+    }
+
+    private func showScoreDetails() {
+        scoreDetailsRow = model.inventorySkillRow(canonicalPath: currentSkillPath)
+            ?? (renamedSkillPath == nil ? row : nil)
     }
 
     private func loadDocument() {

@@ -139,6 +139,17 @@ final class MetagentModel: ObservableObject {
         Self.logicalSkillCount(projects: projects)
     }
 
+    func inventorySkillRow(canonicalPath: String) -> InventorySkillRow? {
+        let targetPath = standardizedDirectoryPath(canonicalPath)
+        return InventorySkillRow.rows(
+            from: projects,
+            usage: usageSnapshot,
+            evaluations: skillEvaluations
+        ).first {
+            standardizedDirectoryPath($0.canonicalPath) == targetPath
+        }
+    }
+
     func refreshStatus() {
         guard !isRunning else { return }
         statusRefreshGeneration += 1
