@@ -4,12 +4,12 @@
         <title>MetagentMenuBar</title>
         <item>
             <title>0.2.0</title>
-            <pubDate>Mon, 27 Jul 2026 04:10:29 +0000</pubDate>
-            <sparkle:version>0.2.0</sparkle:version>
+            <pubDate>Mon, 27 Jul 2026 04:21:34 +0000</pubDate>
+            <sparkle:version>2000</sparkle:version>
             <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/ianwatts22/metagent/releases/download/v0.2.0/Metagent.zip" length="8495195" type="application/octet-stream" sparkle:edSignature="8v6NcOFe/Fkzs36Q/pAbRqLd+q1H9IgxGvGJhMlhLcEtRLadtIMWEV9l/OzoYg6IM1ETUFovKAC46uvBJ5e2BA=="/>
+            <enclosure url="https://github.com/ianwatts22/metagent/releases/download/v0.2.0/Metagent.zip" length="8495264" type="application/octet-stream" sparkle:edSignature="k+aJZF9RyUNJpU5zRVaTATLDPiWDM2S/gU7DrVxeYalTvazAjhUzcxVvTGe4EDISxAmDPNuXxS2i0PNZgwNGCA=="/>
         </item>
     </channel>
 </rss>
