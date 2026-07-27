@@ -138,14 +138,20 @@ struct SkillInfoView: View {
                 }
 
                 Section("Scores") {
-                    LabeledContent("Quality", value: row.metagentScoreText)
-                    LabeledContent("Plugin Eval", value: row.pluginEvalText)
-                    LabeledContent("Utility", value: row.portfolioScoreText)
-                    LabeledContent("Codex", value: row.codexReviewText)
-                    Button("Score details and improvements…") {
-                        showScoreDetails()
+                    if let currentScoreRow {
+                        LabeledContent("Quality", value: currentScoreRow.metagentScoreText)
+                        LabeledContent("Plugin Eval", value: currentScoreRow.pluginEvalText)
+                        LabeledContent("Utility", value: currentScoreRow.portfolioScoreText)
+                        LabeledContent("Codex", value: currentScoreRow.codexReviewText)
+                        Button("Score details and improvements…") {
+                            scoreDetailsRow = currentScoreRow
+                        }
+                    } else if model.isRunning || model.isSkillEvaluating || model.isSkillEvaluationRefreshing {
+                        ProgressView("Refreshing scores…")
+                    } else {
+                        Text("Scores are unavailable for the current skill.")
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(updatedSkillPath != nil && model.isRunning)
                 }
 
                 SkillTimelineSection(skillPath: currentSkillPath)
@@ -214,8 +220,11 @@ struct SkillInfoView: View {
         updatedSkillPath ?? row.canonicalPath
     }
 
-    private func showScoreDetails() {
-        scoreDetailsRow = model.inventorySkillRow(canonicalPath: currentSkillPath)
+    private var currentScoreRow: InventorySkillRow? {
+        guard !model.isRunning, !model.isSkillEvaluating, !model.isSkillEvaluationRefreshing else {
+            return nil
+        }
+        return model.inventorySkillRow(canonicalPath: currentSkillPath)
             ?? (updatedSkillPath == nil ? row : nil)
     }
 }
@@ -253,9 +262,9 @@ struct SkillReaderView: View {
                 if document != nil {
                     HStack(spacing: 8) {
                         Button("Scores", systemImage: "chart.bar.doc.horizontal") {
-                            showScoreDetails()
+                            scoreDetailsRow = currentScoreRow
                         }
-                        .disabled(renamedSkillPath != nil && model.isRunning)
+                        .disabled(currentScoreRow == nil)
                         Button(isEditing ? "Reading" : "Edit") {
                             if isEditing {
                                 cancelEditing()
@@ -455,8 +464,11 @@ struct SkillReaderView: View {
             )
     }
 
-    private func showScoreDetails() {
-        scoreDetailsRow = model.inventorySkillRow(canonicalPath: currentSkillPath)
+    private var currentScoreRow: InventorySkillRow? {
+        guard !model.isRunning, !model.isSkillEvaluating, !model.isSkillEvaluationRefreshing else {
+            return nil
+        }
+        return model.inventorySkillRow(canonicalPath: currentSkillPath)
             ?? (renamedSkillPath == nil ? row : nil)
     }
 

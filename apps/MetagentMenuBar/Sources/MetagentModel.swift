@@ -37,6 +37,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isUsageIndexingStalled = false
     @Published private(set) var skillEvaluations = SkillEvaluationSnapshot()
     @Published private(set) var isSkillEvaluating = false
+    @Published private(set) var isSkillEvaluationRefreshing = false
     @Published private(set) var skillEvaluationStatusText: String?
     @Published private(set) var isPluginInventoryAvailable = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
@@ -52,6 +53,7 @@ final class MetagentModel: ObservableObject {
     private let fileManager = FileManager.default
     private var skillEvaluationRefreshGeneration = 0
     private var statusRefreshGeneration = 0
+    private var statusRefreshQueued = false
     private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
     private var activeSkillRemovalKeys = Set<String>()
     private var completedSkillRemovalIDs = Set<String>()
@@ -140,6 +142,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func inventorySkillRow(canonicalPath: String) -> InventorySkillRow? {
+        guard !isRunning, !isSkillEvaluating, !isSkillEvaluationRefreshing else { return nil }
         let targetPath = standardizedDirectoryPath(canonicalPath)
         return InventorySkillRow.rows(
             from: projects,
@@ -151,7 +154,10 @@ final class MetagentModel: ObservableObject {
     }
 
     func refreshStatus() {
-        guard !isRunning else { return }
+        guard !isRunning else {
+            statusRefreshQueued = true
+            return
+        }
         statusRefreshGeneration += 1
         let generation = statusRefreshGeneration
         isRunning = true
@@ -175,6 +181,13 @@ final class MetagentModel: ObservableObject {
                 generation: generation
             )
         }
+    }
+
+    private func finishRunningOperation() {
+        isRunning = false
+        guard statusRefreshQueued else { return }
+        statusRefreshQueued = false
+        refreshStatus()
     }
 
     /// Sizes every known project root that is a git repository. This walks each
@@ -596,7 +609,7 @@ final class MetagentModel: ObservableObject {
         accumulatedSkillRemovalFailedIDs = []
         if completedSkillRemovalIDs.isEmpty {
             isRemovingSkills = false
-            isRunning = false
+            finishRunningOperation()
         }
         reconcileCompletedSkillRemovalsIfIdle()
     }
@@ -636,7 +649,7 @@ final class MetagentModel: ObservableObject {
                 systemImage = "exclamationmark.triangle"
             }
             isReconcilingSkillRemovals = false
-            isRunning = false
+            finishRunningOperation()
             skillTableRevision += 1
             if didRefreshInventory {
                 reconcileCompletedSkillRemovalsIfIdle()
@@ -695,8 +708,6 @@ final class MetagentModel: ObservableObject {
         generation: Int
     ) {
         guard generation == statusRefreshGeneration else { return }
-        refreshSkillEvaluations()
-        isRunning = false
         lastRunText = Self.timestamp()
 
         let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
@@ -756,6 +767,10 @@ final class MetagentModel: ObservableObject {
         } else {
             statusText = "Status check failed"
             systemImage = "exclamationmark.triangle"
+        }
+
+        refreshSkillEvaluations {
+            self.finishRunningOperation()
         }
     }
 
@@ -833,10 +848,14 @@ final class MetagentModel: ObservableObject {
         return await (scanResult, homeScanResult, pluginScanResult)
     }
 
-    private func refreshSkillEvaluations() {
-        guard !isSkillEvaluating else { return }
+    private func refreshSkillEvaluations(completion: (() -> Void)? = nil) {
+        guard !isSkillEvaluating else {
+            completion?()
+            return
+        }
         skillEvaluationRefreshGeneration += 1
         let generation = skillEvaluationRefreshGeneration
+        isSkillEvaluationRefreshing = true
         Task {
             let snapshot = await Task.detached(priority: .utility) {
                 MetagentCore.loadSkillEvaluationSnapshot()
@@ -844,6 +863,8 @@ final class MetagentModel: ObservableObject {
             guard generation == skillEvaluationRefreshGeneration else { return }
             skillEvaluations = snapshot
             skillTableRevision += 1
+            isSkillEvaluationRefreshing = false
+            completion?()
         }
     }
 
@@ -867,7 +888,6 @@ final class MetagentModel: ObservableObject {
                     return CommandOutcome(succeeded: false, lines: [error.localizedDescription], repairPreview: nil)
                 }
             }.value
-            isRunning = false
             lastRunText = Self.timestamp()
             lastOutputTitle = title
             lastOutputLines = result.lines
@@ -883,6 +903,7 @@ final class MetagentModel: ObservableObject {
             }
 
             completion?(result)
+            finishRunningOperation()
         }
         return true
     }
