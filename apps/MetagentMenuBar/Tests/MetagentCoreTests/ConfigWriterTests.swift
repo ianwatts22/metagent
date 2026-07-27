@@ -164,6 +164,28 @@ struct ConfigWriterTests {
         #expect(try parsedConfig(at: path).maxDepth == 3)
     }
 
+    @Test("quoted multiline terminators do not retain stale managed keys")
+    func quotedMultilineTerminatorClosesValueContext() throws {
+        let path = try temporaryConfigPath()
+        try #"""
+        custom = ["""foo""""]
+        roots = ["/old/root"]
+        max_depth = 9
+        """#.write(to: path, atomically: true, encoding: .utf8)
+
+        try MetagentCore.saveUserConfig(
+            MetagentConfig(roots: ["/new/root"], maxDepth: 3),
+            at: path
+        )
+
+        let written = try String(contentsOf: path, encoding: .utf8)
+        #expect(written.contains(#"custom = ["""foo""""]"#))
+        #expect(!written.contains("/old/root"))
+        #expect(!written.contains("max_depth = 9"))
+        #expect(try parsedConfig(at: path).roots == ["/new/root"])
+        #expect(try parsedConfig(at: path).maxDepth == 3)
+    }
+
     /// Reads the file back through the same parsing helpers `loadUserConfig`
     /// uses, without depending on the process-wide home directory.
     private func parsedConfig(at path: URL) throws -> MetagentConfig {

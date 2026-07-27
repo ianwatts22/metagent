@@ -140,15 +140,26 @@ private struct TOMLValueContext {
         while index < characters.count {
             let character = characters[index]
             if let activeMultilineQuote = multilineQuote {
-                if character == activeMultilineQuote,
-                   hasTripleQuote(at: index, in: characters),
-                   activeMultilineQuote == "'" || !isEscaped(at: index, in: characters)
-                {
-                    self.multilineQuote = nil
-                    index += 3
-                } else {
+                guard character == activeMultilineQuote else {
                     index += 1
+                    continue
                 }
+                let runLength = quoteRunLength(
+                    from: index,
+                    quote: activeMultilineQuote,
+                    in: characters
+                )
+                let delimiterIndex = index + max(0, runLength - 3)
+                if runLength >= 3,
+                   activeMultilineQuote == "'" || !isEscaped(at: delimiterIndex, in: characters)
+                {
+                    // TOML permits one or two quote characters immediately
+                    // before a multiline closing delimiter. Consume the whole
+                    // run so `""""` closes the string instead of opening a new
+                    // unterminated basic string with its fourth quote.
+                    self.multilineQuote = nil
+                }
+                index += runLength
                 continue
             }
             if let activeQuote = quote {
@@ -189,6 +200,18 @@ private func hasTripleQuote(at index: Int, in characters: [Character]) -> Bool {
     index + 2 < characters.count
         && characters[index] == characters[index + 1]
         && characters[index] == characters[index + 2]
+}
+
+private func quoteRunLength(
+    from index: Int,
+    quote: Character,
+    in characters: [Character]
+) -> Int {
+    var length = 0
+    while index + length < characters.count, characters[index + length] == quote {
+        length += 1
+    }
+    return length
 }
 
 private func isEscaped(at index: Int, in characters: [Character]) -> Bool {
