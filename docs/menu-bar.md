@@ -56,7 +56,10 @@ Refresh behavior:
 - Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.
 - A low-priority, resumable session backfill runs after launch. It sleeps after each 16 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
 - Parser upgrades keep the previous Usage results visible until the replacement index completes and swaps atomically.
-- Once current, there is no continuous polling; launch or manual refresh processes newly appended session bytes.
+- Once current, there is no continuous polling of session history; launch or manual refresh processes newly appended session bytes.
+- External skill changes are picked up without a manual refresh: a debounced FSEvents watcher covers the global collections, every known project's canonical skills directory, and the plugin cache, and triggers the full reload once a burst of file events settles. The app's own mutations do not double-scan, because their queues already end in a rescan and the watcher stands down while one is in flight. Opening the main window or the menu bar panel also runs a quiet catch-up scan when the last one is more than a minute old.
+- Removal rows stay hidden from approval until the post-removal rescan lands, including across concurrently draining per-project queues, so a refresh racing the deletions can no longer resurrect a removed row for a frame.
+- The dev channel's Settings gains a Development section with an Add Test Skills action that writes three disposable `test-zz-*` skills to the global collection for exercising selection, archive, removal, and history flows; re-running it restores any that were deleted. Release builds have no such surface.
 - Whole-directory project symlinks stay current automatically, so there is no periodic repair agent.
 
 Portfolio history:

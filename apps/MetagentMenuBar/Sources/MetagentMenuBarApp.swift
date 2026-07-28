@@ -21,6 +21,11 @@ struct MetagentMenuBarApp: App {
             )
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
                 .environmentObject(updater)
+                // Opening the window is when staleness is actually seen, so it
+                // is the one moment worth a quiet catch-up scan.
+                .onAppear {
+                    model.refreshIfStale()
+                }
         }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
@@ -34,6 +39,9 @@ struct MetagentMenuBarApp: App {
             )
                 .frame(width: 560, height: 640)
                 .environmentObject(updater)
+                .onAppear {
+                    model.refreshIfStale()
+                }
         } label: {
             MenuBarIcon()
                 .frame(width: 18, height: 18 / AppBrand.markAspectRatio)

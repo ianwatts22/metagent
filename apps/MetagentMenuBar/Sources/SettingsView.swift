@@ -156,6 +156,27 @@ struct SettingsView: View {
                 Spacer()
             }
 
+            if model.isDevChannel {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Development")
+                            .font(.headline)
+                        Text("Writes three disposable `test-zz-*` skills to the global collection for exercising removal, archive, and history flows. Re-running restores any that were deleted.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button("Add Test Skills", systemImage: "testtube.2") {
+                        model.addTestSkills()
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .disabled(model.isRunning)
+                }
+            }
+
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(AppVersion.display)

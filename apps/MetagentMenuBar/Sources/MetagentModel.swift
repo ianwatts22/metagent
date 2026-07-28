@@ -42,6 +42,10 @@ final class MetagentModel: ObservableObject {
     /// has no meaningful total (single skill, Codex review).
     @Published private(set) var skillEvaluationProgress: Double?
     @Published private(set) var isPluginInventoryAvailable = false
+    @Published private(set) var pluginInventory = PluginInventorySnapshot.empty
+    @Published private(set) var isPluginInventoryRefreshing = false
+    @Published private(set) var pluginUpdateReport: PluginUpdateReport?
+    @Published private(set) var isUpdatingPlugins = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     /// Measured codebase size per standardized project root. Only git
@@ -60,7 +64,7 @@ final class MetagentModel: ObservableObject {
     private var statusRefreshQueued = false
     private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
     private var activeSkillRemovalKeys = Set<String>()
-    private var completedSkillRemovalIDs = Set<String>()
+    private(set) var completedSkillRemovalIDs = Set<String>()
     private var accumulatedSkillRemovalLines: [String] = []
     private var accumulatedSkillRemovalFailedIDs = Set<String>()
     private var isReconcilingSkillRemovals = false
@@ -87,7 +91,166 @@ final class MetagentModel: ObservableObject {
         refreshStatus()
         refreshUsage()
         refreshModelReleases()
+        startWatchingSkillRoots()
     }
+
+    // MARK: - Liveness
+
+    /// When a full status scan last landed. Gates the cheap "am I stale"
+    /// refreshes so opening the window twice in a minute costs one scan.
+    private var lastStatusAppliedAt = Date.distantPast
+
+    private lazy var skillRootsWatcher = SkillRootsWatcher { [weak self] in
+        self?.skillRootsChangedExternally()
+    }
+
+    /// Everything the inventory scan reads that can change behind the app's
+    /// back: the global collections, every known project's canonical skills
+    /// directory, and the plugin cache whose versioned folders change on
+    /// plugin updates.
+    private func startWatchingSkillRoots() {
+        var paths = [
+            homeURL().appendingPathComponent(".agents/skills").path,
+            homeURL().appendingPathComponent(".claude/skills").path,
+            homeURL().appendingPathComponent(".codex/plugins/cache").path,
+        ]
+        paths += projects.map { project in
+            URL(fileURLWithPath: project.coreProject.skillsDir).path
+        }
+        skillRootsWatcher.watch(paths: paths)
+    }
+
+    private func skillRootsChangedExternally() {
+        // Our own mutations already end in a rescan; their file events would
+        // only buy a second, redundant one.
+        guard !isRunning, !isRemovingSkills, !isReconcilingSkillRemovals else { return }
+        guard Date().timeIntervalSince(lastStatusAppliedAt) > 3 else { return }
+        refreshAll()
+    }
+
+    /// Refreshes when the last landed scan is old enough to matter. Called when
+    /// a window or panel opens, which is exactly when staleness becomes visible.
+    func refreshIfStale(maxAgeSeconds: TimeInterval = 60) {
+        guard Date().timeIntervalSince(lastStatusAppliedAt) > maxAgeSeconds else { return }
+        guard !isRunning else { return }
+        refreshAll()
+    }
+
+    // MARK: - Dev channel
+
+    /// True only for the side-installed dev build; gates affordances that have
+    /// no business in a released app.
+    var isDevChannel: Bool {
+        Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true
+    }
+
+    /// Disposable global skills for exercising the removal, archive, and
+    /// history flows without touching anything real. Deliberately re-runnable:
+    /// deleted ones come back, existing ones are left alone.
+    func addTestSkills() {
+        guard isDevChannel, !isRunning else { return }
+        let skillsRoot = homeURL().appendingPathComponent(".agents/skills")
+        runOperation(
+            title: "Add test skills",
+            runningText: "Writing test skills…"
+        ) {
+            var lines: [String] = []
+            for skill in Self.testSkillFixtures {
+                let root = skillsRoot.appendingPathComponent(skill.directory)
+                if FileManager.default.fileExists(atPath: root.path) {
+                    lines.append("\(skill.directory): already present, left alone")
+                    continue
+                }
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                try skill.skillFile.write(
+                    to: root.appendingPathComponent("SKILL.md"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+                for (relativePath, content) in skill.extraFiles {
+                    let url = root.appendingPathComponent(relativePath)
+                    try FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try content.write(to: url, atomically: true, encoding: .utf8)
+                }
+                lines.append("\(skill.directory): created")
+            }
+            return CommandOutcome(succeeded: true, lines: lines, repairPreview: nil)
+        } completion: { [weak self] result in
+            if result.succeeded {
+                self?.refreshStatus()
+            }
+        }
+    }
+
+    private struct TestSkillFixture {
+        let directory: String
+        let skillFile: String
+        var extraFiles: [(String, String)] = []
+    }
+
+    /// Obviously-fake names so nothing here can be mistaken for a real skill,
+    /// with enough variety to light up different table columns: a plain one, one
+    /// with a script, and one with reference documentation.
+    private nonisolated static let testSkillFixtures: [TestSkillFixture] = [
+        TestSkillFixture(
+            directory: "test-zz-plain",
+            skillFile: """
+            ---
+            name: test-zz-plain
+            description: Disposable dev-channel test skill with a minimal body. Safe to remove.
+            ---
+
+            # Test skill: plain
+
+            This skill exists only so the dev build has something safe to select,
+            archive, and remove. It does nothing.
+            """
+        ),
+        TestSkillFixture(
+            directory: "test-zz-scripted",
+            skillFile: """
+            ---
+            name: test-zz-scripted
+            description: Disposable dev-channel test skill carrying a script. Safe to remove.
+            ---
+
+            # Test skill: scripted
+
+            Carries one inert script so script-count columns and removal of
+            multi-file bundles get exercised.
+
+            Run `scripts/noop.sh` to do nothing successfully.
+            """,
+            extraFiles: [
+                ("scripts/noop.sh", "#!/bin/sh\nexit 0\n"),
+            ]
+        ),
+        TestSkillFixture(
+            directory: "test-zz-referenced",
+            skillFile: """
+            ---
+            name: test-zz-referenced
+            description: Disposable dev-channel test skill with reference documentation. Safe to remove.
+            ---
+
+            # Test skill: referenced
+
+            Carries reference documentation so reference-count columns, token
+            estimates, and the skill viewer's document handling get exercised.
+
+            See `references/details.md` for absolutely nothing of value.
+            """,
+            extraFiles: [
+                (
+                    "references/details.md",
+                    "# Details\n\nThere are no details. This file pads the reference count.\n"
+                ),
+            ]
+        ),
+    ]
 
     /// Provider keys whose releases trigger skill-review advisories. Stored as
     /// a comma-separated default so Settings and the model read one value.
@@ -224,6 +387,7 @@ final class MetagentModel: ObservableObject {
         isRunning = true
         refreshArchivedSkills()
         refreshMCPHealth()
+        refreshPluginInventory()
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
         coreStatusText = "Swift core"
@@ -294,6 +458,77 @@ final class MetagentModel: ObservableObject {
             }.value
             mcpHealth = snapshot
             isMCPRefreshing = false
+        }
+    }
+
+    func refreshPluginInventory() {
+        guard !isPluginInventoryRefreshing else { return }
+        isPluginInventoryRefreshing = true
+        Task {
+            let snapshot = await Task.detached(priority: .utility) {
+                MetagentCore.scanPluginInventory()
+            }.value
+            pluginInventory = snapshot
+            isPluginInventoryRefreshing = false
+            autoUpdatePluginsIfDue()
+        }
+    }
+
+    static let pluginAutoUpdateEnabledKey = "metagent.plugins.auto-update.v1"
+    static let pluginAutoUpdateLastRunKey = "metagent.plugins.auto-update.last-run.v1"
+    /// Third-party marketplace refreshes hit the network, so scheduled runs
+    /// stay spaced out; the manual button bypasses the interval entirely.
+    private static let pluginAutoUpdateInterval: TimeInterval = 6 * 60 * 60
+
+    var isPluginAutoUpdateEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.pluginAutoUpdateEnabledKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: Self.pluginAutoUpdateEnabledKey)
+    }
+
+    func setPluginAutoUpdateEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.pluginAutoUpdateEnabledKey)
+        if enabled {
+            autoUpdatePluginsIfDue()
+        }
+    }
+
+    var lastPluginAutoUpdateAt: Date? {
+        let stored = UserDefaults.standard.double(forKey: Self.pluginAutoUpdateLastRunKey)
+        return stored > 0 ? Date(timeIntervalSince1970: stored) : nil
+    }
+
+    private func autoUpdatePluginsIfDue() {
+        guard isPluginAutoUpdateEnabled,
+              pluginInventory.records.contains(where: { $0.updatePolicy == .manual })
+        else { return }
+        if let lastRun = lastPluginAutoUpdateAt,
+           Date().timeIntervalSince(lastRun) < Self.pluginAutoUpdateInterval
+        {
+            return
+        }
+        updateThirdPartyPlugins()
+    }
+
+    func updateThirdPartyPlugins() {
+        guard !isUpdatingPlugins else { return }
+        isUpdatingPlugins = true
+        UserDefaults.standard.set(
+            Date().timeIntervalSince1970,
+            forKey: Self.pluginAutoUpdateLastRunKey
+        )
+        Task {
+            let report = await Task.detached(priority: .utility) {
+                MetagentCore.updateThirdPartyPlugins()
+            }.value
+            pluginUpdateReport = report
+            isUpdatingPlugins = false
+            if report.updatedCount > 0 {
+                // Versions moved, so the plugin list and any plugin-provided
+                // skills are stale; one scheduled refresh reconciles both.
+                refreshPluginInventory()
+                refreshStatus()
+            }
         }
     }
 
@@ -878,8 +1113,14 @@ final class MetagentModel: ObservableObject {
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
-            pendingSkillRemovalIDs.subtract(completedSkillRemovalIDs)
-            completedSkillRemovalIDs.removeAll()
+            // Only release the optimistic hide when no removal is in flight.
+            // Removal queues drain independently, and a refresh whose scan read
+            // the disk before a queue's deletions would otherwise unhide those
+            // rows against stale data — a one-frame resurrection in the table.
+            if activeSkillRemovalKeys.isEmpty, !isRemovingSkills, !isReconcilingSkillRemovals {
+                pendingSkillRemovalIDs.subtract(completedSkillRemovalIDs)
+                completedSkillRemovalIDs.removeAll()
+            }
             skillTableRevision += 1
             let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))
@@ -985,6 +1226,10 @@ final class MetagentModel: ObservableObject {
     }
 
     private func updateInventorySummary() {
+        lastStatusAppliedAt = Date()
+        // The project set may have changed, and each project's skills
+        // directory is a watch root.
+        startWatchingSkillRoots()
         repoCount = projects.count
         skillCount = Self.logicalSkillCount(projects: projects)
         locationSummaryText = Self.locationSummary(projects: projects)

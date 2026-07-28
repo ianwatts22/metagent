@@ -89,7 +89,10 @@ struct InventorySection: View {
         return cachedRows
         .filter {
             guard let removalID = $0.inventory?.removalRequest?.id else { return true }
+            // Completed removals stay hidden too: their rows are already gone
+            // from disk, and only the reconcile rescan may bring a row back.
             return !model.pendingSkillRemovalIDs.contains(removalID)
+                && !model.completedSkillRemovalIDs.contains(removalID)
         }
         .filter { selectedView == .usage || $0.isInstalled }
         .filter { selectedView != .duplicates || $0.overlap != nil }
