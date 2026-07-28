@@ -157,12 +157,13 @@ public extension MetagentCore {
             )
         }
 
-        // Reads are keyed by canonical path in the event log, which is exactly
-        // the key the reconstructed portfolio uses.
+        // Reads are keyed by canonical path in the event log; folding them
+        // through the same identity mapping the portfolio uses keeps a plugin
+        // skill's reads attached to it across versioned cache paths.
         var readsByKeyDay: [String: [String: Int]] = [:]
         for count in dayCounts {
             guard let path = count.canonicalPath else { continue }
-            readsByKeyDay[standardizedHistoryPath(path), default: [:]][count.day, default: 0] += count.count
+            readsByKeyDay[historySkillIdentity(path).key, default: [:]][count.day, default: 0] += count.count
         }
 
         let today = historyDay(now, calendar: calendar)
@@ -419,12 +420,15 @@ func reconstructedInstalls(
     var installs: [String: ReconstructedSkill] = [:]
     for entry in canonicalHealthSkills(projects: projects, scope: .all) {
         let skill = entry.skill
-        let key = standardizedHistoryPath(
+        let path = standardizedHistoryPath(
             skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
         )
+        // Events are keyed by identity so a plugin skill has one timeline, but
+        // git and birthtime evidence still lives at the concrete path.
+        let key = historySkillIdentity(path).key
         guard installs[key] == nil else { continue }
-        let installedOn = gitLifetimes[key]?.installedOn
-            ?? creationDate(ofDirectory: key).map { historyDay($0, calendar: calendar) }
+        let installedOn = gitLifetimes[path]?.installedOn
+            ?? creationDate(ofDirectory: path).map { historyDay($0, calendar: calendar) }
         guard let installedOn else { continue }
         installs[key] = ReconstructedSkill(
             key: key,

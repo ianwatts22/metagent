@@ -49,6 +49,15 @@ struct SkillTimelineSection: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+                        if event.kind == .updated,
+                           let from = event.detail["from"], !from.isEmpty,
+                           let to = event.detail["to"], !to.isEmpty
+                        {
+                            Text("\(from) → \(to)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         Spacer(minLength: 6)
                         if let evidence = event.detail["evidence"] {
                             Text(evidence)

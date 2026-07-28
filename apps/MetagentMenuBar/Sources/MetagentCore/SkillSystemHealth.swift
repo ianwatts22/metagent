@@ -326,6 +326,19 @@ private func pluginHealthIdentity(id: String, path: String?) -> String? {
 private func pluginHealthIdentity(
     path: String
 ) -> (owner: String, plugin: String, skill: String, key: String)? {
+    guard let identity = pluginCachePathIdentity(path) else { return nil }
+    return (identity.owner, identity.plugin, identity.skill, identity.key)
+}
+
+/// The marketplace-aware identity of a plugin-cache skill, parsed from its
+/// versioned path: `.../cache/<marketplace>/<plugin>/<version>/skills/<skill>`.
+///
+/// The version directory changes on every plugin update, so anything that wants
+/// a plugin skill to stay the same thing across updates must key by this
+/// identity rather than by path. Usage matching and history state both do.
+func pluginCachePathIdentity(
+    _ path: String
+) -> (owner: String, plugin: String, skill: String, version: String, key: String)? {
     let url = URL(fileURLWithPath: path)
     let components = url.pathComponents
     guard let skillsIndex = components.lastIndex(of: "skills"),
@@ -334,7 +347,8 @@ private func pluginHealthIdentity(
     else { return nil }
     let marketplace = MetagentCore.normalizedPluginMarketplace(components[skillsIndex - 3])
     let plugin = components[skillsIndex - 2]
+    let version = components[skillsIndex - 1]
     let skill = url.lastPathComponent
     let owner = "\(marketplace)/\(plugin)"
-    return (owner, plugin, skill, "\(owner):\(skill)")
+    return (owner, plugin, skill, version, "\(owner):\(skill)")
 }

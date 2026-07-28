@@ -588,6 +588,143 @@ struct SkillHistoryTests {
         #expect(coverage.inferredDayCount == 0)
         #expect(coverage.firstObservedDay == "2026-07-20")
     }
+
+    private func pluginSkill(version: String, tokens: Int = 100) -> SkillInventoryItem {
+        let path = "/Users/tester/.codex/plugins/cache/acme-market/notes/\(version)/skills/notes"
+        return .fixture(
+            name: "notes",
+            path: path,
+            location: "plugin",
+            originKind: "plugin",
+            scope: "global",
+            manager: "codex-plugin",
+            authority: "managed",
+            tokenEstimate: tokens
+        )
+    }
+
+    @Test("plugin skills key by marketplace identity, not versioned path")
+    func pluginIdentityKeying() {
+        let identity = historySkillIdentity(
+            "/Users/tester/.codex/plugins/cache/acme-market/notes/2.6.10/skills/notes"
+        )
+        #expect(identity.key == "plugin:acme-market/notes:notes")
+        #expect(identity.version == "2.6.10")
+        let plain = historySkillIdentity("/Users/tester/.agents/skills/alpha")
+        #expect(plain.key == "/Users/tester/.agents/skills/alpha")
+        #expect(plain.version.isEmpty)
+    }
+
+    @Test("a plugin version bump is one updated event, not remove plus add")
+    func pluginUpdateEvent() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [pluginSkill(version: "2.6.10")])],
+            usage: usage([]),
+            trigger: .launch,
+            now: date("2026-07-20T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+
+        let bumped = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [pluginSkill(version: "2.7.0", tokens: 140)])],
+            usage: usage([]),
+            trigger: .refresh,
+            now: date("2026-07-21T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+
+        #expect(bumped.events.map(\.kind) == [SkillHistoryEventKind.updated])
+        let event = try #require(bumped.events.first)
+        #expect(event.subjectKey == "plugin:acme-market/notes:notes")
+        #expect(event.detail["from"] == "2.6.10")
+        #expect(event.detail["to"] == "2.7.0")
+
+        // The timeline resolves from either versioned path to one subject.
+        let timeline = try MetagentCore.skillHistoryTimeline(
+            skillKey: "/Users/tester/.codex/plugins/cache/acme-market/notes/2.6.10/skills/notes",
+            databasePath: databasePath
+        )
+        #expect(timeline.map(\.kind) == [SkillHistoryEventKind.updated])
+    }
+
+    @Test("two versioned copies of one plugin collapse to the newer state")
+    func pluginVersionCollapse() throws {
+        let states = canonicalHistoryStates(projects: [project(
+            root: "/Users/tester",
+            skills: [pluginSkill(version: "2.9.0"), pluginSkill(version: "2.10.0")]
+        )])
+        #expect(states.count == 1)
+        #expect(states.first?.version == "2.10.0")
+    }
+
+    @Test("legacy path keys migrate to identities without firing events")
+    func stateKeyMigration() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        let legacyPath = "/Users/tester/.codex/plugins/cache/acme-market/notes/2.6.10/skills/notes"
+
+        // Seed a legacy store: a path-keyed open state and a path-keyed event,
+        // exactly what capture wrote before identity keying existed.
+        let store = try SkillHistoryStore(path: databasePath)
+        _ = try store.record(
+            day: "2026-07-19",
+            capturedAt: date("2026-07-19T09:00:00Z"),
+            trigger: .launch,
+            origin: .observed,
+            metrics: [],
+            states: [{
+                // The same bundle the next capture will scan, but keyed the
+                // way the old schema keyed it: by versioned path.
+                let current = SkillHistoryState(skill: pluginSkill(version: "2.6.10"))
+                return SkillHistoryState(
+                    skillKey: legacyPath,
+                    name: current.name,
+                    scope: current.scope,
+                    location: current.location,
+                    manager: current.manager,
+                    source: current.source,
+                    contentFingerprint: current.contentFingerprint,
+                    fileIdentity: current.fileIdentity,
+                    tokenEstimate: current.tokenEstimate,
+                    upstreamUpdatedAt: current.upstreamUpdatedAt
+                )
+            }()]
+        )
+        try store.insertEvents([SkillHistoryEvent(
+            id: "added:\(legacyPath):2026-07-19",
+            occurredAt: date("2026-07-19T09:00:00Z"),
+            kind: .added,
+            subjectKey: legacyPath,
+            subjectName: "notes",
+            scopeKey: SkillHistoryScope.global.key,
+            origin: .inferred
+        )])
+        try store.setMetadata("state_key_schema", "1")
+
+        // The next capture sees the same plugin at the same version: after
+        // migration this must be a quiet no-op, not a remove-and-add storm.
+        let report = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [pluginSkill(version: "2.6.10")])],
+            usage: usage([]),
+            trigger: .refresh,
+            now: date("2026-07-20T09:00:00Z"),
+            calendar: calendar,
+            databasePath: databasePath
+        )
+        #expect(report.events.isEmpty)
+
+        // Old inferred events follow the key, keeping the timeline whole.
+        let timeline = try MetagentCore.skillHistoryTimeline(
+            skillKey: legacyPath,
+            databasePath: databasePath
+        )
+        #expect(timeline.map(\.kind) == [SkillHistoryEventKind.added])
+        #expect(timeline.first?.subjectKey == "plugin:acme-market/notes:notes")
+    }
 }
 
 @Suite("Skill history backfill")

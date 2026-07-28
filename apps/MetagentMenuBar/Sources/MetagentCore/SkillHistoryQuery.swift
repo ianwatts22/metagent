@@ -127,12 +127,14 @@ public extension MetagentCore {
         )
     }
 
-    /// One skill's recorded lifetime, newest first.
+    /// One skill's recorded lifetime, newest first. Callers pass the canonical
+    /// path; the identity mapping keeps a plugin skill's timeline continuous
+    /// across the versioned cache directories it has lived in.
     static func skillHistoryTimeline(
         skillKey: String,
         databasePath: String? = nil
     ) throws -> [SkillHistoryEvent] {
         try SkillHistoryStore(path: databasePath)
-            .events(forSubject: standardizedHistoryPath(skillKey))
+            .events(forSubject: historySkillIdentity(skillKey).key)
     }
 }

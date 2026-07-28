@@ -461,6 +461,7 @@ extension SkillHistoryEventKind {
         case .archived: "archived"
         case .restored: "restored"
         case .renamed: "renamed"
+        case .updated: "updated"
         case .contentChanged: "edited"
         case .sourceChanged: "resourced"
         case .scopeChanged: "rescoped"
@@ -474,6 +475,7 @@ extension SkillHistoryEventKind {
         case .archived: .brown
         case .restored: .mint
         case .renamed: .blue
+        case .updated: .cyan
         case .contentChanged: .purple
         case .sourceChanged: .teal
         case .scopeChanged: .indigo

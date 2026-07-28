@@ -65,9 +65,24 @@ public enum SkillHistoryEventKind: String, Sendable, Equatable, CaseIterable {
     case archived
     case restored
     case renamed
+    case updated
     case contentChanged = "content-changed"
     case sourceChanged = "source-changed"
     case scopeChanged = "scope-changed"
+}
+
+/// The stable identity a skill's history is recorded under, with the version
+/// when the path carries one.
+///
+/// Plugin-cache skills live in versioned directories, so their path changes on
+/// every plugin update. Keying them by marketplace identity keeps one skill one
+/// timeline, and turns a version bump into an `updated` event instead of a
+/// removal plus an unrelated addition. Everything else keys by canonical path.
+func historySkillIdentity(_ path: String) -> (key: String, version: String) {
+    if let plugin = pluginCachePathIdentity(path) {
+        return ("plugin:\(plugin.key)", plugin.version)
+    }
+    return (standardizedHistoryPath(path), "")
 }
 
 /// Every metric the history layer records.
@@ -212,6 +227,9 @@ struct SkillHistoryState: Sendable, Equatable {
     let fileIdentity: String
     let tokenEstimate: Int
     let upstreamUpdatedAt: String
+    /// The plugin cache version this state was scanned from, empty for skills
+    /// whose paths carry no version. A change here is an update, not an edit.
+    let version: String
 
     /// A change signal built from counts the inventory scan already computed.
     ///
@@ -220,11 +238,13 @@ struct SkillHistoryState: Sendable, Equatable {
     /// It detects edits that change size or shape, and misses same-length
     /// rewrites.
     init(skill: SkillInventoryItem) {
-        let key = standardizedHistoryPath(
+        let path = standardizedHistoryPath(
             skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
         )
-        skillKey = key
-        fileIdentity = directoryIdentity(key) ?? ""
+        let identity = historySkillIdentity(path)
+        skillKey = identity.key
+        version = identity.version
+        fileIdentity = directoryIdentity(path) ?? ""
         name = skill.name
         scope = skill.scope
         location = skill.location
@@ -255,7 +275,8 @@ struct SkillHistoryState: Sendable, Equatable {
         contentFingerprint: String,
         fileIdentity: String,
         tokenEstimate: Int,
-        upstreamUpdatedAt: String
+        upstreamUpdatedAt: String,
+        version: String = ""
     ) {
         self.skillKey = skillKey
         self.name = name
@@ -267,6 +288,7 @@ struct SkillHistoryState: Sendable, Equatable {
         self.fileIdentity = fileIdentity
         self.tokenEstimate = tokenEstimate
         self.upstreamUpdatedAt = upstreamUpdatedAt
+        self.version = version
     }
 }
 
@@ -429,6 +451,13 @@ func canonicalHistoryStates(projects: [SkillProject]) -> [SkillHistoryState] {
     var states: [String: SkillHistoryState] = [:]
     for entry in canonicalHealthSkills(projects: projects, scope: .all) {
         let state = SkillHistoryState(skill: entry.skill)
+        // Two versioned cache directories of one plugin can coexist briefly;
+        // they are one skill, and the newer version is its current state.
+        if let existing = states[state.skillKey],
+           existing.version.compare(state.version, options: .numeric) != .orderedAscending
+        {
+            continue
+        }
         states[state.skillKey] = state
     }
     return states.values.sorted { $0.skillKey < $1.skillKey }
@@ -484,6 +513,7 @@ final class SkillHistoryStore {
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
+            try migrateStateKeys(db)
             let existing = try snapshotID(db, day: day)
             let isNewDay = existing == nil
             // An inferred sample never overwrites an observed one: reconstructed
@@ -821,6 +851,120 @@ final class SkillHistoryStore {
         }
     }
 
+    // MARK: Key migration
+
+    /// Rewrites plugin-cache path keys to marketplace identities, once.
+    ///
+    /// Without this, the keying change itself would read as every plugin skill
+    /// being removed and an unrelated one installed — exactly the artifact the
+    /// change exists to prevent. Runs inside the caller's transaction so a
+    /// failure leaves the store untouched and the flag unset.
+    private func migrateStateKeys(_ db: OpaquePointer?) throws {
+        let schemaKey = "state_key_schema"
+        if try metadataValue(db, schemaKey) == "2" { return }
+
+        // Old keys are absolute paths; only those that parse as versioned
+        // plugin-cache paths change. Events and states share the key space.
+        var mappings: [(old: String, new: String, version: String)] = []
+        for table in ["history_skill_states", "history_events"] {
+            let column = table == "history_events" ? "subject_key" : "skill_key"
+            var statement: OpaquePointer?
+            try prepare(db, "SELECT DISTINCT \(column) FROM \(table) WHERE \(column) LIKE '/%';", &statement)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let old = columnText(statement, 0),
+                      let plugin = pluginCachePathIdentity(old)
+                else { continue }
+                mappings.append((old, "plugin:\(plugin.key)", plugin.version))
+            }
+            sqlite3_finalize(statement)
+        }
+
+        for mapping in mappings {
+            var stateUpdate: OpaquePointer?
+            try prepare(db, """
+            UPDATE history_skill_states SET skill_key = ?, version = ? WHERE skill_key = ?;
+            """, &stateUpdate)
+            bindText(stateUpdate, 1, mapping.new)
+            bindText(stateUpdate, 2, mapping.version)
+            bindText(stateUpdate, 3, mapping.old)
+            let stateStatus = sqlite3_step(stateUpdate)
+            sqlite3_finalize(stateUpdate)
+            guard stateStatus == SQLITE_DONE else {
+                throw databaseError(db, "migrate state key")
+            }
+
+            var eventUpdate: OpaquePointer?
+            try prepare(db, "UPDATE history_events SET subject_key = ? WHERE subject_key = ?;", &eventUpdate)
+            bindText(eventUpdate, 1, mapping.new)
+            bindText(eventUpdate, 2, mapping.old)
+            let eventStatus = sqlite3_step(eventUpdate)
+            sqlite3_finalize(eventUpdate)
+            guard eventStatus == SQLITE_DONE else {
+                throw databaseError(db, "migrate event key")
+            }
+        }
+
+        // Several versioned paths can collapse into one identity, leaving that
+        // key with more than one open state row. The newest interval is the
+        // current one; earlier intervals close where it begins.
+        var duplicates: OpaquePointer?
+        try prepare(db, """
+        SELECT id, skill_key, valid_from FROM history_skill_states
+        WHERE valid_to IS NULL
+        ORDER BY skill_key, valid_from DESC, id DESC;
+        """, &duplicates)
+        var newestByKey: Set<String> = []
+        var rowsToClose: [(id: Int64, closeAt: String)] = []
+        var latestValidFrom: [String: String] = [:]
+        while sqlite3_step(duplicates) == SQLITE_ROW {
+            let id = sqlite3_column_int64(duplicates, 0)
+            guard let key = columnText(duplicates, 1) else { continue }
+            let validFrom = columnText(duplicates, 2) ?? ""
+            if newestByKey.insert(key).inserted {
+                latestValidFrom[key] = validFrom
+            } else {
+                rowsToClose.append((id, latestValidFrom[key] ?? validFrom))
+            }
+        }
+        sqlite3_finalize(duplicates)
+        for row in rowsToClose {
+            var close: OpaquePointer?
+            try prepare(db, "UPDATE history_skill_states SET valid_to = ? WHERE id = ?;", &close)
+            bindText(close, 1, row.closeAt)
+            sqlite3_bind_int64(close, 2, row.id)
+            let status = sqlite3_step(close)
+            sqlite3_finalize(close)
+            guard status == SQLITE_DONE else {
+                throw databaseError(db, "close duplicate state")
+            }
+        }
+
+        try setMetadataValue(db, schemaKey, "2")
+    }
+
+    private func metadataValue(_ db: OpaquePointer?, _ key: String) throws -> String? {
+        var statement: OpaquePointer?
+        try prepare(db, "SELECT value FROM history_metadata WHERE key = ?;", &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, key)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return columnText(statement, 0)
+    }
+
+    private func setMetadataValue(_ db: OpaquePointer?, _ key: String, _ value: String) throws {
+        var statement: OpaquePointer?
+        try prepare(db, """
+        INSERT INTO history_metadata (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, key)
+        bindText(statement, 2, value)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw databaseError(db, "write metadata")
+        }
+    }
+
     // MARK: State folding
 
     private func applyStates(
@@ -912,7 +1056,23 @@ final class SkillHistoryStore {
             guard let old = previous[key], let new = incoming[key], old != new else { continue }
             try closeState(db, skillKey: key, validTo: timestamp)
             try insertState(db, state: new, validFrom: timestamp, origin: origin)
-            if old.contentFingerprint != new.contentFingerprint || old.tokenEstimate != new.tokenEstimate {
+            // A version change is an update by definition, and it subsumes the
+            // content change that came with it: "updated 2.6.10 → 2.7.0" says
+            // everything "edited" would, with the cause attached.
+            if old.version != new.version {
+                events.append(makeEvent(
+                    kind: .updated,
+                    at: capturedAt,
+                    state: new,
+                    origin: origin,
+                    detail: [
+                        "from": old.version,
+                        "to": new.version,
+                        "tokensBefore": String(old.tokenEstimate),
+                        "tokensAfter": String(new.tokenEstimate),
+                    ]
+                ))
+            } else if old.contentFingerprint != new.contentFingerprint || old.tokenEstimate != new.tokenEstimate {
                 events.append(makeEvent(
                     kind: .contentChanged,
                     at: capturedAt,
@@ -923,7 +1083,9 @@ final class SkillHistoryStore {
                         "tokensAfter": String(new.tokenEstimate),
                     ]
                 ))
-            }
+            } // The subsumption above intentionally ends here: a version bump
+            // that also moved the skill between scopes or managers still emits
+            // those events below, because they are separate claims.
             if old.source != new.source || old.manager != new.manager {
                 events.append(makeEvent(
                     kind: .sourceChanged,
@@ -993,7 +1155,8 @@ final class SkillHistoryStore {
         var statement: OpaquePointer?
         try prepare(db, """
         SELECT skill_key, name, scope, location, manager, source,
-               content_fingerprint, file_identity, token_estimate, upstream_updated_at
+               content_fingerprint, file_identity, token_estimate, upstream_updated_at,
+               version
         FROM history_skill_states
         WHERE valid_to IS NULL;
         """, &statement)
@@ -1011,7 +1174,8 @@ final class SkillHistoryStore {
                 contentFingerprint: columnText(statement, 6) ?? "",
                 fileIdentity: columnText(statement, 7) ?? "",
                 tokenEstimate: Int(sqlite3_column_int64(statement, 8)),
-                upstreamUpdatedAt: columnText(statement, 9) ?? ""
+                upstreamUpdatedAt: columnText(statement, 9) ?? "",
+                version: columnText(statement, 10) ?? ""
             )
         }
         return states
@@ -1028,8 +1192,8 @@ final class SkillHistoryStore {
         INSERT INTO history_skill_states (
           skill_key, valid_from, valid_to, name, scope, location, manager,
           source, content_fingerprint, file_identity, token_estimate,
-          upstream_updated_at, origin
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          upstream_updated_at, origin, version
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, &statement)
         defer { sqlite3_finalize(statement) }
         bindText(statement, 1, state.skillKey)
@@ -1044,6 +1208,7 @@ final class SkillHistoryStore {
         sqlite3_bind_int64(statement, 10, Int64(state.tokenEstimate))
         bindText(statement, 11, state.upstreamUpdatedAt)
         bindText(statement, 12, origin.rawValue)
+        bindText(statement, 13, state.version)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw databaseError(db, "insert skill state")
         }
@@ -1233,6 +1398,13 @@ final class SkillHistoryStore {
         );
         CREATE INDEX IF NOT EXISTS history_states_current
           ON history_skill_states(skill_key, valid_to);
+        """)
+        // Added after the first release of this schema; the failure when the
+        // column already exists is the expected steady state.
+        try? exec(db, """
+        ALTER TABLE history_skill_states ADD COLUMN version TEXT NOT NULL DEFAULT '';
+        """)
+        try exec(db, """
         CREATE TABLE IF NOT EXISTS history_events (
           event_id TEXT PRIMARY KEY,
           occurred_at TEXT NOT NULL,
