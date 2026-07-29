@@ -43,6 +43,9 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
     public let name: String
     public let marketplace: String
     public let version: String
+    /// Claude installation scope (`user`, `project`, `local`, or `managed`).
+    /// Codex plugins are user-level and leave this nil.
+    public let scope: String?
     public let enabled: Bool
     public let updatePolicy: PluginUpdatePolicy
     /// Where the plugin ultimately comes from: a git URL, GitHub repo, or
@@ -50,7 +53,9 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
     public let sourceDetail: String
     public let lastUpdated: Date?
 
-    public var id: String { "\(runtime.rawValue):\(pluginID)" }
+    public var id: String {
+        [runtime.rawValue, pluginID, scope].compactMap { $0 }.joined(separator: ":")
+    }
 
     public init(
         runtime: PluginRuntime,
@@ -58,6 +63,7 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
         name: String,
         marketplace: String,
         version: String,
+        scope: String? = nil,
         enabled: Bool,
         updatePolicy: PluginUpdatePolicy,
         sourceDetail: String,
@@ -68,6 +74,7 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
         self.name = name
         self.marketplace = marketplace
         self.version = version
+        self.scope = scope
         self.enabled = enabled
         self.updatePolicy = updatePolicy
         self.sourceDetail = sourceDetail
@@ -148,6 +155,7 @@ extension MetagentCore {
                     name: plugin.pluginID.split(separator: "@").first.map(String.init) ?? plugin.pluginID,
                     marketplace: marketplace,
                     version: plugin.version,
+                    scope: plugin.scope,
                     enabled: enabledStates[plugin.pluginID] ?? true,
                     updatePolicy: source.map { $0.isAnthropicOwned ? .automatic : .manual } ?? .manual,
                     sourceDetail: source?.sourceDetail ?? "",
@@ -187,6 +195,7 @@ private extension PluginRecord {
 struct ClaudeInstalledPlugin {
     var pluginID: String
     var version: String
+    var scope: String
     var installPath: String?
     var lastUpdated: Date?
 }
@@ -219,18 +228,24 @@ func claudeInstalledPlugins(at url: URL) throws -> [ClaudeInstalledPlugin] {
     }
     let dateParser = ISO8601DateFormatter()
     dateParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return plugins.compactMap { pluginID, value in
-        // Version 2 stores an array of per-scope installs; take the first
-        // (user scope in practice). Version 1 stored a single object.
-        let entry = (value as? [[String: Any]])?.first ?? value as? [String: Any]
-        guard let entry, let version = entry["version"] as? String else { return nil }
-        return ClaudeInstalledPlugin(
-            pluginID: pluginID,
-            version: version,
-            installPath: entry["installPath"] as? String,
-            lastUpdated: (entry["lastUpdated"] as? String).flatMap { dateParser.date(from: $0) }
-        )
-    }.sorted { $0.pluginID < $1.pluginID }
+    return plugins.flatMap { pluginID, value -> [ClaudeInstalledPlugin] in
+        // Version 2 stores one entry per installation scope. Preserve all of
+        // them so an update can target the same scope it inventoried. Version
+        // 1 stored one object and used the CLI's default user scope.
+        let entries = (value as? [[String: Any]])
+            ?? (value as? [String: Any]).map { [$0] }
+            ?? []
+        return entries.compactMap { entry in
+            guard let version = entry["version"] as? String else { return nil }
+            return ClaudeInstalledPlugin(
+                pluginID: pluginID,
+                version: version,
+                scope: entry["scope"] as? String ?? "user",
+                installPath: entry["installPath"] as? String,
+                lastUpdated: (entry["lastUpdated"] as? String).flatMap { dateParser.date(from: $0) }
+            )
+        }
+    }.sorted { ($0.pluginID, $0.scope) < ($1.pluginID, $1.scope) }
 }
 
 func claudeKnownMarketplaces(at url: URL) throws -> [String: ClaudeMarketplace] {

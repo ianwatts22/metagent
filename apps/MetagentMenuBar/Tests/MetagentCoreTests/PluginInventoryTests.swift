@@ -20,6 +20,11 @@ final class PluginInventoryTests: XCTestCase {
                 "version": "1.2.0",
                 "installedAt": "2026-06-01T19:13:27.175Z",
                 "lastUpdated": "2026-06-02T02:38:36.796Z"
+              },
+              {
+                "scope": "project",
+                "installPath": "/tmp/project/vendor/demo/1.1.0",
+                "version": "1.1.0"
               }
             ],
             "other@official": [
@@ -30,12 +35,16 @@ final class PluginInventoryTests: XCTestCase {
         """.utf8).write(to: url)
 
         let plugins = try claudeInstalledPlugins(at: url)
+        let scoped = Dictionary(uniqueKeysWithValues: plugins.map {
+            ("\($0.pluginID):\($0.scope)", $0)
+        })
 
-        XCTAssertEqual(plugins.map(\.pluginID), ["demo@vendor", "other@official"])
-        XCTAssertEqual(plugins[0].version, "1.2.0")
-        XCTAssertEqual(plugins[0].installPath, "/tmp/cache/vendor/demo/1.2.0")
-        XCTAssertNotNil(plugins[0].lastUpdated)
-        XCTAssertNil(plugins[1].lastUpdated)
+        XCTAssertEqual(plugins.map(\.pluginID), ["demo@vendor", "demo@vendor", "other@official"])
+        XCTAssertEqual(scoped["demo@vendor:user"]?.version, "1.2.0")
+        XCTAssertEqual(scoped["demo@vendor:user"]?.installPath, "/tmp/cache/vendor/demo/1.2.0")
+        XCTAssertNotNil(scoped["demo@vendor:user"]?.lastUpdated)
+        XCTAssertEqual(scoped["demo@vendor:project"]?.version, "1.1.0")
+        XCTAssertNil(scoped["other@official:user"]?.lastUpdated)
     }
 
     func testClaudeMarketplaceOwnershipSeparatesAnthropicFromThirdParty() throws {
@@ -102,6 +111,7 @@ final class PluginInventoryTests: XCTestCase {
         XCTAssertEqual(records["vendor@vendor"]?.updatePolicy, .manual)
         XCTAssertEqual(records["vendor@vendor"]?.enabled, false)
         XCTAssertEqual(records["vendor@vendor"]?.marketplace, "vendor")
+        XCTAssertEqual(records["vendor@vendor"]?.scope, "user")
         XCTAssertEqual(records["vendor@vendor"]?.sourceDetail, "vendor/agent-plugins")
     }
 

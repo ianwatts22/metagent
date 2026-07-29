@@ -37,6 +37,7 @@ struct PluginInventoryRow: Identifiable {
     var name: String { record.name }
     var runtimeSortValue: String { record.runtime.displayName }
     var version: String { record.version }
+    var scope: String { record.scope ?? "user" }
     var marketplace: String { record.marketplace }
     var policySortValue: String { record.updatePolicy.rawValue }
     var statusSortValue: String { record.enabled ? "enabled" : "disabled" }
@@ -65,7 +66,7 @@ struct PluginInventoryRow: Identifiable {
 
     func matches(_ query: String) -> Bool {
         guard !query.isEmpty else { return true }
-        return [name, record.pluginID, marketplace, record.runtime.displayName, record.sourceDetail]
+        return [name, record.pluginID, marketplace, scope, record.runtime.displayName, record.sourceDetail]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
 }
@@ -150,6 +151,13 @@ struct PluginsSection: View {
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 80, ideal: 110)
+
+                    TableColumn("Scope", value: \.scope) { row in
+                        Text(row.scope.capitalized)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(min: 70, ideal: 85)
 
                     TableColumn("Marketplace", value: \.marketplace) { row in
                         Text(row.marketplace)

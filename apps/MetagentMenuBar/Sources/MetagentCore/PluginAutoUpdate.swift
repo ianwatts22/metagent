@@ -11,12 +11,15 @@ public enum PluginUpdateStatus: String, Codable, Hashable, Sendable {
 public struct PluginUpdateOutcome: Identifiable, Hashable, Sendable {
     public let runtime: PluginRuntime
     public let pluginID: String
+    public let scope: String?
     public let fromVersion: String
     public let toVersion: String?
     public let status: PluginUpdateStatus
     public let detail: String?
 
-    public var id: String { "\(runtime.rawValue):\(pluginID)" }
+    public var id: String {
+        [runtime.rawValue, pluginID, scope].compactMap { $0 }.joined(separator: ":")
+    }
 }
 
 public struct PluginUpdateReport: Sendable {
@@ -83,8 +86,13 @@ extension MetagentCore {
         }
 
         var refreshedMarketplaces = Set<String>()
+        var failedMarketplaces: [String: String] = [:]
         var outcomes: [PluginUpdateOutcome] = []
         for plugin in plugins {
+            if let failure = failedMarketplaces[plugin.marketplace] {
+                outcomes.append(failedUpdate(plugin, detail: failure))
+                continue
+            }
             if !refreshedMarketplaces.contains(plugin.marketplace) {
                 refreshedMarketplaces.insert(plugin.marketplace)
                 if let failure = runPluginCommand(
@@ -93,18 +101,29 @@ extension MetagentCore {
                     label: "codex plugin marketplace upgrade \(plugin.marketplace)"
                 ) {
                     warnings.append(failure)
+                    failedMarketplaces[plugin.marketplace] = failure
+                    outcomes.append(failedUpdate(plugin, detail: failure))
+                    continue
                 }
             }
 
-            let available = codexMarketplaceSnapshotVersion(
+            guard let available = codexMarketplaceSnapshotVersion(
                 marketplace: plugin.marketplace,
                 pluginName: plugin.name,
                 home: homeURL()
-            )
-            if let available, available == plugin.version {
+            ) else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Marketplace version unavailable after refresh; no update attempted."
+                ))
+                continue
+            }
+            let comparison = available.compare(plugin.version, options: .numeric)
+            if comparison == .orderedSame {
                 outcomes.append(PluginUpdateOutcome(
                     runtime: .codex,
                     pluginID: plugin.pluginID,
+                    scope: plugin.scope,
                     fromVersion: plugin.version,
                     toVersion: plugin.version,
                     status: .upToDate,
@@ -112,9 +131,16 @@ extension MetagentCore {
                 ))
                 continue
             }
+            guard comparison == .orderedDescending else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Marketplace offers older version \(available); refusing to downgrade \(plugin.version)."
+                ))
+                continue
+            }
 
-            // Snapshot moved (or its version is unreadable): reinstall from
-            // the refreshed snapshot. `codex plugin add` replaces in place.
+            // The freshly verified snapshot is newer. `codex plugin add`
+            // replaces the existing installation in place.
             if let failure = runPluginCommand(
                 executable: executable,
                 arguments: ["plugin", "add", plugin.pluginID],
@@ -123,6 +149,7 @@ extension MetagentCore {
                 outcomes.append(PluginUpdateOutcome(
                     runtime: .codex,
                     pluginID: plugin.pluginID,
+                    scope: plugin.scope,
                     fromVersion: plugin.version,
                     toVersion: nil,
                     status: .failed,
@@ -130,17 +157,13 @@ extension MetagentCore {
                 ))
                 continue
             }
-            let after = available ?? codexMarketplaceSnapshotVersion(
-                marketplace: plugin.marketplace,
-                pluginName: plugin.name,
-                home: homeURL()
-            )
             outcomes.append(PluginUpdateOutcome(
                 runtime: .codex,
                 pluginID: plugin.pluginID,
+                scope: plugin.scope,
                 fromVersion: plugin.version,
-                toVersion: after,
-                status: after == plugin.version ? .upToDate : .updated,
+                toVersion: available,
+                status: .updated,
                 detail: nil
             ))
         }
@@ -215,8 +238,13 @@ extension MetagentCore {
         }
 
         var refreshedMarketplaces = Set<String>()
+        var failedMarketplaces: [String: String] = [:]
         var outcomes: [PluginUpdateOutcome] = []
         for plugin in plugins {
+            if let failure = failedMarketplaces[plugin.marketplace] {
+                outcomes.append(failedUpdate(plugin, detail: failure))
+                continue
+            }
             if !refreshedMarketplaces.contains(plugin.marketplace) {
                 refreshedMarketplaces.insert(plugin.marketplace)
                 if let failure = runPluginCommand(
@@ -225,18 +253,29 @@ extension MetagentCore {
                     label: "claude plugin marketplace update \(plugin.marketplace)"
                 ) {
                     warnings.append(failure)
+                    failedMarketplaces[plugin.marketplace] = failure
+                    outcomes.append(failedUpdate(plugin, detail: failure))
+                    continue
                 }
             }
 
-            let available = claudeMarketplaceManifestVersion(
+            guard let available = claudeMarketplaceManifestVersion(
                 marketplace: plugin.marketplace,
                 pluginName: plugin.name,
                 home: homeURL()
-            )
-            if let available, available == plugin.version {
+            ) else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Marketplace version unavailable after refresh; no update attempted."
+                ))
+                continue
+            }
+            let comparison = available.compare(plugin.version, options: .numeric)
+            if comparison == .orderedSame {
                 outcomes.append(PluginUpdateOutcome(
                     runtime: .claude,
                     pluginID: plugin.pluginID,
+                    scope: plugin.scope,
                     fromVersion: plugin.version,
                     toVersion: plugin.version,
                     status: .upToDate,
@@ -244,15 +283,30 @@ extension MetagentCore {
                 ))
                 continue
             }
+            guard comparison == .orderedDescending else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Marketplace offers older version \(available); refusing to downgrade \(plugin.version)."
+                ))
+                continue
+            }
+            guard let scope = plugin.scope else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Installation scope is unknown; no update attempted."
+                ))
+                continue
+            }
 
             if let failure = runPluginCommand(
                 executable: executable,
-                arguments: ["plugin", "update", plugin.pluginID],
-                label: "claude plugin update \(plugin.pluginID)"
+                arguments: ["plugin", "update", "--scope", scope, plugin.pluginID],
+                label: "claude plugin update \(plugin.pluginID) --scope \(scope)"
             ) {
                 outcomes.append(PluginUpdateOutcome(
                     runtime: .claude,
                     pluginID: plugin.pluginID,
+                    scope: plugin.scope,
                     fromVersion: plugin.version,
                     toVersion: nil,
                     status: .failed,
@@ -261,13 +315,14 @@ extension MetagentCore {
                 continue
             }
             let installed = claudePluginRecords(home: homeURL()).records
-                .first { $0.pluginID == plugin.pluginID }?.version
+                .first { $0.pluginID == plugin.pluginID && $0.scope == plugin.scope }?.version
             outcomes.append(PluginUpdateOutcome(
                 runtime: .claude,
                 pluginID: plugin.pluginID,
+                scope: plugin.scope,
                 fromVersion: plugin.version,
                 toVersion: installed ?? available,
-                status: (installed ?? available) == plugin.version ? .upToDate : .updated,
+                status: .updated,
                 detail: nil
             ))
         }
@@ -296,6 +351,21 @@ extension MetagentCore {
     }
 
     // MARK: Helpers
+
+    private static func failedUpdate(
+        _ plugin: PluginRecord,
+        detail: String
+    ) -> PluginUpdateOutcome {
+        PluginUpdateOutcome(
+            runtime: plugin.runtime,
+            pluginID: plugin.pluginID,
+            scope: plugin.scope,
+            fromVersion: plugin.version,
+            toVersion: nil,
+            status: .failed,
+            detail: detail
+        )
+    }
 
     /// Runs one plugin CLI command; returns a failure description, or nil on
     /// success. Marketplace refreshes hit the network, so the timeout is long.

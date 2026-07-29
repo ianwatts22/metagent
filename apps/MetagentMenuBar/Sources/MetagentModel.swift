@@ -482,7 +482,7 @@ final class MetagentModel: ObservableObject {
 
     var isPluginAutoUpdateEnabled: Bool {
         UserDefaults.standard.object(forKey: Self.pluginAutoUpdateEnabledKey) == nil
-            ? true
+            ? false
             : UserDefaults.standard.bool(forKey: Self.pluginAutoUpdateEnabledKey)
     }
 
