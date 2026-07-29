@@ -7,10 +7,11 @@ import UniformTypeIdentifiers
 struct ProjectDirectoryRow: Identifiable {
     enum LinkState: String, Comparable {
         case healthy = "Connected"
+        case managed = "Skills CLI"
         case notApplicable = "Independent"
         case nothingToMirror = "No shared skills"
         case missing = "Not connected"
-        case separate = "Separate folder"
+        case separate = "Needs review"
         case wrong = "Wrong link"
 
         static func < (lhs: LinkState, rhs: LinkState) -> Bool {
@@ -60,10 +61,26 @@ struct ProjectDirectoryRow: Identifiable {
                 .filter { $0.location == "agents" && $0.representation == "canonical" }
                 .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
         })
+        let hasAgentSkills = matchingProjects.contains { project in
+            project.skills.contains { $0.location == "agents" }
+        }
+        let hasPersonalSkills = matchingProjects.contains { project in
+            project.skills.contains {
+                $0.location == "agents"
+                    && $0.manager != "skills-cli"
+            }
+        }
+        let hasProjectionWarning = doctorIssues.contains {
+            $0.severity != .ok
+                && $0.category == .projection
+                && $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
+        }
         claudeState = Self.claudeLinkState(
             root: directory.root,
             isGlobal: isGlobal,
-            hasSharedSkills: !agentsPaths.isEmpty
+            hasSharedSkills: hasAgentSkills,
+            hasPersonalSkills: hasPersonalSkills,
+            hasProjectionWarning: hasProjectionWarning
         )
         let codexPaths = Set(matchingProjects.flatMap { project in
             project.skills
@@ -122,7 +139,9 @@ struct ProjectDirectoryRow: Identifiable {
     private static func claudeLinkState(
         root: String,
         isGlobal: Bool,
-        hasSharedSkills: Bool
+        hasSharedSkills: Bool,
+        hasPersonalSkills: Bool,
+        hasProjectionWarning: Bool
     ) -> LinkState {
         let project = URL(fileURLWithPath: root)
         let link = project.appendingPathComponent(".claude/skills")
@@ -135,11 +154,12 @@ struct ProjectDirectoryRow: Identifiable {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: link.path, isDirectory: &isDirectory) else {
             if isGlobal { return .notApplicable }
-            return hasSharedSkills ? .missing : .nothingToMirror
+            if hasPersonalSkills { return .missing }
+            return hasSharedSkills ? .managed : .nothingToMirror
         }
-        // A `.claude/skills` that exists is worth describing either way: it is a
-        // real directory somebody put there, shared skills or not.
-        return isDirectory.boolValue ? (isGlobal ? .notApplicable : .separate) : .wrong
+        guard isDirectory.boolValue else { return .wrong }
+        if isGlobal { return .notApplicable }
+        return hasProjectionWarning ? .separate : .healthy
     }
 }
 
@@ -375,6 +395,7 @@ struct ProjectLinkStateCell: View {
     private var symbol: String {
         switch state {
         case .healthy: "checkmark.circle"
+        case .managed: "shippingbox"
         case .notApplicable: "info.circle"
         case .nothingToMirror: "circle.dashed"
         case .missing: "minus.circle"
@@ -386,18 +407,19 @@ struct ProjectLinkStateCell: View {
     private var tint: Color {
         switch state {
         case .healthy: .green
-        case .notApplicable, .nothingToMirror, .missing: .secondary
+        case .managed, .notApplicable, .nothingToMirror, .missing: .secondary
         case .separate, .wrong: .orange
         }
     }
 
     private var help: String {
         switch state {
-        case .healthy: ".claude/skills points to .agents/skills."
+        case .healthy: "Claude sees project-owned skills through child links. Skills CLI links and Claude-specific overrides remain independently managed."
+        case .managed: "Every shared skill is owned by Skills CLI, so Metagent leaves Claude projection to that tool."
         case .notApplicable: "Global Claude skills are stored independently from .agents/skills. This is allowed, but the two locations do not share one canonical collection."
         case .nothingToMirror: "This folder has no shared .agents skills, so there is nothing for Claude to link to. It appears here for its other agent configuration."
-        case .missing: "Claude does not currently see this project's .agents skills."
-        case .separate: ".claude/skills is an independent directory, not a shared link."
+        case .missing: "Claude is missing one or more project-owned .agents skills. Doctor can create the absent child links."
+        case .separate: "Doctor found a collision or another Claude projection path that needs manual review."
         case .wrong: ".claude/skills is linked somewhere other than .agents/skills."
         }
     }

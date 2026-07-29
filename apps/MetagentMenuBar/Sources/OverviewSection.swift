@@ -1141,7 +1141,7 @@ struct DoctorFindingRow: View {
                         .buttonStyle(.glass)
                         .disabled(isDisabled)
                 } else if let onOpenProject {
-                    Button("Open", action: onOpenProject)
+                    Button("Show Folder", action: onOpenProject)
                         .buttonStyle(.plain)
                 }
             }

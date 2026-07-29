@@ -182,7 +182,7 @@ Project skill ownership is intentionally small:
 
 ```text
 .agents/skills/                 # physical source of truth
-.claude/skills -> ../.agents/skills
+.claude/skills/<personal-skill> -> ../../.agents/skills/<personal-skill>
 skills-lock.json                # optional npx skills provenance
 agents.toml / agents.lock       # optional dotagents declaration and lock evidence
 ```
@@ -198,6 +198,9 @@ signatures when installed content includes manager-specific, versioned
 evidence; a generic `version` field is insufficient. Without an installer lock,
 a distinct manager source, or a recognized signature, Metagent reports
 local/unknown.
+Metagent creates only missing child links for project skills absent from
+`skills-lock.json`. Skills CLI owns its locked names, existing Claude-specific
+overrides remain untouched, and legacy whole-folder project links remain valid.
 Global `~/.claude/skills` remains outside this project projection rule.
 
 ## Verification

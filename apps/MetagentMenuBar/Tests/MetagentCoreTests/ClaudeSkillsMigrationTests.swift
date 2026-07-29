@@ -2,105 +2,147 @@ import Foundation
 import XCTest
 @testable import MetagentCore
 
-/// A real `.claude/skills` directory can hold the only copy of a skill, so these
-/// cover what happens to those files rather than just whether the link appears.
+/// Skills CLI owns names in `skills-lock.json`. Metagent projects only the
+/// remaining project-local names, one child link at a time.
 final class ClaudeSkillsMigrationTests: XCTestCase {
-    func testMovesClaudeOnlySkillsIntoAgentsThenLinks() throws {
-        let root = try makeTemporaryRoot(prefix: "metagent-claude-migration")
-        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/shared"), name: "shared")
-        try writeSkillFixture(
-            at: root.appendingPathComponent(".claude/skills/handwritten"),
-            name: "handwritten",
-            body: "only copy"
-        )
+    func testLinksOnlyPersonalSkillsAndLeavesSkillsCLINamesAlone() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        let personal = root.appendingPathComponent(".agents/skills/personal")
+        let managed = root.appendingPathComponent(".agents/skills/managed")
+        try writeSkillFixture(at: personal, name: "personal")
+        try writeSkillFixture(at: managed, name: "managed")
+        try writeSkillsLock(root, names: ["managed"])
 
         let lines = try repair(root, apply: true)
 
-        let migrated = root.appendingPathComponent(".agents/skills/handwritten/SKILL.md")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: migrated.path))
-        XCTAssertTrue(try String(contentsOf: migrated, encoding: .utf8).contains("only copy"))
-        XCTAssertTrue(isSymlink(root.appendingPathComponent(".claude/skills")))
-        XCTAssertTrue(symlink(
-            root.appendingPathComponent(".claude/skills"),
-            resolvesTo: root.appendingPathComponent(".agents/skills")
+        let personalLink = root.appendingPathComponent(".claude/skills/personal")
+        XCTAssertTrue(isSymlink(personalLink))
+        XCTAssertTrue(symlink(personalLink, resolvesTo: personal))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".claude/skills/managed").path
         ))
-        XCTAssertTrue(lines.contains { $0.kind == .action && $0.text.contains("moved 1 skill(s)") })
+        XCTAssertFalse(isSymlink(root.appendingPathComponent(".claude/skills")))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .action && $0.text == "linked personal Claude skill: personal"
+        })
     }
 
-    func testPreviewMovesNothing() throws {
-        let root = try makeTemporaryRoot(prefix: "metagent-claude-migration")
-        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/shared"), name: "shared")
-        try writeSkillFixture(at: root.appendingPathComponent(".claude/skills/handwritten"), name: "handwritten")
+    func testPreviewCreatesNoDirectoriesOrLinks() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/personal"), name: "personal")
 
         let lines = try repair(root, apply: false)
 
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(".claude/skills/handwritten/SKILL.md").path
-        ))
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(".agents/skills/handwritten").path
-        ))
-        XCTAssertTrue(lines.contains { $0.kind == .action && $0.text.contains("would move 1 skill(s)") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude").path))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .action && $0.text == "would link personal Claude skill: personal"
+        })
     }
 
-    func testRefusesWhenTheSameSkillNameExistsInBothPlaces() throws {
-        let root = try makeTemporaryRoot(prefix: "metagent-claude-migration")
+    func testPreservesRealClaudeSpecificOverride() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
         try writeSkillFixture(
-            at: root.appendingPathComponent(".agents/skills/demo"),
-            name: "demo",
-            body: "canonical copy"
+            at: root.appendingPathComponent(".agents/skills/impeccable"),
+            name: "impeccable",
+            body: "generic copy"
         )
-        try writeSkillFixture(
-            at: root.appendingPathComponent(".claude/skills/demo"),
-            name: "demo",
-            body: "divergent copy"
+        let claudeOverride = root.appendingPathComponent(".claude/skills/impeccable")
+        try writeSkillFixture(at: claudeOverride, name: "impeccable", body: "Claude copy")
+
+        let lines = try repair(root, apply: true)
+
+        XCTAssertFalse(isSymlink(claudeOverride))
+        XCTAssertTrue(try String(
+            contentsOf: claudeOverride.appendingPathComponent("SKILL.md"),
+            encoding: .utf8
+        ).contains("Claude copy"))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .info && $0.text.contains("preserved Claude-specific override(s): impeccable")
+        })
+        XCTAssertNil(try doctorProjectionIssue(root))
+    }
+
+    func testReportsConflictingSymlinkWithoutReplacingIt() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        let canonical = root.appendingPathComponent(".agents/skills/demo")
+        let external = try makeTemporaryRoot(prefix: "metagent-claude-external")
+        try writeSkillFixture(at: canonical, name: "demo")
+        try writeSkillFixture(at: external.appendingPathComponent("demo"), name: "demo")
+        let claudeSkills = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
+        let conflicting = claudeSkills.appendingPathComponent("demo")
+        try FileManager.default.createSymbolicLink(
+            at: conflicting,
+            withDestinationURL: external.appendingPathComponent("demo")
         )
 
         let lines = try repair(root, apply: true)
 
-        // Both copies survive untouched and no link is created.
-        let claudeCopy = root.appendingPathComponent(".claude/skills/demo/SKILL.md")
-        let agentsCopy = root.appendingPathComponent(".agents/skills/demo/SKILL.md")
-        XCTAssertTrue(try String(contentsOf: claudeCopy, encoding: .utf8).contains("divergent copy"))
-        XCTAssertTrue(try String(contentsOf: agentsCopy, encoding: .utf8).contains("canonical copy"))
-        XCTAssertFalse(isSymlink(root.appendingPathComponent(".claude/skills")))
-        XCTAssertTrue(lines.contains { $0.kind == .skipped && $0.text.contains("exist in both") })
+        XCTAssertTrue(symlink(conflicting, resolvesTo: external.appendingPathComponent("demo")))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .skipped && $0.text.contains("collision(s) left untouched: demo")
+        })
+        let issue = try XCTUnwrap(doctorProjectionIssue(root))
+        XCTAssertNil(issue.repairAction)
+        XCTAssertEqual(issue.summary, "Claude skill names collide")
     }
 
-    func testDropsLinksThatAlreadyPointIntoTheCanonicalCollection() throws {
-        let root = try makeTemporaryRoot(prefix: "metagent-claude-migration")
-        let canonical = root.appendingPathComponent(".agents/skills/demo")
-        try writeSkillFixture(at: canonical, name: "demo")
+    func testKeepsLegacyWholeFolderProjection() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/demo"), name: "demo")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".claude"),
+            withIntermediateDirectories: true
+        )
         let claudeSkills = root.appendingPathComponent(".claude/skills")
-        try FileManager.default.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(
-            at: claudeSkills.appendingPathComponent("demo"),
-            withDestinationURL: canonical
+            atPath: claudeSkills.path,
+            withDestinationPath: "../.agents/skills"
         )
 
-        _ = try repair(root, apply: true)
+        let lines = try repair(root, apply: true)
 
-        // The per-skill link is redundant once the folder itself is the link,
-        // and the canonical skill must survive being pointed at.
-        XCTAssertTrue(isSymlink(claudeSkills))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: canonical.appendingPathComponent("SKILL.md").path))
+        XCTAssertTrue(symlink(claudeSkills, resolvesTo: root.appendingPathComponent(".agents/skills")))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .info && $0.text.contains("legacy .claude/skills")
+        })
+        XCTAssertNil(try doctorProjectionIssue(root))
     }
 
-    func testDoctorOffersRepairOnlyWhenMigrationIsPossible() throws {
-        let migratable = try makeTemporaryRoot(prefix: "metagent-claude-migration")
-        try writeSkillFixture(at: migratable.appendingPathComponent(".agents/skills/shared"), name: "shared")
-        try writeSkillFixture(at: migratable.appendingPathComponent(".claude/skills/extra"), name: "extra")
+    func testDoctorOffersRepairForMissingPersonalLinks() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/personal"), name: "personal")
 
-        let blocked = try makeTemporaryRoot(prefix: "metagent-claude-migration")
-        try writeSkillFixture(at: blocked.appendingPathComponent(".agents/skills/demo"), name: "demo")
-        try writeSkillFixture(at: blocked.appendingPathComponent(".claude/skills/demo"), name: "demo")
+        let issue = try XCTUnwrap(doctorProjectionIssue(root))
 
-        let migratableIssue = try XCTUnwrap(doctorProjectionIssue(migratable))
-        XCTAssertEqual(migratableIssue.repairAction, .repairProjection)
+        XCTAssertEqual(issue.repairAction, .repairProjection)
+        XCTAssertEqual(issue.summary, "Claude is missing personal skills")
+    }
 
-        let blockedIssue = try XCTUnwrap(doctorProjectionIssue(blocked))
-        XCTAssertNil(blockedIssue.repairAction)
-        XCTAssertEqual(blockedIssue.severity, .warning)
+    func testDoctorIgnoresMissingSkillsCLIProjection() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/managed"), name: "managed")
+        try writeSkillsLock(root, names: ["managed"])
+
+        XCTAssertNil(try doctorProjectionIssue(root))
+        let lines = try repair(root, apply: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude").path))
+        XCTAssertFalse(lines.contains { $0.kind == .action })
+    }
+
+    func testUnreadableSkillsLockFailsClosed() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/personal"), name: "personal")
+        try Data("{not-json".utf8).write(to: root.appendingPathComponent("skills-lock.json"))
+
+        let lines = try repair(root, apply: true)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".claude").path))
+        XCTAssertTrue(lines.contains {
+            $0.kind == .skipped && $0.text.contains("skills-lock.json is unreadable")
+        })
+        let issue = try XCTUnwrap(doctorProjectionIssue(root))
+        XCTAssertEqual(issue.summary, "Skills CLI ownership is unreadable")
     }
 
     // MARK: - Helpers
@@ -121,5 +163,24 @@ final class ClaudeSkillsMigrationTests: XCTestCase {
         ))
         .issues
         .first { $0.category == .projection && $0.severity != .ok }
+    }
+
+    private func writeSkillsLock(_ root: URL, names: [String]) throws {
+        let skills = Dictionary(uniqueKeysWithValues: names.map { name in
+            (
+                name,
+                [
+                    "source": "example/\(name)",
+                    "sourceType": "github",
+                    "skillPath": "skills/\(name)/SKILL.md",
+                    "computedHash": "fixture"
+                ]
+            )
+        })
+        let data = try JSONSerialization.data(
+            withJSONObject: ["version": 1, "skills": skills],
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try data.write(to: root.appendingPathComponent("skills-lock.json"))
     }
 }

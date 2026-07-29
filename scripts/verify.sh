@@ -684,16 +684,26 @@ expect_failure "unknown repair flag: --rot" "$unknown_repair_output" -- \
   env HOME="$fixture_root/home" "$swift_helper" skills repair --apply --rot "$fixture_root/workspace/child"
 
 repair_project="$fixture_root/repair-project"
-mkdir -p "$repair_project/.agents/skills/native-skill"
+mkdir -p "$repair_project/.agents/skills/native-skill" "$repair_project/.agents/skills/managed-skill"
 make_skill "$repair_project/.agents/skills/native-skill" "native-skill" "native"
+make_skill "$repair_project/.agents/skills/managed-skill" "managed-skill" "managed"
+cat >"$repair_project/skills-lock.json" <<'EOF'
+{"version":1,"skills":{"managed-skill":{"source":"example/skills","sourceType":"github","computedHash":"fixture"}}}
+EOF
 repair_preview="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0)"
-printf '%s\n' "$repair_preview" | grep -F "would create .claude/skills symlink" >/dev/null
+printf '%s\n' "$repair_preview" | grep -F "would link personal Claude skill: native-skill" >/dev/null
+if printf '%s\n' "$repair_preview" | grep -F "managed-skill" >/dev/null; then
+  echo "repair claimed a Skills CLI-owned projection" >&2
+  exit 1
+fi
 test ! -e "$repair_project/.claude/skills"
 repair_apply="$(HOME="$fixture_root/no-config-home" "$swift_helper" skills repair --root "$repair_project" --max-depth 0 --apply)"
-printf '%s\n' "$repair_apply" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
-test -L "$repair_project/.claude/skills"
-test "$(readlink "$repair_project/.claude/skills")" = "../.agents/skills"
+printf '%s\n' "$repair_apply" | grep -F "linked personal Claude skill: native-skill" >/dev/null
+test -d "$repair_project/.claude/skills"
+test -L "$repair_project/.claude/skills/native-skill"
+test "$(readlink "$repair_project/.claude/skills/native-skill")" = "../../.agents/skills/native-skill"
 test -f "$repair_project/.claude/skills/native-skill/SKILL.md"
+test ! -e "$repair_project/.claude/skills/managed-skill"
 test ! -e "$repair_project/agents.toml"
 test ! -e "$repair_project/agents.lock"
 
@@ -717,21 +727,21 @@ mkdir -p "$wrong_link_project/.agents/skills/wrong-link-skill" "$wrong_link_proj
 make_skill "$wrong_link_project/.agents/skills/wrong-link-skill" "wrong-link-skill" "wrong link"
 ln -s ../somewhere-else "$wrong_link_project/.claude/skills"
 wrong_link_preview="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0)"
-printf '%s\n' "$wrong_link_preview" | grep -F "would replace wrong .claude/skills symlink" >/dev/null
-wrong_link_apply="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply)"
-printf '%s\n' "$wrong_link_apply" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
-test "$(readlink "$wrong_link_project/.claude/skills")" = "../.agents/skills"
+printf '%s\n' "$wrong_link_preview" | grep -F "conflicting symlink; left untouched" >/dev/null
+wrong_link_output="$fixture_root/wrong-link.out"
+expect_failure "conflicting symlink" "$wrong_link_output" -- \
+  "$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply
+test "$(readlink "$wrong_link_project/.claude/skills")" = "../somewhere-else"
 
 conflict_project="$fixture_root/conflict-project"
 mkdir -p "$conflict_project/.agents/skills/canonical-skill" "$conflict_project/.claude/skills/claude-only"
 make_skill "$conflict_project/.agents/skills/canonical-skill" "canonical-skill" "canonical"
 printf -- "keep me\n" >"$conflict_project/.claude/skills/claude-only/SKILL.md"
 conflict_output="$("$swift_helper" skills repair --root "$conflict_project" --max-depth 0 --apply)"
-printf '%s\n' "$conflict_output" | grep -F "moved 1 skill(s) into .agents/skills: claude-only" >/dev/null
-printf '%s\n' "$conflict_output" | grep -F "repaired: .claude/skills -> ../.agents/skills" >/dev/null
-test -L "$conflict_project/.claude/skills"
-test "$(readlink "$conflict_project/.claude/skills")" = "../.agents/skills"
-test -f "$conflict_project/.agents/skills/claude-only/SKILL.md"
+printf '%s\n' "$conflict_output" | grep -F "linked personal Claude skill: canonical-skill" >/dev/null
+test -d "$conflict_project/.claude/skills"
+test -L "$conflict_project/.claude/skills/canonical-skill"
+test ! -e "$conflict_project/.agents/skills/claude-only"
 test -f "$conflict_project/.claude/skills/claude-only/SKILL.md"
 
 cat >"$fixture_root/home/.config/metagent/config.toml" <<EOF

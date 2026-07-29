@@ -823,65 +823,6 @@ func finalizeRemovalRecovery(
     }
 }
 
-/// What has to happen to a real `.claude/skills` directory before it can become
-/// a link to the canonical collection.
-///
-/// The directory can hold skills that exist nowhere else, so it is never
-/// replaced outright. Anything with its own content moves into `.agents/skills`
-/// first; only entries that already point back into the canonical collection,
-/// and macOS folder metadata, are dropped.
-enum ClaudeSkillsMigrationPlan: Equatable {
-    /// `moves` carry content and must be relocated. `discards` are removable.
-    case migrate(moves: [String], discards: [String])
-    /// A person has to resolve this; the message says what.
-    case blocked(String)
-}
-
-func planClaudeSkillsMigration(
-    claudeSkills: URL,
-    canonicalSkills: URL
-) -> ClaudeSkillsMigrationPlan {
-    guard let entries = try? fileManager.contentsOfDirectory(atPath: claudeSkills.path) else {
-        return .blocked("\(claudeSkills.path) could not be read")
-    }
-    let canonicalRoot = canonicalProjectPath(canonicalSkills)
-    let existingNames = Set((try? fileManager.contentsOfDirectory(atPath: canonicalSkills.path)) ?? [])
-    var moves: [String] = []
-    var discards: [String] = []
-    var collisions: [String] = []
-
-    for name in entries.sorted() {
-        if name == ".DS_Store" {
-            discards.append(name)
-            continue
-        }
-        let entry = claudeSkills.appendingPathComponent(name)
-        // A link that already resolves into the canonical collection carries no
-        // content of its own, so it goes away with the folder rather than being
-        // moved back on top of its own target.
-        if isSymlink(entry) {
-            let target = canonicalProjectPath(entry)
-            if target == canonicalRoot || target.hasPrefix(canonicalRoot + "/") {
-                discards.append(name)
-                continue
-            }
-        }
-        if existingNames.contains(name) {
-            collisions.append(name)
-            continue
-        }
-        moves.append(name)
-    }
-
-    guard collisions.isEmpty else {
-        return .blocked(
-            "\(collisions.count) name(s) exist in both .claude/skills and .agents/skills "
-                + "(\(collisions.joined(separator: ", "))); merge them by hand first"
-        )
-    }
-    return .migrate(moves: moves, discards: discards)
-}
-
 func repairProjectProjection(
     _ project: SkillProject,
     apply: Bool,
@@ -962,75 +903,95 @@ func repairProjectProjection(
         return lines
     }
 
-    if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) {
-        lines.append(.init(kind: .info, text: "healthy: .claude/skills -> ../.agents/skills"))
+    if isSymlink(claudeSkills) {
+        if symlink(claudeSkills, resolvesTo: canonicalSkills) {
+            lines.append(.init(kind: .info, text: "healthy: legacy .claude/skills -> ../.agents/skills"))
+        } else {
+            if apply {
+                throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey:
+                        ".claude/skills is a conflicting symlink; review it before applying other projection cleanup"
+                ])
+            }
+            lines.append(.init(
+                kind: .skipped,
+                text: "manual review: .claude/skills is a conflicting symlink; left untouched"
+            ))
+        }
         try resolveObsoleteCodexProjections()
         return lines
     }
-    if fileManager.fileExists(atPath: claudeSkills.path), !isSymlink(claudeSkills) {
-        switch planClaudeSkillsMigration(claudeSkills: claudeSkills, canonicalSkills: canonicalSkills) {
-        case .blocked(let reason):
-            lines.append(.init(kind: .skipped, text: "manual review: \(reason)"))
-            try resolveObsoleteCodexProjections()
-            return lines
-        case .migrate(let moves, let discards):
-            guard apply else {
-                lines.append(.init(
-                    kind: .action,
-                    text: moves.isEmpty
-                        ? "would replace empty .claude/skills directory -> ../.agents/skills"
-                        : "would move \(moves.count) skill(s) into .agents/skills, then link"
-                            + " .claude/skills -> ../.agents/skills: \(moves.joined(separator: ", "))"
-                ))
-                try resolveObsoleteCodexProjections()
-                return lines
-            }
-            try fileManager.createDirectory(at: canonicalSkills, withIntermediateDirectories: true)
-            for name in discards {
-                try fileManager.removeItem(at: claudeSkills.appendingPathComponent(name))
-            }
-            for name in moves {
-                try fileManager.moveItem(
-                    at: claudeSkills.appendingPathComponent(name),
-                    to: canonicalSkills.appendingPathComponent(name)
-                )
-            }
-            // Anything still here appeared after the plan was made. Leave the
-            // directory alone rather than deleting content nobody reviewed.
-            let remaining = (try? fileManager.contentsOfDirectory(atPath: claudeSkills.path)) ?? []
-            guard remaining.isEmpty else {
-                throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "\(claudeSkills.path) still holds \(remaining.count) entr(y/ies) after migration; "
-                            + "review it before linking"
-                ])
-            }
-            try fileManager.removeItem(at: claudeSkills)
-            if !moves.isEmpty {
-                lines.append(.init(
-                    kind: .action,
-                    text: "moved \(moves.count) skill(s) into .agents/skills: \(moves.joined(separator: ", "))"
-                ))
-            }
-        }
+
+    var isClaudeSkillsDirectory = ObjCBool(false)
+    if fileManager.fileExists(atPath: claudeSkills.path, isDirectory: &isClaudeSkillsDirectory),
+       !isClaudeSkillsDirectory.boolValue
+    {
+        lines.append(.init(
+            kind: .skipped,
+            text: "manual review: .claude/skills is not a directory; left untouched"
+        ))
+        try resolveObsoleteCodexProjections()
+        return lines
     }
 
-    let replacingWrongSymlink = isSymlink(claudeSkills)
-    let action = replacingWrongSymlink ? "replace wrong .claude/skills symlink" : "create .claude/skills symlink"
-    if apply {
-        try fileManager.createDirectory(at: claudeDirectory, withIntermediateDirectories: true)
-        if replacingWrongSymlink {
-            try fileManager.removeItem(at: claudeSkills)
+    let plan: ClaudeSkillProjectionPlan
+    do {
+        plan = try planClaudeSkillProjection(
+            project: project,
+            claudeSkills: claudeSkills,
+            canonicalSkills: canonicalSkills
+        )
+    } catch {
+        lines.append(.init(
+            kind: .skipped,
+            text: "manual review: skills-lock.json is unreadable; left Claude projections untouched"
+        ))
+        try resolveObsoleteCodexProjections()
+        return lines
+    }
+
+    for name in plan.missingNames {
+        let action = apply ? "linked personal Claude skill: \(name)" : "would link personal Claude skill: \(name)"
+        guard apply else {
+            lines.append(.init(kind: .action, text: action))
+            continue
         }
-        try fileManager.createSymbolicLink(atPath: claudeSkills.path, withDestinationPath: "../.agents/skills")
-        guard isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: canonicalSkills) else {
-            throw NSError(domain: "MetagentSkillsRepair", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "repair verification failed for \(claudeSkills.path)"
+
+        try fileManager.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
+        let claudeEntry = claudeSkills.appendingPathComponent(name)
+        let canonicalEntry = canonicalSkills.appendingPathComponent(name)
+        guard !fileManager.fileExists(atPath: claudeEntry.path), !isSymlink(claudeEntry) else {
+            throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\(claudeEntry.path) appeared after preview; review it before applying"
             ])
         }
-        lines.append(.init(kind: .action, text: "repaired: .claude/skills -> ../.agents/skills"))
-    } else {
-        lines.append(.init(kind: .action, text: "would \(action) -> ../.agents/skills"))
+        try fileManager.createSymbolicLink(
+            atPath: claudeEntry.path,
+            withDestinationPath: "../../.agents/skills/\(name)"
+        )
+        guard symlink(claudeEntry, resolvesTo: canonicalEntry) else {
+            throw NSError(domain: "MetagentSkillsRepair", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "repair verification failed for \(claudeEntry.path)"
+            ])
+        }
+        lines.append(.init(kind: .action, text: action))
+    }
+    if !plan.overrideNames.isEmpty {
+        lines.append(.init(
+            kind: .info,
+            text: "preserved Claude-specific override(s): \(plan.overrideNames.joined(separator: ", "))"
+        ))
+    }
+    if !plan.collisionNames.isEmpty {
+        lines.append(.init(
+            kind: .skipped,
+            text: "manual review: Claude projection collision(s) left untouched: "
+                + plan.collisionNames.joined(separator: ", ")
+        ))
+    }
+    if plan.missingNames.isEmpty, plan.collisionNames.isEmpty {
+        lines.append(.init(kind: .info, text: "healthy: personal Claude skill links are current"))
     }
 
     try resolveObsoleteCodexProjections()

@@ -299,75 +299,7 @@ public enum MetagentCore {
                 continue
             }
 
-            let claudeDirectory = projectRoot.appendingPathComponent(".claude")
-            let claudeSkills = claudeDirectory.appendingPathComponent("skills")
-            let expectedSkills = projectRoot
-                .appendingPathComponent(".agents")
-                .appendingPathComponent("skills")
-            if isSymlink(claudeDirectory) {
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(claudeDirectory.path) is a symlink; projection repair is disabled",
-                    summary: "Claude project directory is shared",
-                    projectRoot: project.root,
-                    category: .projection,
-                    guidance: "Review the shared .claude directory manually; Metagent will not write through it."
-                ))
-            } else if isSymlink(claudeSkills), symlink(claudeSkills, resolvesTo: expectedSkills) {
-                issues.append(.init(
-                    severity: .ok,
-                    message: "\(claudeSkills.path) is a symlink to .agents/skills",
-                    projectRoot: project.root,
-                    category: .projection
-                ))
-            } else if isSymlink(claudeSkills) {
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(claudeSkills.path) points somewhere other than .agents/skills",
-                    summary: "Claude skills mirror points to the wrong target",
-                    projectRoot: project.root,
-                    category: .projection,
-                    guidance: "Run Repair to point Claude at the canonical .agents/skills directory.",
-                    repairAction: .repairProjection
-                ))
-            } else if fileManager.fileExists(atPath: claudeSkills.path) {
-                // Offer Repair only when the move is actually possible, so the
-                // button never appears on a case that would refuse to run.
-                switch planClaudeSkillsMigration(claudeSkills: claudeSkills, canonicalSkills: expectedSkills) {
-                case .migrate(let moves, _):
-                    issues.append(.init(
-                        severity: .warning,
-                        message: "\(claudeSkills.path) exists but is not a symlink",
-                        summary: "Claude skills path is a real directory",
-                        projectRoot: project.root,
-                        category: .projection,
-                        guidance: moves.isEmpty
-                            ? "Run Repair to replace this empty directory with a link to .agents/skills."
-                            : "Run Repair to move \(moves.count) skill(s) into .agents/skills and link Claude at them: "
-                                + "\(moves.joined(separator: ", ")). Review the preview first.",
-                        repairAction: .repairProjection
-                    ))
-                case .blocked(let reason):
-                    issues.append(.init(
-                        severity: .warning,
-                        message: "\(claudeSkills.path) exists but is not a symlink",
-                        summary: "Claude skills path is a real directory",
-                        projectRoot: project.root,
-                        category: .projection,
-                        guidance: "Metagent cannot migrate this automatically: \(reason)."
-                    ))
-                }
-            } else {
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(claudeSkills.path) missing",
-                    summary: "Claude skills mirror missing",
-                    projectRoot: project.root,
-                    category: .projection,
-                    guidance: "Run Repair to point Claude at the canonical .agents/skills directory.",
-                    repairAction: .repairProjection
-                ))
-            }
+            issues.append(contentsOf: doctorClaudeSkillProjection(project: project))
         }
 
         return DoctorReport(issues: issues)
