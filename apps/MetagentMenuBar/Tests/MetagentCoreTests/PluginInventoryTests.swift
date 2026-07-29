@@ -230,4 +230,12 @@ final class PluginInventoryTests: XCTestCase {
             )
         )
     }
+
+    func testClaudeUpdatesOnlySupportUserScopeWithoutProjectContext() {
+        XCTAssertTrue(MetagentCore.isSupportedClaudeUpdateScope("user"))
+        XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope("project"))
+        XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope("local"))
+        XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope("managed"))
+        XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope(nil))
+    }
 }

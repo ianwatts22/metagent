@@ -49,6 +49,9 @@ struct PluginInventoryRow: Identifiable {
         case .manual:
             let source = record.sourceDetail.isEmpty ? "a third-party marketplace" : record.sourceDetail
             var lines = ["Installed from \(source); only updates when the marketplace is refreshed."]
+            if record.runtime == .claude, record.scope != "user" {
+                lines.append("This \(record.scope ?? "unknown") scope must be updated from its owning project.")
+            }
             if let outcome {
                 lines.append(outcomeDescription(outcome))
             }

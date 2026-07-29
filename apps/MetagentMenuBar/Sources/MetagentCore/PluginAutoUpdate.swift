@@ -297,6 +297,13 @@ extension MetagentCore {
                 ))
                 continue
             }
+            guard isSupportedClaudeUpdateScope(scope) else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "\(scope.capitalized)-scoped plugins require their owning project context; update this plugin from that project."
+                ))
+                continue
+            }
 
             if let failure = runPluginCommand(
                 executable: executable,
@@ -351,6 +358,13 @@ extension MetagentCore {
     }
 
     // MARK: Helpers
+
+    /// The Claude CLI resolves project and local scopes from its working
+    /// directory. The installation registry does not retain that project root,
+    /// so only user-scope updates can be targeted without guessing.
+    static func isSupportedClaudeUpdateScope(_ scope: String?) -> Bool {
+        scope == "user"
+    }
 
     private static func failedUpdate(
         _ plugin: PluginRecord,
