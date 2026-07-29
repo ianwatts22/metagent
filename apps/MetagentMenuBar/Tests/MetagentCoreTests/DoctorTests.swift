@@ -114,7 +114,7 @@ final class DoctorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: skill.appendingPathComponent("SKILL.md").path))
     }
 
-    func testRepairApplyRejectsClaudeChangesAfterPreviewBeforeRemovingCodexLinks() throws {
+    func testRepairApplyPreservesConflictingClaudeLinkWhileRemovingApprovedCodexLink() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-doctor-plan")
         let skill = root.appendingPathComponent(".agents/skills/demo")
         let codexSkills = root.appendingPathComponent(".codex/skills")
@@ -138,13 +138,13 @@ final class DoctorTests: XCTestCase {
             withDestinationPath: "../wrong-skills"
         )
 
-        XCTAssertThrowsError(try MetagentCore.repairSkills(options: SkillsRepairOptions(
+        _ = try MetagentCore.repairSkills(options: SkillsRepairOptions(
             apply: true,
             scanOptions: scanOptions,
             approvedCodexProjectionPaths: preview.projects.flatMap(\.plannedCodexProjectionPaths),
             approvedActionsByProject: preview.actionsByProject
-        )))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: projection.path))
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: projection.path))
         XCTAssertEqual(
             try FileManager.default.destinationOfSymbolicLink(atPath: claudeSkills.path),
             "../wrong-skills"

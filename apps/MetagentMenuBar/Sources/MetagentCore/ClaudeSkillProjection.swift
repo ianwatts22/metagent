@@ -11,6 +11,7 @@ struct ClaudeSkillProjectionPlan: Equatable {
     var missingNames: [String]
     var overrideNames: [String]
     var collisionNames: [String]
+    var orphanedNames: [String]
 }
 
 func planClaudeSkillProjection(
@@ -25,6 +26,7 @@ func planClaudeSkillProjection(
     var missingNames: [String] = []
     var overrideNames: [String] = []
     var collisionNames: [String] = []
+    var orphanedNames: [String] = []
 
     for name in personalNames.sorted() {
         let claudeEntry = claudeSkills.appendingPathComponent(name)
@@ -52,12 +54,23 @@ func planClaudeSkillProjection(
         }
     }
 
+    let validNames = Set(project.validSkills)
+    for name in ((try? fileManager.contentsOfDirectory(atPath: claudeSkills.path)) ?? []).sorted() {
+        guard !validNames.contains(name), !lockedNames.contains(name) else { continue }
+        let claudeEntry = claudeSkills.appendingPathComponent(name)
+        let formerCanonicalEntry = canonicalSkills.appendingPathComponent(name)
+        if isSymlink(claudeEntry), symlink(claudeEntry, resolvesTo: formerCanonicalEntry) {
+            orphanedNames.append(name)
+        }
+    }
+
     return ClaudeSkillProjectionPlan(
         lockedNames: lockedNames.intersection(project.validSkills).sorted(),
         linkedNames: linkedNames,
         missingNames: missingNames,
         overrideNames: overrideNames,
-        collisionNames: collisionNames
+        collisionNames: collisionNames,
+        orphanedNames: orphanedNames
     )
 }
 
@@ -150,6 +163,17 @@ func doctorClaudeSkillProjection(project: SkillProject) -> [DoctorIssue] {
             projectRoot: project.root,
             category: .projection,
             guidance: "Review these names manually. Metagent will not replace files or symlinks that point somewhere else."
+        ))
+    }
+    if !plan.orphanedNames.isEmpty {
+        issues.append(.init(
+            severity: .warning,
+            message: "\(plan.orphanedNames.count) personal Claude link(s) have no .agents skill: \(plan.orphanedNames.joined(separator: ", "))",
+            summary: "Claude has stale personal skill links",
+            projectRoot: project.root,
+            category: .projection,
+            guidance: "Run Repair to remove only these dangling child links. Existing Claude content and Skills CLI names stay untouched.",
+            repairAction: .repairProjection
         ))
     }
     if !plan.overrideNames.isEmpty {

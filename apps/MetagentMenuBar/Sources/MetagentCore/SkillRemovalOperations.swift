@@ -907,12 +907,6 @@ func repairProjectProjection(
         if symlink(claudeSkills, resolvesTo: canonicalSkills) {
             lines.append(.init(kind: .info, text: "healthy: legacy .claude/skills -> ../.agents/skills"))
         } else {
-            if apply {
-                throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
-                    NSLocalizedDescriptionKey:
-                        ".claude/skills is a conflicting symlink; review it before applying other projection cleanup"
-                ])
-            }
             lines.append(.init(
                 kind: .skipped,
                 text: "manual review: .claude/skills is a conflicting symlink; left untouched"
@@ -948,6 +942,30 @@ func repairProjectProjection(
         ))
         try resolveObsoleteCodexProjections()
         return lines
+    }
+
+    for name in plan.orphanedNames {
+        let action = apply
+            ? "removed orphaned personal Claude link: \(name)"
+            : "would remove orphaned personal Claude link: \(name)"
+        guard apply else {
+            lines.append(.init(kind: .action, text: action))
+            continue
+        }
+
+        let claudeEntry = claudeSkills.appendingPathComponent(name)
+        let formerCanonicalEntry = canonicalSkills.appendingPathComponent(name)
+        guard isSymlink(claudeEntry),
+              symlink(claudeEntry, resolvesTo: formerCanonicalEntry),
+              !isRegularOrSymlinkedFile(formerCanonicalEntry.appendingPathComponent("SKILL.md"))
+        else {
+            throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "\(claudeEntry.path) changed after preview; review it before applying"
+            ])
+        }
+        try fileManager.removeItem(at: claudeEntry)
+        lines.append(.init(kind: .action, text: action))
     }
 
     for name in plan.missingNames {
@@ -990,7 +1008,7 @@ func repairProjectProjection(
                 + plan.collisionNames.joined(separator: ", ")
         ))
     }
-    if plan.missingNames.isEmpty, plan.collisionNames.isEmpty {
+    if plan.missingNames.isEmpty, plan.collisionNames.isEmpty, plan.orphanedNames.isEmpty {
         lines.append(.init(kind: .info, text: "healthy: personal Claude skill links are current"))
     }
 

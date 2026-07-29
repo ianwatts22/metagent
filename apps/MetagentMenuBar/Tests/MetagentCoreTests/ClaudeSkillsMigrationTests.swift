@@ -130,6 +130,49 @@ final class ClaudeSkillsMigrationTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.kind == .action })
     }
 
+    func testRemovesOnlyOrphanedPersonalProjectionLinks() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        let removedSkill = root.appendingPathComponent(".agents/skills/removed")
+        try writeSkillFixture(at: removedSkill, name: "removed")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/kept"), name: "kept")
+        _ = try repair(root, apply: true)
+        let orphanedLink = root.appendingPathComponent(".claude/skills/removed")
+        XCTAssertTrue(isSymlink(orphanedLink))
+
+        try FileManager.default.removeItem(at: removedSkill)
+
+        let preview = try repair(root, apply: false)
+        XCTAssertTrue(preview.contains {
+            $0.kind == .action && $0.text == "would remove orphaned personal Claude link: removed"
+        })
+        let issue = try XCTUnwrap(doctorProjectionIssue(root))
+        XCTAssertEqual(issue.summary, "Claude has stale personal skill links")
+
+        let applied = try repair(root, apply: true)
+        XCTAssertFalse(isSymlink(orphanedLink))
+        XCTAssertTrue(applied.contains {
+            $0.kind == .action && $0.text == "removed orphaned personal Claude link: removed"
+        })
+    }
+
+    func testLeavesOrphanedSkillsCLIProjectionAlone() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/kept"), name: "kept")
+        try writeSkillsLock(root, names: ["managed"])
+        let claudeSkills = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
+        let managedLink = claudeSkills.appendingPathComponent("managed")
+        try FileManager.default.createSymbolicLink(
+            atPath: managedLink.path,
+            withDestinationPath: "../../.agents/skills/managed"
+        )
+
+        let lines = try repair(root, apply: true)
+
+        XCTAssertTrue(isSymlink(managedLink))
+        XCTAssertFalse(lines.contains { $0.text.contains("managed") })
+    }
+
     func testUnreadableSkillsLockFailsClosed() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
         try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/personal"), name: "personal")

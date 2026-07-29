@@ -73,6 +73,8 @@ conflicting symlinks are review findings without an automatic repair.
 - Repair creates `.claude/skills` as a directory when a personal link is needed.
 - Repair creates only absent child links for valid `.agents/skills` names not
   recorded in `skills-lock.json`.
+- Repair removes dangling personal child links whose same-name `.agents` skill
+  no longer exists, while leaving Skills CLI names alone.
 - Repair never replaces, moves, merges, or imports existing Claude content.
 - Repair preserves real same-name Claude directories as provider-specific
   overrides and reports other same-name collisions for manual review.

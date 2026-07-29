@@ -728,9 +728,8 @@ make_skill "$wrong_link_project/.agents/skills/wrong-link-skill" "wrong-link-ski
 ln -s ../somewhere-else "$wrong_link_project/.claude/skills"
 wrong_link_preview="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0)"
 printf '%s\n' "$wrong_link_preview" | grep -F "conflicting symlink; left untouched" >/dev/null
-wrong_link_output="$fixture_root/wrong-link.out"
-expect_failure "conflicting symlink" "$wrong_link_output" -- \
-  "$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply
+wrong_link_apply="$("$swift_helper" skills repair --root "$wrong_link_project" --max-depth 0 --apply)"
+printf '%s\n' "$wrong_link_apply" | grep -F "conflicting symlink; left untouched" >/dev/null
 test "$(readlink "$wrong_link_project/.claude/skills")" = "../somewhere-else"
 
 conflict_project="$fixture_root/conflict-project"
