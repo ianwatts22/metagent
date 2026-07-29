@@ -106,6 +106,13 @@ struct PluginsSection: View {
         allRows.filter { $0.record.updatePolicy == .manual }.count
     }
 
+    private var warnings: [String] {
+        Array(Set(
+            model.pluginInventory.warnings
+                + (model.pluginUpdateReport?.warnings ?? [])
+        )).sorted()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -126,9 +133,9 @@ struct PluginsSection: View {
                 PluginAutoUpdateControls(model: model, manualCount: manualCount)
             }
 
-            if !model.pluginInventory.warnings.isEmpty {
+            if !warnings.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(model.pluginInventory.warnings, id: \.self) { warning in
+                    ForEach(warnings, id: \.self) { warning in
                         Label(warning, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout)
                             .foregroundStyle(.orange)

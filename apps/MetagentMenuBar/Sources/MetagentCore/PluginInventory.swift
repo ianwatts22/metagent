@@ -146,7 +146,7 @@ extension MetagentCore {
             marketplaces = [:]
             warnings.append("Claude marketplace registry unreadable: \(error.localizedDescription)")
         }
-        let enabledStates = claudeEnabledPluginStates(
+        let userEnabledStates = claudeEnabledPluginStates(
             settingsURL: home.appendingPathComponent(".claude/settings.json")
         )
 
@@ -163,7 +163,11 @@ extension MetagentCore {
                     version: plugin.version,
                     scope: plugin.scope,
                     projectPath: plugin.projectPath,
-                    enabled: enabledStates[plugin.pluginID] ?? true,
+                    enabled: claudePluginEnabledState(
+                        plugin,
+                        home: home,
+                        userStates: userEnabledStates
+                    ),
                     updatePolicy: source.map(\.updatePolicy) ?? .manual,
                     sourceDetail: source?.sourceDetail ?? "",
                     lastUpdated: plugin.lastUpdated
@@ -301,4 +305,22 @@ func claudeEnabledPluginStates(settingsURL: URL) -> [String: Bool] {
         return [:]
     }
     return enabled
+}
+
+func claudePluginEnabledState(
+    _ plugin: ClaudeInstalledPlugin,
+    home: URL,
+    userStates: [String: Bool]
+) -> Bool {
+    guard let projectPath = plugin.projectPath,
+          plugin.scope == "project" || plugin.scope == "local"
+    else {
+        return userStates[plugin.pluginID] ?? true
+    }
+    let file = plugin.scope == "local" ? "settings.local.json" : "settings.json"
+    let projectStates = claudeEnabledPluginStates(
+        settingsURL: URL(fileURLWithPath: projectPath)
+            .appendingPathComponent(".claude/\(file)")
+    )
+    return projectStates[plugin.pluginID] ?? userStates[plugin.pluginID] ?? true
 }

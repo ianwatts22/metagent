@@ -121,7 +121,13 @@ extension MetagentCore {
                 ))
                 continue
             }
-            let comparison = available.compare(plugin.version, options: .numeric)
+            guard let comparison = semanticVersionComparison(available, plugin.version) else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Could not compare marketplace version \(available) with installed version \(plugin.version)."
+                ))
+                continue
+            }
             if comparison == .orderedSame {
                 outcomes.append(PluginUpdateOutcome(
                     runtime: .codex,
@@ -271,7 +277,7 @@ extension MetagentCore {
                 home: homeURL()
             )
             if let available,
-               available.compare(plugin.version, options: .numeric) == .orderedAscending
+               semanticVersionComparison(available, plugin.version) == .orderedAscending
             {
                 outcomes.append(failedUpdate(
                     plugin,
@@ -311,20 +317,26 @@ extension MetagentCore {
                 ))
                 continue
             }
-            let installed = claudePluginRecords(home: homeURL()).records.first {
+            guard let installed = claudePluginRecords(home: homeURL()).records.first(where: {
                 $0.pluginID == plugin.pluginID
                     && $0.scope == plugin.scope
                     && $0.projectPath == plugin.projectPath
+            }) else {
+                outcomes.append(failedUpdate(
+                    plugin,
+                    detail: "Update command succeeded, but the installed plugin could not be verified."
+                ))
+                continue
             }
-            let didChange = installed?.version != plugin.version
-                || installed?.lastUpdated != plugin.lastUpdated
+            let didChange = installed.version != plugin.version
+                || installed.lastUpdated != plugin.lastUpdated
             outcomes.append(PluginUpdateOutcome(
                 runtime: .claude,
                 pluginID: plugin.pluginID,
                 scope: plugin.scope,
                 projectPath: plugin.projectPath,
                 fromVersion: plugin.version,
-                toVersion: installed?.version ?? available ?? plugin.version,
+                toVersion: installed.version,
                 status: didChange ? .updated : .upToDate,
                 detail: nil
             ))
@@ -402,6 +414,50 @@ extension MetagentCore {
         } catch {
             return "\(label): \(error.localizedDescription)"
         }
+    }
+}
+
+/// Compares SemVer precedence, ignoring build metadata. Returns nil for values
+/// that are not valid numeric-core semantic versions.
+func semanticVersionComparison(_ lhs: String, _ rhs: String) -> ComparisonResult? {
+    guard let left = SemanticVersion(lhs), let right = SemanticVersion(rhs) else { return nil }
+    if left.core != right.core {
+        return left.core.lexicographicallyPrecedes(right.core) ? .orderedAscending : .orderedDescending
+    }
+    switch (left.prerelease, right.prerelease) {
+    case ([], []): return .orderedSame
+    case ([], _): return .orderedDescending
+    case (_, []): return .orderedAscending
+    default:
+        for (a, b) in zip(left.prerelease, right.prerelease) where a != b {
+            switch (Int(a), Int(b)) {
+            case let (x?, y?): return x < y ? .orderedAscending : .orderedDescending
+            case (_?, nil): return .orderedAscending
+            case (nil, _?): return .orderedDescending
+            default: return a < b ? .orderedAscending : .orderedDescending
+            }
+        }
+        if left.prerelease.count == right.prerelease.count { return .orderedSame }
+        return left.prerelease.count < right.prerelease.count ? .orderedAscending : .orderedDescending
+    }
+}
+
+private struct SemanticVersion {
+    let core: [Int]
+    let prerelease: [String]
+
+    init?(_ value: String) {
+        let withoutBuild = value.split(separator: "+", maxSplits: 1).first.map(String.init) ?? value
+        let pieces = withoutBuild.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        let corePieces = pieces[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard corePieces.count == 3,
+              corePieces.allSatisfy({ Int($0) != nil })
+        else { return nil }
+        core = corePieces.compactMap { Int($0) }
+        prerelease = pieces.count == 2
+            ? pieces[1].split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+            : []
+        guard !prerelease.contains(where: \.isEmpty) else { return nil }
     }
 }
 

@@ -260,4 +260,35 @@ final class PluginInventoryTests: XCTestCase {
         XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope("managed"))
         XCTAssertFalse(MetagentCore.isSupportedClaudeUpdateScope(nil))
     }
+
+    func testSemanticVersionComparisonHandlesPrereleasesAndBuildMetadata() {
+        XCTAssertEqual(semanticVersionComparison("1.0.0", "1.0.0-beta"), .orderedDescending)
+        XCTAssertEqual(semanticVersionComparison("1.0.0-beta.2", "1.0.0-beta.10"), .orderedAscending)
+        XCTAssertEqual(semanticVersionComparison("1.0.0+2", "1.0.0+1"), .orderedSame)
+        XCTAssertNil(semanticVersionComparison("rolling", "1.0.0"))
+    }
+
+    func testClaudeEnabledStateUsesOwningProjectScope() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-plugin-tests")
+        let project = home.appendingPathComponent("project")
+        try FileManager.default.createDirectory(
+            at: project.appendingPathComponent(".claude"),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        {"enabledPlugins": {"demo@vendor": false}}
+        """.utf8).write(to: project.appendingPathComponent(".claude/settings.json"))
+        let plugin = ClaudeInstalledPlugin(
+            pluginID: "demo@vendor",
+            version: "1.0.0",
+            scope: "project",
+            projectPath: project.path
+        )
+
+        XCTAssertFalse(claudePluginEnabledState(
+            plugin,
+            home: home,
+            userStates: ["demo@vendor": true]
+        ))
+    }
 }

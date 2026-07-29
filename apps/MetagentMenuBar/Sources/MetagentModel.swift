@@ -73,6 +73,7 @@ final class MetagentModel: ObservableObject {
     private var hasAttemptedHistoryBackfill = false
     private var historyBackfillAwaitingCompleteUsage = false
     private var pendingHistoryTrigger: SkillHistoryTrigger?
+    private var pluginAutoUpdateTask: Task<Void, Never>?
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -490,6 +491,9 @@ final class MetagentModel: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: Self.pluginAutoUpdateEnabledKey)
         if enabled {
             autoUpdatePluginsIfDue()
+        } else {
+            pluginAutoUpdateTask?.cancel()
+            pluginAutoUpdateTask = nil
         }
     }
 
@@ -501,13 +505,29 @@ final class MetagentModel: ObservableObject {
     private func autoUpdatePluginsIfDue() {
         guard isPluginAutoUpdateEnabled,
               pluginInventory.records.contains(where: { $0.updatePolicy == .manual })
-        else { return }
+        else {
+            pluginAutoUpdateTask?.cancel()
+            pluginAutoUpdateTask = nil
+            return
+        }
         if let lastRun = lastPluginAutoUpdateAt,
            Date().timeIntervalSince(lastRun) < Self.pluginAutoUpdateInterval
         {
+            schedulePluginAutoUpdate(
+                after: Self.pluginAutoUpdateInterval - Date().timeIntervalSince(lastRun)
+            )
             return
         }
         updateThirdPartyPlugins()
+    }
+
+    private func schedulePluginAutoUpdate(after delay: TimeInterval) {
+        pluginAutoUpdateTask?.cancel()
+        pluginAutoUpdateTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, delay)))
+            guard !Task.isCancelled else { return }
+            self?.autoUpdatePluginsIfDue()
+        }
     }
 
     func updateThirdPartyPlugins() {
@@ -523,6 +543,7 @@ final class MetagentModel: ObservableObject {
             }.value
             pluginUpdateReport = report
             isUpdatingPlugins = false
+            autoUpdatePluginsIfDue()
             if report.updatedCount > 0 {
                 // Versions moved, so the plugin list and any plugin-provided
                 // skills are stale; one scheduled refresh reconciles both.
