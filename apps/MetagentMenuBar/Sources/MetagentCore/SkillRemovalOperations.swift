@@ -957,7 +957,8 @@ func repairProjectProjection(
         let formerCanonicalEntry = canonicalSkills.appendingPathComponent(name)
         guard isSymlink(claudeEntry),
               symlink(claudeEntry, resolvesTo: formerCanonicalEntry),
-              !isRegularOrSymlinkedFile(formerCanonicalEntry.appendingPathComponent("SKILL.md"))
+              !fileManager.fileExists(atPath: formerCanonicalEntry.path),
+              !isSymlink(formerCanonicalEntry)
         else {
             throw NSError(domain: "MetagentSkillsRepair", code: 4, userInfo: [
                 NSLocalizedDescriptionKey:

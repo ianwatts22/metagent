@@ -59,6 +59,9 @@ func planClaudeSkillProjection(
         guard !validNames.contains(name), !lockedNames.contains(name) else { continue }
         let claudeEntry = claudeSkills.appendingPathComponent(name)
         let formerCanonicalEntry = canonicalSkills.appendingPathComponent(name)
+        guard !fileManager.fileExists(atPath: formerCanonicalEntry.path),
+              !isSymlink(formerCanonicalEntry)
+        else { continue }
         if isSymlink(claudeEntry), symlink(claudeEntry, resolvesTo: formerCanonicalEntry) {
             orphanedNames.append(name)
         }

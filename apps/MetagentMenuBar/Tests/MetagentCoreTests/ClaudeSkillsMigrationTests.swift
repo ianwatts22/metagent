@@ -173,6 +173,36 @@ final class ClaudeSkillsMigrationTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.text.contains("managed") })
     }
 
+    func testLeavesProjectionWhenCanonicalEntryStillExistsButIsInvalid() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
+        let canonicalSkills = root.appendingPathComponent(".agents/skills")
+        let claudeSkills = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(
+            at: canonicalSkills.appendingPathComponent("incomplete"),
+            withIntermediateDirectories: true
+        )
+        try writeSkillFixture(
+            at: canonicalSkills.appendingPathComponent("invalid name"),
+            name: "invalid name"
+        )
+        try FileManager.default.createDirectory(at: claudeSkills, withIntermediateDirectories: true)
+        for name in ["incomplete", "invalid name"] {
+            try FileManager.default.createSymbolicLink(
+                atPath: claudeSkills.appendingPathComponent(name).path,
+                withDestinationPath: "../../.agents/skills/\(name)"
+            )
+        }
+
+        let preview = try repair(root, apply: false)
+        let applied = try repair(root, apply: true)
+
+        for name in ["incomplete", "invalid name"] {
+            XCTAssertTrue(isSymlink(claudeSkills.appendingPathComponent(name)))
+            XCTAssertFalse(preview.contains { $0.text.contains("orphaned personal Claude link: \(name)") })
+            XCTAssertFalse(applied.contains { $0.text.contains("orphaned personal Claude link: \(name)") })
+        }
+    }
+
     func testUnreadableSkillsLockFailsClosed() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-claude-projection")
         try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/personal"), name: "personal")
