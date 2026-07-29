@@ -3,6 +3,20 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.4.0 — 2026-07-29
+
+- Plugins: inventory Codex and Claude Code plugins together, see ownership and
+  update status, update third-party marketplace plugins on demand, and opt in
+  to periodic updates.
+- Model readiness: flag skills that may need review after a tracked frontier
+  model release without changing Quality or Utility scores.
+- Contextual Codex reviews: evaluate skills from their real project context
+  and return concrete improvement guidance.
+- Skill inventory stays current as roots change, preserves provider-specific
+  Claude skills, and repairs incomplete or stale Claude skill links.
+- Skill history treats a plugin version change as an update to one stable
+  identity rather than a removal and addition.
+
 ## v0.3.0 — 2026-07-27
 
 - Skill archiving: set a skill aside so no agent runtime sees it, then restore

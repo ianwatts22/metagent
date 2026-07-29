@@ -164,8 +164,9 @@ scripts/install-app.sh --restart
 scripts/install-cli.sh
 ```
 
-The app is installed at `~/Applications/Metagent.app`; the CLI is installed at
-`~/.local/bin/metagent`.
+The source-built app is installed at `~/Applications/Metagent Dev.app`; the CLI
+is installed at `~/.local/bin/metagent`. Production `Metagent.app` is installed
+from the signed DMG and updated only through Sparkle.
 
 For development:
 
@@ -204,6 +205,10 @@ outside the repository. See [architecture](docs/architecture.md),
 [skill provenance](docs/skill-provenance.md), [skill scoring](docs/skill-scoring.md),
 [skill projection](docs/skill-projection.md), [macOS app behavior](docs/menu-bar.md), and
 [adjacent tools and product inspiration](docs/adjacent-tools.md) for details.
+
+## License
+
+Metagent is available under the [MIT License](LICENSE).
 
 ## Verify
 

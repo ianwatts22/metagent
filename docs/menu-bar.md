@@ -139,10 +139,10 @@ The Apple-anchored designated requirement lets macOS recognize rebuilt versions
 as the same app and preserve privacy grants. The first launch after switching
 from an ad-hoc or self-signed build may request folder access once.
 
-The installed app is written to:
+The source-built development app is written to:
 
 ```text
-~/Applications/Metagent.app
+~/Applications/Metagent Dev.app
 ```
 
 Two-channel deployment model:
