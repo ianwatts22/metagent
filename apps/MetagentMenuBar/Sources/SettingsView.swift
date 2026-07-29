@@ -112,7 +112,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Model release providers")
                         .font(.headline)
-                    Text("Skills unreviewed since a tracked provider's frontier release get a review advisory and a bounded Utility penalty.")
+                    Text("Skills unreviewed since a tracked provider's frontier release get a review advisory without changing their scores.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

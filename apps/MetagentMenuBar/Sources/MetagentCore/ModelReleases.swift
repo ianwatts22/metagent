@@ -3,16 +3,13 @@ import Foundation
 /// A Metagent-authored finding about a skill. Advisories are distinct from
 /// evaluator deductions: they carry management context Metagent itself
 /// observes, they never claim the skill content is defective, and each one
-/// states how it clears. An advisory may apply a bounded Utility penalty;
-/// Quality only moves through verified evaluator evidence.
+/// states how it clears. Advisories never change Quality or Utility scores.
 public struct SkillAdvisory: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let category: String
     public let severity: String
     public let message: String
     public let remediation: [String]
-    /// Bounded Utility penalty while the advisory is active. Zero is valid.
-    public let utilityPenalty: Int
     /// Human-readable statement of what clears the advisory.
     public let clearance: String
 
@@ -22,7 +19,6 @@ public struct SkillAdvisory: Codable, Equatable, Sendable, Identifiable {
         severity: String,
         message: String,
         remediation: [String],
-        utilityPenalty: Int,
         clearance: String
     ) {
         self.id = id
@@ -30,7 +26,6 @@ public struct SkillAdvisory: Codable, Equatable, Sendable, Identifiable {
         self.severity = severity
         self.message = message
         self.remediation = remediation
-        self.utilityPenalty = utilityPenalty
         self.clearance = clearance
     }
 }
@@ -185,12 +180,6 @@ extension MetagentCore {
             .sorted { $0.releaseDate < $1.releaseDate }
         guard !missed.isEmpty else { return nil }
 
-        // Flat penalty: the review is equally pending the day after a release
-        // and a month later, and calendar age deliberately never scores on its
-        // own. The number is capped; this signal nags for a review, it does
-        // not condemn the content.
-        let penalty = 15
-
         let events = missedReleaseEvents(missed)
         let eventText = events.map(\.label).joined(separator: "; ")
         return SkillAdvisory(
@@ -201,7 +190,6 @@ extension MetagentCore {
             remediation: [
                 "Review this skill against the newer models. Newer frontier models need less prescription, so look first for guidance to delete, not add — over-describing and over-prescribing solutions can limit them.",
             ],
-            utilityPenalty: penalty,
             clearance: "Clears when the skill changes after the newest tracked release, or when it is explicitly marked reviewed."
         )
     }

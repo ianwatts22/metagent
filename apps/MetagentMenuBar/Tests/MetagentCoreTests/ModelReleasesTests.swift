@@ -71,7 +71,7 @@ final class ModelReleasesTests: XCTestCase {
         ))
     }
 
-    func testAdvisoryPenaltyIsFlatRegardlessOfElapsedTime() {
+    func testAdvisoryIsStableRegardlessOfElapsedTime() {
         let releases = [release("anthropic", "Anthropic", "claude-opus-5", "Claude Opus 5", "2026-07-24")]
         let updated = day("2026-07-01")
 
@@ -83,7 +83,6 @@ final class ModelReleasesTests: XCTestCase {
                 trackedProviders: ["anthropic"],
                 now: now
             )
-            XCTAssertEqual(advisory?.utilityPenalty, 15)
             XCTAssertEqual(advisory?.severity, "warning")
             XCTAssertTrue(advisory?.message.contains("Claude Opus 5") ?? false)
         }
@@ -136,7 +135,7 @@ final class ModelReleasesTests: XCTestCase {
         XCTAssertEqual(message.components(separatedBy: "OpenAI").count, 2, "one provider event, not one per model: \(message)")
     }
 
-    func testUtilityScoreAppliesBoundedAdvisoryPenalty() {
+    func testAdvisoryDoesNotChangeUtilityScore() {
         let score = MetagentSkillScore(
             score: 80,
             confidence: .medium,
@@ -146,9 +145,8 @@ final class ModelReleasesTests: XCTestCase {
             ]
         )
         let base = score.utilityScore(qualityScore: 100)
-        XCTAssertEqual(score.utilityScore(qualityScore: 100, advisoryPenalty: 15), base - 15)
-        XCTAssertEqual(score.utilityScore(qualityScore: 0, advisoryPenalty: 15), max(0, 30 - 15))
-        XCTAssertEqual(score.utilityScore(qualityScore: 100, advisoryPenalty: -5), base, "negative penalties are ignored")
+        XCTAssertEqual(score.utilityScore(qualityScore: 100), base)
+        XCTAssertEqual(score.utilityScore(qualityScore: 0), 30)
     }
 
     func testAffirmationRoundTripStandardizesPaths() throws {

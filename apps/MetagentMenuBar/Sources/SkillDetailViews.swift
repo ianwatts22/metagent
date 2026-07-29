@@ -786,8 +786,8 @@ struct SkillScoreGuidanceView: View {
                                 .font(.headline)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer()
-                            Text(didAffirmModelReleases ? "cleared" : "−\(advisory.utilityPenalty) Utility")
-                                .font(.callout.monospacedDigit().weight(.semibold))
+                            Text(didAffirmModelReleases ? "cleared" : "review due")
+                                .font(.callout.weight(.semibold))
                                 .foregroundStyle(didAffirmModelReleases ? .green : .orange)
                         }
                         Text("Metagent advisory · \(advisory.category) · \(advisory.severity)")
@@ -900,7 +900,7 @@ struct SkillScoreGuidanceView: View {
                     .font(.callout.monospacedDigit())
                     .textSelection(.enabled)
             }
-            Text("Quality is static content quality. Utility adds observed adoption and subtracts active advisories.")
+            Text("Quality is static content quality. Utility adds observed adoption; advisories remain separate.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1109,9 +1109,7 @@ struct SkillScoreGuidanceView: View {
                 ? Int((Double(component.score) / Double(component.maximum) * 100).rounded())
                 : nil
         } ?? 0
-        let penalty = row.advisoryUtilityPenalty
-        let advisoryTerm = penalty > 0 ? " − advisories \(penalty)" : ""
-        return "Quality \(row.metagentStaticScore)×70% + adoption \(adoptionScore)×30%\(advisoryTerm) = \(row.utilityScore)"
+        return "Quality \(row.metagentStaticScore)×70% + adoption \(adoptionScore)×30% = \(row.utilityScore)"
     }
 
     private func scoreBadge(_ value: String, tint: Color) -> some View {

@@ -873,16 +873,8 @@ struct InventorySkillRow: Identifiable, Sendable {
         )
     }
     var metagentStaticGrade: SkillGrade { .forScore(metagentStaticScore) }
-    /// Total active advisory penalty, capped so advisories stay a bounded
-    /// review nag rather than a second scoring system.
-    var advisoryUtilityPenalty: Int {
-        min(15, advisories.reduce(0) { $0 + max(0, $1.utilityPenalty) })
-    }
     var utilityScore: Int {
-        metagentScore.utilityScore(
-            qualityScore: metagentStaticScore,
-            advisoryPenalty: advisoryUtilityPenalty
-        )
+        metagentScore.utilityScore(qualityScore: metagentStaticScore)
     }
     var utilityGrade: SkillGrade { .forScore(utilityScore) }
     var metagentScoreText: String { "\(metagentStaticScore) \(metagentStaticGrade.rawValue)" }
@@ -906,8 +898,8 @@ struct InventorySkillRow: Identifiable, Sendable {
         } ?? "Observed adoption: unavailable"
         let advisoryText = advisories.isEmpty
             ? ""
-            : "\n" + advisories.map { "Advisory (−\($0.utilityPenalty)): \($0.message)" }.joined(separator: "\n")
-        return "Utility combines Quality at 70% with observed adoption at 30%, minus active advisories.\nQuality: \(metagentStaticScore)/100\n\(adoptionText)\(advisoryText)"
+            : "\n" + advisories.map { "Review due: \($0.message)" }.joined(separator: "\n")
+        return "Utility combines Quality at 70% with observed adoption at 30%. Advisories do not change scores.\nQuality: \(metagentStaticScore)/100\n\(adoptionText)\(advisoryText)"
     }
     var pluginEvalText: String {
         guard let pluginEval else { return "—" }

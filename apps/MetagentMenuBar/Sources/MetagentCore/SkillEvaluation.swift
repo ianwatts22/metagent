@@ -87,12 +87,10 @@ public struct MetagentSkillScore: Codable, Equatable, Sendable {
         return Int((Double(weightedTotal) / Double(totalWeight)).rounded())
     }
 
-    /// Retention-oriented aggregate: 70% quality and 30% observed adoption,
-    /// minus any active advisory penalty. Advisories are evidence the world
-    /// changed after the skill (for example a tracked model release); they
-    /// lower Utility because review priority changed, never Quality, which
-    /// only moves on verified evaluator evidence.
-    public func utilityScore(qualityScore: Int, advisoryPenalty: Int = 0) -> Int {
+    /// Retention-oriented aggregate: 70% quality and 30% observed adoption.
+    /// Advisories stay separate because review priority is not evidence that
+    /// the skill's quality or demonstrated utility changed.
+    public func utilityScore(qualityScore: Int) -> Int {
         let adoption = components.first { $0.id == "adoption" }
         let adoptionScore: Int
         if let adoption, adoption.maximum > 0 {
@@ -102,8 +100,7 @@ public struct MetagentSkillScore: Codable, Equatable, Sendable {
         } else {
             adoptionScore = 0
         }
-        let base = Int((Double(qualityScore) * 0.7 + Double(adoptionScore) * 0.3).rounded())
-        return max(0, base - max(0, advisoryPenalty))
+        return Int((Double(qualityScore) * 0.7 + Double(adoptionScore) * 0.3).rounded())
     }
 }
 

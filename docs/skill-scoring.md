@@ -56,10 +56,10 @@ and provenance are less ambiguous.
 
 ## Utility
 
-Utility weights Quality at 70% and observed adoption at 30%, then subtracts any
-active advisory penalty (see Advisories below, capped at −15). It is intended
-for retention and prioritization decisions, where both intrinsic quality and
-demonstrated use matter.
+Utility weights Quality at 70% and observed adoption at 30%. It is intended for
+retention decisions, where both intrinsic quality and demonstrated use matter.
+Review advisories stay separate because a changed external environment is not
+evidence that the skill's quality or demonstrated utility changed.
 
 ### Observed adoption — 40 points
 
@@ -72,19 +72,17 @@ When retained-history coverage is incomplete and no usage is linked, adoption re
 
 Quality, Utility, and Codex grades use conventional fixed bands: A ≥90, B ≥80, C ≥70, D ≥60, otherwise F. They are absolute, not relative to the rest of the portfolio.
 
-`Weeks old` is shown as lifecycle evidence but does not by itself reduce either
-score. A stable skill may remain correct for months. Freshness only costs
-points through an advisory (below), which requires stronger evidence — such as
-a tracked model release after the skill's last change — not the passage of time
-alone.
+`Weeks old` is shown as lifecycle evidence but does not reduce either score. A
+stable skill may remain correct for months. A tracked model release after the
+skill's last change can create a separate review advisory, but does not change
+Quality or Utility.
 
 ## Advisories
 
 Advisories are Metagent-authored findings, separate from evaluator deductions.
 They record that the world changed after the skill — not that the content is
-defective — so they lower Utility (review priority), never Quality, and each
-one states how it clears. The combined advisory penalty is capped at −15
-Utility.
+defective — so they do not change Quality or Utility. Each advisory states how
+it clears.
 
 ### Model-release staleness
 
@@ -96,11 +94,9 @@ id does not read as a size, speed, or modality variant (`-mini`, `-flash`,
 `-realtime`, embeddings, and similar are dropped). Tracked providers default to
 Anthropic and OpenAI and are configurable in Settings.
 
-A skill whose last recorded change predates the newest tracked release gets the
-advisory at a flat −15 Utility: the review is equally pending the day after a
-release and a month later, and elapsed time never scores on its own. Skills
-with no update timestamp get no advisory; staleness is an ordering claim and
-needs a date to stand on.
+A skill whose last recorded change predates the newest tracked release gets a
+review advisory. Skills with no update timestamp get no advisory; staleness is
+an ordering claim and needs a date to stand on.
 
 The advisory's remediation is deliberately directional: newer frontier models
 need less prescription, so the review should look first for guidance to
