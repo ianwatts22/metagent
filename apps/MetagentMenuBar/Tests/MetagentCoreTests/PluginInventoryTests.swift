@@ -23,7 +23,14 @@ final class PluginInventoryTests: XCTestCase {
               },
               {
                 "scope": "project",
+                "projectPath": "/tmp/project-one",
                 "installPath": "/tmp/project/vendor/demo/1.1.0",
+                "version": "1.1.0"
+              },
+              {
+                "scope": "project",
+                "projectPath": "/tmp/project-two",
+                "installPath": "/tmp/project-two/vendor/demo/1.1.0",
                 "version": "1.1.0"
               }
             ],
@@ -35,15 +42,23 @@ final class PluginInventoryTests: XCTestCase {
         """.utf8).write(to: url)
 
         let plugins = try claudeInstalledPlugins(at: url)
-        let scoped = Dictionary(uniqueKeysWithValues: plugins.map {
-            ("\($0.pluginID):\($0.scope)", $0)
+        let scoped = Dictionary(uniqueKeysWithValues: plugins.map { plugin in
+            (
+                [plugin.pluginID, plugin.scope, plugin.projectPath]
+                    .compactMap { $0 }
+                    .joined(separator: ":"),
+                plugin
+            )
         })
 
-        XCTAssertEqual(plugins.map(\.pluginID), ["demo@vendor", "demo@vendor", "other@official"])
+        XCTAssertEqual(plugins.map(\.pluginID), [
+            "demo@vendor", "demo@vendor", "demo@vendor", "other@official",
+        ])
         XCTAssertEqual(scoped["demo@vendor:user"]?.version, "1.2.0")
         XCTAssertEqual(scoped["demo@vendor:user"]?.installPath, "/tmp/cache/vendor/demo/1.2.0")
         XCTAssertNotNil(scoped["demo@vendor:user"]?.lastUpdated)
-        XCTAssertEqual(scoped["demo@vendor:project"]?.version, "1.1.0")
+        XCTAssertEqual(scoped["demo@vendor:project:/tmp/project-one"]?.version, "1.1.0")
+        XCTAssertEqual(scoped["demo@vendor:project:/tmp/project-two"]?.version, "1.1.0")
         XCTAssertNil(scoped["other@official:user"]?.lastUpdated)
     }
 
@@ -58,7 +73,12 @@ final class PluginInventoryTests: XCTestCase {
           },
           "vendor": {
             "source": {"source": "git", "url": "https://example.com/vendor.git"},
+            "autoUpdate": true,
             "installLocation": "/tmp/marketplaces/vendor"
+          },
+          "manual-official": {
+            "source": {"source": "github", "repo": "anthropics/manual"},
+            "autoUpdate": false
           }
         }
         """.utf8).write(to: url)
@@ -66,8 +86,10 @@ final class PluginInventoryTests: XCTestCase {
         let marketplaces = try claudeKnownMarketplaces(at: url)
 
         XCTAssertEqual(marketplaces["claude-plugins-official"]?.isAnthropicOwned, true)
-        XCTAssertEqual(marketplaces["vendor"]?.isAnthropicOwned, false)
+        XCTAssertEqual(marketplaces["claude-plugins-official"]?.updatePolicy, .automatic)
+        XCTAssertEqual(marketplaces["vendor"]?.updatePolicy, .automatic)
         XCTAssertEqual(marketplaces["vendor"]?.sourceDetail, "https://example.com/vendor.git")
+        XCTAssertEqual(marketplaces["manual-official"]?.updatePolicy, .manual)
     }
 
     func testClaudePluginRecordsComposeInventoryPolicyAndEnabledState() throws {

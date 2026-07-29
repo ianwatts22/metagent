@@ -46,6 +46,8 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
     /// Claude installation scope (`user`, `project`, `local`, or `managed`).
     /// Codex plugins are user-level and leave this nil.
     public let scope: String?
+    /// Project root recorded for project/local Claude installations.
+    public let projectPath: String?
     public let enabled: Bool
     public let updatePolicy: PluginUpdatePolicy
     /// Where the plugin ultimately comes from: a git URL, GitHub repo, or
@@ -54,7 +56,9 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
     public let lastUpdated: Date?
 
     public var id: String {
-        [runtime.rawValue, pluginID, scope].compactMap { $0 }.joined(separator: ":")
+        [runtime.rawValue, pluginID, scope, projectPath]
+            .compactMap { $0 }
+            .joined(separator: ":")
     }
 
     public init(
@@ -64,6 +68,7 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
         marketplace: String,
         version: String,
         scope: String? = nil,
+        projectPath: String? = nil,
         enabled: Bool,
         updatePolicy: PluginUpdatePolicy,
         sourceDetail: String,
@@ -75,6 +80,7 @@ public struct PluginRecord: Identifiable, Hashable, Sendable {
         self.marketplace = marketplace
         self.version = version
         self.scope = scope
+        self.projectPath = projectPath
         self.enabled = enabled
         self.updatePolicy = updatePolicy
         self.sourceDetail = sourceDetail
@@ -156,8 +162,9 @@ extension MetagentCore {
                     marketplace: marketplace,
                     version: plugin.version,
                     scope: plugin.scope,
+                    projectPath: plugin.projectPath,
                     enabled: enabledStates[plugin.pluginID] ?? true,
-                    updatePolicy: source.map { $0.isAnthropicOwned ? .automatic : .manual } ?? .manual,
+                    updatePolicy: source.map(\.updatePolicy) ?? .manual,
                     sourceDetail: source?.sourceDetail ?? "",
                     lastUpdated: plugin.lastUpdated
                 )
@@ -196,6 +203,7 @@ struct ClaudeInstalledPlugin {
     var pluginID: String
     var version: String
     var scope: String
+    var projectPath: String?
     var installPath: String?
     var lastUpdated: Date?
 }
@@ -207,6 +215,7 @@ struct ClaudeMarketplace {
     var repo: String?
     var url: String?
     var installLocation: String?
+    var autoUpdate: Bool?
 
     var isAnthropicOwned: Bool {
         repo?.hasPrefix("anthropics/") == true
@@ -214,6 +223,13 @@ struct ClaudeMarketplace {
 
     var sourceDetail: String {
         repo ?? url ?? installLocation ?? ""
+    }
+
+    var updatePolicy: PluginUpdatePolicy {
+        if let autoUpdate {
+            return autoUpdate ? .automatic : .manual
+        }
+        return isAnthropicOwned ? .automatic : .manual
     }
 }
 
@@ -241,11 +257,15 @@ func claudeInstalledPlugins(at url: URL) throws -> [ClaudeInstalledPlugin] {
                 pluginID: pluginID,
                 version: version,
                 scope: entry["scope"] as? String ?? "user",
+                projectPath: entry["projectPath"] as? String,
                 installPath: entry["installPath"] as? String,
                 lastUpdated: (entry["lastUpdated"] as? String).flatMap { dateParser.date(from: $0) }
             )
         }
-    }.sorted { ($0.pluginID, $0.scope) < ($1.pluginID, $1.scope) }
+    }.sorted {
+        ($0.pluginID, $0.scope, $0.projectPath ?? "")
+            < ($1.pluginID, $1.scope, $1.projectPath ?? "")
+    }
 }
 
 func claudeKnownMarketplaces(at url: URL) throws -> [String: ClaudeMarketplace] {
@@ -265,7 +285,8 @@ func claudeKnownMarketplaces(at url: URL) throws -> [String: ClaudeMarketplace] 
             sourceKind: source["source"] as? String ?? "",
             repo: source["repo"] as? String,
             url: source["url"] as? String,
-            installLocation: entry["installLocation"] as? String
+            installLocation: entry["installLocation"] as? String,
+            autoUpdate: entry["autoUpdate"] as? Bool
         )
     }
     return marketplaces

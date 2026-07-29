@@ -12,13 +12,16 @@ public struct PluginUpdateOutcome: Identifiable, Hashable, Sendable {
     public let runtime: PluginRuntime
     public let pluginID: String
     public let scope: String?
+    public let projectPath: String?
     public let fromVersion: String
     public let toVersion: String?
     public let status: PluginUpdateStatus
     public let detail: String?
 
     public var id: String {
-        [runtime.rawValue, pluginID, scope].compactMap { $0 }.joined(separator: ":")
+        [runtime.rawValue, pluginID, scope, projectPath]
+            .compactMap { $0 }
+            .joined(separator: ":")
     }
 }
 
@@ -124,6 +127,7 @@ extension MetagentCore {
                     runtime: .codex,
                     pluginID: plugin.pluginID,
                     scope: plugin.scope,
+                    projectPath: plugin.projectPath,
                     fromVersion: plugin.version,
                     toVersion: plugin.version,
                     status: .upToDate,
@@ -150,6 +154,7 @@ extension MetagentCore {
                     runtime: .codex,
                     pluginID: plugin.pluginID,
                     scope: plugin.scope,
+                    projectPath: plugin.projectPath,
                     fromVersion: plugin.version,
                     toVersion: nil,
                     status: .failed,
@@ -161,6 +166,7 @@ extension MetagentCore {
                 runtime: .codex,
                 pluginID: plugin.pluginID,
                 scope: plugin.scope,
+                projectPath: plugin.projectPath,
                 fromVersion: plugin.version,
                 toVersion: available,
                 status: .updated,
@@ -259,31 +265,14 @@ extension MetagentCore {
                 }
             }
 
-            guard let available = claudeMarketplaceManifestVersion(
+            let available = claudeMarketplaceManifestVersion(
                 marketplace: plugin.marketplace,
                 pluginName: plugin.name,
                 home: homeURL()
-            ) else {
-                outcomes.append(failedUpdate(
-                    plugin,
-                    detail: "Marketplace version unavailable after refresh; no update attempted."
-                ))
-                continue
-            }
-            let comparison = available.compare(plugin.version, options: .numeric)
-            if comparison == .orderedSame {
-                outcomes.append(PluginUpdateOutcome(
-                    runtime: .claude,
-                    pluginID: plugin.pluginID,
-                    scope: plugin.scope,
-                    fromVersion: plugin.version,
-                    toVersion: plugin.version,
-                    status: .upToDate,
-                    detail: nil
-                ))
-                continue
-            }
-            guard comparison == .orderedDescending else {
+            )
+            if let available,
+               available.compare(plugin.version, options: .numeric) == .orderedAscending
+            {
                 outcomes.append(failedUpdate(
                     plugin,
                     detail: "Marketplace offers older version \(available); refusing to downgrade \(plugin.version)."
@@ -314,6 +303,7 @@ extension MetagentCore {
                     runtime: .claude,
                     pluginID: plugin.pluginID,
                     scope: plugin.scope,
+                    projectPath: plugin.projectPath,
                     fromVersion: plugin.version,
                     toVersion: nil,
                     status: .failed,
@@ -321,15 +311,21 @@ extension MetagentCore {
                 ))
                 continue
             }
-            let installed = claudePluginRecords(home: homeURL()).records
-                .first { $0.pluginID == plugin.pluginID && $0.scope == plugin.scope }?.version
+            let installed = claudePluginRecords(home: homeURL()).records.first {
+                $0.pluginID == plugin.pluginID
+                    && $0.scope == plugin.scope
+                    && $0.projectPath == plugin.projectPath
+            }
+            let didChange = installed?.version != plugin.version
+                || installed?.lastUpdated != plugin.lastUpdated
             outcomes.append(PluginUpdateOutcome(
                 runtime: .claude,
                 pluginID: plugin.pluginID,
                 scope: plugin.scope,
+                projectPath: plugin.projectPath,
                 fromVersion: plugin.version,
-                toVersion: installed ?? available,
-                status: .updated,
+                toVersion: installed?.version ?? available ?? plugin.version,
+                status: didChange ? .updated : .upToDate,
                 detail: nil
             ))
         }
@@ -360,8 +356,8 @@ extension MetagentCore {
     // MARK: Helpers
 
     /// The Claude CLI resolves project and local scopes from its working
-    /// directory. The installation registry does not retain that project root,
-    /// so only user-scope updates can be targeted without guessing.
+    /// directory. Metagent does not change its working directory during a
+    /// batch, so only user-scope updates can be targeted without guessing.
     static func isSupportedClaudeUpdateScope(_ scope: String?) -> Bool {
         scope == "user"
     }
@@ -374,6 +370,7 @@ extension MetagentCore {
             runtime: plugin.runtime,
             pluginID: plugin.pluginID,
             scope: plugin.scope,
+            projectPath: plugin.projectPath,
             fromVersion: plugin.version,
             toVersion: nil,
             status: .failed,

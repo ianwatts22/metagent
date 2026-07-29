@@ -126,6 +126,17 @@ struct PluginsSection: View {
                 PluginAutoUpdateControls(model: model, manualCount: manualCount)
             }
 
+            if !model.pluginInventory.warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(model.pluginInventory.warnings, id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
             if rows.isEmpty {
                 EmptyStateView(
                     title: allRows.isEmpty ? "No plugins found" : "No matching plugins",
@@ -159,6 +170,7 @@ struct PluginsSection: View {
                         Text(row.scope.capitalized)
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                            .help(row.record.projectPath ?? row.scope.capitalized)
                     }
                     .width(min: 70, ideal: 85)
 
