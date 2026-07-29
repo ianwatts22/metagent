@@ -20,6 +20,11 @@ struct CodexPlugin: Decodable {
         var path: String?
     }
 
+    struct MarketplaceSource: Decodable {
+        var sourceType: String?
+        var source: String?
+    }
+
     var pluginId: String
     var name: String
     var marketplaceName: String
@@ -27,6 +32,7 @@ struct CodexPlugin: Decodable {
     var installed: Bool
     var enabled: Bool
     var source: Source
+    var marketplaceSource: MarketplaceSource?
 }
 
 public enum MetagentCore {

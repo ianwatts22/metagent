@@ -210,6 +210,12 @@ func hasKnownSkillContainer(_ root: URL) -> Bool {
 }
 
 func installedCodexPlugins() throws -> [CodexPlugin] {
+    try allCodexPlugins().filter { $0.installed && $0.enabled }
+}
+
+/// Every plugin `codex plugin list` reports, including disabled ones. The
+/// skills scan wants only active plugins; the plugin inventory wants all.
+func allCodexPlugins() throws -> [CodexPlugin] {
     let executable = try codexExecutable()
     let result = try runSubprocess(
         executable: executable,
@@ -229,7 +235,7 @@ func installedCodexPlugins() throws -> [CodexPlugin] {
         failureMessage: "codex plugin list failed"
     )
     return try JSONDecoder().decode(CodexPluginList.self, from: result.standardOutput).installed
-        .filter { $0.installed && $0.enabled }
+        .filter { $0.installed }
 }
 
 func codexExecutable() throws -> URL {

@@ -1,0 +1,268 @@
+import Foundation
+
+// MARK: - Models
+
+public enum PluginRuntime: String, Codable, CaseIterable, Hashable, Sendable {
+    case codex
+    case claude
+
+    public var displayName: String {
+        switch self {
+        case .codex: "Codex"
+        case .claude: "Claude"
+        }
+    }
+
+    public var client: MCPClient {
+        switch self {
+        case .codex: .codex
+        case .claude: .claude
+        }
+    }
+}
+
+/// Who is responsible for keeping a plugin current. Runtime-bundled and
+/// app-provided plugins are refreshed by their owner; anything installed from
+/// a third-party git marketplace only moves when someone runs the update.
+public enum PluginUpdatePolicy: String, Codable, Hashable, Sendable {
+    case automatic
+    case manual
+
+    public var displayLabel: String {
+        switch self {
+        case .automatic: "Auto"
+        case .manual: "Manual"
+        }
+    }
+}
+
+public struct PluginRecord: Identifiable, Hashable, Sendable {
+    public let runtime: PluginRuntime
+    /// Stable `name@marketplace` identity used by both CLIs.
+    public let pluginID: String
+    public let name: String
+    public let marketplace: String
+    public let version: String
+    public let enabled: Bool
+    public let updatePolicy: PluginUpdatePolicy
+    /// Where the plugin ultimately comes from: a git URL, GitHub repo, or
+    /// local path, depending on the marketplace source.
+    public let sourceDetail: String
+    public let lastUpdated: Date?
+
+    public var id: String { "\(runtime.rawValue):\(pluginID)" }
+
+    public init(
+        runtime: PluginRuntime,
+        pluginID: String,
+        name: String,
+        marketplace: String,
+        version: String,
+        enabled: Bool,
+        updatePolicy: PluginUpdatePolicy,
+        sourceDetail: String,
+        lastUpdated: Date?
+    ) {
+        self.runtime = runtime
+        self.pluginID = pluginID
+        self.name = name
+        self.marketplace = marketplace
+        self.version = version
+        self.enabled = enabled
+        self.updatePolicy = updatePolicy
+        self.sourceDetail = sourceDetail
+        self.lastUpdated = lastUpdated
+    }
+}
+
+public struct PluginInventorySnapshot: Sendable {
+    public var records: [PluginRecord]
+    public var warnings: [String]
+    public var scannedAt: Date?
+
+    public static let empty = PluginInventorySnapshot(records: [], warnings: [], scannedAt: nil)
+
+    public init(records: [PluginRecord], warnings: [String], scannedAt: Date?) {
+        self.records = records
+        self.warnings = warnings
+        self.scannedAt = scannedAt
+    }
+}
+
+// MARK: - Scan
+
+extension MetagentCore {
+
+    public static func scanPluginInventory() -> PluginInventorySnapshot {
+        var records: [PluginRecord] = []
+        var warnings: [String] = []
+
+        do {
+            records += try allCodexPlugins().map(PluginRecord.init(codexPlugin:))
+        } catch {
+            warnings.append("Codex plugin inventory unavailable: \(error.localizedDescription)")
+        }
+
+        let claude = claudePluginRecords(home: homeURL())
+        records += claude.records
+        warnings += claude.warnings
+
+        return PluginInventorySnapshot(
+            records: records.sorted { ($0.name, $0.runtime.rawValue) < ($1.name, $1.runtime.rawValue) },
+            warnings: warnings,
+            scannedAt: Date()
+        )
+    }
+
+    /// Claude Code writes everything the inventory needs to disk, so this scan
+    /// never has to launch the (slow) `claude` CLI.
+    static func claudePluginRecords(home: URL) -> (records: [PluginRecord], warnings: [String]) {
+        let pluginsRoot = home.appendingPathComponent(".claude/plugins")
+        let installedURL = pluginsRoot.appendingPathComponent("installed_plugins.json")
+        guard fileManager.fileExists(atPath: installedURL.path) else {
+            return ([], [])
+        }
+
+        var warnings: [String] = []
+        let marketplaces: [String: ClaudeMarketplace]
+        do {
+            marketplaces = try claudeKnownMarketplaces(
+                at: pluginsRoot.appendingPathComponent("known_marketplaces.json")
+            )
+        } catch {
+            marketplaces = [:]
+            warnings.append("Claude marketplace registry unreadable: \(error.localizedDescription)")
+        }
+        let enabledStates = claudeEnabledPluginStates(
+            settingsURL: home.appendingPathComponent(".claude/settings.json")
+        )
+
+        do {
+            let installed = try claudeInstalledPlugins(at: installedURL)
+            let records = installed.map { plugin -> PluginRecord in
+                let marketplace = plugin.pluginID.split(separator: "@").last.map(String.init) ?? ""
+                let source = marketplaces[marketplace]
+                return PluginRecord(
+                    runtime: .claude,
+                    pluginID: plugin.pluginID,
+                    name: plugin.pluginID.split(separator: "@").first.map(String.init) ?? plugin.pluginID,
+                    marketplace: marketplace,
+                    version: plugin.version,
+                    enabled: enabledStates[plugin.pluginID] ?? true,
+                    updatePolicy: source.map { $0.isAnthropicOwned ? .automatic : .manual } ?? .manual,
+                    sourceDetail: source?.sourceDetail ?? "",
+                    lastUpdated: plugin.lastUpdated
+                )
+            }
+            return (records, warnings)
+        } catch {
+            warnings.append("Claude plugin inventory unreadable: \(error.localizedDescription)")
+            return ([], warnings)
+        }
+    }
+}
+
+private extension PluginRecord {
+    init(codexPlugin plugin: CodexPlugin) {
+        // Local marketplaces are owned by whatever installed them (the Codex
+        // runtime, a bundled snapshot, or a desktop app) and are refreshed by
+        // that owner. Git marketplaces only move on an explicit upgrade.
+        let isGit = plugin.marketplaceSource?.sourceType == "git"
+        self.init(
+            runtime: .codex,
+            pluginID: plugin.pluginId,
+            name: plugin.name,
+            marketplace: plugin.marketplaceName,
+            version: plugin.version,
+            enabled: plugin.enabled,
+            updatePolicy: isGit ? .manual : .automatic,
+            sourceDetail: plugin.marketplaceSource?.source ?? plugin.source.path ?? "",
+            lastUpdated: nil
+        )
+    }
+}
+
+// MARK: - Claude plugin files
+
+struct ClaudeInstalledPlugin {
+    var pluginID: String
+    var version: String
+    var installPath: String?
+    var lastUpdated: Date?
+}
+
+struct ClaudeMarketplace {
+    var name: String
+    /// `github` sources carry an `owner/repo` slug; `git` sources a URL.
+    var sourceKind: String
+    var repo: String?
+    var url: String?
+    var installLocation: String?
+
+    var isAnthropicOwned: Bool {
+        repo?.hasPrefix("anthropics/") == true
+    }
+
+    var sourceDetail: String {
+        repo ?? url ?? installLocation ?? ""
+    }
+}
+
+func claudeInstalledPlugins(at url: URL) throws -> [ClaudeInstalledPlugin] {
+    let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+    guard let root = object as? [String: Any],
+          let plugins = root["plugins"] as? [String: Any]
+    else {
+        throw NSError(domain: "MetagentPluginInventory", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "installed_plugins.json has an unexpected shape"
+        ])
+    }
+    let dateParser = ISO8601DateFormatter()
+    dateParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return plugins.compactMap { pluginID, value in
+        // Version 2 stores an array of per-scope installs; take the first
+        // (user scope in practice). Version 1 stored a single object.
+        let entry = (value as? [[String: Any]])?.first ?? value as? [String: Any]
+        guard let entry, let version = entry["version"] as? String else { return nil }
+        return ClaudeInstalledPlugin(
+            pluginID: pluginID,
+            version: version,
+            installPath: entry["installPath"] as? String,
+            lastUpdated: (entry["lastUpdated"] as? String).flatMap { dateParser.date(from: $0) }
+        )
+    }.sorted { $0.pluginID < $1.pluginID }
+}
+
+func claudeKnownMarketplaces(at url: URL) throws -> [String: ClaudeMarketplace] {
+    guard fileManager.fileExists(atPath: url.path) else { return [:] }
+    let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+    guard let root = object as? [String: Any] else {
+        throw NSError(domain: "MetagentPluginInventory", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "known_marketplaces.json has an unexpected shape"
+        ])
+    }
+    var marketplaces: [String: ClaudeMarketplace] = [:]
+    for (name, value) in root {
+        guard let entry = value as? [String: Any] else { continue }
+        let source = entry["source"] as? [String: Any] ?? [:]
+        marketplaces[name] = ClaudeMarketplace(
+            name: name,
+            sourceKind: source["source"] as? String ?? "",
+            repo: source["repo"] as? String,
+            url: source["url"] as? String,
+            installLocation: entry["installLocation"] as? String
+        )
+    }
+    return marketplaces
+}
+
+func claudeEnabledPluginStates(settingsURL: URL) -> [String: Bool] {
+    guard let data = try? Data(contentsOf: settingsURL),
+          let object = try? JSONSerialization.jsonObject(with: data),
+          let root = object as? [String: Any],
+          let enabled = root["enabledPlugins"] as? [String: Bool]
+    else {
+        return [:]
+    }
+    return enabled
+}

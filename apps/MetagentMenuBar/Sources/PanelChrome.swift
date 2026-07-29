@@ -276,6 +276,15 @@ struct MetagentPanel: View {
             } else {
                 MCPInventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
             }
+        case .plugins:
+            if showsOpenWindowButton {
+                PluginsMenuSection(
+                    model: model,
+                    openMainWindow: openMainWindow
+                )
+            } else {
+                PluginsSection(model: model)
+            }
         case .projects:
             if showsOpenWindowButton {
                 ProjectsMenuSection(
@@ -540,6 +549,7 @@ enum PanelSection: String, CaseIterable, Identifiable {
     case history
     case skills
     case mcps
+    case plugins
     case projects
 
     var id: String { rawValue }
@@ -550,6 +560,7 @@ enum PanelSection: String, CaseIterable, Identifiable {
         case .history: "History"
         case .skills: "Skills"
         case .mcps: "MCPs"
+        case .plugins: "Plugins"
         case .projects: "Projects"
         }
     }
@@ -560,6 +571,7 @@ enum PanelSection: String, CaseIterable, Identifiable {
         case .history: "chart.xyaxis.line"
         case .skills: "sparkles"
         case .mcps: "server.rack"
+        case .plugins: "puzzlepiece.extension"
         case .projects: "folder"
         }
     }
