@@ -456,18 +456,22 @@ private func isSkillScriptReferenceSource(_ url: URL) -> Bool {
 
 private func runtimeForShebang(_ line: String) -> String? {
     guard line.hasPrefix("#!") else { return nil }
-    var tokens = line.dropFirst(2).split(whereSeparator: \.isWhitespace)
+    let plainTokens = line.dropFirst(2)
+        .split(whereSeparator: \.isWhitespace)
+        .map(String.init)
+    let usesEnvSplitString = plainTokens.first.map {
+        URL(fileURLWithPath: $0).lastPathComponent.lowercased() == "env"
+    } == true && envUsesSplitString(Array(plainTokens.dropFirst()))
+    let parsedTokens = usesEnvSplitString ? shebangTokens(in: line) : plainTokens
+    guard var tokens = parsedTokens else { return nil }
     guard !tokens.isEmpty else { return nil }
 
-    var interpreter = URL(fileURLWithPath: String(tokens.removeFirst()))
+    var interpreter = URL(fileURLWithPath: tokens.removeFirst())
         .lastPathComponent
         .lowercased()
     if interpreter == "env" {
-        while tokens.first?.hasPrefix("-") == true {
-            tokens.removeFirst()
-        }
-        guard let command = tokens.first else { return nil }
-        interpreter = URL(fileURLWithPath: String(command))
+        guard let command = envCommand(in: tokens) else { return nil }
+        interpreter = URL(fileURLWithPath: command)
             .lastPathComponent
             .lowercased()
     }
@@ -490,6 +494,189 @@ private func runtimeForShebang(_ line: String) -> String? {
     case "pwsh", "powershell": "powershell"
     default: nil
     }
+}
+
+private func envUsesSplitString(_ tokens: [String]) -> Bool {
+    for token in tokens {
+        if token.hasPrefix("--split-string=") {
+            return true
+        }
+        if token == "--" || isEnvironmentAssignment(token) {
+            return false
+        }
+        guard token.hasPrefix("-"), !token.hasPrefix("--") else {
+            return false
+        }
+        if token == "-S" || envShortSplitIndex(in: token) != nil {
+            return true
+        }
+    }
+    return false
+}
+
+private func shebangTokens(in line: String) -> [String]? {
+    var tokens: [String] = []
+    var current = ""
+    var quote: Character?
+    var escaped = false
+
+    for character in line.dropFirst(2) {
+        if escaped {
+            current.append(character)
+            escaped = false
+        } else if character == "\\" {
+            escaped = true
+        } else if let activeQuote = quote {
+            if character == activeQuote {
+                quote = nil
+                current.append(character)
+            } else {
+                current.append(character)
+            }
+        } else if character == "'" || character == "\"" {
+            quote = character
+            current.append(character)
+        } else if character.isWhitespace {
+            if !current.isEmpty {
+                tokens.append(current)
+                current = ""
+            }
+        } else {
+            current.append(character)
+        }
+    }
+    if escaped {
+        current.append("\\")
+    }
+    guard quote == nil else { return nil }
+    if !current.isEmpty {
+        tokens.append(current)
+    }
+    return tokens
+}
+
+private func envCommand(in tokens: [String]) -> String? {
+    var index = tokens.startIndex
+    var optionsEnded = false
+    while index < tokens.endIndex {
+        let token = tokens[index]
+        if !optionsEnded, token.hasPrefix("--split-string=") {
+            let payload = String(token.dropFirst("--split-string=".count))
+            let remaining = Array(tokens[tokens.index(after: index)...])
+            guard let payloadTokens = splitStringTokens(payload) else { return nil }
+            return envCommand(in: payloadTokens + remaining)
+        }
+        if !optionsEnded, let splitPayload = attachedEnvSplitPayload(token) {
+            let remaining = Array(tokens[tokens.index(after: index)...])
+            guard let payloadTokens = splitStringTokens(splitPayload) else { return nil }
+            return envCommand(in: payloadTokens + remaining)
+        }
+        if !optionsEnded, token == "--" {
+            optionsEnded = true
+            index = tokens.index(after: index)
+            continue
+        }
+        if !optionsEnded, envOptionConsumesNextToken(token) {
+            index = tokens.index(index, offsetBy: 2, limitedBy: tokens.endIndex)
+                ?? tokens.endIndex
+            continue
+        }
+        if isEnvironmentAssignment(token) {
+            optionsEnded = true
+            index = tokens.index(after: index)
+            continue
+        }
+        if !optionsEnded, token.hasPrefix("-") {
+            index = tokens.index(after: index)
+            continue
+        }
+        return token
+    }
+    return nil
+}
+
+private func attachedEnvSplitPayload(_ token: String) -> String? {
+    guard let splitIndex = envShortSplitIndex(in: token) else { return nil }
+    let payload = token[token.index(after: splitIndex)...]
+    return payload.isEmpty ? nil : String(payload)
+}
+
+private func envShortSplitIndex(in token: String) -> String.Index? {
+    guard token.hasPrefix("-"), !token.hasPrefix("--") else { return nil }
+    var index = token.index(after: token.startIndex)
+    while index < token.endIndex {
+        let option = token[index]
+        if option == "S" {
+            return index
+        }
+        if option == "a" || option == "u" || option == "C" || option == "P" {
+            return nil
+        }
+        index = token.index(after: index)
+    }
+    return nil
+}
+
+private func splitStringTokens(_ value: String) -> [String]? {
+    let normalized: String
+    if value.count >= 2,
+       let first = value.first,
+       first == value.last,
+       first == "'" || first == "\""
+    {
+        normalized = String(value.dropFirst().dropLast())
+    } else {
+        normalized = value
+    }
+    guard let tokens = shebangTokens(in: "#!\(normalized)") else { return nil }
+    return tokens.map(unquotedEnvToken)
+}
+
+private func unquotedEnvToken(_ token: String) -> String {
+    guard token.count >= 2,
+          let first = token.first,
+          first == token.last,
+          first == "'" || first == "\""
+    else {
+        return token.replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "'", with: "")
+    }
+    return String(token.dropFirst().dropLast())
+}
+
+private func envOptionConsumesNextToken(_ token: String) -> Bool {
+    switch token {
+    case "-a", "-u", "-C", "-P", "--argv0", "--unset", "--chdir":
+        return true
+    default:
+        break
+    }
+
+    var shortOptions = token[...]
+    if shortOptions.hasPrefix("-S"), shortOptions.count > 2 {
+        shortOptions = shortOptions.dropFirst(2)
+        if shortOptions.hasPrefix("-") {
+            shortOptions = shortOptions.dropFirst()
+        }
+    } else if shortOptions.hasPrefix("-"), !shortOptions.hasPrefix("--") {
+        shortOptions = shortOptions.dropFirst()
+    } else {
+        return false
+    }
+
+    for index in shortOptions.indices
+        where shortOptions[index] == "u"
+            || shortOptions[index] == "a"
+            || shortOptions[index] == "C"
+            || shortOptions[index] == "P"
+    {
+        return shortOptions.index(after: index) == shortOptions.endIndex
+    }
+    return false
+}
+
+private func isEnvironmentAssignment(_ token: String) -> Bool {
+    token.firstIndex(of: "=").map { $0 != token.startIndex } ?? false
 }
 
 private func readFirstLine(_ url: URL) -> String? {

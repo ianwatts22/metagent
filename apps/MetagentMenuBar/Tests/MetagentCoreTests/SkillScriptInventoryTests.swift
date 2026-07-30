@@ -63,11 +63,59 @@ final class SkillScriptInventoryTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+        try "#!/usr/bin/env -S -iu PYTHONHOME -- 1=bar python3 -u\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env -iSpython3 -u\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python-attached"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env -S--chdir /tmp FOO='hello world' python3 -u\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python-quoted"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env --split-string='-a ignored FOO=hello python3 -u'\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python-long"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env --split-string=FOO=\"hello world\" python3 -u\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python-long-assignment"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env -uSHELL python3\nprint('ok')\n".write(
+            to: skill.appendingPathComponent("scripts/env-python-unset"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env -S 'python3\nprint('not executable')\n".write(
+            to: skill.appendingPathComponent("scripts/env-invalid-split-quote"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env FOO='hello world' python3\nprint('not executable')\n".write(
+            to: skill.appendingPathComponent("scripts/env-invalid-quote"),
+            atomically: true,
+            encoding: .utf8
+        )
 
         let inventory = try MetagentCore.inventorySkillScripts(path: skill.path)
 
         XCTAssertEqual(inventory.scripts.map(\.relativePath), [
             "scripts/driver.rb",
+            "scripts/env-invalid-quote",
+            "scripts/env-invalid-split-quote",
+            "scripts/env-python",
+            "scripts/env-python-attached",
+            "scripts/env-python-long",
+            "scripts/env-python-long-assignment",
+            "scripts/env-python-quoted",
+            "scripts/env-python-unset",
             "scripts/helper.sh",
             "scripts/not-a-shell",
             "scripts/orphan.js",
@@ -101,6 +149,46 @@ final class SkillScriptInventoryTests: XCTestCase {
             $0.relativePath == "scripts/not-a-shell"
         })
         XCTAssertEqual(notAShell.runtime, "unknown")
+
+        let envPython = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python"
+        })
+        XCTAssertEqual(envPython.runtime, "python")
+
+        let envPythonAttached = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python-attached"
+        })
+        XCTAssertEqual(envPythonAttached.runtime, "python")
+
+        let envPythonQuoted = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python-quoted"
+        })
+        XCTAssertEqual(envPythonQuoted.runtime, "python")
+
+        let envPythonLong = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python-long"
+        })
+        XCTAssertEqual(envPythonLong.runtime, "python")
+
+        let envPythonLongAssignment = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python-long-assignment"
+        })
+        XCTAssertEqual(envPythonLongAssignment.runtime, "python")
+
+        let envPythonUnset = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-python-unset"
+        })
+        XCTAssertEqual(envPythonUnset.runtime, "python")
+
+        let envInvalidQuote = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-invalid-quote"
+        })
+        XCTAssertEqual(envInvalidQuote.runtime, "unknown")
+
+        let envInvalidSplitQuote = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/env-invalid-split-quote"
+        })
+        XCTAssertEqual(envInvalidSplitQuote.runtime, "unknown")
 
         let orphan = try XCTUnwrap(inventory.scripts.first {
             $0.relativePath == "scripts/orphan.js"
