@@ -3,6 +3,27 @@
 This repo publishes the `metagent` skill for `npx skills` / skills.sh consumers.
 The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metagent/SKILL.md).
 
+## What "published" means
+
+skills.sh has no separate upload or publish endpoint. A valid skill in a public
+GitHub repository is indexed after the skills CLI installs it and sends its
+anonymous install event. Metagent's canonical pages are:
+
+- [repository page](https://skills.sh/ianwatts22/metagent)
+- [skill page](https://skills.sh/ianwatts22/metagent/metagent)
+
+The public metric is **installs**, not downloads or active users. It comes from
+hourly deduplicated CLI telemetry and excludes telemetry-disabled and CI
+installs. See the [skills.sh FAQ](https://skills.sh/docs/faq) and
+[privacy details](https://skills.sh/privacy).
+
+The [official catalog API](https://skills.sh/docs/api) exposes per-skill install
+counts, stable IDs, file hashes, and audits, but requires a short-lived Vercel
+OIDC token. A native app should read that data through a small authenticated,
+cached service rather than scrape skill pages or embed a renewable bearer
+credential. Until that service exists, link to the canonical skill page and use
+the zero-auth repository badge for a repository-level install total.
+
 ## Publish Checklist
 
 1. Keep the skill portable.
