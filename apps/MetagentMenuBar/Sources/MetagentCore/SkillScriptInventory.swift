@@ -99,6 +99,7 @@ private struct SkillScriptCandidate {
     let readableURL: URL?
     let symlink: Bool
     let containment: SkillScriptContainment
+    let readWarning: String?
 }
 
 private struct SkillScriptReferenceIndex {
@@ -193,17 +194,26 @@ private func collectSkillScriptCandidates(
             let target = resolvedSymlinkTarget(entry)
             let containment: SkillScriptContainment
             let readableURL: URL?
+            let readWarning: String?
             if let target, fileManager.fileExists(atPath: target.path) {
                 if skillBundleContains(root: root, path: target) {
                     containment = .bundledSymlink
-                    readableURL = target
+                    if isRegularFile(target) {
+                        readableURL = target
+                        readWarning = nil
+                    } else {
+                        readableURL = nil
+                        readWarning = "Symlink target is not a regular file; content was not read."
+                    }
                 } else {
                     containment = .escapesBundle
                     readableURL = nil
+                    readWarning = nil
                 }
             } else {
                 containment = .brokenSymlink
                 readableURL = nil
+                readWarning = nil
             }
 
             let targetIsDirectory = target.flatMap {
@@ -217,7 +227,8 @@ private func collectSkillScriptCandidates(
                 relativePath: relativePath,
                 readableURL: readableURL,
                 symlink: true,
-                containment: containment
+                containment: containment,
+                readWarning: readWarning
             ))
             continue
         }
@@ -235,7 +246,8 @@ private func collectSkillScriptCandidates(
                 relativePath: relativePath,
                 readableURL: entry,
                 symlink: false,
-                containment: .bundled
+                containment: .bundled,
+                readWarning: nil
             ))
         }
     }
@@ -248,9 +260,10 @@ private func makeSkillScriptItem(
 ) -> SkillScriptItem {
     let referencePaths = Array(references).sorted()
     guard let readableURL = candidate.readableURL else {
-        let warning = candidate.containment == .escapesBundle
-            ? "Symlink escapes the skill bundle; content was not read."
-            : "Symlink target is missing; content was not read."
+        let warning = candidate.readWarning
+            ?? (candidate.containment == .escapesBundle
+                ? "Symlink escapes the skill bundle; content was not read."
+                : "Symlink target is missing; content was not read.")
         return SkillScriptItem(
             relativePath: candidate.relativePath,
             runtime: "unknown",
@@ -341,7 +354,11 @@ private func skillScriptReferences(
                 queue.append((entry, relativeDirectory))
                 continue
             }
-            guard isRegularOrSymlinkedFile(entry), isSkillTextFile(entry) else { continue }
+            guard isRegularOrSymlinkedFile(entry),
+                  isSkillScriptReferenceSource(entry)
+            else {
+                continue
+            }
             let size = (try? entry.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             guard size <= 1_048_576,
                   let text = try? String(contentsOf: entry, encoding: .utf8)
@@ -433,28 +450,46 @@ private func runtimeForExtension(_ fileExtension: String) -> String? {
     }
 }
 
+private func isSkillScriptReferenceSource(_ url: URL) -> Bool {
+    isSkillTextFile(url) || runtimeForExtension(url.pathExtension) != nil
+}
+
 private func runtimeForShebang(_ line: String) -> String? {
     guard line.hasPrefix("#!") else { return nil }
-    let lowered = line.lowercased()
-    let runtimes = [
-        ("python", "python"),
-        ("uv ", "python"),
-        ("bash", "bash"),
-        ("zsh", "zsh"),
-        ("fish", "fish"),
-        ("env sh", "shell"),
-        ("/sh", "shell"),
-        ("node", "node"),
-        ("deno", "deno"),
-        ("bun", "bun"),
-        ("ruby", "ruby"),
-        ("swift", "swift"),
-        ("perl", "perl"),
-        ("php", "php"),
-        ("pwsh", "powershell"),
-        ("powershell", "powershell"),
-    ]
-    return runtimes.first(where: { lowered.contains($0.0) })?.1
+    var tokens = line.dropFirst(2).split(whereSeparator: \.isWhitespace)
+    guard !tokens.isEmpty else { return nil }
+
+    var interpreter = URL(fileURLWithPath: String(tokens.removeFirst()))
+        .lastPathComponent
+        .lowercased()
+    if interpreter == "env" {
+        while tokens.first?.hasPrefix("-") == true {
+            tokens.removeFirst()
+        }
+        guard let command = tokens.first else { return nil }
+        interpreter = URL(fileURLWithPath: String(command))
+            .lastPathComponent
+            .lowercased()
+    }
+
+    if interpreter.hasPrefix("python") || interpreter == "uv" {
+        return "python"
+    }
+    return switch interpreter {
+    case "sh": "shell"
+    case "bash": "bash"
+    case "zsh": "zsh"
+    case "fish": "fish"
+    case "node": "node"
+    case "deno": "deno"
+    case "bun": "bun"
+    case "ruby": "ruby"
+    case "swift": "swift"
+    case "perl": "perl"
+    case "php": "php"
+    case "pwsh", "powershell": "powershell"
+    default: nil
+    }
 }
 
 private func readFirstLine(_ url: URL) -> String? {
@@ -477,9 +512,9 @@ private func containsAbsolutePersonalPath(_ url: URL) -> Bool {
         return false
     }
     let patterns = [
-        #"/Users/[A-Za-z0-9._-]+/"#,
-        #"/home/[A-Za-z0-9._-]+/"#,
-        #"[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\\"#,
+        #"/Users/[A-Za-z0-9._-]+(?:/|(?=[^A-Za-z0-9._-]|$))"#,
+        #"/home/[A-Za-z0-9._-]+(?:/|(?=[^A-Za-z0-9._-]|$))"#,
+        #"[A-Za-z]:\\Users\\[A-Za-z0-9._-]+(?:\\|(?=[^A-Za-z0-9._-]|$))"#,
     ]
     return patterns.contains { text.range(of: $0, options: .regularExpression) != nil }
 }
@@ -512,6 +547,12 @@ func isFilesystemSymlink(_ url: URL) -> Bool {
     var info = stat()
     guard lstat(url.path, &info) == 0 else { return false }
     return info.st_mode & S_IFMT == S_IFLNK
+}
+
+private func isRegularFile(_ url: URL) -> Bool {
+    var info = stat()
+    guard stat(url.path, &info) == 0 else { return false }
+    return info.st_mode & S_IFMT == S_IFREG
 }
 
 private func skillBundleContains(root: URL, path: URL) -> Bool {

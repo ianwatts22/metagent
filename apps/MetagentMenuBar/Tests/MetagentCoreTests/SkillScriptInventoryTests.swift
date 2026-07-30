@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import MetagentCore
@@ -42,8 +43,13 @@ final class SkillScriptInventoryTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: entryPoint.path
         )
-        try "#!/usr/bin/env sh\ncd /Users/private-user/work\n".write(
+        try "#!/usr/bin/env sh\nHOME=/Users/private-user\n".write(
             to: skill.appendingPathComponent("scripts/helper.sh"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/usr/bin/env ruby\nload 'scripts/helper.sh'\n".write(
+            to: skill.appendingPathComponent("scripts/driver.rb"),
             atomically: true,
             encoding: .utf8
         )
@@ -52,11 +58,18 @@ final class SkillScriptInventoryTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+        try "#!/usr/bin/env shellcheck\nexit 0\n".write(
+            to: skill.appendingPathComponent("scripts/not-a-shell"),
+            atomically: true,
+            encoding: .utf8
+        )
 
         let inventory = try MetagentCore.inventorySkillScripts(path: skill.path)
 
         XCTAssertEqual(inventory.scripts.map(\.relativePath), [
+            "scripts/driver.rb",
             "scripts/helper.sh",
+            "scripts/not-a-shell",
             "scripts/orphan.js",
             "scripts/run.py",
         ])
@@ -78,8 +91,16 @@ final class SkillScriptInventoryTests: XCTestCase {
         XCTAssertEqual(helper.role, .helper)
         XCTAssertEqual(helper.runtime, "shell")
         XCTAssertFalse(helper.executable)
-        XCTAssertEqual(helper.referencedBy, ["references/architecture.md"])
+        XCTAssertEqual(helper.referencedBy, [
+            "references/architecture.md",
+            "scripts/driver.rb",
+        ])
         XCTAssertTrue(helper.warnings.contains("Contains an absolute user-home path."))
+
+        let notAShell = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/not-a-shell"
+        })
+        XCTAssertEqual(notAShell.runtime, "unknown")
 
         let orphan = try XCTUnwrap(inventory.scripts.first {
             $0.relativePath == "scripts/orphan.js"
@@ -103,7 +124,7 @@ final class SkillScriptInventoryTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(encoded).contains("private-user"))
     }
 
-    func testInventoryDoesNotFollowEscapingOrBrokenSymlinks() throws {
+    func testInventoryDoesNotFollowUnsafeSymlinks() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-script-symlink")
         defer { try? FileManager.default.removeItem(at: root) }
         let skill = root.appendingPathComponent(".agents/skills/demo")
@@ -121,7 +142,7 @@ final class SkillScriptInventoryTests: XCTestCase {
         description: Symlink fixture
         ---
 
-        Use `scripts/inside.sh`, `scripts/outside.sh`, and `scripts/broken.sh`.
+        Use `scripts/inside.sh`, `scripts/outside.sh`, `scripts/broken.sh`, and `scripts/pipe.sh`.
         """.write(
             to: skill.appendingPathComponent("SKILL.md"),
             atomically: true,
@@ -152,6 +173,12 @@ final class SkillScriptInventoryTests: XCTestCase {
             atPath: skill.appendingPathComponent("scripts/broken.sh").path,
             withDestinationPath: "../assets/missing.sh"
         )
+        let pipeTarget = skill.appendingPathComponent("assets/pipe.sh")
+        XCTAssertEqual(mkfifo(pipeTarget.path, 0o600), 0)
+        try FileManager.default.createSymbolicLink(
+            atPath: skill.appendingPathComponent("scripts/pipe.sh").path,
+            withDestinationPath: "../assets/pipe.sh"
+        )
 
         let inventory = try MetagentCore.inventorySkillScripts(path: skill.path)
         let inside = try XCTUnwrap(inventory.scripts.first {
@@ -163,6 +190,9 @@ final class SkillScriptInventoryTests: XCTestCase {
         let broken = try XCTUnwrap(inventory.scripts.first {
             $0.relativePath == "scripts/broken.sh"
         }, "inventoried paths: \(inventory.scripts.map(\.relativePath))")
+        let pipe = try XCTUnwrap(inventory.scripts.first {
+            $0.relativePath == "scripts/pipe.sh"
+        })
 
         XCTAssertEqual(inside.containment, .bundledSymlink)
         XCTAssertNotNil(inside.sha256)
@@ -170,6 +200,11 @@ final class SkillScriptInventoryTests: XCTestCase {
         XCTAssertNil(outside.sha256)
         XCTAssertEqual(broken.containment, .brokenSymlink)
         XCTAssertNil(broken.sha256)
+        XCTAssertEqual(pipe.containment, .bundledSymlink)
+        XCTAssertNil(pipe.sha256)
+        XCTAssertTrue(pipe.warnings.contains {
+            $0.contains("not a regular file")
+        })
 
         let encoded = try XCTUnwrap(
             String(data: JSONEncoder().encode(inventory), encoding: .utf8)
