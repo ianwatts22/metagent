@@ -73,6 +73,15 @@ done
 }
 
 verify_notarization_auth() (
+  unset \
+    METAGENT_NOTARY_PROFILE \
+    METAGENT_NOTARY_API_KEY_PATH \
+    METAGENT_NOTARY_API_KEY_ID \
+    METAGENT_NOTARY_API_ISSUER_ID \
+    METAGENT_NOTARY_APPLE_ID \
+    METAGENT_NOTARY_PASSWORD \
+    METAGENT_NOTARY_TEAM_ID
+
   fixture_root="$(mktemp -d /private/tmp/metagent-notary-verify.XXXXXX)"
   trap 'rm -rf "$fixture_root"' EXIT
   mkdir -p "$fixture_root/bin"
