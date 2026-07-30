@@ -360,7 +360,10 @@ private func skillScriptReferences(
 }
 
 private func explicitSkillScriptPaths(in text: String) -> Set<String> {
-    let pattern = #"scripts/[A-Za-z0-9._/-]*[A-Za-z0-9._-]"#
+    // A final period is normally prose punctuation, not part of the filename.
+    // Requiring an alphanumeric, underscore, or hyphen terminator still permits
+    // dotted extensions and hidden files without inventing `script.py.`.
+    let pattern = #"scripts/[A-Za-z0-9._/-]*[A-Za-z0-9_-]"#
     guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
     let range = NSRange(text.startIndex..<text.endIndex, in: text)
     var results = Set<String>()
@@ -439,6 +442,7 @@ private func runtimeForShebang(_ line: String) -> String? {
         ("bash", "bash"),
         ("zsh", "zsh"),
         ("fish", "fish"),
+        ("env sh", "shell"),
         ("/sh", "shell"),
         ("node", "node"),
         ("deno", "deno"),

@@ -27,7 +27,7 @@ final class SkillScriptInventoryTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        try "The entry point calls `scripts/helper.sh`.\n".write(
+        try "The entry point calls scripts/helper.sh.\n".write(
             to: skill.appendingPathComponent("references/architecture.md"),
             atomically: true,
             encoding: .utf8
@@ -42,7 +42,7 @@ final class SkillScriptInventoryTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: entryPoint.path
         )
-        try "#!/bin/sh\ncd /Users/private-user/work\n".write(
+        try "#!/usr/bin/env sh\ncd /Users/private-user/work\n".write(
             to: skill.appendingPathComponent("scripts/helper.sh"),
             atomically: true,
             encoding: .utf8
@@ -76,6 +76,7 @@ final class SkillScriptInventoryTests: XCTestCase {
             $0.relativePath == "scripts/helper.sh"
         })
         XCTAssertEqual(helper.role, .helper)
+        XCTAssertEqual(helper.runtime, "shell")
         XCTAssertFalse(helper.executable)
         XCTAssertEqual(helper.referencedBy, ["references/architecture.md"])
         XCTAssertTrue(helper.warnings.contains("Contains an absolute user-home path."))
