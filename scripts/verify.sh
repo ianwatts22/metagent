@@ -72,6 +72,71 @@ for shell_script in "$repo_root"/scripts/*.sh; do
 done
 }
 
+verify_notarization_auth() (
+  fixture_root="$(mktemp -d /private/tmp/metagent-notary-verify.XXXXXX)"
+  trap 'rm -rf "$fixture_root"' EXIT
+  mkdir -p "$fixture_root/bin"
+  touch "$fixture_root/fixture.dmg" "$fixture_root/AuthKey_fixture.p8"
+
+  cat >"$fixture_root/bin/xcrun" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$METAGENT_NOTARY_TEST_LOG"
+if [[ "$1 $2" == "notarytool submit" ]]; then
+  printf '  id: fixture-submission\nstatus: Accepted\n'
+fi
+EOF
+  chmod +x "$fixture_root/bin/xcrun"
+
+  METAGENT_NOTARY_TEST_LOG="$fixture_root/xcrun.log" \
+  METAGENT_NOTARY_API_KEY_PATH="$fixture_root/AuthKey_fixture.p8" \
+  METAGENT_NOTARY_API_KEY_ID="FIXTURE_KEY" \
+  METAGENT_NOTARY_API_ISSUER_ID="fixture-issuer" \
+  PATH="$fixture_root/bin:$PATH" \
+    "$repo_root/scripts/notarize.sh" "$fixture_root/fixture.dmg" >/dev/null
+
+  grep -Fq \
+    "notarytool submit $fixture_root/fixture.dmg --key $fixture_root/AuthKey_fixture.p8 --key-id FIXTURE_KEY --issuer fixture-issuer --wait" \
+    "$fixture_root/xcrun.log"
+  grep -Fq "stapler staple $fixture_root/fixture.dmg" "$fixture_root/xcrun.log"
+  grep -Fq "stapler validate $fixture_root/fixture.dmg" "$fixture_root/xcrun.log"
+
+  : >"$fixture_root/xcrun.log"
+  METAGENT_NOTARY_TEST_LOG="$fixture_root/xcrun.log" \
+  METAGENT_NOTARY_API_KEY_PATH="$fixture_root/AuthKey_fixture.p8" \
+  METAGENT_NOTARY_API_KEY_ID="FIXTURE_KEY" \
+  METAGENT_NOTARY_API_ISSUER_ID="fixture-issuer" \
+  PATH="$fixture_root/bin:$PATH" \
+    "$repo_root/scripts/notarize.sh" --validate-credentials >/dev/null
+  grep -Fq \
+    "notarytool history --key $fixture_root/AuthKey_fixture.p8 --key-id FIXTURE_KEY --issuer fixture-issuer --output-format json" \
+    "$fixture_root/xcrun.log"
+
+  : >"$fixture_root/xcrun.log"
+  METAGENT_NOTARY_TEST_LOG="$fixture_root/xcrun.log" \
+  METAGENT_NOTARY_PROFILE="fixture-profile" \
+  PATH="$fixture_root/bin:$PATH" \
+    "$repo_root/scripts/notarize.sh" --validate-credentials >/dev/null
+  grep -Fq \
+    "notarytool history --keychain-profile fixture-profile --output-format json" \
+    "$fixture_root/xcrun.log"
+
+  : >"$fixture_root/xcrun.log"
+  METAGENT_NOTARY_TEST_LOG="$fixture_root/xcrun.log" \
+  METAGENT_NOTARY_APPLE_ID="fixture@example.com" \
+  METAGENT_NOTARY_PASSWORD="fixture-password" \
+  METAGENT_NOTARY_TEAM_ID="FIXTURE_TEAM" \
+  PATH="$fixture_root/bin:$PATH" \
+    "$repo_root/scripts/notarize.sh" --validate-credentials >/dev/null
+  grep -Fq \
+    "notarytool history --apple-id fixture@example.com --password fixture-password --team-id FIXTURE_TEAM --output-format json" \
+    "$fixture_root/xcrun.log"
+
+  incomplete_output="$fixture_root/incomplete.out"
+  expect_failure "Incomplete App Store Connect notarization credentials." "$incomplete_output" -- \
+    env METAGENT_NOTARY_API_KEY_PATH="$fixture_root/AuthKey_fixture.p8" \
+      "$repo_root/scripts/notarize.sh" "$fixture_root/fixture.dmg"
+)
+
 verify_swift_build() (
   cd "$app_source"
   swift build --disable-sandbox
@@ -862,6 +927,7 @@ run_stage() {
 
 run_fast_lane() {
   run_stage "Shell syntax" "<5s" verify_shell_syntax
+  run_stage "Notarization auth routing" "<5s" verify_notarization_auth
   run_stage "Swift build" "<10s incremental" verify_swift_build
   swift_built=true
   run_stage "Swift tests" "<30s" verify_swift_tests

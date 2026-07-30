@@ -45,6 +45,36 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
 
+      # A team App Store Connect API key is CI-native and does not expire when
+      # an Apple ID password changes. Validate it before the build so a bad or
+      # revoked credential fails in seconds instead of after compilation.
+      - name: Configure and validate notarization credentials
+        env:
+          NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_API_PRIVATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+        run: |
+          if [[ -z "$NOTARY_PRIVATE_KEY" || -z "$NOTARY_KEY_ID" || -z "$NOTARY_ISSUER_ID" ]]; then
+            echo "App Store Connect notarization credentials are incomplete." >&2
+            echo "Set APPLE_NOTARY_API_PRIVATE_KEY, APPLE_NOTARY_API_KEY_ID, and APPLE_NOTARY_API_ISSUER_ID." >&2
+            exit 1
+          fi
+
+          key_file="$RUNNER_TEMP/notary-api-key.p8"
+          printf '%s' "$NOTARY_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          {
+            echo "METAGENT_NOTARY_API_KEY_PATH=$key_file"
+            echo "METAGENT_NOTARY_API_KEY_ID=$NOTARY_KEY_ID"
+            echo "METAGENT_NOTARY_API_ISSUER_ID=$NOTARY_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+          METAGENT_NOTARY_API_KEY_PATH="$key_file" \
+          METAGENT_NOTARY_API_KEY_ID="$NOTARY_KEY_ID" \
+          METAGENT_NOTARY_API_ISSUER_ID="$NOTARY_ISSUER_ID" \
+            ./scripts/notarize.sh --validate-credentials
+
       - name: Install asset tooling
         run: brew install create-dmg librsvg
 
@@ -106,20 +136,12 @@ jobs:
         run: ./scripts/build-app.sh
 
       - name: Notarize and staple the app
-        env:
-          METAGENT_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
-          METAGENT_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-          METAGENT_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: ./scripts/notarize.sh dist/MetagentMenuBar.app
 
       # Both archives are cut from the stapled bundle, so the ticket travels
       # with the download and Gatekeeper can clear it without a network round
       # trip. The DMG is the human download; the zip is what Sparkle installs.
       - name: Package disk image
-        env:
-          METAGENT_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_ID }}
-          METAGENT_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
-          METAGENT_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           ./scripts/package-dmg.sh artifacts/Metagent.dmg
           ./scripts/notarize.sh artifacts/Metagent.dmg
@@ -207,3 +229,7 @@ jobs:
             git commit -m "chore(release): publish appcast for $tag"
             git push origin main
           fi
+
+      - name: Remove temporary notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/notary-api-key.p8"

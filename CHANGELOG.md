@@ -8,6 +8,8 @@ AGENTS.md for the release procedure.
 - Script inventory: inspect every bundled script without running it, including
   runtime and role inference, executable state, size and hash, documentation
   references, missing files, private-path warnings, and safe symlink handling.
+- Release reliability: notarization can use a CI-native App Store Connect Team
+  API key and validates credentials before starting an expensive release build.
 
 ## v0.4.0 — 2026-07-29
 

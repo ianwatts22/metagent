@@ -296,10 +296,26 @@ Required repository secrets:
 | --- | --- |
 | `MACOS_CERTIFICATE_P12` | Developer ID Application certificate, exported as `.p12` and base64-encoded |
 | `MACOS_CERTIFICATE_PASSWORD` | Password set when exporting that `.p12` |
-| `APPLE_NOTARY_ID` | Apple ID used for notarization |
-| `APPLE_NOTARY_PASSWORD` | App-specific password for that Apple ID |
-| `APPLE_TEAM_ID` | Developer team identifier |
+| `APPLE_NOTARY_API_PRIVATE_KEY` | Contents of the one-time App Store Connect Team API `.p8` key |
+| `APPLE_NOTARY_API_KEY_ID` | App Store Connect Team API key identifier |
+| `APPLE_NOTARY_API_ISSUER_ID` | App Store Connect Team API issuer identifier |
 | `SPARKLE_PRIVATE_KEY` | EdDSA private key from `generate_keys` |
+
+Create an App Store Connect Team API key once, starting with the Developer role,
+keep a recovery copy in the team's secret manager, and store the three values
+above in GitHub Actions secrets. Individual API keys cannot use `notarytool`.
+The `.p8` file can be downloaded only once. The workflow authenticates directly
+from its ephemeral runner and validates the key before installing dependencies
+or building. Normal releases therefore do not depend on an unlocked developer
+Mac, an Apple ID app-specific password, or interactive access to the secret
+manager.
+
+For local notarization, `scripts/notarize.sh` accepts the same key through
+`METAGENT_NOTARY_API_KEY_PATH`, `METAGENT_NOTARY_API_KEY_ID`, and
+`METAGENT_NOTARY_API_ISSUER_ID`. A stored notarytool keychain profile and the
+older Apple ID credential set remain supported for local recovery only. Run
+`scripts/notarize.sh --validate-credentials` to check any configured method
+without submitting an artifact.
 
 ### Checking for updates by hand
 

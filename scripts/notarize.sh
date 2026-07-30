@@ -10,19 +10,28 @@ set -euo pipefail
 #
 # Credentials come from either a stored keychain profile:
 #   METAGENT_NOTARY_PROFILE
+# or an App Store Connect API key:
+#   METAGENT_NOTARY_API_KEY_PATH
+#   METAGENT_NOTARY_API_KEY_ID
+#   METAGENT_NOTARY_API_ISSUER_ID
 # or an App Store Connect app-specific password:
 #   METAGENT_NOTARY_APPLE_ID
 #   METAGENT_NOTARY_PASSWORD
 #   METAGENT_NOTARY_TEAM_ID
 
 target="${1:-}"
+validate_credentials=false
 
-if [[ -z "$target" ]]; then
+if [[ "$target" == "--validate-credentials" ]]; then
+  validate_credentials=true
+  target=""
+elif [[ -z "$target" ]]; then
   echo "Usage: scripts/notarize.sh <path to .app, .dmg, or .pkg>" >&2
+  echo "       scripts/notarize.sh --validate-credentials" >&2
   exit 1
 fi
 
-if [[ ! -e "$target" ]]; then
+if [[ "$validate_credentials" == false && ! -e "$target" ]]; then
   echo "Notarization target does not exist: $target" >&2
   exit 1
 fi
@@ -30,6 +39,26 @@ fi
 notary_args=()
 if [[ -n "${METAGENT_NOTARY_PROFILE:-}" ]]; then
   notary_args=(--keychain-profile "$METAGENT_NOTARY_PROFILE")
+elif [[ -n "${METAGENT_NOTARY_API_KEY_PATH:-}" \
+  || -n "${METAGENT_NOTARY_API_KEY_ID:-}" \
+  || -n "${METAGENT_NOTARY_API_ISSUER_ID:-}" ]]; then
+  if [[ -z "${METAGENT_NOTARY_API_KEY_PATH:-}" \
+    || -z "${METAGENT_NOTARY_API_KEY_ID:-}" \
+    || -z "${METAGENT_NOTARY_API_ISSUER_ID:-}" ]]; then
+    echo "Incomplete App Store Connect notarization credentials." >&2
+    echo "Set METAGENT_NOTARY_API_KEY_PATH, METAGENT_NOTARY_API_KEY_ID, and" >&2
+    echo "METAGENT_NOTARY_API_ISSUER_ID together." >&2
+    exit 1
+  fi
+  if [[ ! -r "$METAGENT_NOTARY_API_KEY_PATH" ]]; then
+    echo "App Store Connect private key is not readable: $METAGENT_NOTARY_API_KEY_PATH" >&2
+    exit 1
+  fi
+  notary_args=(
+    --key "$METAGENT_NOTARY_API_KEY_PATH"
+    --key-id "$METAGENT_NOTARY_API_KEY_ID"
+    --issuer "$METAGENT_NOTARY_API_ISSUER_ID"
+  )
 elif [[ -n "${METAGENT_NOTARY_APPLE_ID:-}" \
   && -n "${METAGENT_NOTARY_PASSWORD:-}" \
   && -n "${METAGENT_NOTARY_TEAM_ID:-}" ]]; then
@@ -40,9 +69,16 @@ elif [[ -n "${METAGENT_NOTARY_APPLE_ID:-}" \
   )
 else
   echo "No notarization credentials found." >&2
-  echo "Set METAGENT_NOTARY_PROFILE, or all of METAGENT_NOTARY_APPLE_ID," >&2
-  echo "METAGENT_NOTARY_PASSWORD, and METAGENT_NOTARY_TEAM_ID." >&2
+  echo "Set METAGENT_NOTARY_PROFILE; the three METAGENT_NOTARY_API variables;" >&2
+  echo "or all of METAGENT_NOTARY_APPLE_ID, METAGENT_NOTARY_PASSWORD, and" >&2
+  echo "METAGENT_NOTARY_TEAM_ID." >&2
   exit 1
+fi
+
+if [[ "$validate_credentials" == true ]]; then
+  xcrun notarytool history "${notary_args[@]}" --output-format json >/dev/null
+  echo "Notarization credentials are valid."
+  exit 0
 fi
 
 cleanup_zip=""
