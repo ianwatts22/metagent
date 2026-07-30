@@ -114,6 +114,7 @@ struct SkillStats {
     var hasIconAndLogo = false
     var iconSmallPath: String?
     var iconLargePath: String?
+    var scriptInventory: SkillScriptInventory?
 }
 
 func discoverProjectRoots(
@@ -585,7 +586,8 @@ func makeSkillItem(
         hasIconLarge: stats.hasIconLarge,
         hasIconAndLogo: stats.hasIconAndLogo,
         iconSmallPath: stats.iconSmallPath,
-        iconLargePath: stats.iconLargePath
+        iconLargePath: stats.iconLargePath,
+        scriptInventory: stats.scriptInventory
     )
 }
 
@@ -635,6 +637,8 @@ func skillStats(_ skillDir: URL) -> SkillStats {
     var otherFolders = Set<String>()
     readOpenAIYaml(skillDir: skillDir, stats: &stats)
     collectSkillStats(root: skillDir, dir: skillDir, stats: &stats, otherFolders: &otherFolders)
+    stats.scriptInventory = scanSkillScripts(in: skillDir)
+    stats.scriptFileCount = stats.scriptInventory?.scripts.count ?? stats.scriptFileCount
     stats.tokenEstimate = estimateTokens(stats.characterCount)
     stats.skillFileTokenEstimate = estimateTokens(stats.skillFileCharacterCount)
     stats.otherFolderCount = otherFolders.count
@@ -665,6 +669,10 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
         }
 
         guard isRegularOrSymlinkedFile(entry) else { continue }
+        if isFilesystemSymlink(entry) {
+            categorizeSkillFile(root: root, path: entry, stats: &stats, otherFolders: &otherFolders)
+            continue
+        }
         if let modifiedAt = try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
            stats.latestModifiedAt == nil || modifiedAt > stats.latestModifiedAt!
         {

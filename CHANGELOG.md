@@ -3,6 +3,12 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.5.0 — unreleased
+
+- Script inventory: inspect every bundled script without running it, including
+  runtime and role inference, executable state, size and hash, documentation
+  references, missing files, private-path warnings, and safe symlink handling.
+
 ## v0.4.0 — 2026-07-29
 
 - Plugins: inventory Codex and Claude Code plugins together, see ownership and

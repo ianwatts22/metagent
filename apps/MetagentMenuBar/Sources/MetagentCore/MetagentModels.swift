@@ -123,6 +123,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
     public var hasIconAndLogo: Bool
     public var iconSmallPath: String?
     public var iconLargePath: String?
+    public var scriptInventory: SkillScriptInventory?
 
     public init(
         name: String,
@@ -162,7 +163,8 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
         hasIconLarge: Bool,
         hasIconAndLogo: Bool,
         iconSmallPath: String?,
-        iconLargePath: String?
+        iconLargePath: String?,
+        scriptInventory: SkillScriptInventory? = nil
     ) {
         self.name = name
         self.description = description
@@ -202,6 +204,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
         self.hasIconAndLogo = hasIconAndLogo
         self.iconSmallPath = iconSmallPath
         self.iconLargePath = iconLargePath
+        self.scriptInventory = scriptInventory
     }
 
     public static func < (left: SkillInventoryItem, right: SkillInventoryItem) -> Bool {
@@ -253,6 +256,7 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
         case hasIconAndLogo = "has_icon_and_logo"
         case iconSmallPath = "icon_small_path"
         case iconLargePath = "icon_large_path"
+        case scriptInventory = "script_inventory"
     }
 }
 

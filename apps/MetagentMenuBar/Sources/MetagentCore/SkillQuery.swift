@@ -397,7 +397,7 @@ public struct SkillDetailUsage: Codable, Equatable, Sendable {
 }
 
 public struct SkillDetail: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     public let schemaVersion: Int
     public let path: String
@@ -412,6 +412,7 @@ public struct SkillDetail: Codable, Equatable, Sendable {
     public let bodyCharacterCount: Int
     public let provenance: SkillDetailProvenance?
     public let size: SkillDetailSize?
+    public let scriptInventory: SkillScriptInventory
     public let usage: SkillDetailUsage?
     public let score: Int?
     public let grade: String?
@@ -430,6 +431,7 @@ public struct SkillDetail: Codable, Equatable, Sendable {
         case bodyCharacterCount = "body_character_count"
         case provenance
         case size
+        case scriptInventory = "script_inventory"
         case usage
         case score
         case grade
@@ -552,6 +554,7 @@ public extension MetagentCore {
                     assetFileCount: $0.assetFileCount
                 )
             },
+            scriptInventory: match?.scriptInventory ?? scanSkillScripts(in: directory),
             usage: summary.map {
                 SkillDetailUsage(
                     totalInvocations: $0.totalInvocations,

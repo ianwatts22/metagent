@@ -1225,6 +1225,30 @@ struct MetagentCLI {
             print("  SKILL.md: \(size.skillFileCharacterCount) chars · ~\(size.skillFileTokenEstimate) tokens")
             print("  files: \(size.textFileCount) text · \(size.referenceFileCount) reference · \(size.scriptFileCount) script · \(size.assetFileCount) asset")
         }
+        if !detail.scriptInventory.scripts.isEmpty {
+            print("scripts:")
+            for script in detail.scriptInventory.scripts {
+                let mode = script.executable ? "executable" : "not executable"
+                print("  \(script.relativePath): \(script.runtime) · \(script.role.rawValue) · \(mode) · \(script.byteCount) bytes")
+                if let hash = script.sha256 {
+                    print("    sha256: \(hash)")
+                }
+                if !script.referencedBy.isEmpty {
+                    print("    referenced by: \(script.referencedBy.joined(separator: ", "))")
+                }
+                for warning in script.warnings {
+                    print("    warning: \(warning)")
+                }
+            }
+        }
+        for missing in detail.scriptInventory.missingReferences {
+            print("script warning: missing \(missing.relativePath), referenced by \(missing.referencedBy.joined(separator: ", "))")
+        }
+        for warning in detail.scriptInventory.warnings
+            where !warning.hasPrefix("Referenced script is missing:")
+        {
+            print("script warning: \(warning)")
+        }
         if let usage = detail.usage {
             print("usage: \(usage.totalInvocations) invocations · \(usage.invocations30d) in 30d · \(usage.invocations7d) in 7d · \(usage.distinctThreads) threads")
             if let lastUsedAt = usage.lastUsedAt { print("  last used: \(lastUsedAt)") }

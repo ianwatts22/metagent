@@ -137,6 +137,12 @@ struct SkillInfoView: View {
                     LabeledContent("Other files", value: row.otherFileCount.formatted())
                 }
 
+                if let inventory = row.skill.coreSkill.scriptInventory,
+                   !inventory.scripts.isEmpty || !inventory.warnings.isEmpty
+                {
+                    SkillScriptsSection(inventory: inventory)
+                }
+
                 Section("Scores") {
                     if let currentScoreRow {
                         LabeledContent("Quality", value: currentScoreRow.metagentScoreText)
@@ -228,6 +234,86 @@ struct SkillInfoView: View {
         }
         return model.inventorySkillRow(canonicalPath: currentSkillPath)
             ?? (updatedSkillPath == nil ? row : nil)
+    }
+
+}
+
+private struct SkillScriptsSection: View {
+    let inventory: SkillScriptInventory
+
+    var body: some View {
+        Section("Scripts") {
+            ForEach(inventory.scripts) { script in
+                SkillScriptDetailRow(script: script)
+            }
+            ForEach(inventory.missingReferences) { missing in
+                Label(
+                    "Missing \(missing.relativePath), referenced by \(missing.referencedBy.joined(separator: ", "))",
+                    systemImage: "questionmark.folder"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+            ForEach(otherWarnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var otherWarnings: [String] {
+        inventory.warnings.filter {
+            !$0.hasPrefix("Referenced script is missing:")
+        }
+    }
+}
+
+private struct SkillScriptDetailRow: View {
+    let script: SkillScriptItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(script.relativePath)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !script.referencedBy.isEmpty {
+                Text("Referenced by \(script.referencedBy.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let hash = script.sha256 {
+                Text("SHA-256 \(hash)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            ForEach(script.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var summary: String {
+        let role = script.role.rawValue.replacingOccurrences(of: "_", with: " ")
+        var parts = [
+            script.runtime,
+            role,
+            script.executable ? "executable" : "not executable",
+            ByteCountFormatter.string(fromByteCount: Int64(script.byteCount), countStyle: .file),
+        ]
+        if script.symlink {
+            parts.append(script.containment.rawValue.replacingOccurrences(of: "_", with: " "))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
