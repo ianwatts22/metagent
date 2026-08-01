@@ -174,6 +174,36 @@ public extension MetagentCore {
         return snapshot
     }
 
+    private static func loadSkillPublicationSnapshotForMutation(
+        path: URL? = nil
+    ) throws -> SkillPublicationSnapshot {
+        let url = path ?? skillPublicationStorePath()
+        guard fileManager.fileExists(atPath: url.path) else { return .empty }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let snapshot = try skillPublicationDecoder().decode(
+                SkillPublicationSnapshot.self,
+                from: data
+            )
+            guard snapshot.version == SkillPublicationSnapshot.version else {
+                throw publicationError(
+                    "Publication settings use an unsupported version (\(snapshot.version))."
+                )
+            }
+            return snapshot
+        } catch {
+            let recoveryURL = url.appendingPathExtension("unreadable")
+            if !fileManager.fileExists(atPath: recoveryURL.path) {
+                try? fileManager.copyItem(at: url, to: recoveryURL)
+            }
+            throw publicationError(
+                "Publication settings could not be read, so Metagent left them unchanged. "
+                    + "A recovery copy is at \(recoveryURL.path). \(error.localizedDescription)"
+            )
+        }
+    }
+
     static func saveSkillPublicationSnapshot(
         _ snapshot: SkillPublicationSnapshot,
         path: URL? = nil
@@ -210,17 +240,22 @@ public extension MetagentCore {
             )
         }
 
-        var snapshot = loadSkillPublicationSnapshot(path: storePath)
+        var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
         let catalogID = publicationCatalogID(repository.path)
-        let catalog = SkillPublicationCatalog(
-            id: catalogID,
-            localRepositoryPath: repository.path,
-            remoteURL: remoteURL
-        )
         if let index = snapshot.catalogs.firstIndex(where: { $0.id == catalogID }) {
-            snapshot.catalogs[index] = catalog
+            let existing = snapshot.catalogs[index]
+            snapshot.catalogs[index] = SkillPublicationCatalog(
+                id: existing.id,
+                localRepositoryPath: existing.localRepositoryPath,
+                skillsRelativePath: existing.skillsRelativePath,
+                remoteURL: remoteURL ?? existing.remoteURL
+            )
         } else {
-            snapshot.catalogs.append(catalog)
+            snapshot.catalogs.append(SkillPublicationCatalog(
+                id: catalogID,
+                localRepositoryPath: repository.path,
+                remoteURL: remoteURL
+            ))
         }
 
         let recordID = publicationRecordID(
@@ -257,7 +292,7 @@ public extension MetagentCore {
         recordID: String,
         storePath: URL? = nil
     ) throws -> SkillPublicationSnapshot {
-        var snapshot = loadSkillPublicationSnapshot(path: storePath)
+        var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
         guard let index = snapshot.records.firstIndex(where: { $0.id == recordID }) else {
             return snapshot
         }
@@ -275,7 +310,7 @@ public extension MetagentCore {
         storePath: URL? = nil,
         now: Date = Date()
     ) throws -> SkillPublicationReconcileReport {
-        var snapshot = loadSkillPublicationSnapshot(path: storePath)
+        var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
         var mirrored: [String] = []
         var blocked: [String] = []
         let destinationCounts = Dictionary(
@@ -526,8 +561,9 @@ private func mirrorSkillPublication(
         }
         try fileManager.moveItem(at: stage, to: destination)
         if movedDestinationToBackup {
-            try fileManager.removeItem(at: backup)
-            movedDestinationToBackup = false
+            if (try? fileManager.removeItem(at: backup)) != nil {
+                movedDestinationToBackup = false
+            }
         }
     } catch {
         if movedDestinationToBackup,
@@ -670,9 +706,8 @@ private func inspectPublicationTextFile(
 ) {
     guard let handle = try? FileHandle(forReadingFrom: file) else { return }
     defer { try? handle.close() }
-    guard let data = try? handle.read(upToCount: 1_048_577), data.count <= 1_048_576,
-          let text = String(data: data, encoding: .utf8)
-    else { return }
+    guard let data = try? handle.read(upToCount: 1_048_576) else { return }
+    let text = String(decoding: data, as: UTF8.self)
 
     if containsPublicationPersonalPath(text) {
         findings.append(publicationFinding(

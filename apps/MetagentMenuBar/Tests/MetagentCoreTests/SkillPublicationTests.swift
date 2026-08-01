@@ -209,6 +209,94 @@ final class SkillPublicationTests: XCTestCase {
         XCTAssertTrue(report.snapshot.records.allSatisfy { $0.state == .updateBlocked })
     }
 
+    func testExistingCatalogMetadataSurvivesEnablingAnotherSkill() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let first = try fixture.skill(named: "first")
+        let second = try fixture.skill(named: "second")
+        let initial = try MetagentCore.enableSkillPublication(
+            sourcePath: first.path,
+            skillName: "first",
+            repositoryPath: fixture.repository.path,
+            remoteURL: "https://github.com/example/public-skills.git",
+            storePath: fixture.store
+        )
+        let original = try XCTUnwrap(initial.snapshot.catalogs.first)
+        let customized = SkillPublicationSnapshot(
+            catalogs: [SkillPublicationCatalog(
+                id: original.id,
+                localRepositoryPath: original.localRepositoryPath,
+                skillsRelativePath: "agent-skills",
+                remoteURL: original.remoteURL
+            )],
+            records: initial.snapshot.records
+        )
+        try MetagentCore.saveSkillPublicationSnapshot(customized, path: fixture.store)
+
+        let updated = try MetagentCore.enableSkillPublication(
+            sourcePath: second.path,
+            skillName: "second",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        )
+
+        XCTAssertEqual(updated.snapshot.catalogs.first?.skillsRelativePath, "agent-skills")
+        XCTAssertEqual(
+            updated.snapshot.catalogs.first?.remoteURL,
+            "https://github.com/example/public-skills.git"
+        )
+    }
+
+    func testUnreadableStoreBlocksMutationAndPreservesRecoveryCopy() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        try FileManager.default.createDirectory(
+            at: fixture.store.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let corrupt = Data("not-json".utf8)
+        try corrupt.write(to: fixture.store)
+
+        XCTAssertThrowsError(try MetagentCore.enableSkillPublication(
+            sourcePath: source.path,
+            skillName: "safe-skill",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        ))
+
+        XCTAssertEqual(try Data(contentsOf: fixture.store), corrupt)
+        XCTAssertEqual(
+            try Data(contentsOf: fixture.store.appendingPathExtension("unreadable")),
+            corrupt
+        )
+    }
+
+    func testLargeTextFileStillReceivesCredentialScan() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "large-text")
+        let credential = "api_key = \"sk-test-secret-value-1234567890\"\n"
+        let body = credential + String(repeating: "x", count: 1_100_000)
+        try body.write(
+            to: source.appendingPathComponent("reference.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let report = try MetagentCore.enableSkillPublication(
+            sourcePath: source.path,
+            skillName: "large-text",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        )
+
+        XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
+        XCTAssertTrue(report.snapshot.records.first?.findings.contains {
+            $0.id == "secret-literal:reference.txt"
+        } == true)
+    }
+
     func testDisablePersistsWithoutDeletingPublicCopy() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
