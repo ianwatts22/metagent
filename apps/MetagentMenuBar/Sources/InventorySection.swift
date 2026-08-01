@@ -406,9 +406,11 @@ struct InventorySection: View {
                         CountChip(text: countText)
                         Spacer(minLength: 0)
                     }
-                    HStack(spacing: 8) {
-                        filterControls
-                        Spacer(minLength: 0)
+                    if selectedView != .published {
+                        HStack(spacing: 8) {
+                            filterControls
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
             }

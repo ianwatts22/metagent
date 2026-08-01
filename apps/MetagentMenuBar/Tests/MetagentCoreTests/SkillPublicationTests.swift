@@ -24,7 +24,7 @@ final class SkillPublicationTests: XCTestCase {
             encoding: .utf8
         )
 
-        let enabled = try MetagentCore.enableSkillPublication(
+        let enabled = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "portable-skill",
             repositoryPath: fixture.repository.path,
@@ -60,9 +60,9 @@ final class SkillPublicationTests: XCTestCase {
         )
         let removed = source.appendingPathComponent("obsolete.txt")
         try "old\n".write(to: removed, atomically: true, encoding: .utf8)
-        _ = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+        _ = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
         try FileManager.default.removeItem(at: removed)
-        let updated = try MetagentCore.reconcileSkillPublications(
+        let updated = try MetagentCore.reconcileSkillPublicationsForTesting(
             storePath: fixture.store,
             now: fixture.dayTwo
         )
@@ -84,7 +84,7 @@ final class SkillPublicationTests: XCTestCase {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
         let source = try fixture.skill(named: "source-wins")
-        _ = try MetagentCore.enableSkillPublication(
+        _ = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "source-wins",
             repositoryPath: fixture.repository.path,
@@ -94,7 +94,7 @@ final class SkillPublicationTests: XCTestCase {
             .appendingPathComponent("SKILL.md")
         try "external edit\n".write(to: publicSkillFile, atomically: true, encoding: .utf8)
 
-        let report = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
 
         XCTAssertEqual(report.mirroredRecordIDs.count, 1)
         XCTAssertEqual(
@@ -110,7 +110,7 @@ final class SkillPublicationTests: XCTestCase {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
         let source = try fixture.skill(named: "safe-skill")
-        _ = try MetagentCore.enableSkillPublication(
+        _ = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "safe-skill",
             repositoryPath: fixture.repository.path,
@@ -125,7 +125,7 @@ final class SkillPublicationTests: XCTestCase {
             encoding: .utf8
         )
 
-        let report = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
 
         XCTAssertEqual(report.blockedRecordIDs.count, 1)
         XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
@@ -139,7 +139,7 @@ final class SkillPublicationTests: XCTestCase {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
         let source = try fixture.skill(named: "retained-skill")
-        _ = try MetagentCore.enableSkillPublication(
+        _ = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "retained-skill",
             repositoryPath: fixture.repository.path,
@@ -148,7 +148,7 @@ final class SkillPublicationTests: XCTestCase {
         let publicSkill = fixture.publicSkill(named: "retained-skill")
         try FileManager.default.removeItem(at: source)
 
-        let report = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
 
         XCTAssertEqual(report.snapshot.records.first?.state, .sourceMissing)
         XCTAssertTrue(FileManager.default.fileExists(
@@ -170,7 +170,7 @@ final class SkillPublicationTests: XCTestCase {
             withDestinationPath: "credentials.txt"
         )
 
-        let readiness = MetagentCore.assessSkillPublicationReadiness(
+        let readiness = MetagentCore.assessSkillPublicationReadinessForTesting(
             sourcePath: source.path,
             repositoryPath: fixture.repository.path,
             destinationName: "blocked-skill"
@@ -190,14 +190,14 @@ final class SkillPublicationTests: XCTestCase {
         defer { fixture.remove() }
         let first = try fixture.skill(named: "first")
         let second = try fixture.skill(named: "second")
-        _ = try MetagentCore.enableSkillPublication(
+        _ = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: first.path,
             skillName: "first",
             repositoryPath: fixture.repository.path,
             destinationName: "shared",
             storePath: fixture.store
         )
-        let report = try MetagentCore.enableSkillPublication(
+        let report = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: second.path,
             skillName: "second",
             repositoryPath: fixture.repository.path,
@@ -214,7 +214,7 @@ final class SkillPublicationTests: XCTestCase {
         defer { fixture.remove() }
         let first = try fixture.skill(named: "first")
         let second = try fixture.skill(named: "second")
-        let initial = try MetagentCore.enableSkillPublication(
+        let initial = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: first.path,
             skillName: "first",
             repositoryPath: fixture.repository.path,
@@ -233,7 +233,7 @@ final class SkillPublicationTests: XCTestCase {
         )
         try MetagentCore.saveSkillPublicationSnapshot(customized, path: fixture.store)
 
-        let updated = try MetagentCore.enableSkillPublication(
+        let updated = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: second.path,
             skillName: "second",
             repositoryPath: fixture.repository.path,
@@ -258,7 +258,7 @@ final class SkillPublicationTests: XCTestCase {
         let corrupt = Data("not-json".utf8)
         try corrupt.write(to: fixture.store)
 
-        XCTAssertThrowsError(try MetagentCore.enableSkillPublication(
+        XCTAssertThrowsError(try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "safe-skill",
             repositoryPath: fixture.repository.path,
@@ -284,7 +284,7 @@ final class SkillPublicationTests: XCTestCase {
             encoding: .utf8
         )
 
-        let report = try MetagentCore.enableSkillPublication(
+        let report = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "large-text",
             repositoryPath: fixture.repository.path,
@@ -312,7 +312,7 @@ final class SkillPublicationTests: XCTestCase {
             encoding: .utf8
         )
 
-        let report = try MetagentCore.enableSkillPublication(
+        let report = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "unsafe-metadata",
             repositoryPath: fixture.repository.path,
@@ -331,7 +331,7 @@ final class SkillPublicationTests: XCTestCase {
         let source = try fixture.skill(named: "invalid-utf8")
         try Data([0xff, 0xfe, 0x00]).write(to: source.appendingPathComponent("SKILL.md"))
 
-        let report = try MetagentCore.enableSkillPublication(
+        let report = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "invalid-utf8",
             repositoryPath: fixture.repository.path,
@@ -344,11 +344,51 @@ final class SkillPublicationTests: XCTestCase {
         } == true)
     }
 
+    func testPublicAPIRejectsSourcesOutsidePrimarySkillsRoot() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "outside-primary")
+
+        XCTAssertThrowsError(try MetagentCore.enableSkillPublication(
+            sourcePath: source.path,
+            skillName: "outside-primary",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        ))
+    }
+
+    func testPublicReconcileBlocksPersistedOutOfRootRecordAndRetainsCopy() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "persisted-outside")
+        _ = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path,
+            skillName: "persisted-outside",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        )
+        let publicDocument = fixture.publicSkill(named: "persisted-outside")
+            .appendingPathComponent("references/note.md")
+        try "unsafe new version\n".write(
+            to: source.appendingPathComponent("references/note.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let report = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+
+        XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
+        XCTAssertTrue(report.snapshot.records.first?.findings.contains {
+            $0.id == "source-outside-primary-root"
+        } == true)
+        XCTAssertEqual(try String(contentsOf: publicDocument, encoding: .utf8), "initial\n")
+    }
+
     func testDisablePersistsWithoutDeletingPublicCopy() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
         let source = try fixture.skill(named: "stop-mirroring")
-        let enabled = try MetagentCore.enableSkillPublication(
+        let enabled = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "stop-mirroring",
             repositoryPath: fixture.repository.path,

@@ -113,6 +113,8 @@ struct SkillPublicationSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var repositoryPath = ""
     @State private var destinationName: String
+    @State private var readiness: SkillPublishReadiness?
+    @State private var isCheckingReadiness = false
 
     init(model: MetagentModel, row: InventorySkillRow) {
         self.model = model
@@ -120,13 +122,8 @@ struct SkillPublicationSetupSheet: View {
         _destinationName = State(initialValue: row.skillName.lowercased().replacingOccurrences(of: "_", with: "-"))
     }
 
-    private var readiness: SkillPublishReadiness? {
-        guard !repositoryPath.isEmpty else { return nil }
-        return MetagentCore.assessSkillPublicationReadiness(
-            sourcePath: row.canonicalPath,
-            repositoryPath: repositoryPath,
-            destinationName: destinationName
-        )
+    private var readinessInput: String {
+        "\(repositoryPath)\u{1f}\(destinationName)"
     }
 
     var body: some View {
@@ -155,7 +152,10 @@ struct SkillPublicationSetupSheet: View {
                     .frame(width: 240)
             }
 
-            if let readiness {
+            if isCheckingReadiness {
+                Label("Checking publication safety…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
+            } else if let readiness {
                 Label(
                     readiness.status == .ready ? "Ready to mirror" : "Fix these before publishing",
                     systemImage: readiness.status == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
@@ -174,13 +174,13 @@ struct SkillPublicationSetupSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Start Publishing") {
-                    model.enableSkillPublication(
+                    let accepted = model.enableSkillPublication(
                         sourcePath: row.canonicalPath,
                         skillName: row.skillName,
                         repositoryPath: repositoryPath,
                         destinationName: destinationName
                     )
-                    dismiss()
+                    if accepted { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(readiness?.status != .ready || model.isPublicationSyncing)
@@ -188,6 +188,32 @@ struct SkillPublicationSetupSheet: View {
         }
         .padding(22)
         .frame(minWidth: 620, minHeight: 420)
+        .task(id: readinessInput) {
+            readiness = nil
+            guard !repositoryPath.isEmpty else {
+                isCheckingReadiness = false
+                return
+            }
+            isCheckingReadiness = true
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+            let sourcePath = row.canonicalPath
+            let repositoryPath = repositoryPath
+            let destinationName = destinationName
+            let result = await Task.detached(priority: .utility) {
+                MetagentCore.assessSkillPublicationReadiness(
+                    sourcePath: sourcePath,
+                    repositoryPath: repositoryPath,
+                    destinationName: destinationName
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            readiness = result
+            isCheckingReadiness = false
+        }
     }
 
     private func chooseRepository() {

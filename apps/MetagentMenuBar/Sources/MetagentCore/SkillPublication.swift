@@ -227,6 +227,55 @@ public extension MetagentCore {
         storePath: URL? = nil,
         now: Date = Date()
     ) throws -> SkillPublicationReconcileReport {
+        return try enableSkillPublication(
+            sourcePath: sourcePath,
+            skillName: skillName,
+            repositoryPath: repositoryPath,
+            destinationName: destinationName,
+            remoteURL: remoteURL,
+            storePath: storePath,
+            now: now,
+            allowedSourceRoot: primaryPublicationSkillsRoot()
+        )
+    }
+
+    #if DEBUG
+    internal static func enableSkillPublicationForTesting(
+        sourcePath: String,
+        skillName: String,
+        repositoryPath: String,
+        destinationName: String? = nil,
+        remoteURL: String? = nil,
+        storePath: URL? = nil,
+        now: Date = Date()
+    ) throws -> SkillPublicationReconcileReport {
+        let allowedSourceRoot = URL(fileURLWithPath: sourcePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        return try enableSkillPublication(
+            sourcePath: sourcePath,
+            skillName: skillName,
+            repositoryPath: repositoryPath,
+            destinationName: destinationName,
+            remoteURL: remoteURL,
+            storePath: storePath,
+            now: now,
+            allowedSourceRoot: allowedSourceRoot
+        )
+    }
+    #endif
+
+    private static func enableSkillPublication(
+        sourcePath: String,
+        skillName: String,
+        repositoryPath: String,
+        destinationName: String?,
+        remoteURL: String?,
+        storePath: URL?,
+        now: Date,
+        allowedSourceRoot: URL
+    ) throws -> SkillPublicationReconcileReport {
         let source = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath()
             .standardizedFileURL
@@ -234,6 +283,9 @@ public extension MetagentCore {
             .resolvingSymlinksInPath()
             .standardizedFileURL
         let destination = destinationName ?? source.lastPathComponent
+        guard isDirectPublicationSkill(source, in: allowedSourceRoot) else {
+            throw publicationError("Only canonical ~/.agents/skills can be published.")
+        }
         guard isValidPublicationName(destination) else {
             throw publicationError(
                 "Use a lowercase skill destination containing only letters, numbers, and hyphens."
@@ -283,7 +335,11 @@ public extension MetagentCore {
             snapshot.records.append(record)
         }
         try saveSkillPublicationSnapshot(snapshot, path: storePath)
-        return try reconcileSkillPublications(storePath: storePath, now: now)
+        return try reconcileSkillPublications(
+            storePath: storePath,
+            now: now,
+            allowedSourceRoot: allowedSourceRoot
+        )
     }
 
     /// Stops watching without deleting the public copy. Removing a public
@@ -309,6 +365,43 @@ public extension MetagentCore {
     static func reconcileSkillPublications(
         storePath: URL? = nil,
         now: Date = Date()
+    ) throws -> SkillPublicationReconcileReport {
+        return try reconcileSkillPublications(
+            storePath: storePath,
+            now: now,
+            allowedSourceRoot: primaryPublicationSkillsRoot()
+        )
+    }
+
+    #if DEBUG
+    internal static func reconcileSkillPublicationsForTesting(
+        storePath: URL? = nil,
+        now: Date = Date()
+    ) throws -> SkillPublicationReconcileReport {
+        let snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
+        guard let sourcePath = snapshot.records.first?.sourceCanonicalPath else {
+            return SkillPublicationReconcileReport(
+                snapshot: snapshot,
+                mirroredRecordIDs: [],
+                blockedRecordIDs: []
+            )
+        }
+        let allowedSourceRoot = URL(fileURLWithPath: sourcePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        return try reconcileSkillPublications(
+            storePath: storePath,
+            now: now,
+            allowedSourceRoot: allowedSourceRoot
+        )
+    }
+    #endif
+
+    private static func reconcileSkillPublications(
+        storePath: URL?,
+        now: Date,
+        allowedSourceRoot: URL
     ) throws -> SkillPublicationReconcileReport {
         var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
         var mirrored: [String] = []
@@ -341,6 +434,20 @@ public extension MetagentCore {
                 continue
             }
             let source = URL(fileURLWithPath: record.sourceCanonicalPath)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard isDirectPublicationSkill(source, in: allowedSourceRoot) else {
+                let finding = publicationFinding(
+                    id: "source-outside-primary-root",
+                    message: "Only canonical ~/.agents/skills can be published.",
+                    remediation: "Move the skill into ~/.agents/skills and publish it from there."
+                )
+                snapshot.records[index].state = .updateBlocked
+                snapshot.records[index].findings = [finding]
+                snapshot.records[index].lastError = finding.message
+                blocked.append(record.id)
+                continue
+            }
             guard fileManager.fileExists(atPath: source.path) else {
                 snapshot.records[index].state = .sourceMissing
                 snapshot.records[index].lastError = "The canonical skill is missing; the public copy was retained."
@@ -353,7 +460,8 @@ public extension MetagentCore {
                 sourcePath: source.path,
                 repositoryPath: repository.path,
                 skillsRelativePath: catalog.skillsRelativePath,
-                destinationName: record.destinationName
+                destinationName: record.destinationName,
+                allowedSourceRoot: allowedSourceRoot
             )
             snapshot.records[index].findings = readiness.findings
             guard readiness.status == .ready, let sourceHash = readiness.sourceHash else {
@@ -413,6 +521,43 @@ public extension MetagentCore {
         skillsRelativePath: String = "skills",
         destinationName: String
     ) -> SkillPublishReadiness {
+        return assessSkillPublicationReadiness(
+            sourcePath: sourcePath,
+            repositoryPath: repositoryPath,
+            skillsRelativePath: skillsRelativePath,
+            destinationName: destinationName,
+            allowedSourceRoot: primaryPublicationSkillsRoot()
+        )
+    }
+
+    #if DEBUG
+    internal static func assessSkillPublicationReadinessForTesting(
+        sourcePath: String,
+        repositoryPath: String,
+        skillsRelativePath: String = "skills",
+        destinationName: String
+    ) -> SkillPublishReadiness {
+        let allowedSourceRoot = URL(fileURLWithPath: sourcePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        return assessSkillPublicationReadiness(
+            sourcePath: sourcePath,
+            repositoryPath: repositoryPath,
+            skillsRelativePath: skillsRelativePath,
+            destinationName: destinationName,
+            allowedSourceRoot: allowedSourceRoot
+        )
+    }
+    #endif
+
+    private static func assessSkillPublicationReadiness(
+        sourcePath: String,
+        repositoryPath: String,
+        skillsRelativePath: String,
+        destinationName: String,
+        allowedSourceRoot: URL
+    ) -> SkillPublishReadiness {
         let source = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath()
             .standardizedFileURL
@@ -420,6 +565,14 @@ public extension MetagentCore {
             .resolvingSymlinksInPath()
             .standardizedFileURL
         var findings: [SkillPublishFinding] = []
+
+        if !isDirectPublicationSkill(source, in: allowedSourceRoot) {
+            findings.append(publicationFinding(
+                id: "source-outside-primary-root",
+                message: "Only canonical ~/.agents/skills can be published.",
+                remediation: "Move the skill into ~/.agents/skills and publish it from there."
+            ))
+        }
 
         guard fileManager.fileExists(atPath: source.path) else {
             return SkillPublishReadiness(
@@ -903,6 +1056,19 @@ private func skillPublicationStorePath() -> URL {
     homeURL().appendingPathComponent(
         "Library/Application Support/Metagent/skill-publications-v1.json"
     )
+}
+
+private func primaryPublicationSkillsRoot() -> URL {
+    homeURL()
+        .appendingPathComponent(".agents/skills", isDirectory: true)
+        .resolvingSymlinksInPath()
+        .standardizedFileURL
+}
+
+private func isDirectPublicationSkill(_ source: URL, in allowedRoot: URL) -> Bool {
+    let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
+    let resolvedRoot = allowedRoot.resolvingSymlinksInPath().standardizedFileURL
+    return resolvedSource.deletingLastPathComponent().path == resolvedRoot.path
 }
 
 private func skillPublicationEncoder() -> JSONEncoder {

@@ -136,7 +136,8 @@ final class MetagentModel: ObservableObject {
         // only buy a second, redundant one.
         guard !isRunning, !isRemovingSkills, !isReconcilingSkillRemovals else { return }
         guard Date().timeIntervalSince(lastStatusAppliedAt) > 3 else { return }
-        refreshAll()
+        refreshStatus()
+        refreshUsage()
     }
 
     /// Refreshes when the last landed scan is old enough to matter. Called when
@@ -359,27 +360,37 @@ final class MetagentModel: ObservableObject {
               skill.skill.mutability == "editable",
               skill.skill.manager != "codex-plugin"
         else { return false }
-        let source = URL(fileURLWithPath: skill.canonicalPath).standardizedFileURL
+        let source = URL(fileURLWithPath: skill.canonicalPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
         let primaryRoot = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".agents/skills", isDirectory: true)
+            .resolvingSymlinksInPath()
             .standardizedFileURL
         return source.deletingLastPathComponent().path == primaryRoot.path
     }
 
+    @discardableResult
     func enableSkillPublication(
         sourcePath: String,
         skillName: String,
         repositoryPath: String,
         destinationName: String
-    ) {
-        guard !isPublicationSyncing else { return }
-        let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
+    ) -> Bool {
+        guard !isPublicationSyncing else {
+            publicationStatusText = "Finish the current sync, then try publishing again."
+            return false
+        }
+        let source = URL(fileURLWithPath: sourcePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
         let primaryRoot = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".agents/skills", isDirectory: true)
+            .resolvingSymlinksInPath()
             .standardizedFileURL
         guard source.deletingLastPathComponent().path == primaryRoot.path else {
             publicationStatusText = "Only canonical ~/.agents/skills can be published."
-            return
+            return false
         }
         isPublicationSyncing = true
         publicationStatusText = "Checking and mirroring \(skillName)…"
@@ -403,11 +414,15 @@ final class MetagentModel: ObservableObject {
             guard let self else { return }
             if let report = result.0 {
                 publicationSnapshot = report.snapshot
+                updatePublicationStatus()
             }
             isPublicationSyncing = false
-            publicationStatusText = result.1 ?? "Local mirroring is on for \(skillName)."
+            if let error = result.1 {
+                publicationStatusText = error
+            }
             finishQueuedPublicationSyncIfNeeded()
         }
+        return true
     }
 
     func disableSkillPublication(recordID: String) {
