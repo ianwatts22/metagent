@@ -235,6 +235,7 @@ enum SkillTableView: String, CaseIterable, Identifiable {
     case summary
     case review
     case duplicates
+    case published
     case inventory
     case usage
 
@@ -242,6 +243,7 @@ enum SkillTableView: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .duplicates: "Duplicates"
+        case .published: "Published"
         default: rawValue.capitalized
         }
     }

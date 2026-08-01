@@ -18,6 +18,7 @@ struct InventorySection: View {
     @State private var viewedSkill: InventorySkillRow?
     @State private var scoreAnalysisSkill: InventorySkillRow?
     @State private var iconTarget: InventorySkillRow?
+    @State private var publicationTarget: InventorySkillRow?
     @State private var selectedDuplicateGroupID: String?
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
     @State private var reviewedDuplicateGroupIDs = Set<String>()
@@ -77,6 +78,8 @@ struct InventorySection: View {
             Binding(get: { reviewColumnCustomization }, set: { reviewColumnCustomization = $0 })
         case .duplicates:
             Binding(get: { duplicateColumnCustomization }, set: { duplicateColumnCustomization = $0 })
+        case .published:
+            Binding(get: { summaryColumnCustomization }, set: { summaryColumnCustomization = $0 })
         case .inventory:
             Binding(get: { inventoryColumnCustomization }, set: { inventoryColumnCustomization = $0 })
         case .usage:
@@ -264,6 +267,10 @@ struct InventorySection: View {
     }
 
     private var countText: String {
+        if selectedView == .published {
+            let enabled = model.publicationSnapshot.records.filter(\.automaticMirroringEnabled).count
+            return "\(enabled) mirrored"
+        }
         if !selectedRows.isEmpty {
             return "\(selectedRows.count) selected"
         }
@@ -289,7 +296,9 @@ struct InventorySection: View {
     private var toolbarControls: some View {
         SkillViewSelector(selection: selectedViewBinding)
         CountChip(text: countText)
-        filterControls
+        if selectedView != .published {
+            filterControls
+        }
     }
 
     @ViewBuilder
@@ -404,7 +413,9 @@ struct InventorySection: View {
                 }
             }
 
-            if rows.isEmpty {
+            if selectedView == .published {
+                PublishedSkillsView(model: model)
+            } else if rows.isEmpty {
                 EmptyStateView(
                     title: selectedView == .duplicates
                         ? (hasActiveFilter ? "No matching duplicates" : "No duplicate installations")
@@ -551,6 +562,9 @@ struct InventorySection: View {
         .sheet(item: $iconTarget) { row in
             SkillIconEditorView(model: model, row: row)
         }
+        .sheet(item: $publicationTarget) { row in
+            SkillPublicationSetupSheet(model: model, row: row)
+        }
     }
 
     private var skillsTable: some View {
@@ -595,6 +609,10 @@ struct InventorySection: View {
             Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
                 scoreAnalysisSkill = inventory
             }
+            Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
+                publicationTarget = inventory
+            }
+            .disabled(!model.isPrimaryPublishableSkill(inventory))
             Button(
                 inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
                 systemImage: "photo.badge.plus"
@@ -666,6 +684,8 @@ struct InventorySection: View {
                 KeyPathComparator(\SkillTableRow.overlapSortValue),
                 KeyPathComparator(\SkillTableRow.skillName),
             ]
+        case .published:
+            [KeyPathComparator(\SkillTableRow.skillName)]
         case .inventory:
             [KeyPathComparator(\SkillTableRow.skillName)]
         case .usage:

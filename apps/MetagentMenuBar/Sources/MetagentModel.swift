@@ -58,6 +58,9 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isRemovingSkills = false
     @Published private(set) var modelReleases = ModelReleaseSnapshot.empty
     @Published private(set) var releaseAffirmations: [String: Date] = [:]
+    @Published private(set) var publicationSnapshot = SkillPublicationSnapshot.empty
+    @Published private(set) var isPublicationSyncing = false
+    @Published private(set) var publicationStatusText = "No skills selected for publishing"
 
     private let fileManager = FileManager.default
     private var statusRefreshGeneration = 0
@@ -74,6 +77,7 @@ final class MetagentModel: ObservableObject {
     private var historyBackfillAwaitingCompleteUsage = false
     private var pendingHistoryTrigger: SkillHistoryTrigger?
     private var pluginAutoUpdateTask: Task<Void, Never>?
+    private var publicationSyncQueued = false
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -89,10 +93,13 @@ final class MetagentModel: ObservableObject {
         }
         modelReleases = MetagentCore.loadModelReleaseSnapshot()
         releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
+        publicationSnapshot = MetagentCore.loadSkillPublicationSnapshot()
+        updatePublicationStatus()
         refreshStatus()
         refreshUsage()
         refreshModelReleases()
         startWatchingSkillRoots()
+        reconcileSkillPublications()
     }
 
     // MARK: - Liveness
@@ -122,6 +129,9 @@ final class MetagentModel: ObservableObject {
     }
 
     private func skillRootsChangedExternally() {
+        // Publication mirroring is independent of inventory work. FSEvents is
+        // only a signal; reconciliation hashes every selected canonical skill.
+        reconcileSkillPublications()
         // Our own mutations already end in a rescan; their file events would
         // only buy a second, redundant one.
         guard !isRunning, !isRemovingSkills, !isReconcilingSkillRemovals else { return }
@@ -341,6 +351,132 @@ final class MetagentModel: ObservableObject {
     func refreshAll() {
         refreshStatus()
         refreshUsage()
+        reconcileSkillPublications()
+    }
+
+    func isPrimaryPublishableSkill(_ skill: InventorySkillRow) -> Bool {
+        guard skill.skill.representation == "canonical",
+              skill.skill.mutability == "editable",
+              skill.skill.manager != "codex-plugin"
+        else { return false }
+        let source = URL(fileURLWithPath: skill.canonicalPath).standardizedFileURL
+        let primaryRoot = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agents/skills", isDirectory: true)
+            .standardizedFileURL
+        return source.deletingLastPathComponent().path == primaryRoot.path
+    }
+
+    func enableSkillPublication(
+        sourcePath: String,
+        skillName: String,
+        repositoryPath: String,
+        destinationName: String
+    ) {
+        guard !isPublicationSyncing else { return }
+        let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
+        let primaryRoot = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agents/skills", isDirectory: true)
+            .standardizedFileURL
+        guard source.deletingLastPathComponent().path == primaryRoot.path else {
+            publicationStatusText = "Only canonical ~/.agents/skills can be published."
+            return
+        }
+        isPublicationSyncing = true
+        publicationStatusText = "Checking and mirroring \(skillName)…"
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                do {
+                    let report: SkillPublicationReconcileReport? = try MetagentCore.enableSkillPublication(
+                        sourcePath: source.path,
+                        skillName: skillName,
+                        repositoryPath: repositoryPath,
+                        destinationName: destinationName
+                    )
+                    return (
+                        report,
+                        nil as String?
+                    )
+                } catch {
+                    return (nil, error.localizedDescription)
+                }
+            }.value
+            guard let self else { return }
+            if let report = result.0 {
+                publicationSnapshot = report.snapshot
+            }
+            isPublicationSyncing = false
+            publicationStatusText = result.1 ?? "Local mirroring is on for \(skillName)."
+            finishQueuedPublicationSyncIfNeeded()
+        }
+    }
+
+    func disableSkillPublication(recordID: String) {
+        guard !isPublicationSyncing else { return }
+        isPublicationSyncing = true
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                do {
+                    let snapshot: SkillPublicationSnapshot? = try MetagentCore.disableSkillPublication(
+                        recordID: recordID
+                    )
+                    return (snapshot, nil as String?)
+                } catch {
+                    return (nil, error.localizedDescription)
+                }
+            }.value
+            guard let self else { return }
+            if let snapshot = result.0 {
+                publicationSnapshot = snapshot
+            }
+            isPublicationSyncing = false
+            publicationStatusText = result.1 ?? "Automatic local mirroring stopped."
+            finishQueuedPublicationSyncIfNeeded()
+        }
+    }
+
+    func reconcileSkillPublications() {
+        guard !isPublicationSyncing else {
+            publicationSyncQueued = true
+            return
+        }
+        isPublicationSyncing = true
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                do {
+                    let report: SkillPublicationReconcileReport? = try MetagentCore.reconcileSkillPublications()
+                    return (report, nil as String?)
+                } catch {
+                    return (nil, error.localizedDescription)
+                }
+            }.value
+            guard let self else { return }
+            if let report = result.0 {
+                publicationSnapshot = report.snapshot
+                updatePublicationStatus()
+            } else if let error = result.1 {
+                publicationStatusText = error
+            }
+            isPublicationSyncing = false
+            finishQueuedPublicationSyncIfNeeded()
+        }
+    }
+
+    private func finishQueuedPublicationSyncIfNeeded() {
+        guard publicationSyncQueued else { return }
+        publicationSyncQueued = false
+        reconcileSkillPublications()
+    }
+
+    private func updatePublicationStatus() {
+        let enabled = publicationSnapshot.records.filter(\.automaticMirroringEnabled)
+        guard !enabled.isEmpty else {
+            publicationStatusText = "No skills selected for publishing"
+            return
+        }
+        let blocked = enabled.filter { $0.state != .mirrored }.count
+        publicationStatusText = blocked == 0
+            ? "\(enabled.count) skills mirrored locally"
+            : "\(blocked) of \(enabled.count) publications need attention"
     }
 
     private var usageIndexingProgress: Double? {
