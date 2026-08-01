@@ -297,6 +297,53 @@ final class SkillPublicationTests: XCTestCase {
         } == true)
     }
 
+    func testEnvironmentVariantAndEmptyFrontmatterBlockPublication() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "unsafe-metadata")
+        try "---\nname:\ndescription: \"\"\n---\nInstructions.\n".write(
+            to: source.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "STRIPE_SECRET_KEY=sk_live_not-for-publication\n".write(
+            to: source.appendingPathComponent(".env.production"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let report = try MetagentCore.enableSkillPublication(
+            sourcePath: source.path,
+            skillName: "unsafe-metadata",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        )
+
+        let findingIDs = Set(report.snapshot.records.first?.findings.map(\.id) ?? [])
+        XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
+        XCTAssertTrue(findingIDs.contains("invalid-frontmatter"))
+        XCTAssertTrue(findingIDs.contains("secret-file:.env.production"))
+    }
+
+    func testInvalidUTF8SkillDocumentBlocksPublication() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "invalid-utf8")
+        try Data([0xff, 0xfe, 0x00]).write(to: source.appendingPathComponent("SKILL.md"))
+
+        let report = try MetagentCore.enableSkillPublication(
+            sourcePath: source.path,
+            skillName: "invalid-utf8",
+            repositoryPath: fixture.repository.path,
+            storePath: fixture.store
+        )
+
+        XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
+        XCTAssertTrue(report.snapshot.records.first?.findings.contains {
+            $0.id == "invalid-skill-encoding"
+        } == true)
+    }
+
     func testDisablePersistsWithoutDeletingPublicCopy() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }

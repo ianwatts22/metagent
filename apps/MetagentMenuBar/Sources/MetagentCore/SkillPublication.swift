@@ -377,7 +377,8 @@ public extension MetagentCore {
                         source: source,
                         repository: repository,
                         skillsRelativePath: catalog.skillsRelativePath,
-                        destinationName: record.destinationName
+                        destinationName: record.destinationName,
+                        expectedHash: sourceHash
                     )
                     snapshot.records[index].lastMirroredHash = sourceHash
                     snapshot.records[index].lastMirroredAt = now
@@ -470,15 +471,28 @@ public extension MetagentCore {
                 message: "A regular SKILL.md file is required.",
                 remediation: "Add a valid SKILL.md file to the canonical skill."
             ))
-        } else if let text = try? String(contentsOf: skillFile, encoding: .utf8),
-                  !hasPublishableSkillFrontmatter(text)
-        {
-            findings.append(publicationFinding(
-                id: "invalid-frontmatter",
-                relativePath: "SKILL.md",
-                message: "SKILL.md needs YAML frontmatter with name and description.",
-                remediation: "Add name and description fields inside the opening frontmatter block."
-            ))
+        } else {
+            guard let text = try? String(contentsOf: skillFile, encoding: .utf8) else {
+                findings.append(publicationFinding(
+                    id: "invalid-skill-encoding",
+                    relativePath: "SKILL.md",
+                    message: "SKILL.md must be valid UTF-8 text.",
+                    remediation: "Save SKILL.md as UTF-8 and retry."
+                ))
+                return SkillPublishReadiness(
+                    status: .blocked,
+                    sourceHash: nil,
+                    findings: findings
+                )
+            }
+            if !hasPublishableSkillFrontmatter(text) {
+                findings.append(publicationFinding(
+                    id: "invalid-frontmatter",
+                    relativePath: "SKILL.md",
+                    message: "SKILL.md needs non-empty YAML name and description fields.",
+                    remediation: "Add name and description fields inside the opening frontmatter block."
+                ))
+            }
         }
 
         let files: [SkillPublicationFile]
@@ -502,13 +516,13 @@ public extension MetagentCore {
                 ))
             }
         }
-        let sourceHash = publicationContentHash(files)
         let status: SkillPublishReadinessStatus = findings.contains {
             $0.severity == .blocking
         } ? .blocked : .ready
+        let sourceHash = status == .ready ? publicationContentHash(files) : nil
         return SkillPublishReadiness(
             status: status,
-            sourceHash: status == .ready ? sourceHash : nil,
+            sourceHash: sourceHash,
             findings: findings.sorted {
                 ($0.relativePath ?? "", $0.id) < ($1.relativePath ?? "", $1.id)
             }
@@ -520,7 +534,8 @@ private func mirrorSkillPublication(
     source: URL,
     repository: URL,
     skillsRelativePath: String,
-    destinationName: String
+    destinationName: String,
+    expectedHash: String
 ) throws {
     var findings: [SkillPublishFinding] = []
     let files = try publicationFiles(in: source, findings: &findings)
@@ -554,6 +569,8 @@ private func mirrorSkillPublication(
         }
     }
 
+    try validateStagedPublication(stage, expectedHash: expectedHash)
+
     do {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.moveItem(at: destination, to: backup)
@@ -574,6 +591,29 @@ private func mirrorSkillPublication(
             movedDestinationToBackup = false
         }
         throw publicationError("Could not update the public checkout safely: \(error.localizedDescription)")
+    }
+}
+
+private func validateStagedPublication(_ stage: URL, expectedHash: String) throws {
+    var findings: [SkillPublishFinding] = []
+    let stagedFiles = try publicationFiles(in: stage, findings: &findings)
+    let skillFile = stage.appendingPathComponent("SKILL.md")
+    guard isRegularPublicationFile(skillFile),
+          let text = try? String(contentsOf: skillFile, encoding: .utf8),
+          hasPublishableSkillFrontmatter(text),
+          !findings.contains(where: { $0.severity == .blocking }),
+          publicationContentHash(stagedFiles) == expectedHash
+    else {
+        throw publicationError(
+            "The staged skill changed or failed safety checks; the last safe public copy was retained."
+        )
+    }
+    if let scriptInventory = try? MetagentCore.inventorySkillScripts(path: stage.path),
+       !scriptInventory.missingReferences.isEmpty
+    {
+        throw publicationError(
+            "The staged skill has a missing bundled script; the last safe public copy was retained."
+        )
     }
 }
 
@@ -666,7 +706,7 @@ private func collectPublicationFiles(
             ))
             continue
         }
-        if publicationSecretFileNames.contains(name.lowercased())
+        if isPublicationSecretFileName(name)
             || publicationSecretExtensions.contains(entry.pathExtension.lowercased())
         {
             findings.append(publicationFinding(
@@ -706,7 +746,7 @@ private func inspectPublicationTextFile(
 ) {
     guard let handle = try? FileHandle(forReadingFrom: file) else { return }
     defer { try? handle.close() }
-    guard let data = try? handle.read(upToCount: 1_048_576) else { return }
+    guard let data = try? handle.readToEnd() else { return }
     let text = String(decoding: data, as: UTF8.self)
 
     if containsPublicationPersonalPath(text) {
@@ -762,11 +802,39 @@ private func hasPublishableSkillFrontmatter(_ text: String) -> Bool {
     guard lines.first == "---",
           let end = lines.dropFirst().firstIndex(of: "---")
     else { return false }
-    let frontmatter = lines[1..<end]
-    return frontmatter.contains { $0.range(of: #"^name\s*:"#, options: .regularExpression) != nil }
-        && frontmatter.contains {
-            $0.range(of: #"^description\s*:"#, options: .regularExpression) != nil
-        }
+    let frontmatter = Array(lines[1..<end])
+    guard let nameIndex = frontmatter.firstIndex(where: {
+        $0.range(of: #"^name\s*:"#, options: .regularExpression) != nil
+    }), let descriptionIndex = frontmatter.firstIndex(where: {
+        $0.range(of: #"^description\s*:"#, options: .regularExpression) != nil
+    }) else { return false }
+    return hasNonEmptyYAMLValue(frontmatter, at: nameIndex, allowsBlock: false)
+        && hasNonEmptyYAMLValue(frontmatter, at: descriptionIndex, allowsBlock: true)
+}
+
+private func hasNonEmptyYAMLValue(
+    _ lines: [String],
+    at index: Int,
+    allowsBlock: Bool
+) -> Bool {
+    guard let colon = lines[index].firstIndex(of: ":") else { return false }
+    let rawValue = lines[index][lines[index].index(after: colon)...]
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if rawValue == "|" || rawValue == ">" {
+        guard allowsBlock else { return false }
+        return lines.dropFirst(index + 1).prefix { line in
+            line.first?.isWhitespace == true || line.isEmpty
+        }.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+    let unquoted = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    return !unquoted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+private func isPublicationSecretFileName(_ name: String) -> Bool {
+    let lowercased = name.lowercased()
+    if publicationSecretFileNames.contains(lowercased) { return true }
+    guard lowercased.hasPrefix(".env.") else { return false }
+    return ![".env.example", ".env.sample", ".env.template"].contains(lowercased)
 }
 
 private func containsPublicationPersonalPath(_ text: String) -> Bool {
