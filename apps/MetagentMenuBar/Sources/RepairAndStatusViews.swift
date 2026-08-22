@@ -4,6 +4,67 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct FailureDetailsView: View {
+    @ObservedObject var model: MetagentModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(
+                        model.failureOutputTitle ?? "Metagent needs attention",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    Text("The latest operation failed.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if model.failureOutputLines.isEmpty {
+                ContentUnavailableView(
+                    "No details were retained",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Run Reload. If the failure returns, Metagent will show the new result here.")
+                )
+            } else {
+                ScrollView {
+                    Text(model.failureOutputLines.joined(separator: "\n"))
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            HStack {
+                if !model.failureOutputLines.isEmpty {
+                    Button("Copy Details", systemImage: "doc.on.doc") {
+                        model.copyLastOutput()
+                    }
+                }
+                Spacer()
+                if model.canDismissFailure {
+                    Button("Dismiss Error") {
+                        model.dismissFailure()
+                        dismiss()
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 440)
+    }
+}
+
 struct RepairSection: View {
     @ObservedObject var model: MetagentModel
     let projectRoot: String?

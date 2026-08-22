@@ -29,6 +29,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var projects: [ProjectStatus] = []
     @Published private(set) var lastOutputTitle: String?
     @Published private(set) var lastOutputLines: [String] = []
+    @Published private(set) var lastOutputWasFailure = false
     @Published private(set) var repairPreview: RepairPreview?
     @Published private(set) var showsRawOutput = false
     @Published private(set) var usageSnapshot = SkillUsageSnapshot.empty
@@ -308,6 +309,7 @@ final class MetagentModel: ObservableObject {
             releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
             skillTableRevision += 1
         } catch {
+            lastOutputWasFailure = true
             lastOutputTitle = "Mark reviewed failed"
             lastOutputLines = [error.localizedDescription]
         }
@@ -753,6 +755,7 @@ final class MetagentModel: ObservableObject {
             let message = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             Task { @MainActor [weak self] in
+                self?.lastOutputWasFailure = true
                 self?.lastOutputTitle = "Could not open Claude"
                 self?.lastOutputLines = [message.isEmpty
                     ? "osascript exited with status \(process.terminationStatus)"
@@ -763,6 +766,7 @@ final class MetagentModel: ObservableObject {
         do {
             try process.run()
         } catch {
+            lastOutputWasFailure = true
             lastOutputTitle = "Could not open Claude"
             lastOutputLines = [error.localizedDescription]
             showsRawOutput = true
@@ -1005,6 +1009,7 @@ final class MetagentModel: ObservableObject {
             guard let self, result.succeeded else { return }
             repairPreview = result.repairPreview
             showsRawOutput = false
+            lastOutputWasFailure = false
             lastOutputTitle = nil
             statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
@@ -1167,6 +1172,7 @@ final class MetagentModel: ObservableObject {
         }
 
         let hadFailures = !accumulatedSkillRemovalFailedIDs.isEmpty
+        lastOutputWasFailure = hadFailures
         lastOutputTitle = hadFailures ? "Some skills could not be removed" : "Remove skills"
         lastOutputLines = accumulatedSkillRemovalLines
         statusText = hadFailures ? "Some skill removals failed" : "Skill removal finished"
@@ -1211,6 +1217,14 @@ final class MetagentModel: ObservableObject {
                 completedSkillRemovalIDs.subtract(reconcilingIDs)
                 pendingSkillRemovalIDs.subtract(reconcilingIDs)
             } else {
+                recordFailureOutput(
+                    title: "Inventory refresh failed",
+                    sources: [
+                        ("Configured skills", scan.error),
+                        ("Global skills", homeScan.error),
+                        ("Codex plugins", pluginScan.error),
+                    ]
+                )
                 statusText = "Removed skills; inventory refresh failed"
                 systemImage = "exclamationmark.triangle"
             }
@@ -1232,9 +1246,29 @@ final class MetagentModel: ObservableObject {
     }
 
     func clearLastOutput() {
+        lastOutputWasFailure = false
         lastOutputTitle = nil
         lastOutputLines = []
         showsRawOutput = false
+    }
+
+    var canDismissFailure: Bool {
+        lastOutputWasFailure
+    }
+
+    var failureOutputTitle: String? {
+        lastOutputWasFailure ? lastOutputTitle : nil
+    }
+
+    var failureOutputLines: [String] {
+        lastOutputWasFailure ? lastOutputLines : []
+    }
+
+    func dismissFailure() {
+        guard canDismissFailure else { return }
+        clearLastOutput()
+        statusText = "\(repoCount) locations, \(skillCount) skills"
+        systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
     }
 
     func copyRepairSummary() {
@@ -1335,10 +1369,20 @@ final class MetagentModel: ObservableObject {
         refreshCodebaseSizes()
 
         if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
+            clearResolvedStatusFailure()
             statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
             recordHistory(trigger: hasCapturedHistory ? .refresh : .launch)
         } else {
+            recordFailureOutput(
+                title: "Status check failed",
+                sources: [
+                    ("Configured skills", scan.error),
+                    ("Global skills", homeScan.error),
+                    ("Codex plugins", pluginScan.error),
+                    ("Skills Doctor", doctor.error),
+                ]
+            )
             statusText = "Status check failed"
             systemImage = "exclamationmark.triangle"
         }
@@ -1407,6 +1451,26 @@ final class MetagentModel: ObservableObject {
         locationSummaryText = Self.locationSummary(projects: projects)
     }
 
+    private func recordFailureOutput(
+        title: String,
+        sources: [(String, Error?)]
+    ) {
+        lastOutputWasFailure = true
+        lastOutputTitle = title
+        lastOutputLines = sources.compactMap { label, error in
+            error.map { "\(label): \($0.localizedDescription)" }
+        }
+        showsRawOutput = false
+    }
+
+    private func clearResolvedStatusFailure() {
+        guard lastOutputWasFailure,
+              let lastOutputTitle,
+              ["Status check failed", "Inventory refresh failed"].contains(lastOutputTitle)
+        else { return }
+        clearLastOutput()
+    }
+
     nonisolated private static func scanInventory() async -> (
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
@@ -1445,6 +1509,7 @@ final class MetagentModel: ObservableObject {
                 }
             }.value
             lastRunText = Self.timestamp()
+            lastOutputWasFailure = !result.succeeded
             lastOutputTitle = title
             lastOutputLines = result.lines
 

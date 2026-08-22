@@ -11,6 +11,7 @@ struct MetagentPanel: View {
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
     @State private var showsSettings = false
+    @State private var showsFailureDetails = false
 
     private var directoryOptions: [DirectoryFilterOption] {
         directoryFilterOptions(
@@ -44,6 +45,9 @@ struct MetagentPanel: View {
         }
         .sheet(isPresented: $showsSettings) {
             SettingsView(model: model)
+        }
+        .sheet(isPresented: $showsFailureDetails) {
+            FailureDetailsView(model: model)
         }
     }
 
@@ -123,10 +127,10 @@ struct MetagentPanel: View {
     @ViewBuilder
     private var statusFailureControl: some View {
         if !model.isRunning,
-           model.statusText.localizedCaseInsensitiveContains("failed")
+           model.lastOutputWasFailure
         {
             Button {
-                model.openLogs()
+                showsFailureDetails = true
             } label: {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -136,8 +140,8 @@ struct MetagentPanel: View {
             .buttonBorderShape(.circle)
             .controlSize(.regular)
             .frame(width: 36, height: 36)
-            .help("\(model.statusText). Open logs.")
-            .accessibilityLabel("\(model.statusText). Open logs.")
+            .help("\(model.failureOutputTitle ?? "The latest operation failed"). Show details.")
+            .accessibilityLabel("\(model.failureOutputTitle ?? "The latest operation failed"). Show details.")
         }
     }
 

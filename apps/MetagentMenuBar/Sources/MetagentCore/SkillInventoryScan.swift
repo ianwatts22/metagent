@@ -134,6 +134,13 @@ func discoverProjectRoots(
         let path = canonicalProjectPath(current)
         guard visited.insert(path).inserted else { continue }
 
+        // A linked Git worktree repeats its repository's project-local skills.
+        // Treat it as generated workspace state, not as another project. The
+        // `.git` file identifies worktrees without running Git for every folder.
+        if depth > 0, isGitLinkedWorktree(current) {
+            continue
+        }
+
         if let projectRoot = projectRootForSkillContainer(current) {
             if !ignoreProjects.contains(projectRoot) {
                 projectRoots.insert(projectRoot)
@@ -179,6 +186,41 @@ func discoverProjectRoots(
             queue.append((entry, depth + 1))
         }
     }
+}
+
+func isGitLinkedWorktree(_ root: URL) -> Bool {
+    let marker = root.appendingPathComponent(".git")
+    guard isRegularOrSymlinkedFile(marker),
+          let text = try? String(contentsOf: marker, encoding: .utf8)
+    else { return false }
+
+    let prefix = "gitdir:"
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.lowercased().hasPrefix(prefix) else { return false }
+    let value = trimmed.dropFirst(prefix.count)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return false }
+
+    let gitDirectory = resolveGitMetadataPath(String(value), relativeTo: root)
+    let commonDirectoryMarker = gitDirectory.appendingPathComponent("commondir")
+    let backlinkMarker = gitDirectory.appendingPathComponent("gitdir")
+    guard isRegularOrSymlinkedFile(commonDirectoryMarker),
+          isRegularOrSymlinkedFile(backlinkMarker),
+          let backlink = try? String(contentsOf: backlinkMarker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+          !backlink.isEmpty
+    else { return false }
+
+    return resolveGitMetadataPath(backlink, relativeTo: gitDirectory)
+        .resolvingSymlinksInPath().standardizedFileURL
+        == marker.resolvingSymlinksInPath().standardizedFileURL
+}
+
+private func resolveGitMetadataPath(_ path: String, relativeTo base: URL) -> URL {
+    if path.hasPrefix("/") {
+        return URL(fileURLWithPath: path).standardizedFileURL
+    }
+    return base.appendingPathComponent(path).standardizedFileURL
 }
 
 func projectRootForSkillContainer(_ url: URL) -> String? {
