@@ -109,7 +109,7 @@ struct DuplicateReviewExperience: View {
                         onInfo: onInfo,
                         onUseRecommendation: {
                             removalIDs.subtract(selectedGroup.rows.map(\.id))
-                            removalIDs.formUnion(selectedGroup.quickSelectionRows.map(\.id))
+                            removalIDs.formUnion(selectedGroup.suggestedRemovalRows.map(\.id))
                         },
                         onReviewRemoval: {
                             onReviewRemoval(selectedGroup.rows.filter { removalIDs.contains($0.id) })
@@ -217,12 +217,10 @@ struct DuplicateReviewDetail: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    if !group.quickSelectionRows.isEmpty {
-                        Button(group.quickSelectionTitle, action: onUseRecommendation)
+                    if !group.suggestedRemovalRows.isEmpty {
+                        Button("Use recommendation", action: onUseRecommendation)
                             .buttonStyle(.glass)
-                            .help(group.kind == .globalProject
-                                ? "Select removable project copies. Nothing is removed until you approve the final review."
-                                : "Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
+                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
                     }
                 }
                 .padding(10)
