@@ -17,6 +17,7 @@ struct OverviewSection: View {
     @State private var isSkillHealthLoading = true
     @State private var loadedSkillHealthRefreshID: String?
     @State private var historyTrends = SkillHistoryTrends.empty
+    @State private var agentRunStats = AgentRunDurationStats.empty
     @AppStorage("metagent.overview.trend-range.v1") private var storedTrendRange = HistoryRange.month.rawValue
 
     /// How far back the sparklines and deltas look. This governs the charts
@@ -64,7 +65,11 @@ struct OverviewSection: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
+            if overviewAttentionCount > 0 {
+                needsAttentionSummary
+            }
             skillHealthSummary
+            agentRunActivity
             mcpConnections
         }
         .frame(maxWidth: .infinity, alignment: .top)
@@ -73,24 +78,8 @@ struct OverviewSection: View {
     private var skillHealthSummary: some View {
         VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Skills")
-                        .font((isCompact ? Font.title3 : .title).weight(.semibold))
-
-                    if !isSkillHealthStale, !scopeChips.isEmpty {
-                        HStack(spacing: 5) {
-                            ForEach(scopeChips, id: \.self) { chip in
-                                Text(chip)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4)
-                                    .background(.quaternary.opacity(0.6), in: Capsule())
-                            }
-                        }
-                        .help(scopeChipsHelp)
-                    }
-                }
+                Text("Skills")
+                    .font((isCompact ? Font.title3 : .title).weight(.semibold))
 
                 Spacer(minLength: 12)
 
@@ -102,17 +91,6 @@ struct OverviewSection: View {
                     trendRangeControl
                 }
 
-                if !isSkillHealthStale, skillHealth.duplicateGroupCount > 0 {
-                    Button(action: openDuplicateReview) {
-                        Label(
-                            "Review \(skillHealth.duplicateGroupCount)",
-                            systemImage: "checklist"
-                        )
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-                    .help("Review duplicate and overlapping skill installations")
-                }
             }
 
             if isSkillHealthStale {
@@ -144,13 +122,6 @@ struct OverviewSection: View {
                     }
                 }
 
-            }
-
-            // Cleanup belongs to the skill corpus, so it lives inside this
-            // card instead of dangling below the MCP row as its own section.
-            if doctorActionCount > 0 {
-                Divider()
-                cleanupStatus
             }
         }
         .padding(isCompact ? 12 : 14)
@@ -197,30 +168,6 @@ struct OverviewSection: View {
         return isGlobalRoot(selectedProjectRoot)
             ? .global(root: selectedProjectRoot)
             : .project(root: selectedProjectRoot)
-    }
-
-    /// The scope facts as short, scannable chips rather than a sentence.
-    private var scopeChips: [String] {
-        var chips = ["\(skillHealth.skillCount) installed"]
-        if skillHealth.assessedSkillCount != skillHealth.skillCount {
-            chips.append("\(skillHealth.assessedSkillCount) rated")
-        }
-        if skillHealth.dormantProjectCount > 0 {
-            chips.append("\(skillHealth.dormantProjectCount) dormant")
-        }
-        return chips
-    }
-
-    private var scopeChipsHelp: String {
-        let scope: String
-        if let selectedProjectRoot {
-            scope = isGlobalRoot(selectedProjectRoot)
-                ? "Counting the global scope only."
-                : "Counting this directory only."
-        } else {
-            scope = "Counting global and project scopes together."
-        }
-        return "\(scope) \(ratedScopeHelp)"
     }
 
     private var metricCards: [SkillHealthCardModel] {
@@ -431,7 +378,8 @@ struct OverviewSection: View {
         let historyScope = skillHistoryScope
         let historyMetrics = overviewTrendMetrics
         let windowDays = trendRange.days
-        let (health, trends) = await Task.detached(priority: .utility) {
+        let projectRoot = selectedProjectRoot
+        let (health, trends, runStats) = await Task.detached(priority: .utility) {
             (
                 MetagentCore.skillSystemHealth(
                     projects: projects,
@@ -443,14 +391,98 @@ struct OverviewSection: View {
                     metrics: historyMetrics,
                     scope: historyScope,
                     windowDays: windowDays
+                )) ?? .empty,
+                (try? MetagentCore.agentRunDurationStats(
+                    windowDays: 30,
+                    projectRoot: projectRoot
                 )) ?? .empty
             )
         }.value
         guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
         skillHealth = health
         historyTrends = trends
+        agentRunStats = runStats
         loadedSkillHealthRefreshID = refreshID
         isSkillHealthLoading = false
+    }
+
+    private var agentRunActivity: some View {
+        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Agent runs")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(agentRunSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: isCompact ? 6 : 8) {
+                agentRunMetric(
+                    title: "Typical",
+                    milliseconds: agentRunStats.medianMilliseconds
+                )
+                agentRunMetric(
+                    title: "Average",
+                    milliseconds: agentRunStats.averageMilliseconds
+                )
+                agentRunMetric(
+                    title: "P90",
+                    milliseconds: agentRunStats.p90Milliseconds
+                )
+            }
+        }
+        .padding(isCompact ? 12 : 14)
+        .cardBackground()
+        .help(
+            "Direct user-requested Codex task durations from the last 30 days. Automation, subagent, and guardian work is excluded. Typical is the median; P90 is longer than 90% of observed runs. Thread idle time is excluded."
+        )
+    }
+
+    private func agentRunMetric(title: String, milliseconds: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(agentRunStats.runCount == 0 ? "—" : formatRunDuration(milliseconds))
+                .font(.system(size: isCompact ? 22 : 28, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, isCompact ? 10 : 12)
+        .padding(.vertical, isCompact ? 8 : 10)
+        .background(
+            .quaternary.opacity(0.55),
+            in: RoundedRectangle(cornerRadius: isCompact ? 9 : 11, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) agent run duration")
+        .accessibilityValue(agentRunStats.runCount == 0 ? "Unavailable" : formatRunDuration(milliseconds))
+    }
+
+    private var agentRunSummary: String {
+        guard agentRunStats.runCount > 0 else {
+            return agentRunStats.isBackfillComplete ? "No direct runs · 30d" : "Indexing history…"
+        }
+        let coverage = agentRunStats.isBackfillComplete ? "" : " · provisional"
+        return "\(agentRunStats.runCount) direct runs · 30d\(coverage)"
+    }
+
+    private func formatRunDuration(_ milliseconds: Int64) -> String {
+        let seconds = max(0, milliseconds / 1_000)
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        let minutes = seconds / 60
+        if minutes < 60 {
+            return "\(minutes)m"
+        }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
     }
 
     /// The history scope mirrors the directory menu: no selection means the
@@ -460,6 +492,81 @@ struct OverviewSection: View {
         return isGlobalRoot(selectedProjectRoot)
             ? .global
             : .project(root: selectedProjectRoot)
+    }
+
+    private var needsAttentionSummary: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 11) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Needs attention")
+                        .font(.headline)
+                    Text(attentionSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            if doctorActionCount > 0 {
+                Divider()
+                    .padding(.leading, 56)
+
+                OverviewAttentionRow(
+                    symbol: "wrench.and.screwdriver.fill",
+                    title: "Skill cleanup",
+                    detail: healthMessage,
+                    actionTitle: "Review…"
+                ) {
+                    showsDoctorFindings = true
+                }
+                .disabled(model.isRunning)
+            }
+
+            if !isSkillHealthStale, skillHealth.duplicateGroupCount > 0 {
+                Divider()
+                    .padding(.leading, 56)
+
+                OverviewAttentionRow(
+                    symbol: "square.on.square",
+                    title: "Duplicate skills",
+                    detail: "\(skillHealth.duplicateGroupCount) \(skillHealth.duplicateGroupCount == 1 ? "group needs" : "groups need") review",
+                    actionTitle: "Review…",
+                    action: openDuplicateReview
+                )
+            }
+
+            ForEach(attentionMCPRows) { row in
+                Divider()
+                    .padding(.leading, 56)
+
+                MCPHealthRow(row: row) {
+                    model.openMCPServer(row.server)
+                }
+            }
+        }
+        .cardBackground()
+    }
+
+    private var overviewAttentionCount: Int {
+        doctorActionCount
+            + (isSkillHealthStale ? 0 : skillHealth.duplicateGroupCount)
+            + attentionMCPRows.count
+    }
+
+    private var attentionSummaryText: String {
+        "\(overviewAttentionCount) \(overviewAttentionCount == 1 ? "item" : "items") across skills and MCP connections"
+    }
+
+    private var attentionMCPRows: [MCPHealthDisplayRow] {
+        groupedMCPRows(scopedMCPHealth.attention)
     }
 
     private var mcpConnections: some View {
@@ -560,15 +667,12 @@ struct OverviewSection: View {
     }
 
     private var visibleMCPRows: [MCPHealthDisplayRow] {
-        if showsMCPDetails {
-            return mcpDetailRows
-        }
-        return groupedMCPRows(scopedMCPHealth.attention)
+        showsMCPDetails ? mcpDetailRows : []
     }
 
     private var mcpDetailRows: [MCPHealthDisplayRow] {
         groupedMCPRows(scopedMCPHealth.servers.filter {
-            $0.state.needsAttention || $0.state == .disabled
+            !$0.state.needsAttention && $0.state == .disabled
         })
     }
 
@@ -642,53 +746,6 @@ struct OverviewSection: View {
             .joined(separator: " ")
     }
 
-    private var cleanupStatus: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "wrench.and.screwdriver.fill")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(Color.orange)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Skill cleanup")
-                    .font(.headline)
-                Text(healthMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 16)
-
-            HStack(spacing: 10) {
-                if doctorActionCount > 0 {
-                    if allDoctorFindingsRepairable {
-                        Button {
-                            repairProjectRoot = doctorFindings.first?.projectRoot
-                            model.previewRepair(projectRoot: repairProjectRoot)
-                            showsRepair = true
-                        } label: {
-                            Label("Resolve", systemImage: "wrench.and.screwdriver")
-                        }
-                        .buttonStyle(.glassProminent)
-                        .disabled(model.isRunning)
-                    } else {
-                        Button {
-                            showsDoctorFindings = true
-                        } label: {
-                            Label("Review", systemImage: "stethoscope")
-                        }
-                        .buttonStyle(.glassProminent)
-                        .disabled(model.isRunning)
-                    }
-                }
-
-            }
-        }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 3)
-    }
-
     private var healthMessage: String {
         if doctorActionCount == 1,
            let issue = doctorFindings.first
@@ -696,10 +753,6 @@ struct OverviewSection: View {
             return issue.summary ?? issue.message
         }
         return "Grouped by project and resolution."
-    }
-
-    private var allDoctorFindingsRepairable: Bool {
-        doctorFindings.count == 1 && doctorFindings[0].repairAction != nil
     }
 
     private var scopedMCPHealth: MCPHealthSnapshot {
@@ -717,6 +770,40 @@ struct OverviewSection: View {
         groupedDoctorActionCount(doctorFindings)
     }
 
+}
+
+struct OverviewAttentionRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Button(actionTitle, action: action)
+                .buttonStyle(.glass)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
 }
 
 struct MCPClientCount: View {

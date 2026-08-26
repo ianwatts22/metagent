@@ -8,6 +8,7 @@ struct MetagentPanel: View {
     @ObservedObject var model: MetagentModel
     let showsOpenWindowButton: Bool
     @Environment(\.openWindow) private var openWindow
+    @EnvironmentObject private var updater: UpdaterModel
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
     @State private var showsSettings = false
@@ -42,6 +43,10 @@ struct MetagentPanel: View {
             if let selectedProjectRoot, !roots.contains(selectedProjectRoot) {
                 self.selectedProjectRoot = nil
             }
+        }
+        .onChange(of: updater.presentationDismissalRequest) {
+            showsSettings = false
+            showsFailureDetails = false
         }
         .sheet(isPresented: $showsSettings) {
             SettingsView(model: model)

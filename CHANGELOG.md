@@ -15,6 +15,12 @@ AGENTS.md for the release procedure.
   opt-out.
 - Published Skills now has a direct skill picker, and Sync stays disabled until
   at least one skill is selected for local mirroring.
+- Overview puts skill, duplicate, and MCP connection actions ahead of passive
+  charts, with one Review path instead of competing Review and Resolve buttons.
+- Agent run timing now counts direct user-requested tasks rather than automation,
+  subagent, guardian, or copied pre-fork history.
+- Settings has a pinned, unclipped header, and app-owned sheets close before
+  Sparkle installs or relaunches an update.
 - Launch polish adds a signed-DMG quick start, visible Mac requirements, honest
   local-first privacy copy, accessible Skills tabs, and a large social preview.
 

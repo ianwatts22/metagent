@@ -9,6 +9,142 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertNotNil(MetagentCore.parseSkillUsageTimestamp("2026-07-19T12:00:00Z"))
     }
 
+    func testAgentRunDurationStatsUseCompletedCodexTasksAndProjectScope() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let project = fixture.root.appendingPathComponent("workspace")
+        let otherProject = fixture.root.appendingPathComponent("other")
+        let rollout = fixture.sessions.appendingPathComponent("rollout-runs.jsonl")
+        try fixture.write([
+            fixture.line(timestamp: "2026-07-30T11:59:59.000Z", type: "session_meta", payload: [
+                "id": "run-session",
+                "cwd": project.path,
+                "thread_source": "user"
+            ]),
+            // Fork histories are rewritten with the new file's wrapper time.
+            // Their payload times still predate this source session and must
+            // not become new runs in the recent window.
+            fixture.line(type: "session_meta", payload: [
+                "id": "copied-parent-session",
+                "cwd": project.path,
+                "thread_source": "user"
+            ]),
+            fixture.line(
+                timestamp: "2026-07-30T12:00:00.000Z",
+                type: "event_msg",
+                payload: [
+                    "type": "task_complete",
+                    "turn_id": "copied-parent-turn",
+                    "started_at": fixture.epoch("2026-07-01T12:00:00Z"),
+                    "completed_at": fixture.epoch("2026-07-01T12:05:00Z"),
+                    "duration_ms": 300_000
+                ]
+            ),
+            fixture.line(
+                timestamp: "2026-07-30T12:00:00.000Z",
+                type: "event_msg",
+                payload: ["type": "task_started", "turn_id": "run-one"]
+            ),
+            fixture.line(
+                timestamp: "2026-07-30T12:02:00.000Z",
+                type: "event_msg",
+                payload: [
+                    "type": "task_complete",
+                    "turn_id": "run-one",
+                    "started_at": fixture.epoch("2026-07-30T12:00:00Z"),
+                    "completed_at": fixture.epoch("2026-07-30T12:02:00Z"),
+                    "duration_ms": 120_000
+                ]
+            ),
+            fixture.line(type: "turn_context", payload: [
+                "turn_id": "run-two",
+                "cwd": project.appendingPathComponent("nested").path
+            ]),
+            fixture.line(
+                timestamp: "2026-07-30T12:10:00.000Z",
+                type: "event_msg",
+                payload: ["type": "task_started", "turn_id": "run-two"]
+            ),
+            fixture.line(
+                timestamp: "2026-07-30T12:14:00.000Z",
+                type: "event_msg",
+                payload: [
+                    "type": "task_complete",
+                    "turn_id": "run-two",
+                    "started_at": fixture.epoch("2026-07-30T12:10:00Z"),
+                    "completed_at": fixture.epoch("2026-07-30T12:14:00Z")
+                ]
+            ),
+            fixture.line(type: "turn_context", payload: [
+                "turn_id": "run-other",
+                "cwd": otherProject.path
+            ]),
+            fixture.line(
+                timestamp: "2026-07-30T13:00:00.000Z",
+                type: "event_msg",
+                payload: [
+                    "type": "task_complete",
+                    "turn_id": "run-other",
+                    "started_at": fixture.epoch("2026-07-30T12:50:00Z"),
+                    "completed_at": fixture.epoch("2026-07-30T13:00:00Z"),
+                    "duration_ms": 600_000
+                ]
+            )
+        ], to: rollout)
+
+        for (name, threadSource, source) in [
+            ("automation", "automation", "vscode" as Any),
+            ("worker", "subagent", ["subagent": ["other": "worker"]] as Any),
+            ("guardian", "guardian_review", ["subagent": ["other": "guardian"]] as Any),
+        ] {
+            try fixture.write([
+                fixture.line(timestamp: "2026-07-30T12:00:00.000Z", type: "session_meta", payload: [
+                    "id": "\(name)-session",
+                    "cwd": project.path,
+                    "thread_source": threadSource,
+                    "source": source
+                ]),
+                fixture.line(timestamp: "2026-07-30T12:01:00.000Z", type: "event_msg", payload: [
+                    "type": "task_complete",
+                    "turn_id": "\(name)-turn",
+                    "started_at": fixture.epoch("2026-07-30T12:00:00Z"),
+                    "completed_at": fixture.epoch("2026-07-30T12:01:00Z"),
+                    "duration_ms": 60_000
+                ])
+            ], to: fixture.sessions.appendingPathComponent("rollout-\(name).jsonl"))
+        }
+
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let now = try XCTUnwrap(MetagentCore.parseSkillUsageTimestamp("2026-07-31T00:00:00Z"))
+        let stats = try MetagentCore.agentRunDurationStats(
+            databasePath: fixture.database.path,
+            projectRoot: project.path,
+            now: now
+        )
+
+        XCTAssertEqual(stats.runCount, 2)
+        XCTAssertEqual(stats.medianMilliseconds, 180_000)
+        XCTAssertEqual(stats.averageMilliseconds, 180_000)
+        XCTAssertEqual(stats.p90Milliseconds, 240_000)
+        XCTAssertEqual(stats.totalMilliseconds, 360_000)
+        XCTAssertTrue(stats.isBackfillComplete)
+        XCTAssertEqual(try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs;"), 6)
+        XCTAssertEqual(
+            try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs WHERE run_kind = 'user';"),
+            3
+        )
+
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(
+            try MetagentCore.agentRunDurationStats(
+                databasePath: fixture.database.path,
+                projectRoot: project.path,
+                now: now
+            ).runCount,
+            2
+        )
+    }
+
     func testDailyCountsUseHistoryCalendarAndSkipInvalidTimestamps() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -948,7 +1084,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertFalse(snapshot.isBackfillComplete)
         XCTAssertTrue(snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(snapshot.displayParserVersion, 13)
-        XCTAssertEqual(snapshot.targetParserVersion, 15)
+        XCTAssertEqual(snapshot.targetParserVersion, 17)
     }
 
     func testParserUpgradeServesPreviousGenerationUntilAtomicCutover() throws {
@@ -990,9 +1126,13 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(rebuilding.snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(rebuilding.snapshot.displayParserVersion, 13)
 
-        try fixture.executeSQL(
-            "UPDATE skill_usage_metadata SET value = '12' WHERE key = 'parser_version';"
-        )
+        // Older generations did not have agent_runs_previous. Treat the three
+        // core previous tables as the atomic display generation so a restart
+        // cannot try to rename them over themselves.
+        try fixture.executeSQL("""
+        DROP TABLE IF EXISTS agent_runs_previous;
+        UPDATE skill_usage_metadata SET value = '12' WHERE key = 'parser_version';
+        """)
         let restartedUpgrade = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
             sessionRoots: [fixture.sessions.path],
             databasePath: fixture.database.path,
@@ -1011,7 +1151,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(cutover.snapshot.totalInvocations, 2)
         XCTAssertTrue(cutover.snapshot.isBackfillComplete)
         XCTAssertFalse(cutover.snapshot.isParserUpgradeBackfill)
-        XCTAssertEqual(cutover.snapshot.displayParserVersion, 15)
+        XCTAssertEqual(cutover.snapshot.displayParserVersion, 17)
     }
 }
 
@@ -1048,6 +1188,10 @@ private final class Fixture {
         payload: [String: Any]
     ) -> String {
         json(["timestamp": timestamp, "type": type, "payload": payload])
+    }
+
+    func epoch(_ timestamp: String) -> TimeInterval {
+        MetagentCore.parseSkillUsageTimestamp(timestamp)!.timeIntervalSince1970
     }
 
     func toolCall(
@@ -1239,6 +1383,23 @@ private final class Fixture {
         guard sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK else {
             throw NSError(domain: "SkillUsageTests", code: 2)
         }
+    }
+
+    func scalarInt(_ sql: String) throws -> Int {
+        var connection: OpaquePointer?
+        guard sqlite3_open(database.path, &connection) == SQLITE_OK else {
+            throw NSError(domain: "SkillUsageTests", code: 3)
+        }
+        defer { sqlite3_close(connection) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw NSError(domain: "SkillUsageTests", code: 4)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw NSError(domain: "SkillUsageTests", code: 5)
+        }
+        return Int(sqlite3_column_int64(statement, 0))
     }
 
     private func json(_ object: [String: Any]) -> String {

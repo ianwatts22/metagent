@@ -99,6 +99,26 @@ public struct SkillUsageRefreshReport: Codable, Sendable, Equatable {
     public let warnings: [String]
 }
 
+public struct AgentRunDurationStats: Codable, Sendable, Equatable {
+    public let windowDays: Int
+    public let runCount: Int
+    public let medianMilliseconds: Int64
+    public let averageMilliseconds: Int64
+    public let p90Milliseconds: Int64
+    public let totalMilliseconds: Int64
+    public let isBackfillComplete: Bool
+
+    public static let empty = AgentRunDurationStats(
+        windowDays: 30,
+        runCount: 0,
+        medianMilliseconds: 0,
+        averageMilliseconds: 0,
+        p90Milliseconds: 0,
+        totalMilliseconds: 0,
+        isBackfillComplete: false
+    )
+}
+
 public extension MetagentCore {
     static func loadSkillUsageSnapshot(databasePath: String? = nil) -> SkillUsageSnapshot? {
         try? SkillUsageStore(path: databasePath).snapshot()
@@ -119,6 +139,19 @@ public extension MetagentCore {
         try SkillUsageStore(path: databasePath).dailyCounts(calendar: calendar)
     }
 
+    static func agentRunDurationStats(
+        databasePath: String? = nil,
+        windowDays: Int = 30,
+        projectRoot: String? = nil,
+        now: Date = Date()
+    ) throws -> AgentRunDurationStats {
+        try SkillUsageStore(path: databasePath).agentRunDurationStats(
+            windowDays: windowDays,
+            projectRoot: projectRoot,
+            now: now
+        )
+    }
+
     static func parseSkillUsageTimestamp(_ value: String) -> Date? {
         if let date = iso8601FractionalFormatter.date(from: value) {
             return date
@@ -133,9 +166,10 @@ public extension MetagentCore {
     }
 }
 
-private let skillUsageParserVersion = 15
+private let skillUsageParserVersion = 17
 private let skillUsageEventsTable = "skill_usage_events"
 private let skillUsageSourcesTable = "skill_usage_sources"
+private let agentRunsTable = "agent_runs"
 
 private struct SkillUsageDayKey: Hashable {
     let canonicalPath: String
@@ -147,6 +181,7 @@ private let skillUsageMetadataTable = "skill_usage_metadata"
 private let previousSkillUsageEventsTable = "skill_usage_events_previous"
 private let previousSkillUsageSourcesTable = "skill_usage_sources_previous"
 private let previousSkillUsageMetadataTable = "skill_usage_metadata_previous"
+private let previousAgentRunsTable = "agent_runs_previous"
 
 private func skillUsageCodexHomeURL() -> URL {
     if let configured = ProcessInfo.processInfo.environment["CODEX_HOME"], !configured.isEmpty {
@@ -174,6 +209,9 @@ private struct UsageSourceState: Sendable {
     var turnID = ""
     var coverageStartedAt = ""
     var pendingEvents: [String: [ParsedUsageEvent]] = [:]
+    var runSessionID = ""
+    var runSessionStartedAt = ""
+    var runKind = "unknown"
 }
 
 private struct ParsedSkillIdentity: Codable, Sendable {
@@ -195,9 +233,22 @@ private struct ParsedUsageEvent: Codable, Sendable {
     let callID: String
 }
 
+private struct ParsedAgentRun: Sendable {
+    let id: String
+    let sessionID: String
+    let turnID: String
+    let cwd: String
+    let startedAt: String
+    let completedAt: String
+    let durationMilliseconds: Int64
+    let kind: String
+    let sourcePath: String
+}
+
 private struct FileParseResult: Sendable {
     let state: UsageSourceState
     let events: [ParsedUsageEvent]
+    let runs: [ParsedAgentRun]
     let bytesRead: Int64
     let reachedEnd: Bool
     let warning: String?
@@ -403,6 +454,86 @@ private final class SkillUsageStore {
             }
     }
 
+    func agentRunDurationStats(
+        windowDays: Int,
+        projectRoot: String?,
+        now: Date
+    ) throws -> AgentRunDurationStats {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+
+        let hasPrevious = try previousGenerationExists(db)
+        let previousRunsAreUsable = try tableExists(db, previousAgentRunsTable)
+            && columnExists(db, table: previousAgentRunsTable, column: "run_kind")
+        let previousCount = previousRunsAreUsable
+            ? try scalarInt(db, "SELECT COUNT(*) FROM \(previousAgentRunsTable);")
+            : 0
+        let table = previousCount > 0 ? previousAgentRunsTable : agentRunsTable
+        let normalizedRoot = projectRoot.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }
+        let cutoff = iso8601Formatter.string(
+            from: now.addingTimeInterval(-Double(max(1, windowDays)) * 86_400)
+        )
+
+        var statement: OpaquePointer?
+        try prepare(db, """
+        SELECT duration_ms, cwd
+        FROM \(table)
+        WHERE completed_at >= ?
+          AND duration_ms >= 0
+          AND run_kind = 'user'
+        ORDER BY duration_ms;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, cutoff)
+
+        var durations: [Int64] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let cwd = text(statement, 1)
+            if let root = normalizedRoot {
+                guard cwd == root || cwd.hasPrefix(root + "/") else { continue }
+            }
+            durations.append(sqlite3_column_int64(statement, 0))
+        }
+
+        let metadata = try loadMetadata(db, table: skillUsageMetadataTable)
+        let isComplete = previousCount > 0
+            || (
+                metadata["parser_version"] == String(skillUsageParserVersion)
+                    && metadata["is_complete"] == "1"
+                    && !hasPrevious
+            )
+        guard !durations.isEmpty else {
+            return AgentRunDurationStats(
+                windowDays: max(1, windowDays),
+                runCount: 0,
+                medianMilliseconds: 0,
+                averageMilliseconds: 0,
+                p90Milliseconds: 0,
+                totalMilliseconds: 0,
+                isBackfillComplete: isComplete
+            )
+        }
+        let total = durations.reduce(Int64(0), +)
+        let middle = durations.count / 2
+        let median = durations.count.isMultiple(of: 2)
+            ? (durations[middle - 1] + durations[middle]) / 2
+            : durations[middle]
+        let p90Index = max(0, Int(ceil(Double(durations.count) * 0.9)) - 1)
+        return AgentRunDurationStats(
+            windowDays: max(1, windowDays),
+            runCount: durations.count,
+            medianMilliseconds: median,
+            averageMilliseconds: total / Int64(durations.count),
+            p90Milliseconds: durations[p90Index],
+            totalMilliseconds: total,
+            isBackfillComplete: isComplete
+        )
+    }
+
     private func snapshot(_ db: OpaquePointer?) throws -> SkillUsageSnapshot {
         let metadata = try loadMetadata(db, table: skillUsageMetadataTable)
         let hasPreviousGeneration = try previousGenerationExists(db)
@@ -603,6 +734,7 @@ private final class SkillUsageStore {
             return FileParseResult(
                 state: initialState,
                 events: [],
+                runs: [],
                 bytesRead: 0,
                 reachedEnd: false,
                 warning: "Could not read \(source.path)"
@@ -613,6 +745,7 @@ private final class SkillUsageStore {
             return FileParseResult(
                 state: initialState,
                 events: [],
+                runs: [],
                 bytesRead: 0,
                 reachedEnd: false,
                 warning: "Could not seek \(source.path)"
@@ -625,6 +758,7 @@ private final class SkillUsageStore {
         state.fileIdentity = source.fileIdentity
         state.prefixFingerprint = prefixFingerprint(path: source.path)
         var events: [ParsedUsageEvent] = []
+        var runs: [ParsedAgentRun] = []
         var warning: String?
         var bytesRead: Int64 = 0
         var nextThrottleAt = throttleEveryBytes > 0
@@ -660,7 +794,8 @@ private final class SkillUsageStore {
                 sourcePath: source.path,
                 state: &state,
                 identityCache: &identityCache,
-                events: &events
+                events: &events,
+                runs: &runs
             )
             if throttleEveryBytes > 0,
                throttleDelayMilliseconds > 0,
@@ -678,6 +813,7 @@ private final class SkillUsageStore {
         return FileParseResult(
             state: state,
             events: events,
+            runs: runs,
             bytesRead: bytesRead,
             reachedEnd: state.offset >= source.size,
             warning: warning
@@ -720,13 +856,15 @@ private final class SkillUsageStore {
         sourcePath: String,
         state: inout UsageSourceState,
         identityCache: inout [String: ParsedSkillIdentity],
-        events: inout [ParsedUsageEvent]
+        events: inout [ParsedUsageEvent],
+        runs: inout [ParsedAgentRun]
     ) {
         let isContext = line.contains("session_meta") || line.contains("turn_context")
+        let isRunEvent = line.contains("task_complete")
         let isToolOutput = line.contains("tool_call_output")
             || line.contains("function_call_output")
             || line.contains("shell_call_output")
-        guard isContext || isToolOutput || line.contains("SKILL.md") else { return }
+        guard isContext || isRunEvent || isToolOutput || line.contains("SKILL.md") else { return }
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String,
@@ -734,7 +872,8 @@ private final class SkillUsageStore {
         else { return }
 
         if type == "session_meta" {
-            state.sessionID = string(payload["id"] ?? payload["session_id"])
+            let sessionID = string(payload["id"] ?? payload["session_id"])
+            state.sessionID = sessionID
             state.cwd = string(payload["cwd"])
             let timestamp = string(object["timestamp"] ?? payload["timestamp"])
             if !timestamp.isEmpty,
@@ -742,12 +881,63 @@ private final class SkillUsageStore {
             {
                 state.coverageStartedAt = timestamp
             }
+            let sourceSessionID = rolloutSessionID(sourcePath)
+            if state.runSessionID.isEmpty,
+               sourceSessionID == nil || sourceSessionID == sessionID
+            {
+                state.runSessionID = sessionID
+                state.runSessionStartedAt = timestamp
+                state.runKind = agentRunKind(payload)
+            }
             return
         }
         if type == "turn_context" {
             state.turnID = string(payload["turn_id"])
             let cwd = string(payload["cwd"])
             if !cwd.isEmpty { state.cwd = cwd }
+            return
+        }
+        if type == "event_msg" {
+            let eventType = string(payload["type"])
+            guard eventType == "task_complete" else { return }
+            let turnID = string(payload["turn_id"])
+            guard !turnID.isEmpty,
+                  !state.runSessionID.isEmpty,
+                  let startedDate = unixTimestampDate(payload["started_at"]),
+                  let completedDate = unixTimestampDate(payload["completed_at"]),
+                  completedDate >= startedDate
+            else { return }
+
+            // Forked and subagent rollouts contain copied parent history whose
+            // JSONL wrapper timestamps are rewritten to the fork time. The
+            // payload timestamps retain the real task time. Only events that
+            // began in this source session belong to this file; the originals
+            // are retained in their own rollout and deduplicate by turn there.
+            if let sessionStarted = MetagentCore.parseSkillUsageTimestamp(state.runSessionStartedAt) {
+                // Payload epochs are often whole seconds while the session
+                // timestamp includes fractions. Keep starts from the same
+                // second, but reject everything from an earlier second.
+                let sessionStartSecond = Date(
+                    timeIntervalSince1970: floor(sessionStarted.timeIntervalSince1970)
+                )
+                if startedDate < sessionStartSecond { return }
+            }
+
+            let recordedDuration = int64(payload["duration_ms"])
+            let derivedDuration = Int64((completedDate.timeIntervalSince(startedDate) * 1_000).rounded())
+            let duration = recordedDuration ?? derivedDuration
+            guard duration >= 0 else { return }
+            runs.append(ParsedAgentRun(
+                id: "\(state.runSessionID)\u{1F}\(turnID)",
+                sessionID: state.runSessionID,
+                turnID: turnID,
+                cwd: state.cwd,
+                startedAt: iso8601Formatter.string(from: startedDate),
+                completedAt: iso8601Formatter.string(from: completedDate),
+                durationMilliseconds: duration,
+                kind: state.runKind,
+                sourcePath: sourcePath
+            ))
             return
         }
         guard type == "response_item", let itemType = payload["type"] as? String else { return }
@@ -1400,13 +1590,36 @@ private final class SkillUsageStore {
                 if sqlite3_changes(db) > 0 { added += 1 }
             }
 
+            for run in result.runs {
+                var statement: OpaquePointer?
+                try prepare(db, """
+                INSERT OR IGNORE INTO agent_runs (
+                  run_id, session_id, turn_id, cwd, started_at, completed_at,
+                  duration_ms, run_kind, source_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, &statement)
+                defer { sqlite3_finalize(statement) }
+                bind(statement, 1, run.id)
+                bind(statement, 2, run.sessionID)
+                bind(statement, 3, run.turnID)
+                bind(statement, 4, run.cwd)
+                bind(statement, 5, run.startedAt)
+                bind(statement, 6, run.completedAt)
+                sqlite3_bind_int64(statement, 7, run.durationMilliseconds)
+                bind(statement, 8, run.kind)
+                bind(statement, 9, run.sourcePath)
+                guard sqlite3_step(statement) == SQLITE_DONE else {
+                    throw databaseError(db, "insert agent run")
+                }
+            }
+
             var sourceStatement: OpaquePointer?
             try prepare(db, """
             INSERT INTO skill_usage_sources (
               path, byte_offset, file_size, modified_at, file_identity, prefix_fingerprint,
               session_id, cwd, turn_id, coverage_started_at, pending_events_json,
-              parser_version, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+              run_session_id, run_session_started_at, run_kind, parser_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(path) DO UPDATE SET
               byte_offset = excluded.byte_offset,
               file_size = excluded.file_size,
@@ -1418,6 +1631,9 @@ private final class SkillUsageStore {
               turn_id = excluded.turn_id,
               coverage_started_at = excluded.coverage_started_at,
               pending_events_json = excluded.pending_events_json,
+              run_session_id = excluded.run_session_id,
+              run_session_started_at = excluded.run_session_started_at,
+              run_kind = excluded.run_kind,
               parser_version = excluded.parser_version,
               updated_at = excluded.updated_at;
             """, &sourceStatement)
@@ -1434,7 +1650,10 @@ private final class SkillUsageStore {
             bind(sourceStatement, 10, result.state.coverageStartedAt)
             let pendingData = try JSONEncoder().encode(result.state.pendingEvents)
             bind(sourceStatement, 11, String(decoding: pendingData, as: UTF8.self))
-            sqlite3_bind_int(sourceStatement, 12, Int32(skillUsageParserVersion))
+            bind(sourceStatement, 12, result.state.runSessionID)
+            bind(sourceStatement, 13, result.state.runSessionStartedAt)
+            bind(sourceStatement, 14, result.state.runKind)
+            sqlite3_bind_int(sourceStatement, 15, Int32(skillUsageParserVersion))
             guard sqlite3_step(sourceStatement) == SQLITE_DONE else {
                 throw databaseError(db, "save usage cursor")
             }
@@ -1454,7 +1673,8 @@ private final class SkillUsageStore {
         var statement: OpaquePointer?
         try prepare(db, """
         SELECT path, byte_offset, file_size, modified_at, file_identity, prefix_fingerprint,
-               session_id, cwd, turn_id, coverage_started_at, pending_events_json
+               session_id, cwd, turn_id, coverage_started_at, pending_events_json,
+               run_session_id, run_session_started_at, run_kind
         FROM skill_usage_sources
         WHERE parser_version = ?;
         """, &statement)
@@ -1476,7 +1696,10 @@ private final class SkillUsageStore {
                 cwd: text(statement, 7),
                 turnID: text(statement, 8),
                 coverageStartedAt: text(statement, 9),
-                pendingEvents: pendingEvents
+                pendingEvents: pendingEvents,
+                runSessionID: text(statement, 11),
+                runSessionStartedAt: text(statement, 12),
+                runKind: text(statement, 13)
             )
         }
         return states
@@ -1500,6 +1723,15 @@ private final class SkillUsageStore {
             bind(eventStatement, 2, oldPath)
             guard sqlite3_step(eventStatement) == SQLITE_DONE else {
                 throw databaseError(db, "migrate usage events")
+            }
+
+            var runStatement: OpaquePointer?
+            try prepare(db, "UPDATE agent_runs SET source_path = ? WHERE source_path = ?;", &runStatement)
+            defer { sqlite3_finalize(runStatement) }
+            bind(runStatement, 1, newPath)
+            bind(runStatement, 2, oldPath)
+            guard sqlite3_step(runStatement) == SQLITE_DONE else {
+                throw databaseError(db, "migrate agent runs")
             }
 
             let pendingData = try JSONEncoder().encode(state.pendingEvents)
@@ -1536,6 +1768,9 @@ private final class SkillUsageStore {
             var sourceStatement: OpaquePointer?
             try prepare(db, "DELETE FROM skill_usage_sources WHERE path = ?;", &sourceStatement)
             defer { sqlite3_finalize(sourceStatement) }
+            var runStatement: OpaquePointer?
+            try prepare(db, "DELETE FROM agent_runs WHERE source_path = ?;", &runStatement)
+            defer { sqlite3_finalize(runStatement) }
 
             for path in paths {
                 sqlite3_reset(eventStatement)
@@ -1550,6 +1785,13 @@ private final class SkillUsageStore {
                 bind(sourceStatement, 1, path)
                 guard sqlite3_step(sourceStatement) == SQLITE_DONE else {
                     throw databaseError(db, "reset usage cursor")
+                }
+
+                sqlite3_reset(runStatement)
+                sqlite3_clear_bindings(runStatement)
+                bind(runStatement, 1, path)
+                guard sqlite3_step(runStatement) == SQLITE_DONE else {
+                    throw databaseError(db, "reset agent runs")
                 }
             }
             try exec(db, "COMMIT;")
@@ -1671,14 +1913,22 @@ private final class SkillUsageStore {
     private func preserveCurrentGeneration(_ db: OpaquePointer?) throws {
         try exec(db, "DROP INDEX IF EXISTS skill_usage_by_skill_time;")
         try exec(db, "DROP INDEX IF EXISTS skill_usage_by_session_turn;")
+        try exec(db, "DROP INDEX IF EXISTS agent_runs_by_completed_at;")
+        // Agent runs were added after the three core usage tables. A failed
+        // development migration can therefore leave an orphan with this name
+        // even though no complete previous generation exists.
+        try exec(db, "DROP TABLE IF EXISTS \(previousAgentRunsTable);")
         try exec(db, "ALTER TABLE \(skillUsageEventsTable) RENAME TO \(previousSkillUsageEventsTable);")
         try exec(db, "ALTER TABLE \(skillUsageSourcesTable) RENAME TO \(previousSkillUsageSourcesTable);")
         try exec(db, "ALTER TABLE \(skillUsageMetadataTable) RENAME TO \(previousSkillUsageMetadataTable);")
+        try exec(db, "ALTER TABLE \(agentRunsTable) RENAME TO \(previousAgentRunsTable);")
         try exec(db, """
         CREATE INDEX IF NOT EXISTS skill_usage_previous_by_skill_time
           ON \(previousSkillUsageEventsTable)(skill_id, occurred_at);
         CREATE INDEX IF NOT EXISTS skill_usage_previous_by_session_turn
           ON \(previousSkillUsageEventsTable)(session_id, turn_id);
+        CREATE INDEX IF NOT EXISTS agent_runs_previous_by_completed_at
+          ON \(previousAgentRunsTable)(completed_at);
         """)
     }
 
@@ -1686,12 +1936,14 @@ private final class SkillUsageStore {
         try exec(db, "DROP TABLE IF EXISTS \(skillUsageEventsTable);")
         try exec(db, "DROP TABLE IF EXISTS \(skillUsageSourcesTable);")
         try exec(db, "DROP TABLE IF EXISTS \(skillUsageMetadataTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(agentRunsTable);")
     }
 
     private func dropPreviousGeneration(_ db: OpaquePointer?) throws {
         try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageEventsTable);")
         try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageSourcesTable);")
         try exec(db, "DROP TABLE IF EXISTS \(previousSkillUsageMetadataTable);")
+        try exec(db, "DROP TABLE IF EXISTS \(previousAgentRunsTable);")
     }
 
     private func open(_ db: inout OpaquePointer?) throws {
@@ -1725,6 +1977,19 @@ private final class SkillUsageStore {
           ON skill_usage_events(skill_id, occurred_at);
         CREATE INDEX IF NOT EXISTS skill_usage_by_session_turn
           ON skill_usage_events(session_id, turn_id);
+        CREATE TABLE IF NOT EXISTS agent_runs (
+          run_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          completed_at TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          run_kind TEXT NOT NULL,
+          source_path TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS agent_runs_by_completed_at
+          ON agent_runs(completed_at);
         CREATE TABLE IF NOT EXISTS skill_usage_sources (
           path TEXT PRIMARY KEY,
           byte_offset INTEGER NOT NULL,
@@ -1737,6 +2002,9 @@ private final class SkillUsageStore {
           turn_id TEXT NOT NULL,
           coverage_started_at TEXT NOT NULL DEFAULT '',
           pending_events_json TEXT NOT NULL DEFAULT '{}',
+          run_session_id TEXT NOT NULL DEFAULT '',
+          run_session_started_at TEXT NOT NULL DEFAULT '',
+          run_kind TEXT NOT NULL DEFAULT 'unknown',
           parser_version INTEGER NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -1748,6 +2016,9 @@ private final class SkillUsageStore {
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN file_identity TEXT NOT NULL DEFAULT '';" )
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN prefix_fingerprint TEXT NOT NULL DEFAULT '';" )
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN pending_events_json TEXT NOT NULL DEFAULT '{}';" )
+        try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN run_session_id TEXT NOT NULL DEFAULT '';" )
+        try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN run_session_started_at TEXT NOT NULL DEFAULT '';" )
+        try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'unknown';" )
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN coverage_started_at TEXT NOT NULL DEFAULT '';" )
     }
 
@@ -1793,6 +2064,22 @@ private final class SkillUsageStore {
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
+    private func columnExists(
+        _ db: OpaquePointer?,
+        table: String,
+        column: String
+    ) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if text(statement, 1) == column { return true }
+        }
+        return false
+    }
+
     private func prepare(_ db: OpaquePointer?, _ sql: String, _ statement: inout OpaquePointer?) throws {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw databaseError(db, "prepare statement")
@@ -1822,6 +2109,60 @@ private final class SkillUsageStore {
 
     private func string(_ value: Any?) -> String {
         value as? String ?? ""
+    }
+
+    private func int64(_ value: Any?) -> Int64? {
+        if let number = value as? NSNumber {
+            return number.int64Value
+        }
+        if let value = value as? String {
+            return Int64(value)
+        }
+        return nil
+    }
+
+    private func unixTimestampDate(_ value: Any?) -> Date? {
+        let seconds: Double?
+        if let number = value as? NSNumber {
+            seconds = number.doubleValue
+        } else if let value = value as? String {
+            seconds = Double(value)
+        } else {
+            seconds = nil
+        }
+        guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: seconds > 100_000_000_000 ? seconds / 1_000 : seconds)
+    }
+
+    private func rolloutSessionID(_ sourcePath: String) -> String? {
+        let filename = URL(fileURLWithPath: sourcePath)
+            .deletingPathExtension()
+            .lastPathComponent
+        guard filename.count >= 36 else { return nil }
+        let candidate = String(filename.suffix(36))
+        return UUID(uuidString: candidate) == nil ? nil : candidate
+    }
+
+    private func agentRunKind(_ session: [String: Any]) -> String {
+        switch string(session["thread_source"]) {
+        case "user":
+            return "user"
+        case "automation":
+            return "automation"
+        case "guardian_review":
+            return "guardian"
+        case "subagent":
+            return "subagent"
+        default:
+            if session["agent_path"] != nil
+                || session["parent_thread_id"] != nil
+                || session["forked_from_id"] != nil
+                || (session["source"] as? [String: Any])?["subagent"] != nil
+            {
+                return "subagent"
+            }
+            return "unknown"
+        }
     }
 
     private func databaseError(_ db: OpaquePointer?, _ operation: String) -> Error {

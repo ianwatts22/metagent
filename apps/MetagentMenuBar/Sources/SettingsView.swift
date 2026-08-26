@@ -24,23 +24,26 @@ struct SettingsView: View {
         // its top with no way to reach it.
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Settings")
                             .font(.title2.weight(.semibold))
                         Text(displayUserPath(MetagentCore.userConfigPath().path))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
                     }
-
-                    Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
 
                     Button("Cancel") {
                         dismiss()
                     }
                     .buttonStyle(.glass)
                     .buttonBorderShape(.capsule)
+                    .fixedSize()
                     .keyboardShortcut(.cancelAction)
 
                     Button("Save") {
@@ -48,6 +51,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.capsule)
+                    .fixedSize()
                     .keyboardShortcut(.defaultAction)
                 }
 
@@ -62,10 +66,12 @@ struct SettingsView: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
 
+            Divider()
+
             ScrollView {
                 settingsForm
                     .padding(.horizontal, 20)
-                    .padding(.top, 4)
+                    .padding(.top, 16)
                     .padding(.bottom, 20)
             }
         }
@@ -209,17 +215,18 @@ struct SettingsView: View {
                 Spacer(minLength: 16)
 
                 Button("Check for Updates", systemImage: "arrow.down.circle") {
-                    updater.checkForUpdates()
+                    // Sparkle owns its update windows. Close this sheet first so
+                    // its progress and install UI cannot be hidden behind a
+                    // sheet attached to the app window.
+                    dismiss()
+                    DispatchQueue.main.async {
+                        updater.checkForUpdates()
+                    }
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.capsule)
                 .disabled(!updater.isConfigured || !updater.canCheckForUpdates)
             }
-        }
-        .padding(20)
-        .frame(minWidth: 560, minHeight: 520)
-        .task {
-            load()
         }
     }
 

@@ -10,24 +10,27 @@ import SwiftUI
 /// configured, so an unconfigured build reports that plainly and never retries a
 /// placeholder URL in the background.
 @MainActor
-final class UpdaterModel: ObservableObject {
+final class UpdaterModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var canCheckForUpdates = false
+    @Published private(set) var presentationDismissalRequest: UInt = 0
 
     /// False while `SUFeedURL` is still the checked-in placeholder.
     let isConfigured: Bool
 
-    private let controller: SPUStandardUpdaterController
+    private var controller: SPUStandardUpdaterController!
     private var observation: AnyCancellable?
 
-    init() {
+    override init() {
         let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
         let startupPolicy = AppUpdateStartupPolicy(feedURL: feedURL)
         isConfigured = startupPolicy.isConfigured
         startupPolicy.repairLegacyAutomaticChecksPreference(in: .standard)
 
+        super.init()
+
         controller = SPUStandardUpdaterController(
             startingUpdater: false,
-            updaterDelegate: nil,
+            updaterDelegate: self,
             userDriverDelegate: nil
         )
 
@@ -47,6 +50,22 @@ final class UpdaterModel: ObservableObject {
     func checkForUpdates() {
         guard isConfigured, canCheckForUpdates else { return }
         controller.checkForUpdates(nil)
+    }
+
+    /// Sparkle can install from either a user-initiated or background check.
+    /// Close app-owned sheets before its installer asks the app to terminate so
+    /// no presentation remains stranded in front of the update UI.
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        requestPresentationDismissal()
+    }
+
+    /// A final backstop for resumed updates that reach the relaunch boundary.
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        requestPresentationDismissal()
+    }
+
+    private func requestPresentationDismissal() {
+        presentationDismissalRequest &+= 1
     }
 }
 
