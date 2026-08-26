@@ -109,7 +109,7 @@ struct DuplicateReviewExperience: View {
                         onInfo: onInfo,
                         onUseRecommendation: {
                             removalIDs.subtract(selectedGroup.rows.map(\.id))
-                            removalIDs.formUnion(selectedGroup.suggestedRemovalRows.map(\.id))
+                            removalIDs.formUnion(selectedGroup.quickSelectionRows.map(\.id))
                         },
                         onReviewRemoval: {
                             onReviewRemoval(selectedGroup.rows.filter { removalIDs.contains($0.id) })
@@ -217,10 +217,12 @@ struct DuplicateReviewDetail: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    if !group.suggestedRemovalRows.isEmpty {
-                        Button("Use recommendation", action: onUseRecommendation)
+                    if !group.quickSelectionRows.isEmpty {
+                        Button(group.quickSelectionTitle, action: onUseRecommendation)
                             .buttonStyle(.glass)
-                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
+                            .help(group.kind == .globalProject
+                                ? "Select removable project copies. Nothing is removed until you approve the final review."
+                                : "Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
                     }
                 }
                 .padding(10)
@@ -296,7 +298,17 @@ struct DuplicateCandidateCard: View {
     private var canRemove: Bool { row.inventory?.removalRequest != nil }
     private var removalLabel: String {
         guard let request = row.inventory?.removalRequest else { return "Keep" }
+        if isProjectSkill, row.overlap?.kind == .globalProject {
+            return "Remove project copy"
+        }
         return request.method == .codexPlugin ? "Remove plugin" : "Remove"
+    }
+    private var removalControlWidth: CGFloat {
+        switch removalLabel {
+        case "Remove project copy": 225
+        case "Remove plugin": 190
+        default: 155
+        }
     }
 
     private var isProjectSkill: Bool { row.scope == "project" }
@@ -384,7 +396,7 @@ struct DuplicateCandidateCard: View {
                     .pickerStyle(.segmented)
                     .glassEffect(.regular.interactive(), in: Capsule())
                     .tint(isMarkedForRemoval ? .red : .accentColor)
-                    .frame(width: removalLabel == "Remove plugin" ? 190 : 155)
+                    .frame(width: removalControlWidth)
                     .accessibilityLabel("Duplicate decision")
                     .help(removalLabel == "Remove plugin"
                         ? "Removing this copy uninstalls its entire plugin."

@@ -654,6 +654,18 @@ struct DuplicateReviewGroup: Identifiable {
     var suggestedRemovalRows: [SkillTableRow] {
         rows.filter { $0.overlap?.suggestedRemoval == true && $0.inventory?.removalRequest != nil }
     }
+    var optionalProjectCopyRows: [SkillTableRow] {
+        guard kind == .globalProject,
+              rows.contains(where: { $0.scope == "global" })
+        else { return [] }
+        return rows.filter { $0.scope == "project" && $0.inventory?.removalRequest != nil }
+    }
+    var quickSelectionRows: [SkillTableRow] {
+        kind == .globalProject ? optionalProjectCopyRows : suggestedRemovalRows
+    }
+    var quickSelectionTitle: String {
+        kind == .globalProject ? "Select project copies" : "Use recommendation"
+    }
     var similarityText: String {
         similarity.formatted(.percent.precision(.fractionLength(0)))
     }
@@ -666,7 +678,7 @@ struct DuplicateReviewGroup: Identifiable {
         case .exactDuplicate:
             "Choose one canonical copy"
         case .globalProject:
-            "Keeping both may be intentional"
+            "Keep global; project copies are optional"
         case .sameName:
             "Compare before removing anything"
         }
@@ -680,7 +692,7 @@ struct DuplicateReviewGroup: Identifiable {
         case .exactDuplicate:
             "The contents match. Keep the copy whose location and lifecycle owner you want."
         case .globalProject:
-            "A project copy can be useful for collaborators even when you also keep the skill globally."
+            "Remove a project copy when the global skill already covers your work. Keep it when the project must share that skill with collaborators. Nothing is selected or removed automatically."
         case .sameName:
             "These bundles share a name but differ enough that one is not a safe replacement for the other."
         }
