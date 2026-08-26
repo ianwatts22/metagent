@@ -69,7 +69,9 @@ struct OverviewSection: View {
                 needsAttentionSummary
             }
             skillHealthSummary
-            agentRunActivity
+            if !isGlobalScopeSelection {
+                agentRunActivity
+            }
             mcpConnections
         }
         .frame(maxWidth: .infinity, alignment: .top)
@@ -168,6 +170,13 @@ struct OverviewSection: View {
         return isGlobalRoot(selectedProjectRoot)
             ? .global(root: selectedProjectRoot)
             : .project(root: selectedProjectRoot)
+    }
+
+    /// Runs belong to working directories, while Global is a skill-availability
+    /// pseudo-root. Treating the home directory as a project would silently
+    /// include every project below it.
+    private var isGlobalScopeSelection: Bool {
+        selectedProjectRoot.map(isGlobalRoot) ?? false
     }
 
     private var metricCards: [SkillHealthCardModel] {
@@ -379,6 +388,7 @@ struct OverviewSection: View {
         let historyMetrics = overviewTrendMetrics
         let windowDays = trendRange.days
         let projectRoot = selectedProjectRoot
+        let shouldLoadAgentRuns = !isGlobalScopeSelection
         let (health, trends, runStats) = await Task.detached(priority: .utility) {
             (
                 MetagentCore.skillSystemHealth(
@@ -392,10 +402,12 @@ struct OverviewSection: View {
                     scope: historyScope,
                     windowDays: windowDays
                 )) ?? .empty,
-                (try? MetagentCore.agentRunDurationStats(
-                    windowDays: 30,
-                    projectRoot: projectRoot
-                )) ?? .empty
+                shouldLoadAgentRuns
+                    ? ((try? MetagentCore.agentRunDurationStats(
+                        windowDays: 30,
+                        projectRoot: projectRoot
+                    )) ?? .empty)
+                    : .empty
             )
         }.value
         guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
