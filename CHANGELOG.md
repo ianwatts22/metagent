@@ -3,7 +3,18 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
-## v0.5.0 — unreleased
+## v0.5.0 — 2026-08-25
+
+- Publish selected global skills from the app into an existing public Git
+  checkout. Metagent keeps the copy in sync one way as files change, while
+  commits and pushes remain under the user's control.
+- Duplicate review now gives each project copy an explicit removal choice when
+  the same skill is also installed globally. Nothing is selected or removed
+  automatically, and the final approval step remains required.
+- Broad inventory scans ignore linked Git worktrees, so temporary development
+  copies no longer inflate project and skill counts.
+- Operation warnings keep their failure details so the warning button always
+  explains what failed.
 
 - Script inventory: inspect every bundled script without running it, including
   runtime and role inference, executable state, size and hash, documentation
