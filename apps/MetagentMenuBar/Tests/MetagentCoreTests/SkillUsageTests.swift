@@ -114,6 +114,24 @@ final class SkillUsageTests: XCTestCase {
             ], to: fixture.sessions.appendingPathComponent("rollout-\(name).jsonl"))
         }
 
+        try fixture.write([
+            fixture.line(timestamp: "2026-07-30T12:00:00.000Z", type: "session_meta", payload: [
+                "id": "unknown-session",
+                "cwd": project.path,
+                "agent_path": NSNull(),
+                "parent_thread_id": NSNull(),
+                "forked_from_id": NSNull(),
+                "source": ["subagent": NSNull()]
+            ]),
+            fixture.line(timestamp: "2026-07-30T12:01:00.000Z", type: "event_msg", payload: [
+                "type": "task_complete",
+                "turn_id": "unknown-turn",
+                "started_at": fixture.epoch("2026-07-30T12:00:00Z"),
+                "completed_at": fixture.epoch("2026-07-30T12:01:00Z"),
+                "duration_ms": 60_000
+            ])
+        ], to: fixture.sessions.appendingPathComponent("rollout-unknown.jsonl"))
+
         _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
         let now = try XCTUnwrap(MetagentCore.parseSkillUsageTimestamp("2026-07-31T00:00:00Z"))
         let stats = try MetagentCore.agentRunDurationStats(
@@ -128,10 +146,14 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(stats.p90Milliseconds, 240_000)
         XCTAssertEqual(stats.totalMilliseconds, 360_000)
         XCTAssertTrue(stats.isBackfillComplete)
-        XCTAssertEqual(try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs;"), 6)
+        XCTAssertEqual(try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs;"), 7)
         XCTAssertEqual(
             try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs WHERE run_kind = 'user';"),
             3
+        )
+        XCTAssertEqual(
+            try fixture.scalarInt("SELECT COUNT(*) FROM agent_runs WHERE run_kind = 'unknown';"),
+            1
         )
 
         _ = try MetagentCore.refreshSkillUsage(options: fixture.options)

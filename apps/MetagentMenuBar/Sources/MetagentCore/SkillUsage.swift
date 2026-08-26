@@ -2144,6 +2144,10 @@ private final class SkillUsageStore {
     }
 
     private func agentRunKind(_ session: [String: Any]) -> String {
+        func hasJSONValue(_ value: Any?) -> Bool {
+            value != nil && !(value is NSNull)
+        }
+
         switch string(session["thread_source"]) {
         case "user":
             return "user"
@@ -2154,10 +2158,10 @@ private final class SkillUsageStore {
         case "subagent":
             return "subagent"
         default:
-            if session["agent_path"] != nil
-                || session["parent_thread_id"] != nil
-                || session["forked_from_id"] != nil
-                || (session["source"] as? [String: Any])?["subagent"] != nil
+            if hasJSONValue(session["agent_path"])
+                || hasJSONValue(session["parent_thread_id"])
+                || hasJSONValue(session["forked_from_id"])
+                || hasJSONValue((session["source"] as? [String: Any])?["subagent"])
             {
                 return "subagent"
             }
