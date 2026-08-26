@@ -53,6 +53,46 @@ public struct ModelRelease: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// The newest significant release event for one tracked provider, compared
+/// with the best review evidence available for a skill. Keeping this
+/// structured lets the table render provider badges without parsing advisory
+/// prose, and makes an unknown baseline distinct from a current skill.
+public struct ModelReviewTarget: Codable, Equatable, Sendable, Identifiable {
+    public let provider: String
+    public let providerName: String
+    public let modelIDs: [String]
+    public let modelNames: [String]
+    public let releaseDate: Date
+    public let baselineDate: Date?
+
+    public var id: String { provider }
+    public var needsReview: Bool {
+        baselineDate.map { $0 < releaseDate } ?? false
+    }
+    public var isUnknown: Bool { baselineDate == nil }
+    public var modelLabel: String {
+        let shown = modelNames.prefix(2).joined(separator: ", ")
+        let suffix = modelNames.count > 2 ? " +\(modelNames.count - 2) more" : ""
+        return shown + suffix
+    }
+
+    public init(
+        provider: String,
+        providerName: String,
+        modelIDs: [String],
+        modelNames: [String],
+        releaseDate: Date,
+        baselineDate: Date?
+    ) {
+        self.provider = provider
+        self.providerName = providerName
+        self.modelIDs = modelIDs
+        self.modelNames = modelNames
+        self.releaseDate = releaseDate
+        self.baselineDate = baselineDate
+    }
+}
+
 public struct ModelReleaseSnapshot: Codable, Equatable, Sendable {
     public static let version = 1
 
@@ -172,16 +212,55 @@ extension MetagentCore {
         trackedProviders: [String],
         now: Date = Date()
     ) -> SkillAdvisory? {
-        let baseline = [skillUpdatedAt, affirmedAt].compactMap { $0 }.max()
-        guard let baseline else { return nil }
-        let tracked = Set(trackedProviders)
-        let missed = releases
-            .filter { tracked.contains($0.provider) && $0.releaseDate > baseline && $0.releaseDate <= now }
-            .sorted { $0.releaseDate < $1.releaseDate }
-        guard !missed.isEmpty else { return nil }
+        modelReleaseAdvisory(targets: modelReviewTargets(
+            skillUpdatedAt: skillUpdatedAt,
+            affirmedAt: affirmedAt,
+            releases: releases,
+            trackedProviders: trackedProviders,
+            now: now
+        ))
+    }
 
-        let events = missedReleaseEvents(missed)
-        let eventText = events.map(\.label).joined(separator: "; ")
+    /// Resolves one rolling target per provider. Multiple variants released by
+    /// the same provider on the same day are one event, so GPT-5.6, Sol, and
+    /// Terra yield one OpenAI badge rather than three warnings.
+    public static func modelReviewTargets(
+        skillUpdatedAt: Date?,
+        affirmedAt: Date?,
+        releases: [ModelRelease],
+        trackedProviders: [String],
+        now: Date = Date()
+    ) -> [ModelReviewTarget] {
+        let baseline = [skillUpdatedAt, affirmedAt].compactMap { $0 }.max()
+        let available = releases.filter { $0.releaseDate <= now }
+        return trackedProviders.compactMap { provider in
+            let providerReleases = available.filter { $0.provider == provider }
+            guard let newestDate = providerReleases.map(\.releaseDate).max() else { return nil }
+            let newest = providerReleases
+                .filter { $0.releaseDate == newestDate }
+                .sorted {
+                    if $0.modelName != $1.modelName { return $0.modelName < $1.modelName }
+                    return $0.modelID < $1.modelID
+                }
+            guard let first = newest.first else { return nil }
+            return ModelReviewTarget(
+                provider: provider,
+                providerName: first.providerName,
+                modelIDs: newest.map(\.modelID),
+                modelNames: newest.map(\.modelName),
+                releaseDate: newestDate,
+                baselineDate: baseline
+            )
+        }
+    }
+
+    public static func modelReleaseAdvisory(targets: [ModelReviewTarget]) -> SkillAdvisory? {
+        let gaps = targets.filter(\.needsReview)
+        guard !gaps.isEmpty else { return nil }
+
+        let eventText = gaps.map {
+            "\($0.modelLabel) (\($0.providerName), \(dayFormatter.string(from: $0.releaseDate)))"
+        }.joined(separator: "; ")
         return SkillAdvisory(
             id: "model-release-staleness",
             category: "model-release",
@@ -192,24 +271,6 @@ extension MetagentCore {
             ],
             clearance: "Clears when the skill changes after the newest tracked release, or when it is explicitly marked reviewed."
         )
-    }
-
-    /// Groups missed releases into provider+date events so simultaneous
-    /// variants ("GPT-5.6", "GPT-5.6 Sol", …) read as one release.
-    private static func missedReleaseEvents(_ missed: [ModelRelease]) -> [(date: Date, label: String)] {
-        let grouped = Dictionary(grouping: missed) { "\($0.provider)|\(dayFormatter.string(from: $0.releaseDate))" }
-        return grouped.values
-            .compactMap { group -> (date: Date, label: String)? in
-                guard let first = group.min(by: { $0.modelName < $1.modelName }) else { return nil }
-                let names = group.map(\.modelName).sorted()
-                let shown = names.prefix(2).joined(separator: ", ")
-                let suffix = names.count > 2 ? " +\(names.count - 2) more" : ""
-                return (
-                    first.releaseDate,
-                    "\(shown)\(suffix) (\(first.providerName), \(dayFormatter.string(from: first.releaseDate)))"
-                )
-            }
-            .sorted { $0.date > $1.date }
     }
 
     /// A model id is significant unless any of its tokens names a size, speed,

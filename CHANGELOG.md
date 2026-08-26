@@ -3,6 +3,21 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.6.0 — 2026-08-26
+
+- Model readiness is visible in the Skills table: OpenAI and Anthropic badges
+  flag skills last changed or reviewed before each provider's newest tracked
+  frontier release. Hover for the exact model, release date, review baseline,
+  and model-catalog check time.
+- Anonymous, aggregate PostHog analytics cover app launch, inventory scans, and
+  skill publishing outcomes. Inventory, skill content, paths, accounts, logs,
+  prompts, and screen recordings are never sent, and Settings has a full
+  opt-out.
+- Published Skills now has a direct skill picker, and Sync stays disabled until
+  at least one skill is selected for local mirroring.
+- Launch polish adds a signed-DMG quick start, visible Mac requirements, honest
+  local-first privacy copy, accessible Skills tabs, and a large social preview.
+
 ## v0.5.0 — 2026-08-25
 
 - Publish selected global skills from the app into an existing public Git

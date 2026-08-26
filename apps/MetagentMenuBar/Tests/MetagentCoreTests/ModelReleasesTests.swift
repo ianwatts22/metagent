@@ -135,6 +135,87 @@ final class ModelReleasesTests: XCTestCase {
         XCTAssertEqual(message.components(separatedBy: "OpenAI").count, 2, "one provider event, not one per model: \(message)")
     }
 
+    func testReviewTargetsUseOnlyNewestEventPerProvider() {
+        let releases = [
+            release("openai", "OpenAI", "gpt-5.5", "GPT-5.5", "2026-04-23"),
+            release("openai", "OpenAI", "gpt-5.6", "GPT-5.6", "2026-07-09"),
+            release("openai", "OpenAI", "gpt-5.6-sol", "GPT-5.6 Sol", "2026-07-09"),
+            release("anthropic", "Anthropic", "claude-opus-5", "Claude Opus 5", "2026-07-24"),
+        ]
+
+        let targets = MetagentCore.modelReviewTargets(
+            skillUpdatedAt: day("2026-06-01"),
+            affirmedAt: nil,
+            releases: releases,
+            trackedProviders: ["anthropic", "openai"],
+            now: day("2026-07-27")
+        )
+
+        XCTAssertEqual(targets.map(\.provider), ["anthropic", "openai"])
+        XCTAssertEqual(targets[0].modelIDs, ["claude-opus-5"])
+        XCTAssertEqual(targets[1].modelIDs, ["gpt-5.6", "gpt-5.6-sol"])
+        XCTAssertFalse(targets[1].modelIDs.contains("gpt-5.5"))
+        XCTAssertTrue(targets.allSatisfy(\.needsReview))
+    }
+
+    func testReviewTargetDistinguishesUnknownFromCurrent() {
+        let releases = [release("openai", "OpenAI", "gpt-5.6", "GPT-5.6", "2026-07-09")]
+        let unknown = MetagentCore.modelReviewTargets(
+            skillUpdatedAt: nil,
+            affirmedAt: nil,
+            releases: releases,
+            trackedProviders: ["openai"],
+            now: day("2026-07-27")
+        )
+        XCTAssertTrue(unknown[0].isUnknown)
+        XCTAssertFalse(unknown[0].needsReview)
+
+        let current = MetagentCore.modelReviewTargets(
+            skillUpdatedAt: day("2026-07-09"),
+            affirmedAt: nil,
+            releases: releases,
+            trackedProviders: ["openai"],
+            now: day("2026-07-27")
+        )
+        XCTAssertFalse(current[0].isUnknown)
+        XCTAssertFalse(current[0].needsReview, "a same-day change is treated as current")
+    }
+
+    func testReviewTargetsIgnoreFutureAndDisabledProviders() {
+        let releases = [
+            release("openai", "OpenAI", "gpt-5.6", "GPT-5.6", "2026-07-09"),
+            release("openai", "OpenAI", "gpt-5.7", "GPT-5.7", "2026-08-01"),
+            release("anthropic", "Anthropic", "claude-opus-5", "Claude Opus 5", "2026-07-24"),
+        ]
+        let targets = MetagentCore.modelReviewTargets(
+            skillUpdatedAt: day("2026-06-01"),
+            affirmedAt: nil,
+            releases: releases,
+            trackedProviders: ["openai"],
+            now: day("2026-07-27")
+        )
+
+        XCTAssertEqual(targets.count, 1)
+        XCTAssertEqual(targets[0].modelIDs, ["gpt-5.6"])
+    }
+
+    func testLaterReleaseRestoresGapAfterReviewAffirmation() {
+        let releases = [
+            release("openai", "OpenAI", "gpt-5.6", "GPT-5.6", "2026-07-09"),
+            release("openai", "OpenAI", "gpt-5.7", "GPT-5.7", "2026-08-01"),
+        ]
+        let targets = MetagentCore.modelReviewTargets(
+            skillUpdatedAt: day("2026-06-01"),
+            affirmedAt: day("2026-07-15"),
+            releases: releases,
+            trackedProviders: ["openai"],
+            now: day("2026-08-02")
+        )
+
+        XCTAssertEqual(targets[0].modelIDs, ["gpt-5.7"])
+        XCTAssertTrue(targets[0].needsReview)
+    }
+
     func testAdvisoryDoesNotChangeUtilityScore() {
         let score = MetagentSkillScore(
             score: 80,

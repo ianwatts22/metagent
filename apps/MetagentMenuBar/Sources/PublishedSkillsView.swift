@@ -4,6 +4,8 @@ import SwiftUI
 
 struct PublishedSkillsView: View {
     @ObservedObject var model: MetagentModel
+    let availableSkills: [InventorySkillRow]
+    let onChooseSkill: (InventorySkillRow) -> Void
 
     private var records: [SkillPublicationRecord] {
         model.publicationSnapshot.records.sorted {
@@ -11,6 +13,18 @@ struct PublishedSkillsView: View {
                 return $0.automaticMirroringEnabled
             }
             return $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
+        }
+    }
+
+    private var hasEnabledRecords: Bool {
+        records.contains(where: \.automaticMirroringEnabled)
+    }
+
+    private var selectableSkills: [InventorySkillRow] {
+        availableSkills.filter { skill in
+            !records.contains {
+                $0.automaticMirroringEnabled && $0.sourceCanonicalPath == skill.canonicalPath
+            }
         }
     }
 
@@ -23,18 +37,31 @@ struct PublishedSkillsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if !records.isEmpty {
+                    skillPicker
+                }
                 Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
                     model.reconcileSkillPublications()
                 }
-                .disabled(model.isPublicationSyncing)
+                .disabled(model.isPublicationSyncing || !hasEnabledRecords)
             }
 
             if records.isEmpty {
-                EmptyStateView(
-                    title: "No published skills",
-                    message: "Right-click a canonical skill from ~/.agents/skills and choose Publish. Metagent will keep its local public-repository copy current without committing or pushing.",
-                    symbol: "shippingbox"
-                )
+                VStack(spacing: 8) {
+                    Image(systemName: "shippingbox")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("No published skills")
+                        .font(.callout.weight(.semibold))
+                    Text("Choose a canonical skill from ~/.agents/skills. Metagent will keep its public-repository copy current without committing or pushing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    skillPicker
+                    .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
@@ -47,6 +74,22 @@ struct PublishedSkillsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var skillPicker: some View {
+        Menu("Choose a Skill…", systemImage: "plus") {
+            if selectableSkills.isEmpty {
+                Text("No more publishable global skills found")
+            } else {
+                ForEach(selectableSkills) { skill in
+                    Button(skill.skillName) {
+                        onChooseSkill(skill)
+                    }
+                }
+            }
+        }
+        .disabled(selectableSkills.isEmpty || model.isPublicationSyncing)
+        .buttonStyle(.borderedProminent)
     }
 
     @ViewBuilder

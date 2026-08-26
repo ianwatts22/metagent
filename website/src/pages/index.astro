@@ -20,7 +20,7 @@ const surfaces = [
   {
     icon: McpServerIcon,
     label: "MCP",
-    detail: "Your agent reads its own setup before it starts guessing. Read-only, always.",
+    detail: "Your agent reads its own setup before it starts guessing. The MCP surface is read-only.",
   },
 ];
 
@@ -69,6 +69,7 @@ const controls = [
         <GitHubMark size={15} /> GitHub
       </a>
     </div>
+    <p class="download-requirements">macOS 26+ · Apple Silicon</p>
     <picture>
       <source
         srcset="/app-overview-dark.webp"
@@ -159,10 +160,11 @@ const controls = [
   </section>
 
   <section class="section centered closing">
-    <h2>100% free &amp; local.</h2>
+    <h2>free &amp; local-first.</h2>
     <p class="section-lede">
-      metagent reads your agent logs and writes its analysis to a SQLite file on
-      your own disk. no account, no server, nothing to upload.
+      inventory, usage history, and analysis stay on your Mac. the app sends
+      anonymous aggregate product analytics to PostHog by default; switch it
+      off any time in Settings. no account required.
     </p>
     <a
       class="primary-button"
@@ -170,5 +172,6 @@ const controls = [
     >
       Download
     </a>
+    <p class="download-requirements">macOS 26+ · Apple Silicon</p>
   </section>
 </SiteLayout>

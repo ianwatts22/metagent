@@ -75,6 +75,8 @@ struct SkillTableColumnCell: View {
             SkillScopeLocationCell(row: row)
         } else if column.id == "origin" {
             SkillSourceIconCell(category: row.sourceCategory, help: row.sourceHelp)
+        } else if column.id == "models" {
+            ModelReviewCell(row: row)
         } else if column.id == "last-used" {
             RelativeUsageDateCell(date: row.lastUsedDate)
                 .foregroundStyle(row.totalInvocations == 0 ? Color.secondary : Color.primary)
@@ -198,6 +200,19 @@ struct SkillTableColumnCell: View {
         defaultViews: [.summary, .inventory],
         value: \.updatedText,
         help: \.updatedHelp
+    ),
+    SkillColumnSpec(
+        id: "models",
+        title: "Models",
+        comparator: KeyPathComparator(\SkillTableRow.modelReviewSortValue, order: .reverse),
+        minWidth: 70,
+        idealWidth: 84,
+        isNumeric: false,
+        isMonospaced: false,
+        isPrimary: false,
+        defaultViews: [.summary, .inventory, .review],
+        value: \.modelReviewText,
+        help: \.modelReviewHelp
     ),
     SkillColumnSpec(
         id: "references",
@@ -570,6 +585,70 @@ struct SkillSourceIconCell: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         } else {
             Image(systemName: fallback)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ModelReviewCell: View {
+    let row: SkillTableRow
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(row.modelReviewGaps) { target in
+                providerMark(target)
+                    .frame(width: 17, height: 17)
+                    .padding(2)
+                    .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.orange.opacity(0.38), lineWidth: 0.75)
+                    }
+                    .accessibilityHidden(true)
+            }
+
+            if row.modelReviewGaps.isEmpty {
+                if !row.modelReviewUnknownTargets.isEmpty {
+                    Image(systemName: "questionmark.circle")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                } else {
+                    Text("—")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(row.modelReviewHelp)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.modelReviewText)
+        .accessibilityHint(row.modelReviewHelp)
+    }
+
+    @ViewBuilder
+    private func providerMark(_ target: ModelReviewTarget) -> some View {
+        switch target.provider {
+        case "openai":
+            applicationIcon(MCPClient.codex.bundleIdentifier, fallback: "O")
+        case "anthropic":
+            applicationIcon(MCPClient.claude.bundleIdentifier, fallback: "C")
+        default:
+            Text(String(target.providerName.prefix(1)).uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func applicationIcon(_ bundleIdentifier: String, fallback: String) -> some View {
+        if let icon = AppBrand.applicationIcon(bundleIdentifier: bundleIdentifier) {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        } else {
+            Text(fallback)
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
         }
     }

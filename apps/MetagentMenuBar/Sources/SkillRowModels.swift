@@ -278,7 +278,6 @@ struct SkillViewSelector: View {
         }
         .padding(4)
         .glassEffect(.regular, in: Capsule())
-        .accessibilityLabel("Skills view")
     }
 }
 
@@ -487,6 +486,35 @@ struct SkillTableRow: Identifiable, Sendable {
     var updatedSortValue: Int { inventory?.weeksOld ?? Int.max }
     var updatedText: String { inventory?.updatedText ?? "—" }
     var updatedHelp: String { inventory?.updatedHelp ?? "No installed update metadata is available." }
+    var modelReviewTargets: [ModelReviewTarget] { inventory?.modelReviewTargets ?? [] }
+    var modelReviewGaps: [ModelReviewTarget] { modelReviewTargets.filter(\.needsReview) }
+    var modelReviewUnknownTargets: [ModelReviewTarget] { modelReviewTargets.filter(\.isUnknown) }
+    var modelReviewSortValue: Int {
+        modelReviewGaps.count * 10 + (modelReviewUnknownTargets.isEmpty ? 0 : 1)
+    }
+    var modelReviewText: String {
+        if !modelReviewGaps.isEmpty {
+            return modelReviewGaps.map(\.providerName).joined(separator: ", ")
+        }
+        return modelReviewUnknownTargets.isEmpty ? "—" : "Unknown"
+    }
+    var modelReviewHelp: String {
+        guard !modelReviewTargets.isEmpty else {
+            return "No tracked model-release target is available."
+        }
+        let targets = modelReviewTargets.map { target in
+            let release = target.releaseDate.formatted(date: .abbreviated, time: .omitted)
+            guard let baseline = target.baselineDate else {
+                return "\(target.providerName): \(target.modelLabel) released \(release). This skill has no reliable change date, so review status is unknown."
+            }
+            let changed = baseline.formatted(date: .abbreviated, time: .omitted)
+            return target.needsReview
+                ? "\(target.providerName): \(target.modelLabel) released \(release); skill last changed or reviewed \(changed). Review suggested."
+                : "\(target.providerName): current through \(target.modelLabel), released \(release); skill changed or reviewed \(changed)."
+        }.joined(separator: "\n")
+        guard let fetchedAt = inventory?.modelReleaseCatalogFetchedAt else { return targets }
+        return targets + "\nModel catalog checked \(fetchedAt.formatted(date: .abbreviated, time: .shortened))."
+    }
     var referenceFileCount: Int { inventory?.referenceFileCount ?? -1 }
     var scriptFileCount: Int { inventory?.scriptFileCount ?? -1 }
     var skillIconPath: String? { inventory?.skillIconPath }
@@ -704,6 +732,8 @@ struct InventorySkillRow: Identifiable, Sendable {
     let codexReview: CodexSkillReview?
     let pluginEvalIsStale: Bool
     let codexReviewIsStale: Bool
+    var modelReviewTargets: [ModelReviewTarget] = []
+    var modelReleaseCatalogFetchedAt: Date? = nil
     var advisories: [SkillAdvisory] = []
 
     static func rows(
@@ -742,6 +772,12 @@ struct InventorySkillRow: Identifiable, Sendable {
                 let matchedUsage = usageByPath[canonicalPath]
                     ?? pluginUsageMatchKey(skill).flatMap { pluginUsageByKey[$0] }
                     ?? (skill.canonicalPath.isEmpty ? usageByIdentity["\(skill.name):\(skill.scope)"] : nil)
+                let modelReviewTargets = MetagentCore.modelReviewTargets(
+                    skillUpdatedAt: skill.updatedAt.flatMap(parseISO8601Date),
+                    affirmedAt: releaseAffirmations[canonicalPath],
+                    releases: modelReleases.releases,
+                    trackedProviders: trackedModelProviders
+                )
                 return InventorySkillRow(
                     project: project,
                     skill: skill,
@@ -756,12 +792,9 @@ struct InventorySkillRow: Identifiable, Sendable {
                     codexReview: evaluationsByPath[canonicalPath]?.codexReview,
                     pluginEvalIsStale: evaluations.stalePluginEvalPaths.contains(canonicalPath),
                     codexReviewIsStale: evaluations.staleCodexReviewPaths.contains(canonicalPath),
-                    advisories: MetagentCore.modelReleaseAdvisory(
-                        skillUpdatedAt: skill.updatedAt.flatMap(parseISO8601Date),
-                        affirmedAt: releaseAffirmations[canonicalPath],
-                        releases: modelReleases.releases,
-                        trackedProviders: trackedModelProviders
-                    ).map { [$0] } ?? []
+                    modelReviewTargets: modelReviewTargets,
+                    modelReleaseCatalogFetchedAt: modelReleases.fetchedAt,
+                    advisories: MetagentCore.modelReleaseAdvisory(targets: modelReviewTargets).map { [$0] } ?? []
                 )
             }
         }

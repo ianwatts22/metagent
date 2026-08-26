@@ -241,7 +241,17 @@ img {
   gap: 0.7rem;
   justify-content: center;
   margin-top: 2.2rem;
-}/* The picture only swaps sources; layout-wise the img stays the flex child. */
+}
+
+.download-requirements {
+  margin: 0.8rem 0 0;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+/* The picture only swaps sources; layout-wise the img stays the flex child. */
 .hero picture {
   display: contents;
 }
@@ -250,7 +260,9 @@ img {
   width: min(100%, 1060px);
   height: auto;
   margin-top: 3rem;
-}.section-tag {
+}
+
+.section-tag {
   margin: 0 0 1.4rem;
   color: var(--faint);
   font-family: var(--mono);

@@ -422,6 +422,9 @@ final class MetagentModel: ObservableObject {
             if let error = result.1 {
                 publicationStatusText = error
             }
+            ProductAnalytics.shared.capture(.skillPublicationEnabled(
+                result: result.0 == nil ? .failure : .success
+            ))
             finishQueuedPublicationSyncIfNeeded()
         }
         return true
@@ -472,6 +475,23 @@ final class MetagentModel: ObservableObject {
                 updatePublicationStatus()
             } else if let error = result.1 {
                 publicationStatusText = error
+            }
+            let enabled = publicationSnapshot.records.filter(\.automaticMirroringEnabled)
+            if !enabled.isEmpty {
+                let blockedCount = enabled.count { $0.state != .mirrored }
+                let analyticsResult: ProductAnalyticsResult
+                if result.0 == nil {
+                    analyticsResult = .failure
+                } else if blockedCount > 0 {
+                    analyticsResult = .partial
+                } else {
+                    analyticsResult = .success
+                }
+                ProductAnalytics.shared.capture(.skillPublicationSyncCompleted(
+                    result: analyticsResult,
+                    publishedSkillCount: enabled.count,
+                    blockedSkillCount: blockedCount
+                ))
             }
             isPublicationSyncing = false
             finishQueuedPublicationSyncIfNeeded()
@@ -1386,6 +1406,22 @@ final class MetagentModel: ObservableObject {
             statusText = "Status check failed"
             systemImage = "exclamationmark.triangle"
         }
+
+        let inventoryResult: ProductAnalyticsResult
+        if scan.isSuccess, homeScan.isSuccess, pluginScan.isSuccess, doctor.isSuccess {
+            inventoryResult = .success
+        } else if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
+            inventoryResult = .partial
+        } else {
+            inventoryResult = .failure
+        }
+        ProductAnalytics.shared.capture(.inventoryScanCompleted(
+            result: inventoryResult,
+            projectCount: repoCount,
+            skillCount: skillCount,
+            warningCount: warningCount,
+            failureCount: failureCount
+        ))
 
         finishRunningOperation()
     }

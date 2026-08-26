@@ -11,6 +11,10 @@ struct MetagentMenuBarApp: App {
     @State private var selectedSection = PanelSection.overview
     @State private var selectedProjectRoot: String?
 
+    init() {
+        ProductAnalytics.shared.capture(.appLaunched)
+    }
+
     var body: some Scene {
         WindowGroup("Metagent", id: "main") {
             MetagentPanel(

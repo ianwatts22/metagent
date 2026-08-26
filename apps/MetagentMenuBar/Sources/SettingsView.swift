@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var ignoreProjects: [String] = []
     @State private var maxDepth = 6
     @State private var trackedProviders: Set<String> = []
+    @State private var analyticsEnabled = ProductAnalytics.defaultEnabled
     @State private var loadError: String?
     @State private var saveError: String?
 
@@ -138,6 +139,21 @@ struct SettingsView: View {
                 }
             }
 
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Share anonymous usage data")
+                        .font(.headline)
+                    Text("Sends anonymous product analytics to PostHog to improve scanning, reliability, and skill publishing. Includes a persistent random install ID, app version, build, channel, action outcomes, and count ranges. Never sends skill names or content, file paths, account details, or screen recordings.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                Toggle("Share anonymous usage data", isOn: $analyticsEnabled)
+                    .labelsHidden()
+            }
+
             Divider()
 
             HStack(spacing: 10) {
@@ -208,6 +224,7 @@ struct SettingsView: View {
     }
 
     private func load() {
+        analyticsEnabled = ProductAnalytics.shared.isEnabled
         do {
             let config = try MetagentCore.loadUserConfig()
             roots = config.roots.uniqued()
@@ -230,6 +247,7 @@ struct SettingsView: View {
             model.setTrackedModelProviders(
                 MetagentCore.selectableModelProviders.map(\.key).filter(trackedProviders.contains)
             )
+            ProductAnalytics.shared.setEnabled(analyticsEnabled)
             model.refreshStatus()
             dismiss()
         } catch {

@@ -416,7 +416,16 @@ struct InventorySection: View {
             }
 
             if selectedView == .published {
-                PublishedSkillsView(model: model)
+                PublishedSkillsView(
+                    model: model,
+                    availableSkills: cachedRows
+                        .compactMap(\.inventory)
+                        .filter(model.isPrimaryPublishableSkill)
+                        .sorted {
+                            $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
+                        },
+                    onChooseSkill: { publicationTarget = $0 }
+                )
             } else if rows.isEmpty {
                 EmptyStateView(
                     title: selectedView == .duplicates

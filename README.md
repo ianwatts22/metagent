@@ -18,9 +18,21 @@ systems, and skill managers share one machine:
 The macOS app is the primary human interface. The `metagent` CLI and MCP server
 expose the same Swift core to terminals and agents.
 
-> **Status:** early developer preview for macOS 26+. Metagent is local-first and
-> does not upload inventory or usage history. Optional Codex skill review sends
-> only the selected, bounded skill copy to OpenAI after confirmation.
+> **Status:** early developer preview for macOS 26+ on Apple Silicon. Inventory
+> and usage history stay on your Mac. The native app sends anonymous aggregate
+> product analytics to PostHog by default; you can switch this off in Settings.
+> Optional Codex skill review sends only the selected, bounded skill copy to
+> OpenAI after confirmation.
+
+## Quick install
+
+1. Download the latest signed and notarized [Metagent DMG](https://github.com/ianwatts22/metagent/releases/latest/download/Metagent.dmg).
+2. Open the DMG and drag Metagent into Applications.
+3. Open Metagent. Future production updates arrive through Sparkle.
+
+Requires macOS 26 or newer and an Apple Silicon Mac.
+
+![Metagent overview showing skill health, usage, and MCP connections](public/app-overview-dark.webp)
 
 ## What it includes
 
@@ -190,6 +202,17 @@ treated as proof that a skill is useless.
 Passive MCP health reads local client configuration. It does not start servers,
 contact providers, inspect secrets, or claim that a configured server was
 successfully invoked.
+
+The native app sends four anonymous product events to PostHog: app launch,
+inventory scan completion, skill publication enabled, and publication sync
+completion. Events contain only the app version, build, channel, an outcome,
+and broad count ranges. They never contain skill names or content, file paths,
+account details, prompts, logs, or screen recordings. A random install ID keeps
+events from one installation together without an account or identity lookup.
+Turn off **Share anonymous usage data** in Settings to stop all app analytics.
+
+Optional Codex review is separate from analytics. It sends the selected skill
+and bounded project context to OpenAI only after explicit confirmation.
 
 ## Architecture
 

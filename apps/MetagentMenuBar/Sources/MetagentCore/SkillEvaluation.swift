@@ -493,7 +493,7 @@ public extension MetagentCore {
     /// the user's Codex history with one chat per skill. Codex returns one
     /// review object per requested skill; each result is hash-checked and
     /// stored independently, so one bad skill fails alone, not the batch.
-    public static func reviewSkillsWithCodexSession(
+    static func reviewSkillsWithCodexSession(
         targets: [(path: String, contextRoot: String?)],
         storePath: URL? = nil
     ) throws -> CodexBatchReviewOutcome {
