@@ -48,6 +48,16 @@ public struct MCPServerHealth: Codable, Equatable, Identifiable, Sendable {
 
     public var id: String { "\(client.rawValue):\(name)" }
 
+    /// The client-owned command that starts an interactive authentication
+    /// flow. Metagent launches it in Terminal; it never handles credentials.
+    public var authenticationCommand: [String]? {
+        guard state == .needsSignIn else { return nil }
+        return switch client {
+        case .codex: ["codex", "mcp", "login", name]
+        case .claude: nil
+        }
+    }
+
     public init(
         client: MCPClient,
         name: String,

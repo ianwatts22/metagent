@@ -8,10 +8,10 @@ struct MetagentPanel: View {
     @ObservedObject var model: MetagentModel
     let showsOpenWindowButton: Bool
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var updater: UpdaterModel
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
-    @State private var showsSettings = false
     @State private var showsFailureDetails = false
 
     private var directoryOptions: [DirectoryFilterOption] {
@@ -45,11 +45,7 @@ struct MetagentPanel: View {
             }
         }
         .onChange(of: updater.presentationDismissalRequest) {
-            showsSettings = false
             showsFailureDetails = false
-        }
-        .sheet(isPresented: $showsSettings) {
-            SettingsView(model: model)
         }
         .sheet(isPresented: $showsFailureDetails) {
             FailureDetailsView(model: model)
@@ -192,7 +188,7 @@ struct MetagentPanel: View {
 
     private var settingsControl: some View {
         Button {
-            showsSettings = true
+            openSettings()
         } label: {
             GlassMenuLabel(
                 title: nil,
@@ -348,7 +344,14 @@ struct SectionNavigationButton: View {
         // The enclosing track already supplies the glass, so the selected tab
         // is a solid fill rather than glass layered on glass.
         Button(action: action) {
-            Label(section.title, systemImage: section.symbol)
+            HStack(spacing: 6) {
+                if section == .mcps {
+                    MCPServerIcon(size: 15, weight: isSelected ? .semibold : .medium)
+                } else {
+                    Image(systemName: section.symbol)
+                }
+                Text(section.title)
+            }
                 .font(.callout.weight(isSelected ? .semibold : .medium))
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .frame(maxWidth: .infinity)

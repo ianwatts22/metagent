@@ -140,13 +140,20 @@ struct MCPInventorySection: View {
             }
 
             if rows.isEmpty {
-                EmptyStateView(
-                    title: allRows.isEmpty ? "No MCP servers found" : "No matching MCPs",
-                    message: allRows.isEmpty
+                VStack(spacing: 6) {
+                    MCPServerIcon(size: 24)
+                        .foregroundStyle(.secondary)
+                    Text(allRows.isEmpty ? "No MCP servers found" : "No matching MCPs")
+                        .font(.callout.weight(.semibold))
+                    Text(allRows.isEmpty
                         ? "Refresh after configuring an MCP server in Codex or Claude."
-                        : "Clear the search or choose a different status.",
-                    symbol: "server.rack"
-                )
+                        : "Clear the search or choose a different status.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("MCP", value: \.name) { row in
@@ -200,7 +207,21 @@ struct MCPMenuSection: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                MetricView(title: "Servers", value: "\(rows.count)", symbol: "server.rack")
+                HStack(spacing: 7) {
+                    MCPServerIcon(size: 16)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Servers")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(rows.count.formatted())
+                            .font(.callout.weight(.medium))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 MetricView(
                     title: "Attention",
                     value: "\(rows.filter { $0.state.needsAttention }.count)",

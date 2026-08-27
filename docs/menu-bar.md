@@ -190,6 +190,9 @@ are ignored so Metagent never offers an action for a missing worktree. Metagent
 does not approve the server, edit the manifest, or authenticate on the user's
 behalf. Pending servers are grouped into one actionable row per project,
 including when the same server name is awaiting approval in several projects.
+Codex servers that need OAuth expose an `Authenticate…` action. It opens Terminal
+and runs `codex mcp login <server>` so Codex owns the complete sign-in flow;
+Metagent never reads or stores the credential.
 
 For iterative SwiftUI work, run:
 

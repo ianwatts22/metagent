@@ -34,6 +34,11 @@ struct MetagentMenuBarApp: App {
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
 
+        Settings {
+            SettingsView(model: model)
+                .environmentObject(updater)
+        }
+
         MenuBarExtra {
             MetagentPanel(
                 model: model,

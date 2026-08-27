@@ -727,6 +727,11 @@ final class MetagentModel: ObservableObject {
     }
 
     func openMCPServer(_ server: MCPServerHealth) {
+        if let command = server.authenticationCommand {
+            openMCPAuthentication(command: command)
+            return
+        }
+
         if server.client == .claude,
            server.state == .pendingApproval,
            server.projectPaths.count == 1,
@@ -737,6 +742,48 @@ final class MetagentModel: ObservableObject {
         }
 
         openMCPClient(server.client)
+    }
+
+    private func openMCPAuthentication(command: [String]) {
+        let script = """
+        on run argv
+            set shellCommand to ""
+            repeat with argumentValue in argv
+                if shellCommand is not "" then set shellCommand to shellCommand & " "
+                set shellCommand to shellCommand & quoted form of argumentValue
+            end repeat
+            tell application "Terminal"
+                activate
+                do script "exec " & shellCommand
+            end tell
+        end run
+        """
+        let process = Process()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script, "--"] + command
+        process.standardError = standardError
+        process.terminationHandler = { [weak self] process in
+            guard process.terminationStatus != 0 else { return }
+            let data = standardError.fileHandleForReading.readDataToEndOfFile()
+            let message = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            Task { @MainActor [weak self] in
+                self?.recordTerminalLaunchFailure(
+                    title: "Could not start MCP authentication",
+                    message: message,
+                    status: process.terminationStatus
+                )
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            recordTerminalLaunchFailure(
+                title: "Could not start MCP authentication",
+                message: error.localizedDescription
+            )
+        }
     }
 
     private func openMCPClient(_ client: MCPClient) {
@@ -775,22 +822,34 @@ final class MetagentModel: ObservableObject {
             let message = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             Task { @MainActor [weak self] in
-                self?.lastOutputWasFailure = true
-                self?.lastOutputTitle = "Could not open Claude"
-                self?.lastOutputLines = [message.isEmpty
-                    ? "osascript exited with status \(process.terminationStatus)"
-                    : message]
-                self?.showsRawOutput = true
+                self?.recordTerminalLaunchFailure(
+                    title: "Could not open Claude",
+                    message: message,
+                    status: process.terminationStatus
+                )
             }
         }
         do {
             try process.run()
         } catch {
-            lastOutputWasFailure = true
-            lastOutputTitle = "Could not open Claude"
-            lastOutputLines = [error.localizedDescription]
-            showsRawOutput = true
+            recordTerminalLaunchFailure(
+                title: "Could not open Claude",
+                message: error.localizedDescription
+            )
         }
+    }
+
+    private func recordTerminalLaunchFailure(
+        title: String,
+        message: String,
+        status: Int32? = nil
+    ) {
+        lastOutputWasFailure = true
+        lastOutputTitle = title
+        lastOutputLines = [message.isEmpty
+            ? "osascript exited with status \(status ?? -1)"
+            : message]
+        showsRawOutput = true
     }
 
     func refreshUsage() {

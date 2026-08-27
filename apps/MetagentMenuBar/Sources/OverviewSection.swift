@@ -514,18 +514,14 @@ struct OverviewSection: View {
                     .foregroundStyle(.orange)
                     .frame(width: 28)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Needs attention")
-                        .font(.headline)
-                    Text(attentionSummaryText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Needs attention")
+                    .font(.headline)
 
                 Spacer()
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 13)
+            .padding(.vertical, 15)
+            .background(Color.orange.opacity(0.07))
 
             if doctorActionCount > 0 {
                 Divider()
@@ -548,8 +544,8 @@ struct OverviewSection: View {
 
                 OverviewAttentionRow(
                     symbol: "square.on.square",
-                    title: "Duplicate skills",
-                    detail: "\(skillHealth.duplicateGroupCount) \(skillHealth.duplicateGroupCount == 1 ? "group needs" : "groups need") review",
+                    title: "\(skillHealth.duplicateGroupCount) potential duplicate \(skillHealth.duplicateGroupCount == 1 ? "skill" : "skills")",
+                    detail: nil,
                     actionTitle: "Review…",
                     action: openDuplicateReview
                 )
@@ -571,10 +567,6 @@ struct OverviewSection: View {
         doctorActionCount
             + (isSkillHealthStale ? 0 : skillHealth.duplicateGroupCount)
             + attentionMCPRows.count
-    }
-
-    private var attentionSummaryText: String {
-        "\(overviewAttentionCount) \(overviewAttentionCount == 1 ? "item" : "items") across skills and MCP connections"
     }
 
     private var attentionMCPRows: [MCPHealthDisplayRow] {
@@ -740,11 +732,14 @@ struct OverviewSection: View {
                     detail: "\(group.count) project \(group.count == 1 ? "server needs" : "servers need") approval"
                 ))
             } else {
+                let needsAuthentication = server.state == .needsSignIn
                 rows.append(MCPHealthDisplayRow(
                     id: server.id,
                     server: server,
-                    title: "\(server.name) · \(server.client.displayName)",
-                    detail: server.detail
+                    title: needsAuthentication
+                        ? "\(server.name) MCP (\(server.client.displayName)) needs auth"
+                        : "\(server.name) · \(server.client.displayName)",
+                    detail: needsAuthentication ? nil : server.detail
                 ))
             }
         }
@@ -787,7 +782,7 @@ struct OverviewSection: View {
 struct OverviewAttentionRow: View {
     let symbol: String
     let title: String
-    let detail: String
+    let detail: String?
     let actionTitle: String
     let action: () -> Void
 
@@ -802,10 +797,12 @@ struct OverviewAttentionRow: View {
                 Text(title)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer(minLength: 12)
@@ -844,7 +841,7 @@ struct MCPHealthDisplayRow: Identifiable {
     let id: String
     let server: MCPServerHealth
     let title: String
-    let detail: String
+    let detail: String?
 }
 
 struct MCPHealthRow: View {
@@ -855,8 +852,7 @@ struct MCPHealthRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            Image(systemName: server.state.displaySymbol)
-                .font(.system(size: 13, weight: .semibold))
+            MCPServerIcon(size: 17, weight: .semibold)
                 .foregroundStyle(server.state.displayTint)
                 .frame(width: 22)
 
@@ -864,9 +860,11 @@ struct MCPHealthRow: View {
                 Text(row.title)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text(row.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let detail = row.detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: 12)
@@ -890,6 +888,9 @@ struct MCPHealthRow: View {
            server.projectPaths.count == 1
         {
             return "Resolve…"
+        }
+        if server.authenticationCommand != nil {
+            return "Authenticate…"
         }
         return switch server.client {
         case .codex:

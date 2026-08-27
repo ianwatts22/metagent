@@ -16,6 +16,9 @@ final class MCPHealthTests: XCTestCase {
 
         XCTAssertEqual(servers.map(\.state), [.configured, .needsSignIn, .disabled])
         XCTAssertFalse(servers[0].detail.localizedCaseInsensitiveContains("working"))
+        XCTAssertNil(servers[0].authenticationCommand)
+        XCTAssertEqual(servers[1].authenticationCommand, ["codex", "mcp", "login", "login"])
+        XCTAssertNil(servers[2].authenticationCommand)
     }
 
     func testClaudeInventoryCombinesDirectAndEnabledPluginConfiguration() throws {
