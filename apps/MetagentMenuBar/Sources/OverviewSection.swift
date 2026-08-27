@@ -889,7 +889,7 @@ struct MCPHealthRow: View {
         {
             return "Resolve…"
         }
-        if server.authenticationCommand != nil {
+        if server.supportsAuthentication {
             return "Authenticate…"
         }
         return switch server.client {

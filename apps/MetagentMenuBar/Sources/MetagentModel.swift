@@ -727,8 +727,17 @@ final class MetagentModel: ObservableObject {
     }
 
     func openMCPServer(_ server: MCPServerHealth) {
-        if let command = server.authenticationCommand {
-            openMCPAuthentication(command: command)
+        if server.supportsAuthentication {
+            do {
+                if let command = try MetagentCore.mcpAuthenticationCommand(for: server) {
+                    openMCPAuthentication(command: command)
+                }
+            } catch {
+                recordTerminalLaunchFailure(
+                    title: "Could not start MCP authentication",
+                    message: error.localizedDescription
+                )
+            }
             return
         }
 

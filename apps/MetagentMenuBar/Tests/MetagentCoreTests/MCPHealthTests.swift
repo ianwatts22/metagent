@@ -16,9 +16,21 @@ final class MCPHealthTests: XCTestCase {
 
         XCTAssertEqual(servers.map(\.state), [.configured, .needsSignIn, .disabled])
         XCTAssertFalse(servers[0].detail.localizedCaseInsensitiveContains("working"))
-        XCTAssertNil(servers[0].authenticationCommand)
-        XCTAssertEqual(servers[1].authenticationCommand, ["codex", "mcp", "login", "login"])
-        XCTAssertNil(servers[2].authenticationCommand)
+        let executable = URL(fileURLWithPath: "/opt/example/codex")
+        XCTAssertFalse(servers[0].supportsAuthentication)
+        XCTAssertNil(try MetagentCore.mcpAuthenticationCommand(
+            for: servers[0],
+            codexExecutableOverride: executable
+        ))
+        XCTAssertTrue(servers[1].supportsAuthentication)
+        XCTAssertEqual(
+            try MetagentCore.mcpAuthenticationCommand(
+                for: servers[1],
+                codexExecutableOverride: executable
+            ),
+            ["/opt/example/codex", "mcp", "login", "login"]
+        )
+        XCTAssertFalse(servers[2].supportsAuthentication)
     }
 
     func testClaudeInventoryCombinesDirectAndEnabledPluginConfiguration() throws {

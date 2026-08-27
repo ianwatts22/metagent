@@ -48,14 +48,8 @@ public struct MCPServerHealth: Codable, Equatable, Identifiable, Sendable {
 
     public var id: String { "\(client.rawValue):\(name)" }
 
-    /// The client-owned command that starts an interactive authentication
-    /// flow. Metagent launches it in Terminal; it never handles credentials.
-    public var authenticationCommand: [String]? {
-        guard state == .needsSignIn else { return nil }
-        return switch client {
-        case .codex: ["codex", "mcp", "login", name]
-        case .claude: nil
-        }
+    public var supportsAuthentication: Bool {
+        state == .needsSignIn && client == .codex
     }
 
     public init(
@@ -200,6 +194,18 @@ private struct CodexMCPEntry: Decodable {
 }
 
 public extension MetagentCore {
+    /// Returns the client-owned command for an interactive authentication
+    /// flow. The absolute executable path uses the same resolver as inventory,
+    /// so Terminal does not need to have Codex on its own PATH.
+    static func mcpAuthenticationCommand(
+        for server: MCPServerHealth,
+        codexExecutableOverride: URL? = nil
+    ) throws -> [String]? {
+        guard server.supportsAuthentication else { return nil }
+        let executable = try codexExecutableOverride ?? codexExecutable()
+        return [executable.path, "mcp", "login", server.name]
+    }
+
     /// Builds a passive MCP inventory. This never starts an MCP server, performs OAuth discovery,
     /// or invokes a tool. Codex's supported JSON inventory and Claude's local configuration are
     /// treated as configuration evidence, not proof that a connection currently works.
