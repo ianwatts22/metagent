@@ -7,23 +7,34 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
     public var databasePath: String?
     public var maxBytes: Int64
     public var maxFiles: Int
+    /// Maximum size of one JSONL record. This is intentionally independent
+    /// from `maxBytes`, which is the cooperative per-refresh slice budget.
+    public var maxRecordBytes: Int64
     public var throttleEveryBytes: Int64
     public var throttleDelayMilliseconds: Int
+    /// Zero means an explicit foreground refresh. A positive value makes this
+    /// a cooperative background refresh: only one app process may claim the
+    /// shared database during the interval.
+    public var minimumMaintenanceIntervalSeconds: TimeInterval
 
     public init(
         sessionRoots: [String] = [],
         databasePath: String? = nil,
         maxBytes: Int64 = 8 * 1_024 * 1_024,
         maxFiles: Int = 12,
+        maxRecordBytes: Int64 = 8 * 1_024 * 1_024,
         throttleEveryBytes: Int64 = 0,
-        throttleDelayMilliseconds: Int = 0
+        throttleDelayMilliseconds: Int = 0,
+        minimumMaintenanceIntervalSeconds: TimeInterval = 0
     ) {
         self.sessionRoots = sessionRoots
         self.databasePath = databasePath
         self.maxBytes = max(1, maxBytes)
         self.maxFiles = max(1, maxFiles)
+        self.maxRecordBytes = max(1, maxRecordBytes)
         self.throttleEveryBytes = max(0, throttleEveryBytes)
         self.throttleDelayMilliseconds = max(0, throttleDelayMilliseconds)
+        self.minimumMaintenanceIntervalSeconds = max(0, minimumMaintenanceIntervalSeconds)
     }
 }
 
@@ -96,6 +107,7 @@ public struct SkillUsageRefreshReport: Codable, Sendable, Equatable {
     public let processedBytesAdvanced: Int64
     public let invocationsAdded: Int
     public let hasMore: Bool
+    public let wasDeferred: Bool
     public let warnings: [String]
 }
 
@@ -278,6 +290,30 @@ private final class SkillUsageStore {
 
     func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageRefreshReport {
         try prepareParserVersion()
+        var maintenanceLeaseID: String?
+        if options.minimumMaintenanceIntervalSeconds > 0 {
+            guard let claimedLeaseID = try claimMaintenanceLease(
+                minimumIntervalSeconds: options.minimumMaintenanceIntervalSeconds
+            ) else {
+                let current = try snapshot()
+                return SkillUsageRefreshReport(
+                    snapshot: current,
+                    filesRead: 0,
+                    bytesRead: 0,
+                    processedBytesAdvanced: 0,
+                    invocationsAdded: 0,
+                    hasMore: !current.isBackfillComplete,
+                    wasDeferred: true,
+                    warnings: []
+                )
+            }
+            maintenanceLeaseID = claimedLeaseID
+        }
+        defer {
+            if let maintenanceLeaseID {
+                try? finishMaintenanceLease(id: maintenanceLeaseID)
+            }
+        }
         var states = try loadSourceStates()
         let sources = discoverSources(roots: options.sessionRoots, states: states)
         let sourcePaths = Set(sources.map(\.path))
@@ -353,6 +389,7 @@ private final class SkillUsageStore {
                 source: source,
                 state: state,
                 maxBytes: remainingBudget,
+                maxRecordBytes: options.maxRecordBytes,
                 throttleEveryBytes: options.throttleEveryBytes,
                 throttleDelayMilliseconds: options.throttleDelayMilliseconds,
                 throttleOffset: bytesRead,
@@ -378,8 +415,78 @@ private final class SkillUsageStore {
             processedBytesAdvanced: max(0, progress.processedBytes - startingProgress.processedBytes),
             invocationsAdded: invocationsAdded,
             hasMore: !sources.isEmpty && !progress.isComplete,
+            wasDeferred: false,
             warnings: warnings
         )
+    }
+
+    private func claimMaintenanceLease(minimumIntervalSeconds: TimeInterval) throws -> String? {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        let now = Date()
+        try exec(db, "BEGIN IMMEDIATE;")
+        do {
+            let lastFinished = try scalarText(
+                db,
+                "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_finished_at';"
+            ).flatMap(MetagentCore.parseSkillUsageTimestamp)
+            let leaseExpires = try scalarText(
+                db,
+                "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_lease_expires_at';"
+            ).flatMap(MetagentCore.parseSkillUsageTimestamp)
+            if lastFinished.map({ now.timeIntervalSince($0) < minimumIntervalSeconds }) == true
+                || leaseExpires.map({ $0 > now }) == true
+            {
+                try exec(db, "COMMIT;")
+                return nil
+            }
+            let leaseID = UUID().uuidString.lowercased()
+            try upsertMetadata(
+                db,
+                key: "maintenance_lease_expires_at",
+                value: iso8601Formatter.string(from: now.addingTimeInterval(5 * 60))
+            )
+            try upsertMetadata(db, key: "maintenance_lease_id", value: leaseID)
+            try exec(db, "COMMIT;")
+            return leaseID
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func finishMaintenanceLease(id: String) throws {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        try exec(db, "BEGIN IMMEDIATE;")
+        do {
+            let currentLeaseID = try scalarText(
+                db,
+                "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_lease_id';"
+            )
+            guard currentLeaseID == id else {
+                try exec(db, "COMMIT;")
+                return
+            }
+            try upsertMetadata(
+                db,
+                key: "maintenance_finished_at",
+                value: iso8601Formatter.string(from: Date())
+            )
+            try exec(
+                db,
+                "DELETE FROM \(skillUsageMetadataTable) "
+                    + "WHERE key IN ('maintenance_lease_expires_at', 'maintenance_lease_id');"
+            )
+            try exec(db, "COMMIT;")
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
+        }
     }
 
     func snapshot() throws -> SkillUsageSnapshot {
@@ -725,6 +832,7 @@ private final class SkillUsageStore {
         source: UsageSource,
         state initialState: UsageSourceState,
         maxBytes: Int64,
+        maxRecordBytes: Int64,
         throttleEveryBytes: Int64,
         throttleDelayMilliseconds: Int,
         throttleOffset: Int64,
@@ -768,9 +876,21 @@ private final class SkillUsageStore {
             let lineStart = Int64(ftello(file))
             let remainingLineBudget = maxBytes - bytesRead
             guard remainingLineBudget > 0 else { break }
-            let read = readBoundedLine(file, maxBytes: remainingLineBudget)
+            // The refresh byte limit is a soft scheduling boundary, not a
+            // record-size limit. If a record does not fit at the end of this
+            // slice, rewind it so the next slice can parse it whole. A record
+            // at the start of a slice may exceed the slice to ensure progress.
+            let lineReadLimit = bytesRead == 0
+                ? maxRecordBytes
+                : min(remainingLineBudget, maxRecordBytes)
+            let read = readBoundedLine(file, maxBytes: lineReadLimit)
             guard let read else { break }
             if read.exceededLimit {
+                if bytesRead > 0, remainingLineBudget < maxRecordBytes {
+                    fseeko(file, off_t(lineStart), SEEK_SET)
+                    state.offset = lineStart
+                    break
+                }
                 if !read.isTerminated {
                     discardRemainderOfLine(file)
                 }
@@ -787,9 +907,8 @@ private final class SkillUsageStore {
                 break
             }
             state.offset = Int64(ftello(file))
-            guard let line = String(data: read.data, encoding: .utf8) else { continue }
             parseLine(
-                line,
+                read.data,
                 lineOffset: lineStart,
                 sourcePath: source.path,
                 state: &state,
@@ -851,7 +970,7 @@ private final class SkillUsageStore {
     }
 
     private func parseLine(
-        _ line: String,
+        _ data: Data,
         lineOffset: Int64,
         sourcePath: String,
         state: inout UsageSourceState,
@@ -859,14 +978,8 @@ private final class SkillUsageStore {
         events: inout [ParsedUsageEvent],
         runs: inout [ParsedAgentRun]
     ) {
-        let isContext = line.contains("session_meta") || line.contains("turn_context")
-        let isRunEvent = line.contains("task_complete")
-        let isToolOutput = line.contains("tool_call_output")
-            || line.contains("function_call_output")
-            || line.contains("shell_call_output")
-        guard isContext || isRunEvent || isToolOutput || line.contains("SKILL.md") else { return }
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard Self.containsUsageMarker(in: data) else { return }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String,
               let payload = object["payload"] as? [String: Any]
         else { return }
@@ -988,6 +1101,25 @@ private final class SkillUsageStore {
             state.pendingEvents[callID] = pending
         }
     }
+
+    /// Most session records cannot affect usage or run timing. Inspect their
+    /// UTF-8 bytes before allocating a Swift String or decoding JSON. Large
+    /// retained histories contain millions of token and message records, so
+    /// this cheap gate is the difference between an incremental index and a
+    /// sustained CPU workload.
+    private static func containsUsageMarker(in data: Data) -> Bool {
+        usageMarkers.contains { data.range(of: $0) != nil }
+    }
+
+    private static let usageMarkers = [
+        Data("session_meta".utf8),
+        Data("turn_context".utf8),
+        Data("task_complete".utf8),
+        Data("tool_call_output".utf8),
+        Data("function_call_output".utf8),
+        Data("shell_call_output".utf8),
+        Data("SKILL.md".utf8),
+    ]
 
     private func outputConfirmsRead(_ event: ParsedUsageEvent, output: String) -> Bool {
         let escaped = NSRegularExpression.escapedPattern(for: event.skill.confirmationName)
@@ -2034,6 +2166,24 @@ private final class SkillUsageStore {
             values[text(statement, 0)] = text(statement, 1)
         }
         return values
+    }
+
+    private func upsertMetadata(
+        _ db: OpaquePointer?,
+        key: String,
+        value: String
+    ) throws {
+        var statement: OpaquePointer?
+        try prepare(db, """
+        INSERT INTO \(skillUsageMetadataTable) (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, key)
+        bind(statement, 2, value)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw databaseError(db, "save usage metadata")
+        }
     }
 
     private func scalarText(_ db: OpaquePointer?, _ sql: String) throws -> String? {

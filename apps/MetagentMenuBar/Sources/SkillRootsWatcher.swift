@@ -55,7 +55,7 @@ final class SkillRootsWatcher {
             normalized as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNoDefer)
+            FSEventStreamCreateFlags(0)
         ) else { return }
         self.stream = stream
         FSEventStreamSetDispatchQueue(stream, .main)

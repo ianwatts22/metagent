@@ -890,7 +890,44 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(startedAt), 0.05)
     }
 
-    func testSkipsARecordLargerThanTheByteLimitAndResumes() throws {
+    func testRetriesARecordThatCrossesTheRefreshSliceBoundary() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/boundary", name: "boundary")
+        let rollout = fixture.sessions.appendingPathComponent("rollout-boundary.jsonl")
+        let session = fixture.line(type: "session_meta", payload: [
+            "id": "boundary-session",
+            "cwd": fixture.root.path
+        ])
+        let toolCall = fixture.toolCall(
+            callID: "boundary-read",
+            command: "cat \(skill.path)",
+            outputOverride: String(repeating: "x", count: 2_000)
+        )
+        try fixture.write([session, toolCall], to: rollout)
+
+        let first = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: Int64(session.utf8.count + 128),
+            maxFiles: 20
+        ))
+        XCTAssertEqual(first.snapshot.totalInvocations, 0)
+        XCTAssertTrue(first.hasMore)
+        XCTAssertTrue(first.warnings.isEmpty)
+
+        let resumed = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 4_096,
+            maxFiles: 20
+        ))
+        XCTAssertEqual(resumed.snapshot.totalInvocations, 1)
+        XCTAssertTrue(resumed.snapshot.isBackfillComplete)
+        XCTAssertTrue(resumed.warnings.isEmpty)
+    }
+
+    func testSkipsARecordLargerThanTheRecordLimitAndResumes() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let skill = try fixture.makeSkill(at: "workspace/.agents/skills/oversized", name: "oversized")
@@ -908,7 +945,8 @@ final class SkillUsageTests: XCTestCase {
             sessionRoots: [fixture.sessions.path],
             databasePath: fixture.database.path,
             maxBytes: 1_024,
-            maxFiles: 20
+            maxFiles: 20,
+            maxRecordBytes: 1_024
         ))
         XCTAssertGreaterThan(report.bytesRead, 1_024)
         XCTAssertGreaterThan(report.processedBytesAdvanced, 1_024)
@@ -1174,6 +1212,51 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(cutover.snapshot.isBackfillComplete)
         XCTAssertFalse(cutover.snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(cutover.snapshot.displayParserVersion, 17)
+    }
+
+    func testMaintenanceIntervalDefersDuplicateBackgroundWorkButNotManualRefresh() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/maintenance",
+            name: "maintenance"
+        )
+        for index in 0..<3 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: [
+                    "id": "maintenance-session-\(index)",
+                    "cwd": fixture.root.path
+                ]),
+                fixture.toolCall(
+                    callID: "maintenance-read-\(index)",
+                    command: "cat \(skill.path)"
+                )
+            ], to: fixture.sessions.appendingPathComponent("rollout-maintenance-\(index).jsonl"))
+        }
+        let maintenanceOptions = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 1,
+            minimumMaintenanceIntervalSeconds: 60
+        )
+
+        let first = try MetagentCore.refreshSkillUsage(options: maintenanceOptions)
+        XCTAssertFalse(first.wasDeferred)
+        XCTAssertEqual(first.filesRead, 1)
+        XCTAssertTrue(first.hasMore)
+
+        let duplicate = try MetagentCore.refreshSkillUsage(options: maintenanceOptions)
+        XCTAssertTrue(duplicate.wasDeferred)
+        XCTAssertEqual(duplicate.filesRead, 0)
+        XCTAssertEqual(duplicate.processedBytesAdvanced, 0)
+        XCTAssertTrue(duplicate.hasMore)
+
+        var manualOptions = maintenanceOptions
+        manualOptions.minimumMaintenanceIntervalSeconds = 0
+        let manual = try MetagentCore.refreshSkillUsage(options: manualOptions)
+        XCTAssertFalse(manual.wasDeferred)
+        XCTAssertEqual(manual.filesRead, 1)
     }
 }
 

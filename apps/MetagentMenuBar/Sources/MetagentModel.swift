@@ -78,7 +78,16 @@ final class MetagentModel: ObservableObject {
     private var historyBackfillAwaitingCompleteUsage = false
     private var pendingHistoryTrigger: SkillHistoryTrigger?
     private var pluginAutoUpdateTask: Task<Void, Never>?
+    private var usageMaintenanceTask: Task<Void, Never>?
+    private var usageForegroundRefreshQueued = false
     private var publicationSyncQueued = false
+    private var codebaseSizeRefreshQueued = false
+
+    /// A refresh advances recent usage by one bounded slice. Historical parser
+    /// upgrades can span tens of gigabytes; the menu-bar app must never turn
+    /// that maintenance into an unbounded, full-core loop.
+    private static let usageRefreshSliceBytes: Int64 = 8 * 1_024 * 1_024
+    private static let usageRefreshSliceFiles = 12
 
     init() {
         if let snapshot = MetagentCore.loadInventorySnapshot() {
@@ -135,10 +144,13 @@ final class MetagentModel: ObservableObject {
         reconcileSkillPublications()
         // Our own mutations already end in a rescan; their file events would
         // only buy a second, redundant one.
-        guard !isRunning, !isRemovingSkills, !isReconcilingSkillRemovals else { return }
+        guard !isRunning,
+              !isRemovingSkills,
+              !isReconcilingSkillRemovals,
+              !isUpdatingPlugins
+        else { return }
         guard Date().timeIntervalSince(lastStatusAppliedAt) > 3 else { return }
         refreshStatus()
-        refreshUsage()
     }
 
     /// Refreshes when the last landed scan is old enough to matter. Called when
@@ -567,15 +579,14 @@ final class MetagentModel: ObservableObject {
         coreStatusText = "Swift core"
 
         Task {
-            async let doctorResult = Task.detached {
-                Result { try MetagentCore.doctor() }
-            }.value
             async let evaluationResult = Task.detached(priority: .utility) {
                 MetagentCore.loadSkillEvaluationSnapshot()
             }.value
             let (scan, homeScan, pluginScan) = await Self.scanInventory()
-            let doctor = await doctorResult
             let evaluations = await evaluationResult
+            let doctor = await Task.detached(priority: .utility) {
+                Self.doctorResult(scan: scan, homeScan: homeScan)
+            }.value
 
             applyStatus(
                 scan: scan,
@@ -599,16 +610,15 @@ final class MetagentModel: ObservableObject {
         runQueuedStatusRefreshIfNeeded()
     }
 
-    /// Sizes every known project root that is a git repository. This walks each
-    /// repository's tracked files, so it runs off the main actor and replaces
-    /// the published map only once the whole sweep finishes.
+    /// Sizes every known project root that is a git repository. The Projects
+    /// view calls this only while it is visible; ordinary inventory refreshes
+    /// do not need to open every tracked source file on the machine.
     func refreshCodebaseSizes() {
-        guard !isCodebaseSizeRefreshing else { return }
-        let roots = directoryFilterOptions(
-            projects: projects,
-            mcpHealth: mcpHealth,
-            doctorIssues: doctorIssues
-        ).map(\.root)
+        guard !isCodebaseSizeRefreshing else {
+            codebaseSizeRefreshQueued = true
+            return
+        }
+        let roots = codebaseSizeRoots
         guard !roots.isEmpty else {
             codebaseSizes = [:]
             return
@@ -616,11 +626,30 @@ final class MetagentModel: ObservableObject {
 
         isCodebaseSizeRefreshing = true
         Task {
-            codebaseSizes = await Task.detached(priority: .utility) {
+            let measured = await Task.detached(priority: .utility) {
                 MetagentCore.measureCodebaseSizes(roots: roots)
             }.value
+            if roots == codebaseSizeRoots {
+                codebaseSizes = measured
+            }
             isCodebaseSizeRefreshing = false
+            if codebaseSizeRefreshQueued {
+                codebaseSizeRefreshQueued = false
+                refreshCodebaseSizes()
+            }
         }
+    }
+
+    var codebaseSizeInputKey: String {
+        codebaseSizeRoots.joined(separator: "\u{1F}")
+    }
+
+    private var codebaseSizeRoots: [String] {
+        directoryFilterOptions(
+            projects: projects,
+            mcpHealth: mcpHealth,
+            doctorIssues: doctorIssues
+        ).map(\.root).sorted()
     }
 
     func refreshMCPHealth() {
@@ -720,7 +749,6 @@ final class MetagentModel: ObservableObject {
             if report.updatedCount > 0 {
                 // Versions moved, so the plugin list and any plugin-provided
                 // skills are stale; one scheduled refresh reconciles both.
-                refreshPluginInventory()
                 refreshStatus()
             }
         }
@@ -861,39 +889,50 @@ final class MetagentModel: ObservableObject {
         showsRawOutput = true
     }
 
-    func refreshUsage() {
+    func refreshUsage(maintenancePlan: SkillUsageMaintenancePlan? = nil) {
+        if maintenancePlan == nil {
+            usageMaintenanceTask?.cancel()
+            usageMaintenanceTask = nil
+            if isUsageRefreshing {
+                usageForegroundRefreshQueued = true
+                return
+            }
+        }
         guard !isUsageRefreshing else { return }
         isUsageRefreshing = true
         isUsageIndexingStalled = false
         usageStatusText = usageSnapshot.totalFiles == 0 ? "Discovering Codex history…" : "Updating usage history…"
+        let maxBytes = maintenancePlan?.maxBytes ?? Self.usageRefreshSliceBytes
+        let maxFiles = maintenancePlan?.maxFiles ?? Self.usageRefreshSliceFiles
+        let minimumMaintenanceInterval = maintenancePlan?.delaySeconds ?? 0
 
         Task {
+            var shouldContinueMaintenance = false
             do {
-                while true {
-                    let report = try await Task.detached(priority: .background) {
-                        try autoreleasepool {
-                            try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
-                                maxBytes: 64 * 1_024 * 1_024,
-                                maxFiles: 200,
-                                throttleEveryBytes: 16 * 1_024 * 1_024,
-                                throttleDelayMilliseconds: 500
-                            ))
-                        }
-                    }.value
-                    usageSnapshot = report.snapshot
-                    skillTableRevision += 1
-                    usageStatusText = Self.usageStatus(report.snapshot)
-                    guard report.hasMore else { break }
-                    guard report.processedBytesAdvanced > 0 else {
-                        if let warning = report.warnings.first {
-                            usageStatusText = "Usage backfill paused: \(warning)"
-                        } else {
-                            usageStatusText = "Usage backfill paused at an incomplete session record"
-                        }
-                        isUsageIndexingStalled = true
-                        break
+                let report = try await Task.detached(priority: .background) {
+                    try autoreleasepool {
+                        try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                            maxBytes: maxBytes,
+                            maxFiles: maxFiles,
+                            minimumMaintenanceIntervalSeconds: minimumMaintenanceInterval
+                        ))
                     }
-                    try await Task.sleep(for: .milliseconds(500))
+                }.value
+                usageSnapshot = report.snapshot
+                skillTableRevision += 1
+                usageStatusText = Self.usageStatus(report.snapshot)
+                shouldContinueMaintenance = report.hasMore
+                    && (report.wasDeferred || report.processedBytesAdvanced > 0)
+                if report.hasMore,
+                   !report.wasDeferred,
+                   report.processedBytesAdvanced == 0
+                {
+                    if let warning = report.warnings.first {
+                        usageStatusText = "Usage backfill paused: \(warning)"
+                    } else {
+                        usageStatusText = "Usage backfill paused at an incomplete session record"
+                    }
+                    isUsageIndexingStalled = true
                 }
             } catch is CancellationError {
                 usageStatusText = Self.usageStatus(usageSnapshot)
@@ -902,10 +941,43 @@ final class MetagentModel: ObservableObject {
                 isUsageIndexingStalled = true
             }
             isUsageRefreshing = false
+            let shouldRunForegroundRefresh = usageForegroundRefreshQueued
+            usageForegroundRefreshQueued = false
+            if shouldRunForegroundRefresh {
+                refreshUsage()
+            } else if shouldContinueMaintenance {
+                scheduleUsageMaintenance()
+            }
             if let trigger = pendingHistoryTrigger {
                 pendingHistoryTrigger = nil
                 recordHistory(trigger: trigger)
+            } else if usageSnapshot.isBackfillComplete,
+                      historyBackfillAwaitingCompleteUsage
+            {
+                // The first bounded slice recorded a partial reconstruction.
+                // Retry exactly when later maintenance reaches full coverage.
+                recordHistory(trigger: hasCapturedHistory ? .refresh : .launch)
             }
+        }
+    }
+
+    private func scheduleUsageMaintenance() {
+        usageMaintenanceTask?.cancel()
+        let processInfo = ProcessInfo.processInfo
+        let isThermallyConstrained = processInfo.thermalState == .serious
+            || processInfo.thermalState == .critical
+        let plan = SkillUsageMaintenancePlan.recommended(
+            isEnergyConstrained: processInfo.isLowPowerModeEnabled || isThermallyConstrained
+        )
+        usageMaintenanceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(plan.delaySeconds))
+            guard !Task.isCancelled, let self else { return }
+            usageMaintenanceTask = nil
+            if isRunning || isSkillEvaluating || isCodebaseSizeRefreshing {
+                scheduleUsageMaintenance()
+                return
+            }
+            refreshUsage(maintenancePlan: plan)
         }
     }
 
@@ -1454,8 +1526,6 @@ final class MetagentModel: ObservableObject {
             failureCount = 0
         }
 
-        refreshCodebaseSizes()
-
         if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
             clearResolvedStatusFailure()
             statusText = "\(repoCount) locations, \(skillCount) skills"
@@ -1590,6 +1660,35 @@ final class MetagentModel: ObservableObject {
             Result { try MetagentCore.scanCodexPlugins() }
         }.value
         return await (scanResult, homeScanResult, pluginScanResult)
+    }
+
+    nonisolated private static func doctorResult(
+        scan: Result<SkillScanReport, Error>,
+        homeScan: Result<SkillScanReport, Error>
+    ) -> Result<DoctorReport, Error> {
+        switch scan {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let report):
+            let homeReport: SkillScanReport
+            switch homeScan {
+            case .failure(let error):
+                return .failure(error)
+            case .success(let report):
+                homeReport = report
+            }
+            var projects = report.projects
+            let homePath = FileManager.default.homeDirectoryForCurrentUser
+                .standardizedFileURL.path
+            if let homeProject = homeReport.projects.first(where: {
+                URL(fileURLWithPath: $0.root).standardizedFileURL.path == homePath
+            }), !projects.contains(where: {
+                URL(fileURLWithPath: $0.root).standardizedFileURL.path == homePath
+            }) {
+                projects.append(homeProject)
+            }
+            return .success(MetagentCore.doctor(projects: projects))
+        }
     }
 
     @discardableResult

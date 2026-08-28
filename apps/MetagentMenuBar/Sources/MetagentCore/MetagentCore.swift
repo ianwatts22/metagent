@@ -212,6 +212,12 @@ public enum MetagentCore {
         if options.roots.isEmpty {
             try appendHomeProjectIfMissing(&projects)
         }
+        return doctor(projects: projects)
+    }
+
+    /// Audits an inventory that has already been scanned. The app uses this
+    /// overload so one refresh does not walk every configured root twice.
+    public static func doctor(projects: [SkillProject]) -> DoctorReport {
         var issues: [DoctorIssue] = []
 
         if projects.isEmpty {

@@ -261,6 +261,9 @@ struct ProjectsSection: View {
                 }
             }
         }
+        .task(id: model.codebaseSizeInputKey) {
+            model.refreshCodebaseSizes()
+        }
         .frame(maxHeight: .infinity, alignment: .top)
     }
 }
