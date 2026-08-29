@@ -57,6 +57,13 @@ final class SkillUsageTests: XCTestCase {
         }
     }
 
+    func testContinuationCatalogArmsOnlyAfterQueuedCallbacksDrain() {
+        XCTAssertTrue(
+            MetagentCore.skillUsageCatalogArmingDrainsQueuedCallbacksForTesting(),
+            "callbacks queued by the initial flush must run while the catalog is disarmed"
+        )
+    }
+
     func testAgentRunDurationStatsUseCompletedCodexTasksAndProjectScope() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

@@ -364,6 +364,19 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     }
 }
 
+private func armUsageSourceCatalogWatcherState(
+    _ state: UsageSourceCatalogWatcherState,
+    afterDraining queue: DispatchQueue
+) {
+    // FSEventStreamFlushSync can return after callback blocks have been queued
+    // but before that dispatch queue has executed them. The serial barrier
+    // makes every callback queued before this point observe the disarmed
+    // baseline; callbacks queued afterward observe the armed catalog.
+    queue.sync {
+        state.armAfterInitialFlush()
+    }
+}
+
 private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     private let state = UsageSourceCatalogWatcherState()
     private let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog")
@@ -419,7 +432,7 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
             // stream starts. Drain those before discovery establishes the
             // catalog baseline. Later events invalidate the baseline normally.
             FSEventStreamFlushSync(created)
-            state.armAfterInitialFlush()
+            armUsageSourceCatalogWatcherState(state, afterDraining: queue)
         } else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
@@ -557,6 +570,16 @@ extension MetagentCore {
         eventFlags: FSEventStreamEventFlags
     ) -> Bool {
         shouldInvalidateUsageSourceCatalog(eventFlags)
+    }
+
+    static func skillUsageCatalogArmingDrainsQueuedCallbacksForTesting() -> Bool {
+        let state = UsageSourceCatalogWatcherState()
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog-test")
+        queue.async {
+            state.handle(FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))
+        }
+        armUsageSourceCatalogWatcherState(state, afterDraining: queue)
+        return !state.isDirty
     }
 }
 
