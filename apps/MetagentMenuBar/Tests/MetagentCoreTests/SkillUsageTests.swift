@@ -60,8 +60,135 @@ final class SkillUsageTests: XCTestCase {
     func testContinuationCatalogArmsOnlyAfterQueuedCallbacksDrain() {
         XCTAssertTrue(
             MetagentCore.skillUsageCatalogArmingDrainsQueuedCallbacksForTesting(),
-            "callbacks queued by the initial flush must run while the catalog is disarmed"
+            "callbacks queued before the event watermark must run while the catalog is disarmed"
         )
+    }
+
+    func testContinuationCatalogUsesEventWatermarkInsteadOfCallbackTiming() {
+        let modified = FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)
+        XCTAssertFalse(MetagentCore.skillUsageCatalogInvalidatesEventForTesting(
+            baselineEventID: 100,
+            eventID: 100,
+            flags: modified
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesEventForTesting(
+            baselineEventID: 100,
+            eventID: 101,
+            flags: modified
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesEventForTesting(
+            baselineEventID: 100,
+            eventID: 1,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped)
+        ))
+    }
+
+    func testContinuationCatalogCanonicalizesWatchRootsAndInvalidatesRootChanges() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let linkedRoot = fixture.root.appendingPathComponent("linked-sessions")
+        try FileManager.default.createSymbolicLink(
+            at: linkedRoot,
+            withDestinationURL: fixture.sessions
+        )
+        let realHome = fixture.root.appendingPathComponent("real-home")
+        let linkedHome = fixture.root.appendingPathComponent("linked-home")
+        try FileManager.default.createDirectory(
+            at: realHome.appendingPathComponent("sessions"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: linkedHome, withDestinationURL: realHome)
+        XCTAssertEqual(
+            MetagentCore.canonicalSkillUsageWatchPathsForTesting([
+                fixture.sessions.path,
+                fixture.sessions.resolvingSymlinksInPath().path,
+            ]),
+            [fixture.sessions.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+        XCTAssertEqual(
+            MetagentCore.canonicalSkillUsageWatchPathsForTesting([linkedRoot.path]),
+            [
+                linkedRoot.deletingLastPathComponent()
+                    .resolvingSymlinksInPath()
+                    .appendingPathComponent(linkedRoot.lastPathComponent)
+                    .standardizedFileURL.path,
+            ],
+            "the final component must stay unresolved so mutable symlinks remain detectable"
+        )
+        XCTAssertTrue(MetagentCore.skillUsageWatchSupportsReuseForTesting([
+            fixture.sessions.path,
+        ]))
+        XCTAssertFalse(MetagentCore.skillUsageWatchSupportsReuseForTesting(["/"]))
+        XCTAssertFalse(MetagentCore.skillUsageWatchSupportsReuseForTesting(["/Users"]))
+        XCTAssertFalse(MetagentCore.skillUsageWatchSupportsReuseForTesting([
+            linkedRoot.path,
+        ]))
+        XCTAssertFalse(MetagentCore.skillUsageWatchSupportsReuseForTesting([
+            linkedHome.appendingPathComponent("sessions").path,
+        ]))
+        let initiallyMissing = fixture.root.appendingPathComponent("initially-missing")
+        XCTAssertTrue(MetagentCore.skillUsageRootIsMissingForTesting(initiallyMissing.path))
+        try FileManager.default.createDirectory(
+            at: initiallyMissing,
+            withIntermediateDirectories: true
+        )
+        XCTAssertFalse(MetagentCore.skillUsageRootIsMissingForTesting(initiallyMissing.path))
+        let identityWatchPaths = MetagentCore.skillUsageIdentityWatchPathsForTesting([
+            fixture.sessions.path,
+        ])
+        XCTAssertTrue(identityWatchPaths.contains(fixture.sessions.path))
+        XCTAssertTrue(identityWatchPaths.contains(fixture.root.path))
+        XCTAssertTrue(MetagentCore.skillUsageEventInvalidatesRootsForTesting(
+            eventPath: fixture.sessions.path,
+            roots: [fixture.sessions.path]
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageEventInvalidatesRootsForTesting(
+            eventPath: fixture.sessions.appendingPathComponent("new.jsonl").path,
+            roots: [fixture.sessions.path]
+        ))
+        XCTAssertFalse(MetagentCore.skillUsageEventInvalidatesRootsForTesting(
+            eventPath: fixture.root.appendingPathComponent("unrelated.jsonl").path,
+            roots: [fixture.sessions.path]
+        ))
+        XCTAssertFalse(MetagentCore.skillUsageEventInvalidatesRootsForTesting(
+            eventPath: fixture.root.appendingPathComponent("renamed-sessions").path,
+            roots: [fixture.sessions.path]
+        ))
+        let renameSource = fixture.root.appendingPathComponent("rename-source")
+        let renameDestination = fixture.root.appendingPathComponent("rename-destination")
+        try FileManager.default.createDirectory(
+            at: renameSource,
+            withIntermediateDirectories: true
+        )
+        XCTAssertTrue(try MetagentCore.skillUsageRootWatcherDetectsRenameForTesting(
+            rootPath: renameSource.path,
+            renamedPath: renameDestination.path
+        ))
+        let ancestorSource = fixture.root.appendingPathComponent("ancestor-source")
+        let descendantRoot = ancestorSource.appendingPathComponent("nested/sessions")
+        let ancestorDestination = fixture.root.appendingPathComponent("ancestor-destination")
+        try FileManager.default.createDirectory(
+            at: descendantRoot,
+            withIntermediateDirectories: true
+        )
+        XCTAssertTrue(try MetagentCore.skillUsageRootWatcherDetectsAncestorRenameForTesting(
+            rootPath: descendantRoot.path,
+            ancestorPath: ancestorSource.path,
+            renamedAncestorPath: ancestorDestination.path
+        ))
+        let deleteSource = fixture.root.appendingPathComponent("delete-source")
+        try FileManager.default.createDirectory(
+            at: deleteSource,
+            withIntermediateDirectories: true
+        )
+        XCTAssertTrue(try MetagentCore.skillUsageRootWatcherDetectsDeleteForTesting(
+            rootPath: deleteSource.path
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesEventForTesting(
+            baselineEventID: 100,
+            eventID: 0,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged)
+        ))
     }
 
     func testAgentRunDurationStatsUseCompletedCodexTasksAndProjectScope() throws {

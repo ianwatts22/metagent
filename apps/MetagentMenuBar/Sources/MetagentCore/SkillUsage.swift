@@ -330,10 +330,85 @@ private func shouldInvalidateUsageSourceCatalog(
     flags & usageSourceCatalogInvalidatingEventFlags != 0
 }
 
+private func canonicalUsageWatchPaths(_ paths: [String]) -> [String] {
+    Array(Set(paths.map { path in
+        let root = URL(fileURLWithPath: path).standardizedFileURL
+        guard root.path != "/" else { return root.path }
+        // Resolve aliases in the parent chain (notably macOS's /var ->
+        // /private/var) without resolving the watched directory itself. A
+        // user-configured root may intentionally be a mutable symlink, which
+        // the cache must detect and decline rather than silently pinning to its
+        // current target.
+        return root.deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .appendingPathComponent(root.lastPathComponent)
+            .standardizedFileURL
+            .path
+    })).sorted()
+}
+
+private let stableSystemSymlinkPaths: Set<String> = ["/etc", "/tmp", "/var"]
+
+private func usagePathContainsMutableSymlink(_ path: String) -> Bool {
+    let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+    var candidate = URL(fileURLWithPath: "/", isDirectory: true)
+    for component in components.dropFirst() {
+        candidate.appendPathComponent(component)
+        var metadata = stat()
+        guard lstat(candidate.path, &metadata) == 0 else { continue }
+        let isSymlink = metadata.st_mode & S_IFMT == S_IFLNK
+        if isSymlink, !stableSystemSymlinkPaths.contains(candidate.path) {
+            return true
+        }
+    }
+    return false
+}
+
+private func usageRootIsMissing(_ path: String) -> Bool {
+    var metadata = stat()
+    return lstat(path, &metadata) != 0 && errno == ENOENT
+}
+
+private func usageIdentityWatchPaths(_ roots: [String]) -> [String] {
+    var paths: Set<String> = []
+    for root in roots {
+        var current = URL(fileURLWithPath: root).standardizedFileURL
+        while current.path != "/" {
+            paths.insert(current.path)
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != current.path else { break }
+            current = parent
+        }
+    }
+    return paths.sorted()
+}
+
+private func usageStreamWatchPaths(_ roots: [String]) -> [String] {
+    Array(Set(roots.map { root in
+        URL(fileURLWithPath: root)
+            .deletingLastPathComponent().standardizedFileURL.path
+    })).sorted()
+}
+
+private func usageEventInvalidatesRoots(
+    _ eventPath: String,
+    roots: [String]
+) -> Bool {
+    let normalizedEventPath = canonicalUsageWatchPaths([eventPath]).first ?? eventPath
+    return roots.contains { root in
+        normalizedEventPath == root || normalizedEventPath.hasPrefix(root + "/")
+    }
+}
+
 private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
+    private let roots: [String]
     private let lock = NSLock()
-    private var armed = false
+    private var baselineEventID: FSEventStreamEventId?
     private var dirty = false
+
+    init(roots: [String] = []) {
+        self.roots = roots
+    }
 
     var isDirty: Bool {
         lock.lock()
@@ -341,17 +416,41 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
         return dirty
     }
 
-    func armAfterInitialFlush() {
+    func arm(baselineEventID: FSEventStreamEventId) {
         lock.lock()
         dirty = false
-        armed = true
+        self.baselineEventID = baselineEventID
         lock.unlock()
     }
 
-    func handle(_ flags: FSEventStreamEventFlags) {
+    func handle(
+        _ flags: FSEventStreamEventFlags,
+        eventID: FSEventStreamEventId,
+        eventPath: String? = nil
+    ) {
         guard shouldInvalidateUsageSourceCatalog(flags) else { return }
+        let mustInvalidateWholeTree = flags & FSEventStreamEventFlags(
+            kFSEventStreamEventFlagMustScanSubDirs |
+                kFSEventStreamEventFlagUserDropped |
+                kFSEventStreamEventFlagKernelDropped |
+                kFSEventStreamEventFlagEventIdsWrapped |
+                kFSEventStreamEventFlagRootChanged
+        ) != 0
+        if !mustInvalidateWholeTree,
+           !roots.isEmpty,
+           let eventPath,
+           !usageEventInvalidatesRoots(eventPath, roots: roots)
+        {
+            return
+        }
+
         lock.lock()
-        if armed {
+        if let baselineEventID,
+           (flags & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0
+            || flags & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped) != 0
+            || eventID == 0
+            || eventID > baselineEventID)
+        {
             dirty = true
         }
         lock.unlock()
@@ -364,27 +463,90 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     }
 }
 
+private final class UsageRootChangeWatcher: @unchecked Sendable {
+    private let source: DispatchSourceFileSystemObject
+
+    init?(path: String, queue: DispatchQueue, onChange: @escaping @Sendable () -> Void) {
+        let descriptor = Darwin.open(path, O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.delete, .rename, .revoke],
+            queue: queue
+        )
+        source.setEventHandler(handler: onChange)
+        source.setCancelHandler { Darwin.close(descriptor) }
+        source.resume()
+    }
+
+    deinit {
+        source.cancel()
+    }
+}
+
 private func armUsageSourceCatalogWatcherState(
     _ state: UsageSourceCatalogWatcherState,
-    afterDraining queue: DispatchQueue
+    on queue: DispatchQueue
 ) {
-    // FSEventStreamFlushSync can return after callback blocks have been queued
-    // but before that dispatch queue has executed them. The serial barrier
-    // makes every callback queued before this point observe the disarmed
-    // baseline; callbacks queued afterward observe the armed catalog.
+    // Capture the system event watermark on the callback queue. Events
+    // generated before it are reflected by the full discovery that starts
+    // after this block; later events invalidate even if callbacks arrive out
+    // of order. Root-change events always invalidate once armed.
     queue.sync {
-        state.armAfterInitialFlush()
+        state.arm(baselineEventID: FSEventsGetCurrentEventId())
     }
 }
 
 private final class UsageSourceCatalogWatcher: @unchecked Sendable {
-    private let state = UsageSourceCatalogWatcherState()
+    private let state: UsageSourceCatalogWatcherState
     private let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog")
     private var stream: FSEventStreamRef?
+    private var identityChangeWatchers: [UsageRootChangeWatcher] = []
+    private var missingIdentityPathsWithoutDescriptors: [String] = []
     private(set) var isStarted = false
 
     init(paths: [String]) {
-        guard !paths.isEmpty else { return }
+        // A mutable symlink anywhere in a configured root can be retargeted
+        // outside every stream created for its old hierarchy. In that rare
+        // configuration, decline to cache rather than weaken freshness. The
+        // fixed macOS /etc, /tmp, and /var aliases are normalized below.
+        guard !paths.contains(where: usagePathContainsMutableSymlink) else {
+            state = UsageSourceCatalogWatcherState()
+            return
+        }
+        let roots = canonicalUsageWatchPaths(paths)
+        state = UsageSourceCatalogWatcherState(roots: roots)
+        // A filesystem-root stream would observe every machine-wide mutation.
+        // Keep an explicit `/` scan correct but uncached rather than turning a
+        // pathological configuration into a permanent energy hotspot.
+        guard !roots.isEmpty, !roots.contains("/") else { return }
+        var hasUnwatchedExistingIdentityPath = false
+        identityChangeWatchers = usageIdentityWatchPaths(roots).compactMap { path in
+            guard let watcher = UsageRootChangeWatcher(path: path, queue: queue, onChange: { [state] in
+                state.markDirty()
+            }) else {
+                if usageRootIsMissing(path) {
+                    missingIdentityPathsWithoutDescriptors.append(path)
+                } else {
+                    hasUnwatchedExistingIdentityPath = true
+                }
+                return nil
+            }
+            return watcher
+        }
+        // FSEvents can report only the destination of a rename. Watch every
+        // existing ancestor inode so moving the root itself or any parent
+        // invalidates its path identity. If any descriptor is unavailable,
+        // decline reuse instead of risking a stale catalog.
+        guard !hasUnwatchedExistingIdentityPath else { return }
+        // A parent stream recursively sees the root and all descendants while
+        // also catching creation of a root that was initially absent. Callback
+        // filtering below discards unrelated siblings.
+        let streamPaths = usageStreamWatchPaths(roots)
+        // A top-level root such as `/Users` also derives a machine-wide `/`
+        // parent stream. Decline reuse for that configuration just as we do
+        // for an explicit filesystem-root scan.
+        guard !streamPaths.contains("/") else { return }
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(state).toOpaque(),
@@ -403,36 +565,36 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
             },
             copyDescription: nil
         )
-        let callback: FSEventStreamCallback = { _, info, eventCount, _, eventFlags, _ in
+        let callback: FSEventStreamCallback = { _, info, eventCount, eventPaths, eventFlags, eventIDs in
             guard let info, eventCount > 0 else { return }
             let state = Unmanaged<UsageSourceCatalogWatcherState>.fromOpaque(info)
                 .takeUnretainedValue()
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
             for index in 0 ..< Int(eventCount) {
-                state.handle(eventFlags[index])
+                state.handle(
+                    eventFlags[index],
+                    eventID: eventIDs[index],
+                    eventPath: index < paths.count ? paths[index] : nil
+                )
             }
         }
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
             &context,
-            paths as CFArray,
+            streamPaths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.2,
             FSEventStreamCreateFlags(
                 kFSEventStreamCreateFlagUseCFTypes |
-                    kFSEventStreamCreateFlagFileEvents |
-                    kFSEventStreamCreateFlagWatchRoot
+                    kFSEventStreamCreateFlagFileEvents
             )
         ) else { return }
         stream = created
         FSEventStreamSetDispatchQueue(created, queue)
         isStarted = FSEventStreamStart(created)
         if isStarted {
-            // `SinceNow` may still deliver events already in flight when the
-            // stream starts. Drain those before discovery establishes the
-            // catalog baseline. Later events invalidate the baseline normally.
-            FSEventStreamFlushSync(created)
-            armUsageSourceCatalogWatcherState(state, afterDraining: queue)
+            armUsageSourceCatalogWatcherState(state, on: queue)
         } else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
@@ -441,14 +603,31 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     }
 
     deinit {
-        guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
+        identityChangeWatchers.removeAll()
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
     }
 
     var isDirty: Bool {
         state.isDirty
+    }
+
+    func canRetainCatalogAfterDiscovery() -> Bool {
+        guard isStarted, let stream else { return false }
+        // Discovery may last long enough for stream delivery latency to hide a
+        // change. Flush and drain before deciding whether this exact walk is
+        // safe to retain for the next continuation.
+        FSEventStreamFlushSync(stream)
+        queue.sync {}
+        guard !state.isDirty else { return false }
+        // A root or ancestor missing during watcher setup has no inode
+        // descriptor. If it appeared before the stream started, its creation
+        // event is outside the stream horizon; refuse retention and let the
+        // next discovery attach the descriptor.
+        return missingIdentityPathsWithoutDescriptors.allSatisfy(usageRootIsMissing)
     }
 
     func markDirty() {
@@ -477,7 +656,15 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         materialize: ([UsageSourceCatalogItem]) -> [UsageSource],
         discover: () -> [UsageSource]
     ) -> [UsageSource] {
-        if allowsReuse, let items = reusableItems(
+        guard allowsReuse else {
+            let sources = discover()
+            lock.lock()
+            discoveryCounts[key, default: 0] += 1
+            entries.removeValue(forKey: key)
+            lock.unlock()
+            return sources
+        }
+        if let items = reusableItems(
             for: key,
             maximumAgeSeconds: maximumAgeSeconds
         ) {
@@ -490,9 +677,10 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         let watcher = UsageSourceCatalogWatcher(paths: roots)
         let sources = discover()
         let items = sources.map(UsageSourceCatalogItem.init(source:))
+        let canRetainCatalog = watcher.canRetainCatalogAfterDiscovery()
         lock.lock()
         discoveryCounts[key, default: 0] += 1
-        if watcher.isStarted, !watcher.isDirty {
+        if canRetainCatalog {
             entries[key] = Entry(
                 items: items,
                 createdAt: ProcessInfo.processInfo.systemUptime,
@@ -576,10 +764,110 @@ extension MetagentCore {
         let state = UsageSourceCatalogWatcherState()
         let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog-test")
         queue.async {
-            state.handle(FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))
+            state.handle(
+                FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
+                eventID: 1
+            )
         }
-        armUsageSourceCatalogWatcherState(state, afterDraining: queue)
+        armUsageSourceCatalogWatcherState(state, on: queue)
         return !state.isDirty
+    }
+
+    static func skillUsageCatalogInvalidatesEventForTesting(
+        baselineEventID: FSEventStreamEventId,
+        eventID: FSEventStreamEventId,
+        flags: FSEventStreamEventFlags
+    ) -> Bool {
+        let state = UsageSourceCatalogWatcherState()
+        state.arm(baselineEventID: baselineEventID)
+        state.handle(flags, eventID: eventID)
+        return state.isDirty
+    }
+
+    static func canonicalSkillUsageWatchPathsForTesting(_ paths: [String]) -> [String] {
+        canonicalUsageWatchPaths(paths)
+    }
+
+    static func skillUsageEventInvalidatesRootsForTesting(
+        eventPath: String,
+        roots: [String]
+    ) -> Bool {
+        usageEventInvalidatesRoots(
+            eventPath,
+            roots: canonicalUsageWatchPaths(roots)
+        )
+    }
+
+    static func skillUsageWatchSupportsReuseForTesting(_ roots: [String]) -> Bool {
+        let canonicalRoots = canonicalUsageWatchPaths(roots)
+        return !canonicalRoots.contains("/")
+            && !usageStreamWatchPaths(canonicalRoots).contains("/")
+            && !roots.contains(where: usagePathContainsMutableSymlink)
+    }
+
+    static func skillUsageRootIsMissingForTesting(_ rootPath: String) -> Bool {
+        usageRootIsMissing(rootPath)
+    }
+
+    static func skillUsageIdentityWatchPathsForTesting(_ roots: [String]) -> [String] {
+        usageIdentityWatchPaths(canonicalUsageWatchPaths(roots))
+    }
+
+    static func skillUsageRootWatcherDetectsRenameForTesting(
+        rootPath: String,
+        renamedPath: String
+    ) throws -> Bool {
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-root-change-test")
+        let changed = DispatchSemaphore(value: 0)
+        let watchPaths = usageIdentityWatchPaths([rootPath])
+        let watchers = watchPaths.compactMap { path in
+            UsageRootChangeWatcher(path: path, queue: queue) { changed.signal() }
+        }
+        guard watchers.count == watchPaths.count else { return false }
+        return try withExtendedLifetime(watchers) {
+            try FileManager.default.moveItem(
+                atPath: rootPath,
+                toPath: renamedPath
+            )
+            return changed.wait(timeout: .now() + 2) == .success
+        }
+    }
+
+    static func skillUsageRootWatcherDetectsDeleteForTesting(
+        rootPath: String
+    ) throws -> Bool {
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-root-delete-test")
+        let changed = DispatchSemaphore(value: 0)
+        let watchPaths = usageIdentityWatchPaths([rootPath])
+        let watchers = watchPaths.compactMap { path in
+            UsageRootChangeWatcher(path: path, queue: queue) { changed.signal() }
+        }
+        guard watchers.count == watchPaths.count else { return false }
+        return try withExtendedLifetime(watchers) {
+            try FileManager.default.removeItem(atPath: rootPath)
+            return changed.wait(timeout: .now() + 2) == .success
+        }
+    }
+
+    static func skillUsageRootWatcherDetectsAncestorRenameForTesting(
+        rootPath: String,
+        ancestorPath: String,
+        renamedAncestorPath: String
+    ) throws -> Bool {
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-ancestor-change-test")
+        let changed = DispatchSemaphore(value: 0)
+        let watchPaths = usageIdentityWatchPaths([rootPath])
+        let watchers = watchPaths.compactMap { path in
+            UsageRootChangeWatcher(path: path, queue: queue) { changed.signal() }
+        }
+        guard watchers.count == watchPaths.count else { return false }
+        return try withExtendedLifetime(watchers) {
+            try FileManager.default.moveItem(
+                atPath: ancestorPath,
+                toPath: renamedAncestorPath
+            )
+            return changed.wait(timeout: .now() + 2) == .success
+        }
     }
 }
 
