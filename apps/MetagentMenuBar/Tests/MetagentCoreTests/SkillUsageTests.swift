@@ -1,13 +1,60 @@
 import Foundation
 import Darwin
+import CoreServices
 import SQLite3
 import XCTest
 @testable import MetagentCore
 
 final class SkillUsageTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+    }
+
+    override func tearDown() {
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        super.tearDown()
+    }
+
     func testParsesCodexFractionalAndWholeSecondTimestamps() {
         XCTAssertNotNil(MetagentCore.parseSkillUsageTimestamp("2026-07-19T12:00:00.000Z"))
         XCTAssertNotNil(MetagentCore.parseSkillUsageTimestamp("2026-07-19T12:00:00Z"))
+    }
+
+    func testContinuationCatalogIgnoresWatcherBookkeepingButInvalidatesForChanges() {
+        let bookkeepingFlags: [FSEventStreamEventFlags] = [
+            FSEventStreamEventFlags(kFSEventStreamEventFlagNone),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile),
+            FSEventStreamEventFlags(
+                kFSEventStreamEventFlagHistoryDone | kFSEventStreamEventFlagItemIsDir
+            ),
+        ]
+        for flags in bookkeepingFlags {
+            XCTAssertFalse(
+                MetagentCore.shouldInvalidateSkillUsageSourceCatalogForTesting(
+                    eventFlags: flags
+                )
+            )
+        }
+
+        let mutationFlags: [FSEventStreamEventFlags] = [
+            FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagKernelDropped),
+            FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged),
+        ]
+        for flags in mutationFlags {
+            XCTAssertTrue(
+                MetagentCore.shouldInvalidateSkillUsageSourceCatalogForTesting(
+                    eventFlags: flags
+                )
+            )
+        }
     }
 
     func testAgentRunDurationStatsUseCompletedCodexTasksAndProjectScope() throws {
@@ -1300,7 +1347,8 @@ final class SkillUsageTests: XCTestCase {
             databasePath: fixture.database.path,
             maxBytes: 1_024 * 1_024,
             maxFiles: 1,
-            minimumMaintenanceIntervalSeconds: 60
+            minimumMaintenanceIntervalSeconds: 60,
+            reusesSourceCatalog: true
         )
 
         let first = try MetagentCore.refreshSkillUsage(options: maintenanceOptions)
@@ -1316,6 +1364,7 @@ final class SkillUsageTests: XCTestCase {
 
         var manualOptions = maintenanceOptions
         manualOptions.minimumMaintenanceIntervalSeconds = 0
+        manualOptions.reusesSourceCatalog = false
         let manual = try MetagentCore.refreshSkillUsage(options: manualOptions)
         XCTAssertFalse(manual.wasDeferred)
         XCTAssertEqual(manual.filesRead, 1)
@@ -1344,7 +1393,8 @@ final class SkillUsageTests: XCTestCase {
             sessionRoots: [fixture.sessions.path],
             databasePath: fixture.database.path,
             maxBytes: 1_024 * 1_024,
-            maxFiles: 1
+            maxFiles: 1,
+            reusesSourceCatalog: true
         )
 
         let first = try MetagentCore.refreshSkillUsage(options: options)
@@ -1361,6 +1411,9 @@ final class SkillUsageTests: XCTestCase {
             ]),
             fixture.toolCall(callID: "new-read-2", command: "cat \(skill.path)")
         ], to: nestedDirectory.appendingPathComponent("rollout-new-2.jsonl"))
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
 
         let second = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(second.filesRead, 1)
@@ -1512,6 +1565,228 @@ final class SkillUsageTests: XCTestCase {
         let warm = try MetagentCore.refreshSkillUsage(options: fixture.options)
         XCTAssertEqual(warm.filesRead, 0)
         XCTAssertEqual(warm.snapshot.totalInvocations, 1)
+    }
+
+    func testContinuationReusesCatalogUntilInvalidatedAndForegroundForcesDiscovery() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/continuation",
+            name: "continuation"
+        )
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "continuation-one",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "continuation-one", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-one.jsonl"))
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20,
+            reusesSourceCatalog: true
+        )
+
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
+            1
+        )
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            1
+        )
+
+        // Surface any event callbacks already in flight when the watcher was
+        // created. They predate the discovery baseline and must not invalidate
+        // the catalog that discovery just established.
+        usleep(250_000)
+        let warm = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(warm.filesRead, 0)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            1
+        )
+
+        let nested = fixture.sessions.appendingPathComponent("2026/08/28")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "continuation-two",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "continuation-two", command: "cat \(skill.path)")
+        ], to: nested.appendingPathComponent("rollout-two.jsonl"))
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
+
+        let invalidated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(invalidated.snapshot.totalFiles, 2)
+        XCTAssertEqual(invalidated.snapshot.totalInvocations, 2)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            2
+        )
+
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            3,
+            "an explicit foreground refresh must never trust the continuation catalog"
+        )
+    }
+
+    func testContinuationInvalidationCoversGrowthRewriteRotationAndArchiveRelocation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let firstSkill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/first",
+            name: "first"
+        )
+        _ = try fixture.makeSkill(
+            at: "workspace/.agents/skills/other",
+            name: "other"
+        )
+        let archived = fixture.root.appendingPathComponent("archived_sessions")
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+        let rollout = fixture.sessions.appendingPathComponent("rollout-continuation.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "continuation-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "first-read", command: "cat \(firstSkill.path)")
+        ], to: rollout)
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path, archived.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20,
+            reusesSourceCatalog: true
+        )
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
+            1
+        )
+
+        try fixture.append([
+            fixture.toolCall(callID: "growth-read", command: "cat \(firstSkill.path)")
+        ], to: rollout)
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
+            2
+        )
+
+        let oldContents = try String(contentsOf: rollout, encoding: .utf8)
+        let rewritten = oldContents.replacingOccurrences(of: "first", with: "other")
+        XCTAssertEqual(oldContents.utf8.count, rewritten.utf8.count)
+        try rewritten.write(to: rollout, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(2)],
+            ofItemAtPath: rollout.path
+        )
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
+        let sameSizeRewrite = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(sameSizeRewrite.snapshot.totalInvocations, 2)
+        XCTAssertEqual(sameSizeRewrite.snapshot.summaries.map(\.skillName), ["other"])
+
+        let archivedRollout = archived.appendingPathComponent(rollout.lastPathComponent)
+        try FileManager.default.moveItem(at: rollout, to: archivedRollout)
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
+        let relocated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(relocated.bytesRead, 0)
+        XCTAssertEqual(relocated.snapshot.totalInvocations, 2)
+
+        try FileManager.default.removeItem(at: archivedRollout)
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "rotated-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "rotated-read", command: "cat \(firstSkill.path)")
+        ], to: archivedRollout)
+        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
+            databasePath: fixture.database.path
+        )
+        let rotated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(rotated.snapshot.totalInvocations, 1)
+        XCTAssertEqual(rotated.snapshot.summaries.map(\.skillName), ["first"])
+    }
+
+    func testContinuationCatalogExpiresAndParserGenerationChangeInvalidatesIt() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/generation",
+            name: "generation"
+        )
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "generation-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "generation-read", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-generation.jsonl"))
+        let reusable = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20,
+            reusesSourceCatalog: true
+        )
+        _ = try MetagentCore.refreshSkillUsage(options: reusable)
+        _ = try MetagentCore.refreshSkillUsage(options: reusable)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            1
+        )
+
+        let expired = SkillUsageRefreshOptions(
+            sessionRoots: reusable.sessionRoots,
+            databasePath: reusable.databasePath,
+            maxBytes: reusable.maxBytes,
+            maxFiles: reusable.maxFiles,
+            reusesSourceCatalog: true,
+            sourceCatalogMaximumAgeSeconds: 0
+        )
+        _ = try MetagentCore.refreshSkillUsage(options: expired)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            2
+        )
+
+        try fixture.executeSQL(
+            "UPDATE skill_usage_metadata SET value = '13' WHERE key = 'parser_version';"
+        )
+        let rebuilt = try MetagentCore.refreshSkillUsage(options: reusable)
+        XCTAssertEqual(rebuilt.snapshot.totalInvocations, 1)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(
+                databasePath: fixture.database.path
+            ),
+            3
+        )
     }
 }
 

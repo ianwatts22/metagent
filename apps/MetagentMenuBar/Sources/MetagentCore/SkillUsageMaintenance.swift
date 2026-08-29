@@ -34,7 +34,8 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
             maxFiles: maxFiles,
             throttleEveryBytes: throttleEveryBytes,
             throttleDelayMilliseconds: throttleDelayMilliseconds,
-            minimumMaintenanceIntervalSeconds: delaySeconds
+            minimumMaintenanceIntervalSeconds: delaySeconds,
+            reusesSourceCatalog: true
         )
     }
 

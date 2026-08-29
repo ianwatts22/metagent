@@ -1,4 +1,5 @@
 import Darwin
+import CoreServices
 import Foundation
 import SQLite3
 
@@ -16,6 +17,13 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
     /// a cooperative background refresh: only one app process may claim the
     /// shared database during the interval.
     public var minimumMaintenanceIntervalSeconds: TimeInterval
+    /// Background continuation slices can reuse an unchanged filesystem
+    /// catalog instead of recursively rediscovering every retained session.
+    /// Foreground refreshes leave this false so they always observe disk now.
+    public var reusesSourceCatalog: Bool
+    /// Even without a filesystem event, a continuation periodically rebuilds
+    /// its catalog. This bounds risk from a lost event or an unavailable stream.
+    public var sourceCatalogMaximumAgeSeconds: TimeInterval
 
     public init(
         sessionRoots: [String] = [],
@@ -25,7 +33,9 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         maxRecordBytes: Int64 = 8 * 1_024 * 1_024,
         throttleEveryBytes: Int64 = 0,
         throttleDelayMilliseconds: Int = 0,
-        minimumMaintenanceIntervalSeconds: TimeInterval = 0
+        minimumMaintenanceIntervalSeconds: TimeInterval = 0,
+        reusesSourceCatalog: Bool = false,
+        sourceCatalogMaximumAgeSeconds: TimeInterval = 15 * 60
     ) {
         self.sessionRoots = sessionRoots
         self.databasePath = databasePath
@@ -35,6 +45,8 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         self.throttleEveryBytes = max(0, throttleEveryBytes)
         self.throttleDelayMilliseconds = max(0, throttleDelayMilliseconds)
         self.minimumMaintenanceIntervalSeconds = max(0, minimumMaintenanceIntervalSeconds)
+        self.reusesSourceCatalog = reusesSourceCatalog
+        self.sourceCatalogMaximumAgeSeconds = max(0, sourceCatalogMaximumAgeSeconds)
     }
 }
 
@@ -270,6 +282,288 @@ private struct UsageSourceCheckpointRecord: Sendable {
     let checkpoint: UsageSourceCheckpoint
 }
 
+private struct UsageSourceCatalogKey: Hashable, Sendable {
+    let databasePath: String
+    let roots: [String]
+}
+
+private struct UsageSourceCatalogItem: Sendable {
+    let path: String
+    let size: Int64
+    let modifiedAt: Double
+    let fileIdentity: String
+
+    init(source: UsageSource) {
+        path = source.path
+        size = source.size
+        modifiedAt = source.modifiedAt
+        fileIdentity = source.fileIdentity
+    }
+}
+
+/// One passive invalidation stream per live catalog. It does no polling and
+/// marks the catalog dirty for any recursive change under a session root.
+/// Foreground refreshes still force discovery, and the cache also has a maximum
+/// age, so stream setup failure or a dropped event cannot make reuse permanent.
+private let usageSourceCatalogInvalidatingEventFlags = FSEventStreamEventFlags(
+    kFSEventStreamEventFlagMustScanSubDirs |
+        kFSEventStreamEventFlagUserDropped |
+        kFSEventStreamEventFlagKernelDropped |
+        kFSEventStreamEventFlagEventIdsWrapped |
+        kFSEventStreamEventFlagRootChanged |
+        kFSEventStreamEventFlagMount |
+        kFSEventStreamEventFlagUnmount |
+        kFSEventStreamEventFlagItemCreated |
+        kFSEventStreamEventFlagItemRemoved |
+        kFSEventStreamEventFlagItemInodeMetaMod |
+        kFSEventStreamEventFlagItemRenamed |
+        kFSEventStreamEventFlagItemModified |
+        kFSEventStreamEventFlagItemFinderInfoMod |
+        kFSEventStreamEventFlagItemChangeOwner |
+        kFSEventStreamEventFlagItemXattrMod |
+        kFSEventStreamEventFlagItemCloned
+)
+
+private func shouldInvalidateUsageSourceCatalog(
+    _ flags: FSEventStreamEventFlags
+) -> Bool {
+    flags & usageSourceCatalogInvalidatingEventFlags != 0
+}
+
+private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed = false
+    private var dirty = false
+
+    var isDirty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return dirty
+    }
+
+    func armAfterInitialFlush() {
+        lock.lock()
+        dirty = false
+        armed = true
+        lock.unlock()
+    }
+
+    func handle(_ flags: FSEventStreamEventFlags) {
+        guard shouldInvalidateUsageSourceCatalog(flags) else { return }
+        lock.lock()
+        if armed {
+            dirty = true
+        }
+        lock.unlock()
+    }
+
+    func markDirty() {
+        lock.lock()
+        dirty = true
+        lock.unlock()
+    }
+}
+
+private final class UsageSourceCatalogWatcher: @unchecked Sendable {
+    private let state = UsageSourceCatalogWatcherState()
+    private let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog")
+    private var stream: FSEventStreamRef?
+    private(set) var isStarted = false
+
+    init(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(state).toOpaque(),
+            retain: { info in
+                guard let info else { return nil }
+                _ = Unmanaged<UsageSourceCatalogWatcherState>
+                    .fromOpaque(info)
+                    .retain()
+                return info
+            },
+            release: { info in
+                guard let info else { return }
+                Unmanaged<UsageSourceCatalogWatcherState>
+                    .fromOpaque(info)
+                    .release()
+            },
+            copyDescription: nil
+        )
+        let callback: FSEventStreamCallback = { _, info, eventCount, _, eventFlags, _ in
+            guard let info, eventCount > 0 else { return }
+            let state = Unmanaged<UsageSourceCatalogWatcherState>.fromOpaque(info)
+                .takeUnretainedValue()
+            for index in 0 ..< Int(eventCount) {
+                state.handle(eventFlags[index])
+            }
+        }
+        guard let created = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &context,
+            paths as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.2,
+            FSEventStreamCreateFlags(
+                kFSEventStreamCreateFlagUseCFTypes |
+                    kFSEventStreamCreateFlagFileEvents |
+                    kFSEventStreamCreateFlagWatchRoot
+            )
+        ) else { return }
+        stream = created
+        FSEventStreamSetDispatchQueue(created, queue)
+        isStarted = FSEventStreamStart(created)
+        if isStarted {
+            // `SinceNow` may still deliver events already in flight when the
+            // stream starts. Drain those before discovery establishes the
+            // catalog baseline. Later events invalidate the baseline normally.
+            FSEventStreamFlushSync(created)
+            state.armAfterInitialFlush()
+        } else {
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
+            stream = nil
+        }
+    }
+
+    deinit {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+    }
+
+    var isDirty: Bool {
+        state.isDirty
+    }
+
+    func markDirty() {
+        state.markDirty()
+    }
+}
+
+private final class UsageSourceCatalogCache: @unchecked Sendable {
+    static let shared = UsageSourceCatalogCache()
+
+    private struct Entry {
+        let items: [UsageSourceCatalogItem]
+        let createdAt: TimeInterval
+        let watcher: UsageSourceCatalogWatcher
+    }
+
+    private let lock = NSLock()
+    private var entries: [UsageSourceCatalogKey: Entry] = [:]
+    private var discoveryCounts: [UsageSourceCatalogKey: Int] = [:]
+
+    func sources(
+        key: UsageSourceCatalogKey,
+        roots: [String],
+        allowsReuse: Bool,
+        maximumAgeSeconds: TimeInterval,
+        materialize: ([UsageSourceCatalogItem]) -> [UsageSource],
+        discover: () -> [UsageSource]
+    ) -> [UsageSource] {
+        if allowsReuse, let items = reusableItems(
+            for: key,
+            maximumAgeSeconds: maximumAgeSeconds
+        ) {
+            return materialize(items)
+        }
+
+        // Start listening before walking. If the tree changes during discovery,
+        // the current refresh keeps its normal best-effort view but that view is
+        // not retained for a later continuation.
+        let watcher = UsageSourceCatalogWatcher(paths: roots)
+        let sources = discover()
+        let items = sources.map(UsageSourceCatalogItem.init(source:))
+        lock.lock()
+        discoveryCounts[key, default: 0] += 1
+        if watcher.isStarted, !watcher.isDirty {
+            entries[key] = Entry(
+                items: items,
+                createdAt: ProcessInfo.processInfo.systemUptime,
+                watcher: watcher
+            )
+        } else {
+            entries.removeValue(forKey: key)
+        }
+        lock.unlock()
+        return sources
+    }
+
+    func invalidate(databasePath: String? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let databasePath else {
+            entries.removeAll()
+            return
+        }
+        for key in entries.keys where key.databasePath == databasePath {
+            entries[key]?.watcher.markDirty()
+        }
+    }
+
+    func resetForTesting() {
+        lock.lock()
+        entries.removeAll()
+        discoveryCounts.removeAll()
+        lock.unlock()
+    }
+
+    func discoveryCount(databasePath: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return discoveryCounts.reduce(into: 0) { count, record in
+            if record.key.databasePath == databasePath {
+                count += record.value
+            }
+        }
+    }
+
+    private func reusableItems(
+        for key: UsageSourceCatalogKey,
+        maximumAgeSeconds: TimeInterval
+    ) -> [UsageSourceCatalogItem]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard maximumAgeSeconds > 0,
+              let entry = entries[key],
+              !entry.watcher.isDirty,
+              ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds
+        else { return nil }
+        return entry.items
+    }
+}
+
+extension MetagentCore {
+    static func resetSkillUsageSourceCatalogForTesting() {
+        UsageSourceCatalogCache.shared.resetForTesting()
+    }
+
+    static func invalidateSkillUsageSourceCatalogForTesting(databasePath: String? = nil) {
+        UsageSourceCatalogCache.shared.invalidate(
+            databasePath: databasePath.map(standardizedUsageDatabasePath)
+        )
+    }
+
+    static func skillUsageSourceDiscoveryCountForTesting(databasePath: String) -> Int {
+        UsageSourceCatalogCache.shared.discoveryCount(
+            databasePath: standardizedUsageDatabasePath(databasePath)
+        )
+    }
+
+    static func shouldInvalidateSkillUsageSourceCatalogForTesting(
+        eventFlags: FSEventStreamEventFlags
+    ) -> Bool {
+        shouldInvalidateUsageSourceCatalog(eventFlags)
+    }
+}
+
+private func standardizedUsageDatabasePath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.path
+}
+
 private struct ParsedSkillIdentity: Codable, Sendable {
     let id: String
     let name: String
@@ -333,7 +627,10 @@ private final class SkillUsageStore {
     }
 
     func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageRefreshReport {
-        try prepareParserVersion()
+        let parserGenerationChanged = try prepareParserVersion()
+        if parserGenerationChanged {
+            UsageSourceCatalogCache.shared.invalidate(databasePath: path.standardizedFileURL.path)
+        }
         var maintenanceLeaseID: String?
         if options.minimumMaintenanceIntervalSeconds > 0 {
             guard let claimedLeaseID = try claimMaintenanceLease(
@@ -360,10 +657,30 @@ private final class SkillUsageStore {
         }
         var checkpoints = try loadSourceCheckpoints()
         let checkpointsByIdentity = indexCheckpointsByIdentity(checkpoints)
-        var sources = discoverSources(
-            roots: options.sessionRoots,
-            checkpoints: checkpoints,
-            checkpointsByIdentity: checkpointsByIdentity
+        let catalogRoots = resolvedSessionRoots(options.sessionRoots).map(\.path)
+        let catalogKey = UsageSourceCatalogKey(
+            databasePath: path.standardizedFileURL.path,
+            roots: catalogRoots
+        )
+        var sources = UsageSourceCatalogCache.shared.sources(
+            key: catalogKey,
+            roots: catalogRoots,
+            allowsReuse: options.reusesSourceCatalog,
+            maximumAgeSeconds: options.sourceCatalogMaximumAgeSeconds,
+            materialize: { items in
+                self.materializeCatalogItems(
+                    items,
+                    checkpoints: checkpoints,
+                    checkpointsByIdentity: checkpointsByIdentity
+                )
+            },
+            discover: {
+                self.discoverSources(
+                    roots: options.sessionRoots,
+                    checkpoints: checkpoints,
+                    checkpointsByIdentity: checkpointsByIdentity
+                )
+            }
         )
         let sourcePaths = Set(sources.map(\.path))
         var migrations: [(oldPath: String, newPath: String, sourceIndex: Int)] = []
@@ -883,16 +1200,7 @@ private final class SkillUsageStore {
         checkpoints: [String: UsageSourceCheckpoint],
         checkpointsByIdentity: [String: UsageSourceCheckpointRecord]
     ) -> [UsageSource] {
-        let resolvedRoots: [URL]
-        if roots.isEmpty {
-            let codex = skillUsageCodexHomeURL()
-            resolvedRoots = [
-                codex.appendingPathComponent("sessions"),
-                codex.appendingPathComponent("archived_sessions")
-            ]
-        } else {
-            resolvedRoots = roots.map { URL(fileURLWithPath: $0).standardizedFileURL }
-        }
+        let resolvedRoots = resolvedSessionRoots(roots)
 
         // Scanning both a parent and its child produces the same canonical
         // paths twice. Collapse overlapping configured roots up front so the
@@ -939,6 +1247,40 @@ private final class SkillUsageStore {
                     sources: &sources
                 )
             }
+        }
+        return sources
+    }
+
+    private func resolvedSessionRoots(_ roots: [String]) -> [URL] {
+        if roots.isEmpty {
+            let codex = skillUsageCodexHomeURL()
+            return [
+                codex.appendingPathComponent("sessions"),
+                codex.appendingPathComponent("archived_sessions")
+            ]
+        }
+        return roots.map { URL(fileURLWithPath: $0).standardizedFileURL }
+    }
+
+    private func materializeCatalogItems(
+        _ items: [UsageSourceCatalogItem],
+        checkpoints: [String: UsageSourceCheckpoint],
+        checkpointsByIdentity: [String: UsageSourceCheckpointRecord]
+    ) -> [UsageSource] {
+        var sources: [UsageSource] = []
+        sources.reserveCapacity(items.count)
+        for item in items {
+            appendSource(
+                path: item.path,
+                metadata: UsageSourceMetadata(
+                    size: item.size,
+                    modifiedAt: item.modifiedAt,
+                    fileIdentity: item.fileIdentity
+                ),
+                checkpoints: checkpoints,
+                checkpointsByIdentity: checkpointsByIdentity,
+                sources: &sources
+            )
         }
         return sources
     }
@@ -2416,7 +2758,8 @@ private final class SkillUsageStore {
         }
     }
 
-    private func prepareParserVersion() throws {
+    @discardableResult
+    private func prepareParserVersion() throws -> Bool {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
@@ -2425,7 +2768,7 @@ private final class SkillUsageStore {
             db,
             "SELECT value FROM skill_usage_metadata WHERE key = 'parser_version';"
         )
-        guard current != String(skillUsageParserVersion) else { return }
+        guard current != String(skillUsageParserVersion) else { return false }
         try exec(db, "BEGIN IMMEDIATE;")
         do {
             if try previousGenerationExists(db) {
@@ -2446,6 +2789,7 @@ private final class SkillUsageStore {
                 throw databaseError(db, "save parser version")
             }
             try exec(db, "COMMIT;")
+            return true
         } catch {
             try? exec(db, "ROLLBACK;")
             throw error

@@ -355,6 +355,77 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.hasMore, false)
     }
 
+    func testPerformanceUsageContinuationReusesOneDiscoveryAcrossSevenSlices() throws {
+        guard runsPerformanceTests else { return }
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        defer { MetagentCore.resetSkillUsageSourceCatalogForTesting() }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-usage-continuation")
+        let sessions = root.appendingPathComponent("sessions")
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database
+        ))
+        let sourceCount = 15_456
+        var sourcePaths: [String] = []
+        sourcePaths.reserveCapacity(sourceCount)
+        for index in 0..<sourceCount {
+            let source = sessions.appendingPathComponent(
+                "2026/08/\(index % 28 + 1)/rollout-\(index).jsonl"
+            )
+            try write("", to: source)
+            sourcePaths.append(source.path)
+        }
+        try seedCompletedUsageSources(sourcePaths, database: database)
+        try writeUsageNoise(
+            minimumBytes: 55 * 1_024 * 1_024,
+            to: URL(fileURLWithPath: sourcePaths[0])
+        )
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database,
+            maxBytes: 8 * 1_024 * 1_024,
+            maxFiles: 12,
+            reusesSourceCatalog: true
+        )
+        var reports: [SkillUsageRefreshReport] = []
+        try assertLatencyBudget(
+            "15k-source seven-slice usage continuation",
+            seconds: 4.0
+        ) {
+            for slice in 0..<7 {
+                reports.append(try MetagentCore.refreshSkillUsage(options: options))
+                if slice == 0 {
+                    // Real maintenance continuations are separated by tens of
+                    // seconds. Expose delayed stream callbacks here so the rail
+                    // cannot pass by outrunning catalog invalidation.
+                    usleep(250_000)
+                }
+            }
+        }
+
+        print("[Metagent performance] continuation slice bytes: \(reports.map(\.processedBytesAdvanced))")
+        XCTAssertEqual(reports.count, 7)
+        XCTAssertTrue(reports.dropLast().allSatisfy(\.hasMore))
+        XCTAssertEqual(reports.last?.hasMore, false)
+        XCTAssertTrue(reports.dropLast().allSatisfy {
+            // A slice may rewind one partial JSONL record at its boundary.
+            $0.processedBytesAdvanced >= options.maxBytes - 1_024
+        })
+        XCTAssertGreaterThan(reports.last?.processedBytesAdvanced ?? 0, 0)
+        XCTAssertGreaterThanOrEqual(
+            reports.reduce(Int64(0)) { $0 + $1.processedBytesAdvanced },
+            55 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database),
+            1
+        )
+        XCTAssertEqual(reports.last?.snapshot.totalFiles, sourceCount)
+        XCTAssertEqual(reports.last?.snapshot.completedFiles, sourceCount)
+    }
+
     func testPerformanceUsageSnapshotAggregation() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeUsageBackfillFixture(sessionCount: 60, readsPerSession: 300)
@@ -728,6 +799,27 @@ final class MetagentCorePerformanceTests: XCTestCase {
         defer { sqlite3_finalize(countStatement) }
         XCTAssertEqual(sqlite3_step(countStatement), SQLITE_ROW)
         return Int(sqlite3_column_int64(countStatement, 0))
+    }
+
+    private func writeUsageNoise(minimumBytes: Int, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let line = performanceJSONLine(type: "event_msg", payload: [
+            "type": "token_count",
+            "info": ["input_tokens": 12_000, "output_tokens": 240]
+        ]) + "\n"
+        let repetitions = max(1, 64 * 1_024 / line.utf8.count)
+        let chunk = Data(String(repeating: line, count: repetitions).utf8)
+        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        var written = 0
+        while written < minimumBytes {
+            try handle.write(contentsOf: chunk)
+            written += chunk.count
+        }
     }
 
     private func runGit(_ arguments: [String], in root: URL) throws {

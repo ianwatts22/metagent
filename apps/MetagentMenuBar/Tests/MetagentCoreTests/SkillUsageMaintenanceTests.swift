@@ -33,6 +33,8 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(options.throttleEveryBytes, plan.throttleEveryBytes)
         XCTAssertEqual(options.throttleDelayMilliseconds, plan.throttleDelayMilliseconds)
         XCTAssertEqual(options.minimumMaintenanceIntervalSeconds, plan.delaySeconds)
+        XCTAssertTrue(options.reusesSourceCatalog)
+        XCTAssertEqual(options.sourceCatalogMaximumAgeSeconds, 15 * 60)
     }
 
     func testForegroundRefreshDefaultsRemainUnthrottled() {
@@ -41,6 +43,7 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(options.throttleEveryBytes, 0)
         XCTAssertEqual(options.throttleDelayMilliseconds, 0)
         XCTAssertEqual(options.minimumMaintenanceIntervalSeconds, 0)
+        XCTAssertFalse(options.reusesSourceCatalog)
     }
 
     func testExplicitPlanKeepsLegacyUnthrottledDefaults() {
