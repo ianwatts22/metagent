@@ -163,7 +163,7 @@ final class MetagentModel: ObservableObject {
             await hydrateLaunchCaches()
             isHydratingLaunchCaches = false
 
-            refreshStatus()
+            refreshStatus(preloadedEvaluations: skillEvaluations)
             refreshUsage()
             refreshModelReleases()
             startWatchingSkillRoots()
@@ -649,7 +649,7 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    func refreshStatus() {
+    func refreshStatus(preloadedEvaluations: SkillEvaluationSnapshot? = nil) {
         guard !isRunning, !isSkillEvaluating else {
             statusRefreshQueued = true
             return
@@ -665,11 +665,16 @@ final class MetagentModel: ObservableObject {
         coreStatusText = "Swift core"
 
         Task {
-            async let evaluationResult = Task.detached(priority: .utility) {
-                MetagentCore.loadSkillEvaluationSnapshot()
-            }.value
-            let (scan, homeScan, pluginScan) = await Self.scanInventory()
-            let evaluations = await evaluationResult
+            async let inventoryResults = Self.scanInventory()
+            let evaluations: SkillEvaluationSnapshot
+            if let preloadedEvaluations {
+                evaluations = preloadedEvaluations
+            } else {
+                evaluations = await Task.detached(priority: .utility) {
+                    MetagentCore.loadSkillEvaluationSnapshot()
+                }.value
+            }
+            let (scan, homeScan, pluginScan) = await inventoryResults
             let doctor = await Task.detached(priority: .utility) {
                 Self.doctorResult(scan: scan, homeScan: homeScan)
             }.value
