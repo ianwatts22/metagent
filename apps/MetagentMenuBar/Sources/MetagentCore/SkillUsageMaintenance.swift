@@ -30,6 +30,13 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
     /// precise `scheduleDelaySeconds` name.
     public var delaySeconds: TimeInterval { scheduleDelaySeconds }
 
+    /// Lets macOS coalesce maintenance timers with other process wakeups. The
+    /// first continuation remains relatively precise; longer catch-up and
+    /// constrained intervals intentionally allow a wider energy-saving window.
+    public var scheduleToleranceSeconds: TimeInterval {
+        min(30, max(1, scheduleDelaySeconds / 9))
+    }
+
     public init(
         maxBytes: Int64,
         maxFiles: Int,
@@ -142,5 +149,54 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
             throttleEveryBytes: throttleEveryBytes,
             throttleDelayMilliseconds: throttleDelayMilliseconds
         )
+    }
+}
+
+/// Monotonic, testable state for the app's continuation schedule. Keeping the
+/// deadline here prevents each slice's wall time from silently reducing the
+/// intended sustained indexing rate.
+public struct SkillUsageMaintenanceSchedule: Sendable, Equatable {
+    public private(set) var phase: SkillUsageMaintenancePhase = .firstContinuation
+    public private(set) var nextDueUptime: TimeInterval?
+
+    public init() {}
+
+    public mutating func resetDeadline() {
+        nextDueUptime = nil
+    }
+
+    public func plan(
+        isEnergyConstrained: Bool,
+        remainingBytes: Int64,
+        remainingFiles: Int
+    ) -> SkillUsageMaintenancePlan? {
+        SkillUsageMaintenancePlan.recommended(
+            phase: phase,
+            isEnergyConstrained: isEnergyConstrained
+        ).clampedToTail(
+            remainingBytes: remainingBytes,
+            remainingFiles: remainingFiles
+        )
+    }
+
+    /// A deferred lease never materialized the reusable catalog, so it must
+    /// not advance to the larger watcher-armed phase.
+    public mutating func recordCompletion(wasDeferred: Bool) {
+        guard !wasDeferred else { return }
+        phase = .watcherArmedCatchUp
+    }
+
+    /// Returns the delay until the next absolute deadline. After a completed
+    /// slice, the next deadline advances from the prior deadline rather than
+    /// from completion time; if work overran the cadence, the delay bottoms at
+    /// zero rather than drifting every subsequent slice.
+    public mutating func delayBeforeNextRun(
+        plan: SkillUsageMaintenancePlan,
+        nowUptime: TimeInterval
+    ) -> TimeInterval {
+        let due = nextDueUptime.map { $0 + plan.scheduleDelaySeconds }
+            ?? nowUptime + plan.scheduleDelaySeconds
+        nextDueUptime = due
+        return max(0, due - nowUptime)
     }
 }

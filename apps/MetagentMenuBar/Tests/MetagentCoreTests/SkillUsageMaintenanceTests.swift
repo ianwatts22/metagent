@@ -174,4 +174,90 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(plan.scheduleDelaySeconds, 10)
         XCTAssertEqual(plan.minimumDatabaseLeaseSeconds, 10)
     }
+
+    func testScheduleUsesAbsoluteDeadlinesAcrossPhaseTransition() throws {
+        var schedule = SkillUsageMaintenanceSchedule()
+        let first = try XCTUnwrap(schedule.plan(
+            isEnergyConstrained: false,
+            remainingBytes: 80 * 1_024 * 1_024,
+            remainingFiles: 80
+        ))
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: first, nowUptime: 1_000), 45)
+        XCTAssertEqual(schedule.nextDueUptime, 1_045)
+
+        schedule.recordCompletion(wasDeferred: false)
+        let catchUp = try XCTUnwrap(schedule.plan(
+            isEnergyConstrained: false,
+            remainingBytes: 72 * 1_024 * 1_024,
+            remainingFiles: 68
+        ))
+        XCTAssertEqual(catchUp.maxBytes, 24 * 1_024 * 1_024)
+        XCTAssertEqual(
+            schedule.delayBeforeNextRun(plan: catchUp, nowUptime: 1_050),
+            130,
+            "five seconds of slice work must come out of the next wait rather than reducing throughput"
+        )
+        XCTAssertEqual(schedule.nextDueUptime, 1_180)
+    }
+
+    func testDeferredFirstContinuationDoesNotArmCatchUpPhase() throws {
+        var schedule = SkillUsageMaintenanceSchedule()
+        schedule.recordCompletion(wasDeferred: true)
+
+        let plan = try XCTUnwrap(schedule.plan(
+            isEnergyConstrained: false,
+            remainingBytes: 16 * 1_024 * 1_024,
+            remainingFiles: 24
+        ))
+        XCTAssertEqual(schedule.phase, .firstContinuation)
+        XCTAssertEqual(plan.maxBytes, 8 * 1_024 * 1_024)
+        XCTAssertEqual(plan.scheduleDelaySeconds, 45)
+    }
+
+    func testScheduleClampsTailAndStopsWhenComplete() throws {
+        var schedule = SkillUsageMaintenanceSchedule()
+        schedule.recordCompletion(wasDeferred: false)
+
+        let tail = try XCTUnwrap(schedule.plan(
+            isEnergyConstrained: false,
+            remainingBytes: 3 * 1_024 * 1_024,
+            remainingFiles: 2
+        ))
+        XCTAssertEqual(tail.maxBytes, 3 * 1_024 * 1_024)
+        XCTAssertEqual(tail.maxFiles, 2)
+        XCTAssertNil(schedule.plan(
+            isEnergyConstrained: false,
+            remainingBytes: 0,
+            remainingFiles: 0
+        ))
+    }
+
+    func testResetDeadlineStartsANewCadenceFromNow() {
+        var schedule = SkillUsageMaintenanceSchedule()
+        let plan = SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10), 45)
+        schedule.resetDeadline()
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 1_000), 45)
+        XCTAssertEqual(schedule.nextDueUptime, 1_045)
+    }
+
+    func testScheduleToleranceScalesWithoutExceedingThirtySeconds() {
+        let first = SkillUsageMaintenancePlan.recommended(
+            phase: .firstContinuation,
+            isEnergyConstrained: false
+        )
+        let catchUp = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false
+        )
+        let constrained = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: true
+        )
+
+        XCTAssertEqual(first.scheduleToleranceSeconds, 5)
+        XCTAssertEqual(catchUp.scheduleToleranceSeconds, 15)
+        XCTAssertEqual(constrained.scheduleToleranceSeconds, 20)
+        XCTAssertLessThanOrEqual(constrained.scheduleToleranceSeconds, 30)
+    }
 }

@@ -116,6 +116,7 @@ final class MetagentModel: ObservableObject {
     private var pendingHistoryTrigger: SkillHistoryTrigger?
     private var pluginAutoUpdateTask: Task<Void, Never>?
     private var usageMaintenanceTask: Task<Void, Never>?
+    private var usageMaintenanceSchedule = SkillUsageMaintenanceSchedule()
     private var usageForegroundRefreshQueued = false
     private var publicationSyncQueued = false
     private var codebaseSizeRefreshQueued = false
@@ -990,6 +991,7 @@ final class MetagentModel: ObservableObject {
         if maintenancePlan == nil {
             usageMaintenanceTask?.cancel()
             usageMaintenanceTask = nil
+            usageMaintenanceSchedule.resetDeadline()
             if isUsageRefreshing {
                 usageForegroundRefreshQueued = true
                 return
@@ -1012,8 +1014,14 @@ final class MetagentModel: ObservableObject {
                         try MetagentCore.refreshSkillUsage(options: refreshOptions)
                     }
                 }.value
+                let usageChanged = report.snapshot != usageSnapshot
                 usageSnapshot = report.snapshot
-                skillTableRevision += 1
+                if usageChanged {
+                    skillTableRevision += 1
+                }
+                if maintenancePlan != nil {
+                    usageMaintenanceSchedule.recordCompletion(wasDeferred: report.wasDeferred)
+                }
                 usageStatusText = Self.usageStatus(report.snapshot)
                 shouldContinueMaintenance = report.hasMore
                     && (report.wasDeferred || report.processedBytesAdvanced > 0)
@@ -1060,14 +1068,29 @@ final class MetagentModel: ObservableObject {
         let processInfo = ProcessInfo.processInfo
         let isThermallyConstrained = processInfo.thermalState == .serious
             || processInfo.thermalState == .critical
-        let plan = SkillUsageMaintenancePlan.recommended(
-            isEnergyConstrained: processInfo.isLowPowerModeEnabled || isThermallyConstrained
+        let remainingBytes = max(0, usageSnapshot.totalBytes - usageSnapshot.processedBytes)
+        let remainingFiles = max(0, usageSnapshot.totalFiles - usageSnapshot.completedFiles)
+        guard let plan = usageMaintenanceSchedule.plan(
+            isEnergyConstrained: processInfo.isLowPowerModeEnabled || isThermallyConstrained,
+            remainingBytes: remainingBytes,
+            remainingFiles: remainingFiles
+        ) else {
+            usageMaintenanceTask = nil
+            return
+        }
+        let delay = usageMaintenanceSchedule.delayBeforeNextRun(
+            plan: plan,
+            nowUptime: processInfo.systemUptime
         )
         usageMaintenanceTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(plan.delaySeconds))
+            try? await Task.sleep(
+                for: .seconds(delay),
+                tolerance: .seconds(plan.scheduleToleranceSeconds)
+            )
             guard !Task.isCancelled, let self else { return }
             usageMaintenanceTask = nil
             if isRunning || isSkillEvaluating || isCodebaseSizeRefreshing {
+                usageMaintenanceSchedule.resetDeadline()
                 scheduleUsageMaintenance()
                 return
             }
