@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "status": "proposed",
+  "note": "Initial product targets. Promote individual entries to enforced only after repeated same-machine measurements prove the harness and normal variance.",
+  "budgets": {
+    "warm_launch_to_navigation_ready_ms": {
+      "limit": 1000,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "main window and navigation controls exposed through Accessibility"
+    },
+    "cold_launch_to_navigation_ready_ms": {
+      "limit": 2000,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "main window and navigation controls exposed through Accessibility; OS cache state is user-controlled"
+    },
+    "common_interaction_input_to_present_p95_ms": {
+      "limit": 150,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "requires a view-specific presentation sentinel; current tab harness exposes selected-state latency only"
+    },
+    "manual_refresh_to_ready_p95_ms": {
+      "limit": 3000,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "Reload control transition away and back to enabled"
+    },
+    "settled_overview_average_cpu_percent": {
+      "limit": 0.5,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "time-weighted process CPU over a controlled idle Overview scenario"
+    },
+    "settled_overview_p95_cpu_percent": {
+      "limit": 1.0,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "time-weighted process CPU over a controlled idle Overview scenario"
+    },
+    "settled_overview_high_cpu_bursts_over_1s": {
+      "limit": 0,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "count of contiguous sampled bursts at or above 20 percent CPU lasting longer than one second"
+    },
+    "skills_view_cycle_retained_live_heap_delta_mib": {
+      "limit": 5.0,
+      "comparison": "max",
+      "status": "proposed",
+      "fidelity": "median vmmap live malloc allocations after Overview to Skills to Overview minus the settled Overview baseline"
+    }
+  }
+}

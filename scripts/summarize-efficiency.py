@@ -126,6 +126,20 @@ def longest_active_burst(samples: list[ProcessSample], threshold: float) -> floa
     return longest
 
 
+def active_bursts(samples: list[ProcessSample], threshold: float) -> list[float]:
+    bursts: list[float] = []
+    current = 0.0
+    for sample, interval in zip(samples, sample_intervals(samples)):
+        if sample.cpu_percent >= threshold:
+            current += interval
+        elif current > 0:
+            bursts.append(current)
+            current = 0.0
+    if current > 0:
+        bursts.append(current)
+    return bursts
+
+
 def summarize(
     samples: list[ProcessSample],
     *,
@@ -133,6 +147,7 @@ def summarize(
     pid: int,
     active_cpu_threshold: float,
     processed_usage_bytes: int | None,
+    high_cpu_threshold: float = 20.0,
     provenance: dict[str, object] | None = None,
 ) -> dict[str, object]:
     cpu = [sample.cpu_percent for sample in samples]
@@ -151,6 +166,7 @@ def summarize(
     estimated_cpu_seconds = sum(
         value * interval for value, interval in zip(cpu, intervals)
     ) / 100
+    high_cpu_bursts = active_bursts(samples, high_cpu_threshold)
     result: dict[str, object] = {
         "schema_version": 2,
         "channel": channel,
@@ -175,6 +191,12 @@ def summarize(
                 samples, active_cpu_threshold
             ),
             "estimated_cpu_seconds": estimated_cpu_seconds,
+            "high_cpu_threshold_percent": high_cpu_threshold,
+            "high_cpu_burst_count": len(high_cpu_bursts),
+            "high_cpu_bursts_over_one_second": sum(
+                duration > 1.0 for duration in high_cpu_bursts
+            ),
+            "longest_high_cpu_burst_seconds": max(high_cpu_bursts, default=0.0),
         },
         "memory": {
             "time_weighted_average_rss_mib": sum(
@@ -283,6 +305,10 @@ def text_summary(result: dict[str, object]) -> str:
         f"active_cpu_duty_cycle_percent: {cpu['active_duty_cycle_percent']:.2f}",
         f"longest_active_cpu_burst_seconds: {cpu['longest_active_burst_seconds']}",
         f"estimated_cpu_seconds: {cpu['estimated_cpu_seconds']:.2f}",
+        f"high_cpu_threshold_percent: {cpu['high_cpu_threshold_percent']:.2f}",
+        f"high_cpu_burst_count: {cpu['high_cpu_burst_count']}",
+        f"high_cpu_bursts_over_one_second: {cpu['high_cpu_bursts_over_one_second']}",
+        f"longest_high_cpu_burst_seconds: {cpu['longest_high_cpu_burst_seconds']:.2f}",
         f"time_weighted_average_rss_mib: {memory['time_weighted_average_rss_mib']:.2f}",
         f"time_weighted_p95_rss_mib: {memory['time_weighted_p95_rss_mib']:.2f}",
         f"peak_rss_mib: {memory['peak_rss_mib']:.2f}",
@@ -329,6 +355,7 @@ def main() -> int:
     parser.add_argument("--channel", choices=("dev", "prod"), required=True)
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--active-cpu-threshold", type=float, default=2.0)
+    parser.add_argument("--high-cpu-threshold", type=float, default=20.0)
     parser.add_argument("--processed-usage-bytes", type=int)
     parser.add_argument("--scenario", default="unspecified")
     parser.add_argument("--repo-commit", default="unknown")
@@ -351,6 +378,8 @@ def main() -> int:
 
     if args.active_cpu_threshold < 0:
         parser.error("--active-cpu-threshold must be non-negative")
+    if args.high_cpu_threshold < 0:
+        parser.error("--high-cpu-threshold must be non-negative")
     if args.processed_usage_bytes is not None and args.processed_usage_bytes < 0:
         parser.error("--processed-usage-bytes must be non-negative")
     try:
@@ -361,6 +390,7 @@ def main() -> int:
             pid=args.pid,
             active_cpu_threshold=args.active_cpu_threshold,
             processed_usage_bytes=args.processed_usage_bytes,
+            high_cpu_threshold=args.high_cpu_threshold,
             provenance={
                 "scenario": args.scenario,
                 "repo_commit": args.repo_commit,

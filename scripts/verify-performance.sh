@@ -13,6 +13,7 @@ if ! xcrun xcodebuild -version >/dev/null 2>&1; then
 fi
 
 export METAGENT_RUN_PERFORMANCE_TESTS=1
+export METAGENT_PERFORMANCE_TESTS=1
 export SWIFT_DETERMINISTIC_HASHING=1
 performance_iterations="${METAGENT_PERFORMANCE_ITERATIONS:-5}"
 if ! [[ "$performance_iterations" =~ ^[0-9]+$ ]]; then
@@ -37,6 +38,24 @@ swift test \
   --configuration release \
   -Xswiftc -DDEBUG \
   --filter MetagentCorePerformanceTests 2>&1 | tee "$performance_log"
+
+# This is a deterministic row-pipeline proxy, not a SwiftUI render or
+# interaction-latency claim. Keep it explicit so its opt-in gate cannot become
+# dead coverage behind the core-only filter above.
+swift test \
+  --disable-sandbox \
+  --configuration release \
+  -Xswiftc -DDEBUG \
+  --filter skillTablePresentationPerformanceProxy
+
+# Projects used to rescan the complete project array for every displayed row.
+# This model-layer proxy keeps that preparation indexed; live Accessibility
+# timing remains the authority for full navigation latency.
+swift test \
+  --disable-sandbox \
+  --configuration release \
+  -Xswiftc -DDEBUG \
+  --filter projectRowIndexPerformanceProxy
 
 summary_arguments=(
   "$performance_log"

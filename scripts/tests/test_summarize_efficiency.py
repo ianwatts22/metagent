@@ -66,6 +66,10 @@ class SummarizeEfficiencyTests(unittest.TestCase):
         self.assertAlmostEqual(cpu["active_duty_cycle_percent"], 300 / 6.5)
         self.assertEqual(cpu["longest_active_burst_seconds"], 3.0)
         self.assertAlmostEqual(cpu["estimated_cpu_seconds"], 0.1275)
+        self.assertEqual(cpu["high_cpu_threshold_percent"], 20.0)
+        self.assertEqual(cpu["high_cpu_burst_count"], 0)
+        self.assertEqual(cpu["high_cpu_bursts_over_one_second"], 0)
+        self.assertEqual(cpu["longest_high_cpu_burst_seconds"], 0.0)
         self.assertAlmostEqual(memory["time_weighted_average_rss_mib"], 665.5 / 6.5)
         self.assertEqual(memory["time_weighted_p95_rss_mib"], 105.0)
         self.assertEqual(memory["peak_rss_mib"], 105.0)
@@ -99,6 +103,29 @@ class SummarizeEfficiencyTests(unittest.TestCase):
         self.assertIn("global_usage_progress_scope: shared_database_global", summary)
         self.assertIn("observed_descendants_capture_between_samples: false", summary)
         self.assertNotIn("cpu_seconds_per_processed_mib", summary)
+        self.assertIn("high_cpu_bursts_over_one_second: 0", summary)
+
+    def test_counts_contiguous_high_cpu_bursts_by_elapsed_time(self) -> None:
+        samples = [
+            MODULE.ProcessSample(second=0.4, cpu_percent=25, rss_kib=1024, threads=1),
+            MODULE.ProcessSample(second=1.2, cpu_percent=30, rss_kib=1024, threads=1),
+            MODULE.ProcessSample(second=2.2, cpu_percent=0, rss_kib=1024, threads=1),
+            MODULE.ProcessSample(second=2.7, cpu_percent=50, rss_kib=1024, threads=1),
+            MODULE.ProcessSample(second=3.2, cpu_percent=0, rss_kib=1024, threads=1),
+        ]
+        result = MODULE.summarize(
+            samples,
+            channel="dev",
+            pid=42,
+            active_cpu_threshold=2,
+            high_cpu_threshold=20,
+            processed_usage_bytes=None,
+        )
+
+        cpu = result["cpu"]
+        self.assertEqual(cpu["high_cpu_burst_count"], 2)
+        self.assertEqual(cpu["high_cpu_bursts_over_one_second"], 1)
+        self.assertAlmostEqual(cpu["longest_high_cpu_burst_seconds"], 1.2)
 
     def test_percentiles_weight_each_cpu_interval_by_elapsed_time(self) -> None:
         samples = [

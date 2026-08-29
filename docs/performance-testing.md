@@ -62,6 +62,11 @@ filesystem work. It does not claim to cover the external Codex plugin process,
 SwiftUI publication, or snapshot persistence; use the running-app sampler for
 those whole-app stages.
 
+The performance lane also runs `skillTablePresentationPerformanceProxy`
+explicitly. That deterministic model-layer proxy compares the old repeated
+filter/sort row pipeline with the shared one-pass pipeline. It is not a SwiftUI
+render benchmark and is not evidence of input-to-present latency.
+
 ## Usage freshness and energy pacing
 
 An explicit refresh reads at most 8 MiB or 12 session files before returning.
@@ -105,7 +110,7 @@ idle and whole-app behavior after installing and starting the selected channel:
 scripts/measure-app-efficiency.sh \
   --channel dev \
   --duration 60 \
-  --scenario idle-overview
+  --scenario settled-idle-overview
 ```
 
 It samples CPU, resident memory, and thread count once per second, then writes a
@@ -161,8 +166,8 @@ fragmentation views together:
 ```bash
 scripts/profile-app-memory.sh \
   --channel dev \
-  --scenario skills-before \
-  --output /private/tmp/metagent-memory-skills-before
+  --scenario overview-before-skills \
+  --output /private/tmp/metagent-memory-before
 ```
 
 The default run waits three seconds, captures three snapshots one second apart,
@@ -186,3 +191,157 @@ footprint together. RSS alone includes reclaimable and fragmented pages.
 since that app process launched, not the peak of the sampled scenario. Compare
 it only across freshly launched processes that ran the same ordered scenario;
 do not use it to compare two views captured in one process.
+
+## Product targets versus measured baselines
+
+[`scripts/app-performance-budgets.json`](../scripts/app-performance-budgets.json)
+records the initial product targets separately from measurement output. They are
+all `proposed` today:
+
+- common tab, filter, or sort input-to-present p95 at or below 150 ms, with
+  100 ms as the desired center of the range;
+- warm process launch to an Accessibility-ready window at or below 1 second;
+- cold process launch to the same ready point at or below 2 seconds;
+- settled Overview average CPU at or below 0.5%, time-weighted p95 at or below
+  1%, and no sampled 20% CPU burst lasting longer than one second;
+- no more than 5 MiB of retained live malloc allocations after an Overview →
+  Skills → Overview view cycle;
+- manual Reload returning to its enabled ready state within 3 seconds at p95.
+
+These are intended product constraints, not claims about the current app and
+not release gates. Keep current measured values in timestamped artifacts rather
+than copying them into this file. Promote one budget to `enforced` only after
+repeated same-machine runs prove that its observable, scenario preparation, and
+normal variance are trustworthy. `--include-proposed` is an explicit local
+stress check; it does not silently turn proposed targets into release gates.
+
+## Installed-app interaction measurements
+
+The interaction harness drives the installed app through macOS Accessibility:
+
+```bash
+scripts/measure-app-interactions.sh \
+  --channel dev \
+  --scenario tabs \
+  --iterations 5 \
+  --output /private/tmp/metagent-tabs-$(date +%Y%m%d-%H%M%S)
+
+scripts/measure-app-interactions.sh \
+  --channel dev \
+  --scenario refresh \
+  --iterations 5 \
+  --output /private/tmp/metagent-refresh-$(date +%Y%m%d-%H%M%S)
+```
+
+The selected app must be running with its main window open. The Codex or
+terminal host needs macOS Accessibility permission. The harness identifies the
+single five- or six-button navigation row, supports both the current layout and
+the future layout without History, and fails if that shape is ambiguous. It
+never falls back to fixed screen coordinates.
+
+Tab results currently end when the destination button exposes `AXSelected`.
+That is useful for detecting event-loop stalls, but it is named
+`tab_input_to_selected_state_ms` and is not compared with the
+input-to-present product target. SwiftUI does not expose stable, inexpensive
+view-specific ready sentinels for all five pages; traversing the Skills table's
+Accessibility tree would measure the traversal itself. Filter and sort
+input-to-present latency share this coverage gap. Add stable Accessibility
+identifiers or an app-owned UI-test readiness hook before enforcing those
+budgets.
+
+Reload is stronger: a valid sample must observe the Reload control leave its
+enabled ready state and then return. A refresh that finishes too quickly for
+that transition to be observed fails the scenario rather than inventing a
+completion duration.
+
+### Launch to ready
+
+Launch measurement intentionally changes the selected channel's process state
+and leaves it running:
+
+```bash
+# Performs one unmeasured prewarm launch, stops it, then measures relaunches.
+scripts/measure-app-interactions.sh \
+  --channel dev --scenario launch-warm --iterations 5 \
+  --output /private/tmp/metagent-launch-warm-$(date +%Y%m%d-%H%M%S)
+
+# The selected app must already be stopped. Run after reboot/install when that
+# is the cold condition being studied.
+scripts/measure-app-interactions.sh \
+  --channel dev --scenario launch-cold --iterations 1 \
+  --output /private/tmp/metagent-launch-cold-$(date +%Y%m%d-%H%M%S)
+```
+
+Ready means the main `Metagent` window and its navigation row are exposed
+through Accessibility. It does not mean background indexing has completed.
+The harness uses system uptime for monotonic durations. It cannot flush or
+prove macOS filesystem, dynamic-linker, and disk caches, so `launch-cold` is a
+declared scenario precondition rather than a cache-manipulation claim. Use one
+cold iteration; repeated launches are warm by definition.
+
+All interaction artifacts include the same repository, bundle, executable,
+OS, hardware, CPU, and power provenance as the process sampler. A supplied
+output directory must be new or empty.
+
+## Evaluating the complete budget shape
+
+Use a controlled five-minute Overview idle run for energy pacing:
+
+```bash
+scripts/measure-app-efficiency.sh \
+  --channel dev --duration 300 --scenario settled-idle-overview \
+  --output /private/tmp/metagent-idle-overview-$(date +%Y%m%d-%H%M%S)
+```
+
+Its summary now includes the count and longest duration of contiguous sampled
+bursts at or above 20% CPU in addition to the 2% active-duty metrics. A burst
+longer than one second is counted only when the monotonic sample intervals add
+up to more than one second; one isolated quantized sample is not stretched into
+a recurring burst.
+
+For retained Skills memory, keep one process alive and capture both settled
+Overview states around a manual Overview → Skills → Overview cycle:
+
+```bash
+scripts/profile-app-memory.sh \
+  --channel dev --scenario overview-before-skills \
+  --output /private/tmp/metagent-memory-before-$(date +%Y%m%d-%H%M%S)
+
+# Open Skills, exercise the normal table once, return to Overview, then:
+scripts/profile-app-memory.sh \
+  --channel dev --scenario overview-after-skills \
+  --output /private/tmp/metagent-memory-after-$(date +%Y%m%d-%H%M%S)
+```
+
+The budget checker rejects before/after memory artifacts from different
+process launches, executables, builds, channels, or OS versions. It compares
+median `malloc.allocated_mib`, which is the live heap; it does not substitute
+RSS or process-lifetime peak.
+
+Combine whatever artifacts a scenario produced:
+
+```bash
+scripts/check-app-performance-budgets.py \
+  --interactions /private/tmp/metagent-launch-warm-TIMESTAMP/summary.json \
+  --interactions /private/tmp/metagent-refresh-TIMESTAMP/summary.json \
+  --efficiency /private/tmp/metagent-idle-overview-TIMESTAMP/summary.json \
+  --memory-before /private/tmp/metagent-memory-before-TIMESTAMP/summary.json \
+  --memory-after /private/tmp/metagent-memory-after-TIMESTAMP/summary.json
+```
+
+Default evaluation reports proposed targets and observed values without failing
+on them; only entries explicitly marked `enforced` can fail. To see which
+current measurements miss the proposed product target, add
+`--include-proposed`. That mode exits nonzero on a miss and remains opt-in.
+Supplying `--output` writes a new JSON evaluation and refuses to replace an
+existing file. The checker also validates scenario labels: settled Overview CPU
+must come from a label containing `settled`, `idle`, and `overview`; memory must
+be an Overview-before and Overview-after-Skills pair from the same process; and
+interaction metrics must match their launch or refresh scenario. The explicit
+`--allow-scenario-mismatch` escape hatch exists for investigations, not routine
+gating, and should be recorded with the result whenever used.
+
+Remaining gaps are explicit: visual presentation after tab/filter/sort input,
+complete attribution of short-lived child processes, wakeup and file-I/O
+counts without Instruments, and truly controlled cold OS cache state. Core-only
+benchmarks must not be used as substitutes for those observables.
