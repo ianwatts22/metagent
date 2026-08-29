@@ -1441,6 +1441,44 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(report.snapshot.totalInvocations, 1)
     }
 
+    func testUsageDiscoveryPreservesExplicitRootsUnderSkippedAncestors() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/explicit", name: "explicit")
+        let hiddenRoot = fixture.sessions.appendingPathComponent(".archive/sessions")
+        let finderHiddenRoot = fixture.sessions.appendingPathComponent("finder-hidden/sessions")
+        let packageRoot = fixture.sessions.appendingPathComponent("History.app/Contents/sessions")
+        try FileManager.default.createDirectory(at: hiddenRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: finderHiddenRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+        var finderHiddenValues = URLResourceValues()
+        finderHiddenValues.isHidden = true
+        var finderHiddenAncestor = finderHiddenRoot.deletingLastPathComponent()
+        try finderHiddenAncestor.setResourceValues(finderHiddenValues)
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "hidden-explicit", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "hidden-explicit-read", command: "cat \(skill.path)")
+        ], to: hiddenRoot.appendingPathComponent("rollout-hidden-explicit.jsonl"))
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "finder-hidden-explicit", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "finder-hidden-explicit-read", command: "cat \(skill.path)")
+        ], to: finderHiddenRoot.appendingPathComponent("rollout-finder-hidden-explicit.jsonl"))
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "package-explicit", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "package-explicit-read", command: "cat \(skill.path)")
+        ], to: packageRoot.appendingPathComponent("rollout-package-explicit.jsonl"))
+
+        let report = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path, hiddenRoot.path, finderHiddenRoot.path, packageRoot.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20
+        ))
+
+        XCTAssertEqual(report.snapshot.totalFiles, 3)
+        XCTAssertEqual(report.snapshot.totalInvocations, 3)
+    }
+
     func testBulkMetadataMatchesExistingStatMetadata() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

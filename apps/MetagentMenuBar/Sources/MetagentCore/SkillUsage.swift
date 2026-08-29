@@ -901,7 +901,9 @@ private final class SkillUsageStore {
         for root in resolvedRoots.sorted(by: { $0.path.count < $1.path.count }) {
             let rootPath = root.path
             guard !scanRoots.contains(where: {
-                rootPath == $0.path || rootPath.hasPrefix($0.path + "/")
+                rootPath == $0.path
+                    || (rootPath.hasPrefix($0.path + "/")
+                        && parentTraversalCanReach(root, from: $0))
             }) else { continue }
             scanRoots.append(root)
         }
@@ -939,6 +941,27 @@ private final class SkillUsageStore {
             }
         }
         return sources
+    }
+
+    /// A nested explicit root is redundant only when the parent walk can
+    /// actually descend into it. Hidden and package directories are skipped by
+    /// both discovery implementations, so roots beneath either must remain
+    /// independently scannable.
+    private func parentTraversalCanReach(_ nestedRoot: URL, from parentRoot: URL) -> Bool {
+        let parentComponents = parentRoot.standardizedFileURL.pathComponents
+        let nestedComponents = nestedRoot.standardizedFileURL.pathComponents
+        guard nestedComponents.starts(with: parentComponents) else { return false }
+
+        var candidate = parentRoot.standardizedFileURL
+        let keys: Set<URLResourceKey> = [.isHiddenKey, .isPackageKey]
+        for component in nestedComponents.dropFirst(parentComponents.count) {
+            candidate.appendPathComponent(component, isDirectory: true)
+            guard let values = try? candidate.resourceValues(forKeys: keys),
+                  values.isHidden != true,
+                  values.isPackage != true
+            else { return false }
+        }
+        return true
     }
 
     /// Darwin can return the name, type, size, timestamps, and stable file ID
@@ -1082,9 +1105,10 @@ private final class SkillUsageStore {
                 let entryPath = directoryPath + "/" + parsed.name
                 if isDirectory {
                     let entryURL = URL(fileURLWithPath: entryPath, isDirectory: true)
-                    let packageKeys: Set<URLResourceKey> = [.isPackageKey]
-                    let isPackage = (try? entryURL.resourceValues(forKeys: packageKeys).isPackage) == true
-                    if !isPackage,
+                    let traversalKeys: Set<URLResourceKey> = [.isHiddenKey, .isPackageKey]
+                    let traversalValues = try? entryURL.resourceValues(forKeys: traversalKeys)
+                    if traversalValues?.isHidden != true,
+                       traversalValues?.isPackage != true,
                        !discoverSourcesWithBulkAttributes(
                            in: entryURL,
                            checkpoints: checkpoints,
