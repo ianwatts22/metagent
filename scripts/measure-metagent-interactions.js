@@ -66,6 +66,43 @@ function elementPosition(element) {
   }
 }
 
+function elementIdentifier(element) {
+  try {
+    return element.attributes.byName("AXIdentifier").value();
+  } catch (_) {
+    return null;
+  }
+}
+
+function findDescendantByIdentifier(root, identifier) {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (elementIdentifier(current) === identifier) {
+      return current;
+    }
+    let children = [];
+    try {
+      children = current.uiElements();
+    } catch (_) {
+      continue;
+    }
+    for (const child of children) {
+      pending.push(child);
+    }
+  }
+  return null;
+}
+
+function waitForIdentifier(root, identifier, timeoutMilliseconds) {
+  let found = null;
+  waitUntil(() => {
+    found = findDescendantByIdentifier(root, identifier);
+    return found !== null;
+  }, timeoutMilliseconds, `Accessibility identifier ${identifier}`);
+  return found;
+}
+
 function navigationButtons(window) {
   const topLevel = window.uiElements()[0];
   if (!topLevel) {
@@ -195,6 +232,61 @@ function runTabs(window, iterations, timeoutMilliseconds) {
     coverage_gaps: [
       "SwiftUI exposes selected state but no stable view-specific ready sentinel; tab results are input-to-selected-state, not input-to-present.",
       "Filter and sort input-to-present remain unmeasured until stable Accessibility identifiers or UI-test hooks exist.",
+    ],
+  };
+}
+
+function runSkillsCycle(window, iterations, timeoutMilliseconds) {
+  const buttons = navigationButtons(window);
+  const tabs = namedNavigation(buttons);
+  if (!isSelected(tabs.Overview)) {
+    selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+  }
+  const samples = [];
+  for (let iteration = 1; iteration <= iterations; iteration += 1) {
+    const forward = selectTab(tabs.Skills, timeoutMilliseconds, "Skills");
+    const summaryButton = waitForIdentifier(
+      window,
+      "metagent.skills.view.summary",
+      timeoutMilliseconds
+    );
+    if (!isSelected(summaryButton)) {
+      selectTab(summaryButton, timeoutMilliseconds, "Skills Summary view");
+    }
+    waitForIdentifier(
+      window,
+      "metagent.skills.table.summary.ready",
+      timeoutMilliseconds
+    );
+    // Keep the fully presented canonical table alive long enough to populate
+    // lazy SwiftUI/AppKit allocations before returning to Overview.
+    delay(1);
+    const backward = selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+    samples.push(
+      {
+        metric: "skills_cycle_selected_state_ms",
+        interaction: "Overview to Skills",
+        iteration,
+        value_ms: forward,
+        selected_state_observed: true,
+        presentation_observed: true,
+      },
+      {
+        metric: "skills_cycle_selected_state_ms",
+        interaction: "Skills to Overview",
+        iteration,
+        value_ms: backward,
+        selected_state_observed: true,
+        presentation_observed: false,
+      }
+    );
+  }
+  return {
+    automation: "macos_accessibility",
+    navigation_button_count: buttons.length,
+    samples,
+    coverage_gaps: [
+      "The Skills cycle observes the canonical Summary table through a stable Accessibility identifier, but does not scroll every lazy row into view.",
     ],
   };
 }
@@ -368,6 +460,8 @@ function run(argv) {
     const window = mainWindow(process, timeoutMilliseconds);
     if (scenario === "tabs") {
       result = runTabs(window, iterations, timeoutMilliseconds);
+    } else if (scenario === "skills-cycle") {
+      result = runSkillsCycle(window, iterations, timeoutMilliseconds);
     } else if (scenario === "refresh") {
       result = runRefresh(window, iterations, timeoutMilliseconds);
     } else {

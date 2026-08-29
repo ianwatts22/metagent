@@ -24,6 +24,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("selected-state latency, not full", completed.stdout)
         self.assertIn("launch-cold requires it to be stopped", completed.stdout)
+        self.assertIn("Overview → Skills → Overview", completed.stdout)
 
     def test_rejects_unknown_scenario_before_touching_the_app(self) -> None:
         completed = subprocess.run(
@@ -48,6 +49,22 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 2)
         self.assertIn("every later launch would be warm", completed.stderr)
+
+    def test_skills_cycle_defaults_to_one_iteration(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('iterations_explicit=false', script)
+        self.assertIn('scenario" == "skills-cycle"', script)
+        self.assertIn('iterations=1', script)
+
+    def test_skills_cycle_normalizes_and_waits_for_summary_table(self) -> None:
+        script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"metagent.skills.view.summary"', script)
+        self.assertIn('"metagent.skills.table.summary.ready"', script)
+        self.assertIn("presentation_observed: true", script)
 
     @unittest.skipUnless(sys.platform == "darwin", "interaction harness is macOS-only")
     def test_refuses_to_overwrite_existing_output(self) -> None:

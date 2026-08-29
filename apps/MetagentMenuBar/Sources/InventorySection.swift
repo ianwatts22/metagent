@@ -587,6 +587,7 @@ struct InventorySection: View {
     private func decoratedSkillsTable<Content: View>(_ table: Content) -> some View {
         table
             .id("\(selectedView.rawValue):\(grouping.rawValue)")
+            .accessibilityIdentifier("metagent.skills.table.\(selectedView.rawValue).ready")
             .tableStyle(.inset)
             .alternatingRowBackgrounds(.enabled)
             .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in

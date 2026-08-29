@@ -397,6 +397,7 @@ struct SkillViewSelector: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("metagent.skills.view.\(view.rawValue)")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }

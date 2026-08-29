@@ -4,13 +4,14 @@ set -euo pipefail
 channel="dev"
 scenario="tabs"
 iterations=5
+iterations_explicit=false
 timeout_seconds=30
 output_root=""
 
 usage() {
   cat <<'USAGE'
 Usage: scripts/measure-app-interactions.sh [--channel dev|prod]
-       [--scenario tabs|refresh|launch-warm|launch-cold] [--iterations COUNT]
+       [--scenario tabs|skills-cycle|refresh|launch-warm|launch-cold] [--iterations COUNT]
        [--timeout SECONDS] [--output EMPTY_DIR]
 
 Measures Metagent through macOS Accessibility. Tab measurements
@@ -18,6 +19,8 @@ end at AXSelected and are deliberately labeled selected-state latency, not full
 visual presentation. Refresh measurements require the Reload control to leave
 and return to its enabled ready state. Launch scenarios stop/start the selected
 channel and leave it running; launch-cold requires it to be stopped beforehand.
+skills-cycle performs only Overview → Skills → Overview, with a one-second Skills
+dwell, so before/after memory captures have a reproducible view-cycle protocol.
 Existing output is never replaced.
 USAGE
 }
@@ -26,7 +29,7 @@ while (($# > 0)); do
   case "$1" in
     --channel) channel="$2"; shift 2 ;;
     --scenario) scenario="$2"; shift 2 ;;
-    --iterations) iterations="$2"; shift 2 ;;
+    --iterations) iterations="$2"; iterations_explicit=true; shift 2 ;;
     --timeout) timeout_seconds="$2"; shift 2 ;;
     --output) output_root="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
@@ -34,13 +37,17 @@ while (($# > 0)); do
   esac
 done
 
+if [[ "$scenario" == "skills-cycle" && "$iterations_explicit" == "false" ]]; then
+  iterations=1
+fi
+
 if [[ "$channel" != "dev" && "$channel" != "prod" ]]; then
   echo "Channel must be dev or prod." >&2
   exit 2
 fi
-if [[ "$scenario" != "tabs" && "$scenario" != "refresh" \
+if [[ "$scenario" != "tabs" && "$scenario" != "skills-cycle" && "$scenario" != "refresh" \
       && "$scenario" != "launch-warm" && "$scenario" != "launch-cold" ]]; then
-  echo "Scenario must be tabs, refresh, launch-warm, or launch-cold." >&2
+  echo "Scenario must be tabs, skills-cycle, refresh, launch-warm, or launch-cold." >&2
   exit 2
 fi
 if ! [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || ((iterations > 20)); then
