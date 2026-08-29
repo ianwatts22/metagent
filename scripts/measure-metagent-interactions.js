@@ -50,22 +50,6 @@ function elementRole(element) {
   }
 }
 
-function elementSize(element) {
-  try {
-    return element.size();
-  } catch (_) {
-    return [0, 0];
-  }
-}
-
-function elementPosition(element) {
-  try {
-    return element.position();
-  } catch (_) {
-    return [0, 0];
-  }
-}
-
 function elementIdentifier(element) {
   try {
     return element.attributes.byName("AXIdentifier").value();
@@ -94,6 +78,27 @@ function findDescendantByIdentifier(root, identifier) {
   return null;
 }
 
+function findDescendantByIdentifierPrefix(root, prefix) {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    const identifier = elementIdentifier(current);
+    if (identifier && identifier.indexOf(prefix) === 0) {
+      return current;
+    }
+    let children = [];
+    try {
+      children = current.uiElements();
+    } catch (_) {
+      continue;
+    }
+    for (const child of children) {
+      pending.push(child);
+    }
+  }
+  return null;
+}
+
 function waitForIdentifier(root, identifier, timeoutMilliseconds) {
   let found = null;
   waitUntil(() => {
@@ -103,55 +108,34 @@ function waitForIdentifier(root, identifier, timeoutMilliseconds) {
   return found;
 }
 
-function navigationButtons(window) {
-  const topLevel = window.uiElements()[0];
-  if (!topLevel) {
-    fail("The Metagent window has no top-level Accessibility group.");
-  }
-  const candidates = topLevel.uiElements().filter((element) => {
-    const size = elementSize(element);
-    return elementRole(element) === "AXButton" && size[0] >= 60 && size[1] <= 40;
-  });
-  const rows = new Map();
-  for (const element of candidates) {
-    const y = Math.round(elementPosition(element)[1]);
-    const row = rows.get(y) || [];
-    row.push(element);
-    rows.set(y, row);
-  }
-  const possibleNavigationRows = Array.from(rows.values()).filter((row) => {
-    if (row.length !== 5 && row.length !== 6) {
-      return false;
-    }
-    const widths = row.map((element) => elementSize(element)[0]);
-    const heights = row.map((element) => elementSize(element)[1]);
-    return (
-      Math.max(...widths) - Math.min(...widths) <= 2 &&
-      Math.max(...heights) - Math.min(...heights) <= 2
-    );
-  });
-  if (possibleNavigationRows.length !== 1) {
-    fail(
-      `Expected one equal-sized five- or six-button navigation row; found ${possibleNavigationRows.length}. ` +
-      "The app Accessibility shape may have changed."
-    );
-  }
-  return possibleNavigationRows[0].sort(
-    (left, right) => elementPosition(left)[0] - elementPosition(right)[0]
-  );
+function waitForIdentifierPrefix(root, prefix, timeoutMilliseconds) {
+  let found = null;
+  waitUntil(() => {
+    found = findDescendantByIdentifierPrefix(root, prefix);
+    return found !== null;
+  }, timeoutMilliseconds, `Accessibility identifier prefix ${prefix}`);
+  return found;
 }
 
-function namedNavigation(buttons) {
-  // History may still be present between Overview and Skills. Anchoring the
-  // four inventory destinations from the right keeps this harness valid after
-  // History is removed without pretending unlabeled AX buttons have names.
-  return {
-    Overview: buttons[0],
-    Skills: buttons[buttons.length - 4],
-    MCPs: buttons[buttons.length - 3],
-    Plugins: buttons[buttons.length - 2],
-    Projects: buttons[buttons.length - 1],
+function navigationButtons(window) {
+  const identifiers = {
+    Overview: "metagent.navigation.overview",
+    Skills: "metagent.navigation.skills",
+    MCPs: "metagent.navigation.mcps",
+    Plugins: "metagent.navigation.plugins",
+    Projects: "metagent.navigation.projects",
   };
+  const buttons = {};
+  for (const [name, identifier] of Object.entries(identifiers)) {
+    const button = findDescendantByIdentifier(window, identifier);
+    if (!button) {
+      fail(`Missing required Accessibility navigation control ${identifier}.`);
+    }
+    buttons[name] = button;
+  }
+  buttons.count = Object.keys(identifiers).length +
+    (findDescendantByIdentifier(window, "metagent.navigation.history") ? 1 : 0);
+  return buttons;
 }
 
 function isSelected(button) {
@@ -177,6 +161,180 @@ function selectTab(button, timeoutMilliseconds, label) {
   return monotonicMilliseconds() - started;
 }
 
+function contentReadyPrefix(section) {
+  return `metagent.${section.toLowerCase()}.content.ready.`;
+}
+
+function selectTabToContentReady(
+  window,
+  button,
+  section,
+  timeoutMilliseconds
+) {
+  const started = monotonicMilliseconds();
+  press(button);
+  const selectedStateMilliseconds = waitUntil(
+    () => isSelected(button),
+    timeoutMilliseconds,
+    `${section} selected state`
+  );
+  waitForIdentifierPrefix(
+    window,
+    section === "Overview"
+      ? "metagent.overview.content.ready"
+      : contentReadyPrefix(section),
+    timeoutMilliseconds
+  );
+  return {
+    contentReadyMilliseconds: monotonicMilliseconds() - started,
+    selectedStateMilliseconds,
+  };
+}
+
+function elementValue(element) {
+  try {
+    return String(element.value());
+  } catch (_) {
+    return null;
+  }
+}
+
+function elementAttributeValue(element, name) {
+  try {
+    return String(element.attributes.byName(name).value());
+  } catch (_) {
+    return null;
+  }
+}
+
+function elementName(element) {
+  try {
+    return String(element.name());
+  } catch (_) {
+    return null;
+  }
+}
+
+function findDescendantByRoleAndName(root, role, name, requiresPress) {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (elementRole(current) === role && elementName(current) === name) {
+      if (!requiresPress || current.actions.byName("AXPress").exists()) {
+        return current;
+      }
+    }
+    let children = [];
+    try {
+      children = current.uiElements();
+    } catch (_) {
+      continue;
+    }
+    for (const child of children) {
+      pending.push(child);
+    }
+  }
+  return null;
+}
+
+function contentElement(window, section, timeoutMilliseconds) {
+  return waitForIdentifierPrefix(
+    window,
+    contentReadyPrefix(section),
+    timeoutMilliseconds
+  );
+}
+
+function waitForContentIdentifierChange(
+  window,
+  section,
+  previousIdentifier,
+  timeoutMilliseconds
+) {
+  let changed = null;
+  waitUntil(() => {
+    changed = findDescendantByIdentifierPrefix(window, contentReadyPrefix(section));
+    return changed !== null && elementIdentifier(changed) !== previousIdentifier;
+  }, timeoutMilliseconds, `${section} AX content-ready token to change`);
+  return changed;
+}
+
+function menuItem(process, name, timeoutMilliseconds) {
+  let item = null;
+  waitUntil(() => {
+    item = findDescendantByRoleAndName(process, "AXMenuItem", name, true);
+    return item !== null;
+  }, timeoutMilliseconds, `menu item ${name}`);
+  return item;
+}
+
+function chooseMenuOption(
+  process,
+  window,
+  section,
+  control,
+  option,
+  timeoutMilliseconds,
+  measured
+) {
+  if (elementValue(control) === option) {
+    return null;
+  }
+  press(control);
+  const item = menuItem(process, option, timeoutMilliseconds);
+  const previous = elementIdentifier(contentElement(window, section, timeoutMilliseconds));
+  const started = monotonicMilliseconds();
+  press(item);
+  waitForContentIdentifierChange(window, section, previous, timeoutMilliseconds);
+  const elapsed = monotonicMilliseconds() - started;
+  waitUntil(
+    () => elementValue(control) === option,
+    timeoutMilliseconds,
+    `${section} filter value ${option}`
+  );
+  return measured ? elapsed : null;
+}
+
+function measureSort(
+  window,
+  section,
+  headerName,
+  timeoutMilliseconds
+) {
+  const content = contentElement(window, section, timeoutMilliseconds);
+  // macOS exposes NSTableView headers as siblings on some OS builds and as
+  // descendants on others. The selected tab is the only live destination, so
+  // an exact AXButton name in this window is stable without coordinates.
+  const header = findDescendantByRoleAndName(window, "AXButton", headerName, true);
+  if (!header) {
+    fail(`${section} table header ${headerName} is not exposed with AXPress.`);
+  }
+  const previous = elementIdentifier(content);
+  const previousDirection = elementAttributeValue(header, "AXSortDirection");
+  if (!previousDirection) {
+    fail(`${section} table header ${headerName} has no AXSortDirection.`);
+  }
+  const started = monotonicMilliseconds();
+  press(header);
+  waitUntil(() => {
+    const currentContent = findDescendantByIdentifierPrefix(
+      window,
+      contentReadyPrefix(section)
+    );
+    const currentHeader = findDescendantByRoleAndName(
+      window,
+      "AXButton",
+      headerName,
+      true
+    );
+    return currentContent !== null &&
+      currentHeader !== null &&
+      elementIdentifier(currentContent) !== previous &&
+      elementAttributeValue(currentHeader, "AXSortDirection") !== previousDirection;
+  }, timeoutMilliseconds, `${section} sorted AX table content and direction to change`);
+  return monotonicMilliseconds() - started;
+}
+
 function findReloadControl(window) {
   const topLevel = window.uiElements()[0];
   for (const element of topLevel.uiElements()) {
@@ -197,77 +355,252 @@ function findReloadControl(window) {
 
 function runTabs(window, iterations, timeoutMilliseconds) {
   const buttons = navigationButtons(window);
-  const tabs = namedNavigation(buttons);
-  if (!isSelected(tabs.Overview)) {
-    selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+  if (!isSelected(buttons.Overview)) {
+    selectTabToContentReady(
+      window,
+      buttons.Overview,
+      "Overview",
+      timeoutMilliseconds
+    );
   }
   const samples = [];
   const destinations = ["Skills", "MCPs", "Plugins", "Projects"];
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     for (const destination of destinations) {
-      const forward = selectTab(tabs[destination], timeoutMilliseconds, destination);
-      samples.push({
-        metric: "tab_input_to_selected_state_ms",
-        interaction: `Overview to ${destination}`,
-        iteration,
-        value_ms: forward,
-        selected_state_observed: true,
-        presentation_observed: false,
-      });
-      const backward = selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
-      samples.push({
-        metric: "tab_input_to_selected_state_ms",
-        interaction: `${destination} to Overview`,
-        iteration,
-        value_ms: backward,
-        selected_state_observed: true,
-        presentation_observed: false,
-      });
+      const forward = selectTabToContentReady(
+        window,
+        buttons[destination],
+        destination,
+        timeoutMilliseconds
+      );
+      const backward = selectTabToContentReady(
+        window,
+        buttons.Overview,
+        "Overview",
+        timeoutMilliseconds
+      );
+      for (const [interaction, measured] of [
+        [`Overview to ${destination}`, forward],
+        [`${destination} to Overview`, backward],
+      ]) {
+        samples.push(
+          {
+            metric: "tab_input_to_selected_state_ms",
+            interaction,
+            iteration,
+            value_ms: measured.selectedStateMilliseconds,
+            selected_state_observed: true,
+            presentation_observed: false,
+          },
+          {
+            metric: "tab_input_to_ax_content_ready_ms",
+            interaction,
+            iteration,
+            value_ms: measured.contentReadyMilliseconds,
+            ax_content_ready_observed: true,
+            presentation_observed: true,
+            presentation_fidelity: "accessibility_content_ready",
+          }
+        );
+      }
     }
   }
   return {
     automation: "macos_accessibility",
-    navigation_button_count: buttons.length,
+    navigation_button_count: buttons.count,
     samples,
     coverage_gaps: [
-      "SwiftUI exposes selected state but no stable view-specific ready sentinel; tab results are input-to-selected-state, not input-to-present.",
-      "Filter and sort input-to-present remain unmeasured until stable Accessibility identifiers or UI-test hooks exist.",
+      "AX content-ready proves SwiftUI exposed the destination state through Accessibility; it does not observe the first painted or composited pixel.",
+    ],
+  };
+}
+
+function normalizeSkillsSummary(window, timeoutMilliseconds) {
+  const summary = waitForIdentifier(
+    window,
+    "metagent.skills.view.summary",
+    timeoutMilliseconds
+  );
+  if (isSelected(summary)) {
+    return;
+  }
+  const previous = elementIdentifier(contentElement(window, "Skills", timeoutMilliseconds));
+  press(summary);
+  waitUntil(
+    () => isSelected(summary),
+    timeoutMilliseconds,
+    "Skills Summary view selected state"
+  );
+  waitForContentIdentifierChange(window, "Skills", previous, timeoutMilliseconds);
+}
+
+function runCommonInteractions(
+  process,
+  window,
+  iterations,
+  timeoutMilliseconds
+) {
+  const tabResult = runTabs(window, iterations, timeoutMilliseconds);
+  const buttons = navigationButtons(window);
+  const samples = tabResult.samples.slice();
+
+  const filters = [
+    {
+      tab: "Skills",
+      section: "Skills",
+      control: "metagent.skills.usage-filter",
+      baseline: "All skills",
+      alternate: "Observed",
+    },
+    {
+      tab: "MCPs",
+      section: "MCPs",
+      control: "metagent.mcps.status-filter",
+      baseline: "All",
+      alternate: "Needs attention",
+    },
+    {
+      tab: "Plugins",
+      section: "Plugins",
+      control: "metagent.plugins.show-filter",
+      baseline: "All",
+      alternate: "Manual updates",
+    },
+  ];
+  for (const specification of filters) {
+    selectTabToContentReady(
+      window,
+      buttons[specification.tab],
+      specification.section,
+      timeoutMilliseconds
+    );
+    if (specification.section === "Skills") {
+      normalizeSkillsSummary(window, timeoutMilliseconds);
+    }
+    let control = waitForIdentifier(window, specification.control, timeoutMilliseconds);
+    chooseMenuOption(
+      process,
+      window,
+      specification.section,
+      control,
+      specification.baseline,
+      timeoutMilliseconds,
+      false
+    );
+    for (let iteration = 1; iteration <= iterations; iteration += 1) {
+      for (const option of [specification.alternate, specification.baseline]) {
+        control = waitForIdentifier(window, specification.control, timeoutMilliseconds);
+        const elapsed = chooseMenuOption(
+          process,
+          window,
+          specification.section,
+          control,
+          option,
+          timeoutMilliseconds,
+          true
+        );
+        if (elapsed === null) {
+          fail(
+            `${specification.section} filter did not leave ${option}; ` +
+            "the scenario cannot produce a truthful state transition."
+          );
+        }
+        samples.push({
+          metric: "filter_input_to_ax_content_ready_ms",
+          interaction: `${specification.section} filter to ${option}`,
+          iteration,
+          value_ms: elapsed,
+          ax_content_ready_observed: true,
+          presentation_observed: true,
+          presentation_fidelity: "accessibility_content_ready",
+        });
+      }
+    }
+  }
+
+  const sorts = [
+    { tab: "Skills", section: "Skills", header: "Skill" },
+    { tab: "MCPs", section: "MCPs", header: "MCP" },
+    { tab: "Plugins", section: "Plugins", header: "Plugin" },
+    { tab: "Projects", section: "Projects", header: "Project" },
+  ];
+  for (const specification of sorts) {
+    selectTabToContentReady(
+      window,
+      buttons[specification.tab],
+      specification.section,
+      timeoutMilliseconds
+    );
+    if (specification.section === "Skills") {
+      normalizeSkillsSummary(window, timeoutMilliseconds);
+    }
+    for (let iteration = 1; iteration <= iterations; iteration += 1) {
+      for (const direction of ["toggle", "restore"]) {
+        samples.push({
+          metric: "sort_input_to_ax_content_ready_ms",
+          interaction: `${specification.section} ${specification.header} ${direction}`,
+          iteration,
+          value_ms: measureSort(
+            window,
+            specification.section,
+            specification.header,
+            timeoutMilliseconds
+          ),
+          ax_content_ready_observed: true,
+          presentation_observed: true,
+          presentation_fidelity: "accessibility_content_ready",
+        });
+      }
+    }
+  }
+
+  return {
+    automation: "macos_accessibility",
+    navigation_button_count: buttons.count,
+    samples,
+    coverage_gaps: [
+      "AX content-ready proves SwiftUI exposed the destination state through Accessibility; it does not observe the first painted or composited pixel.",
     ],
   };
 }
 
 function runSkillsCycle(window, iterations, timeoutMilliseconds) {
   const buttons = navigationButtons(window);
-  const tabs = namedNavigation(buttons);
-  if (!isSelected(tabs.Overview)) {
-    selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+  if (!isSelected(buttons.Overview)) {
+    selectTabToContentReady(window, buttons.Overview, "Overview", timeoutMilliseconds);
   }
   const samples = [];
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
-    const forward = selectTab(tabs.Skills, timeoutMilliseconds, "Skills");
-    const summaryButton = waitForIdentifier(
+    const forward = selectTabToContentReady(
       window,
-      "metagent.skills.view.summary",
+      buttons.Skills,
+      "Skills",
       timeoutMilliseconds
     );
-    if (!isSelected(summaryButton)) {
-      selectTab(summaryButton, timeoutMilliseconds, "Skills Summary view");
-    }
-    waitForIdentifier(
+    // A persisted non-Summary view already exposes a valid Skills prefix.
+    // Normalize through the token-changing helper so that old view cannot be
+    // mistaken for the Summary presentation used by this cycle.
+    normalizeSkillsSummary(window, timeoutMilliseconds);
+    waitForIdentifierPrefix(
       window,
-      "metagent.skills.table.summary.ready",
+      contentReadyPrefix("Skills"),
       timeoutMilliseconds
     );
     // Keep the fully presented canonical table alive long enough to populate
     // lazy SwiftUI/AppKit allocations before returning to Overview.
     delay(1);
-    const backward = selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+    const backward = selectTabToContentReady(
+      window,
+      buttons.Overview,
+      "Overview",
+      timeoutMilliseconds
+    );
     samples.push(
       {
         metric: "skills_cycle_selected_state_ms",
         interaction: "Overview to Skills",
         iteration,
-        value_ms: forward,
+        value_ms: forward.selectedStateMilliseconds,
         selected_state_observed: true,
         presentation_observed: true,
       },
@@ -275,7 +608,7 @@ function runSkillsCycle(window, iterations, timeoutMilliseconds) {
         metric: "skills_cycle_selected_state_ms",
         interaction: "Skills to Overview",
         iteration,
-        value_ms: backward,
+        value_ms: backward.selectedStateMilliseconds,
         selected_state_observed: true,
         presentation_observed: false,
       }
@@ -283,7 +616,7 @@ function runSkillsCycle(window, iterations, timeoutMilliseconds) {
   }
   return {
     automation: "macos_accessibility",
-    navigation_button_count: buttons.length,
+    navigation_button_count: buttons.count,
     samples,
     coverage_gaps: [
       "The Skills cycle observes the canonical Summary table through a stable Accessibility identifier, but does not scroll every lazy row into view.",
@@ -293,9 +626,8 @@ function runSkillsCycle(window, iterations, timeoutMilliseconds) {
 
 function runRefresh(window, iterations, timeoutMilliseconds) {
   const buttons = navigationButtons(window);
-  const tabs = namedNavigation(buttons);
-  if (!isSelected(tabs.Overview)) {
-    selectTab(tabs.Overview, timeoutMilliseconds, "Overview");
+  if (!isSelected(buttons.Overview)) {
+    selectTabToContentReady(window, buttons.Overview, "Overview", timeoutMilliseconds);
   }
   const samples = [];
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
@@ -338,7 +670,7 @@ function runRefresh(window, iterations, timeoutMilliseconds) {
   }
   return {
     automation: "macos_accessibility",
-    navigation_button_count: buttons.length,
+    navigation_button_count: buttons.count,
     samples,
     coverage_gaps: [],
   };
@@ -374,7 +706,7 @@ function launchToNavigationReady(
   const buttons = navigationButtons(window);
   return {
     value_ms: monotonicMilliseconds() - started,
-    navigation_button_count: buttons.length,
+    navigation_button_count: buttons.count,
   };
 }
 
@@ -460,6 +792,13 @@ function run(argv) {
     const window = mainWindow(process, timeoutMilliseconds);
     if (scenario === "tabs") {
       result = runTabs(window, iterations, timeoutMilliseconds);
+    } else if (scenario === "common-interactions") {
+      result = runCommonInteractions(
+        process,
+        window,
+        iterations,
+        timeoutMilliseconds
+      );
     } else if (scenario === "skills-cycle") {
       result = runSkillsCycle(window, iterations, timeoutMilliseconds);
     } else if (scenario === "refresh") {

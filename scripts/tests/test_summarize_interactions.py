@@ -45,6 +45,7 @@ class SummarizeInteractionsTests(unittest.TestCase):
         self.assertEqual(metric["p95"], 80)
         self.assertEqual(metric["maximum"], 80)
         self.assertFalse(metric["all_presentations_observed"])
+        self.assertEqual(metric["interactions"]["switch-5"]["p95"], 80)
         self.assertEqual(result["provenance"]["build_commit"], "abc123")
         self.assertIn("coverage_gap: No presentation sentinel.", MODULE.text_summary(result))
 

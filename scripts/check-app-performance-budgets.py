@@ -98,8 +98,39 @@ def observed_metrics(
                         f"interaction metric {source_name} requires scenario "
                         f"{expected_scenario}, found {interaction_scenario!r}"
                     )
+        ax_content_ready_names = (
+            "tab_input_to_ax_content_ready_ms",
+            "filter_input_to_ax_content_ready_ms",
+            "sort_input_to_ax_content_ready_ms",
+        )
+        if interaction_scenario == "common-interactions":
+            p95_values: list[float] = []
+            for source_name in ax_content_ready_names:
+                metric = metrics.get(source_name)
+                if not isinstance(metric, dict) or not isinstance(
+                    metric.get("p95"), (int, float)
+                ):
+                    raise ValueError(
+                        "common-interactions is missing AX content-ready metric "
+                        + source_name
+                    )
+                if (
+                    metric.get("all_presentations_observed") is not True
+                    and not allow_scenario_mismatch
+                ):
+                    raise ValueError(
+                        f"interaction metric {source_name} did not observe every AX ready state"
+                    )
+                p95_values.append(float(metric["p95"]))
+            if "common_interaction_input_to_ax_content_ready_p95_ms" in observed:
+                raise ValueError(
+                    "multiple interaction artifacts provide the common interaction budget; "
+                    "combine repetitions in one measurement run"
+                )
+            observed["common_interaction_input_to_ax_content_ready_p95_ms"] = max(p95_values)
         selected_state = metrics.get("tab_input_to_selected_state_ms")
-        if isinstance(selected_state, dict):
+        tab_content_ready = metrics.get("tab_input_to_ax_content_ready_ms")
+        if isinstance(selected_state, dict) and not isinstance(tab_content_ready, dict):
             gaps.append(
                 "Tab selected-state latency is diagnostic only; no stable view-specific "
                 "presentation sentinel exists, so the input-to-present budget was not evaluated."

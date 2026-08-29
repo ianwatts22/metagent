@@ -11,12 +11,15 @@ output_root=""
 usage() {
   cat <<'USAGE'
 Usage: scripts/measure-app-interactions.sh [--channel dev|prod]
-       [--scenario tabs|skills-cycle|refresh|launch-warm|launch-cold] [--iterations COUNT]
+       [--scenario tabs|common-interactions|skills-cycle|refresh|launch-warm|launch-cold] [--iterations COUNT]
        [--timeout SECONDS] [--output EMPTY_DIR]
 
-Measures Metagent through macOS Accessibility. Tab measurements
-end at AXSelected and are deliberately labeled selected-state latency, not full
-visual presentation. Refresh measurements require the Reload control to leave
+Measures Metagent through macOS Accessibility. Tab and common-interaction
+measurements report both AXSelected diagnostics and view-specific AX content-ready
+latency; they do not claim first-pixel or compositor presentation. The bounded
+common-interactions scenario exercises tabs, top-level filters, and primary-column
+sorts through exact Accessibility identifiers with no coordinate fallback.
+Refresh measurements require the Reload control to leave
 and return to its enabled ready state. Launch scenarios stop/start the selected
 channel and leave it running; launch-cold requires it to be stopped beforehand.
 skills-cycle performs only Overview → Skills → Overview, with a one-second Skills
@@ -45,9 +48,10 @@ if [[ "$channel" != "dev" && "$channel" != "prod" ]]; then
   echo "Channel must be dev or prod." >&2
   exit 2
 fi
-if [[ "$scenario" != "tabs" && "$scenario" != "skills-cycle" && "$scenario" != "refresh" \
+if [[ "$scenario" != "tabs" && "$scenario" != "common-interactions" \
+      && "$scenario" != "skills-cycle" && "$scenario" != "refresh" \
       && "$scenario" != "launch-warm" && "$scenario" != "launch-cold" ]]; then
-  echo "Scenario must be tabs, skills-cycle, refresh, launch-warm, or launch-cold." >&2
+  echo "Scenario must be tabs, common-interactions, skills-cycle, refresh, launch-warm, or launch-cold." >&2
   exit 2
 fi
 if ! [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || ((iterations > 20)); then

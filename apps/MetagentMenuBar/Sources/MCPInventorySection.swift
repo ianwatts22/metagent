@@ -124,9 +124,24 @@ struct MCPInventorySection: View {
     var body: some View {
         let allRows = allRows
         let rows = filteredRows(from: allRows)
+        let readyIdentifier = presentationReadyIdentifier(
+            section: "mcps",
+            state: [
+                filter.rawValue,
+                searchText,
+                selectedProjectRoot ?? "",
+                sortPresentationState(sortOrder),
+            ],
+            orderedRowIDs: rows.map(\.id)
+        )
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                GlassSearchField(placeholder: "Search MCPs", text: $searchText, width: 220)
+                GlassSearchField(
+                    placeholder: "Search MCPs",
+                    text: $searchText,
+                    width: 220,
+                    accessibilityIdentifier: "metagent.mcps.search"
+                )
 
                 GlassSelectionMenu(
                     title: "Status",
@@ -135,6 +150,7 @@ struct MCPInventorySection: View {
                     optionTitle: { $0.title },
                     width: 165
                 )
+                .accessibilityIdentifier("metagent.mcps.status-filter")
 
                 CountChip(text: "\(allRows.count) servers")
 
@@ -156,6 +172,7 @@ struct MCPInventorySection: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(20)
+                .accessibilityIdentifier(readyIdentifier)
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("MCP", value: \.name) { row in
@@ -182,6 +199,7 @@ struct MCPInventorySection: View {
                 }
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
+                .accessibilityIdentifier(readyIdentifier)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)

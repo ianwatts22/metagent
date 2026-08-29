@@ -63,7 +63,7 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
             memory_after=self.memory(29, "overview-after-skills"),
         )
 
-        self.assertNotIn("common_interaction_input_to_present_p95_ms", observed)
+        self.assertNotIn("common_interaction_input_to_ax_content_ready_p95_ms", observed)
         self.assertEqual(observed["manual_refresh_to_ready_p95_ms"], 700)
         self.assertEqual(observed["settled_overview_average_cpu_percent"], 0.4)
         self.assertEqual(observed["skills_view_cycle_retained_live_heap_delta_mib"], 4)
@@ -90,6 +90,64 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
         self.assertFalse(informational["evaluations"][0]["evaluated"])
         self.assertEqual(informational["violations"], [])
         self.assertEqual(len(enforced["violations"]), 1)
+
+    def test_common_interaction_budget_uses_worst_truthful_ax_ready_p95(self) -> None:
+        observed, gaps = MODULE.observed_metrics(
+            interactions=[{
+                "scenario": "common-interactions",
+                "automation": "macos_accessibility",
+                "metrics": {
+                    "tab_input_to_ax_content_ready_ms": {
+                        "p95": 90,
+                        "all_presentations_observed": True,
+                    },
+                    "filter_input_to_ax_content_ready_ms": {
+                        "p95": 130,
+                        "all_presentations_observed": True,
+                    },
+                    "sort_input_to_ax_content_ready_ms": {
+                        "p95": 110,
+                        "all_presentations_observed": True,
+                    },
+                },
+                "coverage_gaps": ["No first-pixel observation."],
+            }],
+            efficiency=None,
+            memory_before=None,
+            memory_after=None,
+        )
+
+        self.assertEqual(
+            observed["common_interaction_input_to_ax_content_ready_p95_ms"], 130
+        )
+        self.assertEqual(gaps, ["No first-pixel observation."])
+
+    def test_common_interaction_budget_rejects_unobserved_ax_ready_state(self) -> None:
+        with self.assertRaisesRegex(ValueError, "did not observe every AX ready state"):
+            MODULE.observed_metrics(
+                interactions=[{
+                    "scenario": "common-interactions",
+                    "automation": "macos_accessibility",
+                    "metrics": {
+                        "tab_input_to_ax_content_ready_ms": {
+                            "p95": 90,
+                            "all_presentations_observed": True,
+                        },
+                        "filter_input_to_ax_content_ready_ms": {
+                            "p95": 130,
+                            "all_presentations_observed": False,
+                        },
+                        "sort_input_to_ax_content_ready_ms": {
+                            "p95": 110,
+                            "all_presentations_observed": True,
+                        },
+                    },
+                    "coverage_gaps": [],
+                }],
+                efficiency=None,
+                memory_before=None,
+                memory_after=None,
+            )
 
     def test_rejects_memory_comparison_across_processes(self) -> None:
         before = self.memory(25, "overview-before")

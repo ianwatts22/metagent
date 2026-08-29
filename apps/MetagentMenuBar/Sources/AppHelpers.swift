@@ -8,6 +8,50 @@ func formatNumber(_ value: Int) -> String {
     value.formatted()
 }
 
+/// A privacy-safe Accessibility readiness token for installed-app latency
+/// measurement. The identifier changes only when the state or ordered rows
+/// presented by a section change. It intentionally contains no paths, search
+/// text, or row names.
+func presentationReadyIdentifier(
+    section: String,
+    state: [String],
+    orderedRowIDs: [String]
+) -> String {
+    var hash: UInt64 = 0xcbf29ce484222325
+    func mix(_ value: String) {
+        var byteCount = UInt64(value.utf8.count)
+        for _ in 0..<MemoryLayout<UInt64>.size {
+            hash ^= byteCount & 0xff
+            hash &*= 0x100000001b3
+            byteCount >>= 8
+        }
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+    }
+
+    mix(section)
+    mix("state-count:\(state.count)")
+    state.forEach(mix)
+    mix("row-count:\(orderedRowIDs.count)")
+    orderedRowIDs.forEach(mix)
+    let token = String(hash, radix: 16, uppercase: false)
+    return "metagent.\(section).content.ready.\(String(repeating: "0", count: 16 - token.count))\(token)"
+}
+
+/// The semantic sort state actually supplied to `Table`: column key paths and
+/// directions only, without private comparator debug internals or an
+/// input-generation counter.
+func sortPresentationState<Row>(
+    _ sortOrder: [KeyPathComparator<Row>]
+) -> String {
+    sortOrder.map { comparator in
+        let direction = comparator.order == .forward ? "forward" : "reverse"
+        return "\(String(describing: comparator.keyPath)):\(direction)"
+    }.joined(separator: "|")
+}
+
 func copyToPasteboard(_ text: String) {
     guard !text.isEmpty else { return }
     let pasteboard = NSPasteboard.general

@@ -207,9 +207,19 @@ struct ProjectsSection: View {
     var body: some View {
         let allRows = allRows
         let rows = filteredRows(from: allRows)
+        let readyIdentifier = presentationReadyIdentifier(
+            section: "projects",
+            state: [searchText, selectedProjectRoot ?? "", sortPresentationState(sortOrder)],
+            orderedRowIDs: rows.map(\.id)
+        )
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                GlassSearchField(placeholder: "Search projects", text: $searchText, width: 220)
+                GlassSearchField(
+                    placeholder: "Search projects",
+                    text: $searchText,
+                    width: 220,
+                    accessibilityIdentifier: "metagent.projects.search"
+                )
                 CountChip(text: "\(allRows.count) directories")
                 Spacer(minLength: 8)
             }
@@ -220,6 +230,7 @@ struct ProjectsSection: View {
                     message: allRows.isEmpty ? "Add a configured skill or MCP directory, then refresh." : "Clear the search.",
                     symbol: "folder"
                 )
+                .accessibilityIdentifier(readyIdentifier)
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("Project", value: \.name) { row in
@@ -274,6 +285,7 @@ struct ProjectsSection: View {
                         }
                     }
                 }
+                .accessibilityIdentifier(readyIdentifier)
             }
         }
         .task(id: model.codebaseSizeInputKey) {

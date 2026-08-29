@@ -255,6 +255,7 @@ struct MetagentPanel: View {
                     openMainWindow()
                 }
             }
+            .accessibilityIdentifier("metagent.overview.content.ready")
         case .history:
             HistorySection(
                 model: model,
@@ -360,6 +361,7 @@ struct SectionNavigationButton: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("metagent.navigation.\(section.rawValue)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -449,14 +451,26 @@ struct GlassSearchField: View {
     let placeholder: String
     @Binding var text: String
     let width: CGFloat
+    var accessibilityIdentifier: String? = nil
+
+    @ViewBuilder
+    private var textField: some View {
+        if let accessibilityIdentifier {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .accessibilityIdentifier(accessibilityIdentifier)
+        } else {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
+            textField
 
             if !text.isEmpty {
                 Button {

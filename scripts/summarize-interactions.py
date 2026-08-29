@@ -55,6 +55,11 @@ def summarize(
             bool(sample.get("presentation_observed", False))
             for sample in metric_samples
         ]
+        by_interaction: dict[str, list[float]] = defaultdict(list)
+        for sample in metric_samples:
+            by_interaction[str(sample.get("interaction", "unknown"))].append(
+                float(sample["value_ms"])
+            )
         metrics[metric] = {
             "unit": "ms",
             "samples": len(values),
@@ -63,6 +68,15 @@ def summarize(
             "p95": percentile(values, 0.95),
             "maximum": max(values),
             "all_presentations_observed": all(presentations),
+            "interactions": {
+                interaction: {
+                    "samples": len(interaction_values),
+                    "median": statistics.median(interaction_values),
+                    "p95": percentile(interaction_values, 0.95),
+                    "maximum": max(interaction_values),
+                }
+                for interaction, interaction_values in sorted(by_interaction.items())
+            },
         }
 
     return {

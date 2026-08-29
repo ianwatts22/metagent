@@ -15,11 +15,11 @@
       "status": "proposed",
       "fidelity": "main window and navigation controls exposed through Accessibility; OS cache state is user-controlled"
     },
-    "common_interaction_input_to_present_p95_ms": {
+    "common_interaction_input_to_ax_content_ready_p95_ms": {
       "limit": 150,
       "comparison": "max",
       "status": "proposed",
-      "fidelity": "requires a view-specific presentation sentinel; current tab harness exposes selected-state latency only"
+      "fidelity": "worst p95 across tab, filter, and sort input to view-specific AX content-ready state after SwiftUI reconciliation; first pixel and compositor completion are not observed"
     },
     "manual_refresh_to_ready_p95_ms": {
       "limit": 3000,

@@ -10,6 +10,7 @@ struct InventorySection: View {
     @State private var selection = Set<SkillTableRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
     @State private var cachedRows: [SkillTableRow] = []
+    @State private var loadedSkillTableRevision: Int?
     @State private var query = ""
     @State private var usageFilter = UsageFilter.all
     @State private var scopeFilter = SkillScopeFilter.all
@@ -259,7 +260,12 @@ struct InventorySection: View {
 
     @ViewBuilder
     private var filterControls: some View {
-        GlassSearchField(placeholder: "Search", text: $query, width: 150)
+        GlassSearchField(
+            placeholder: "Search",
+            text: $query,
+            width: 150,
+            accessibilityIdentifier: "metagent.skills.search"
+        )
 
         // Usage is the question this app exists to answer, so it stays in the
         // open alongside search and grouping.
@@ -270,6 +276,7 @@ struct InventorySection: View {
             optionTitle: { $0.title },
             width: 158
         )
+        .accessibilityIdentifier("metagent.skills.usage-filter")
 
         if selectedView != .duplicates {
             GlassSelectionMenu(
@@ -352,6 +359,22 @@ struct InventorySection: View {
         let selectedRows = presentation.resolvedRows(for: selection)
         let selectedRow = selectedRows.count == 1 ? selectedRows[0].inventory : nil
         let countText = countText(presentation, selectedRows: selectedRows)
+        let readyIdentifier = loadedSkillTableRevision == model.skillTableRevision
+            ? presentationReadyIdentifier(
+                section: "skills",
+                state: [
+                    selectedViewRaw,
+                    groupingRaw,
+                    hiddenSourceRaw,
+                    usageFilter.rawValue,
+                    scopeFilter.rawValue,
+                    query,
+                    selectedProjectRoot ?? "",
+                    sortPresentationState(sortOrder),
+                ],
+                orderedRowIDs: presentation.displayRows.map(\.id)
+            )
+            : "metagent.skills.content.loading"
         VStack(alignment: .leading, spacing: 10) {
             // One row when the window allows it, two only when it does not.
             ViewThatFits(in: .horizontal) {
@@ -386,6 +409,7 @@ struct InventorySection: View {
                         },
                     onChooseSkill: { publicationTarget = $0 }
                 )
+                .accessibilityIdentifier(readyIdentifier)
             } else if presentation.rows.isEmpty {
                 EmptyStateView(
                     title: selectedView == .duplicates
@@ -398,6 +422,7 @@ struct InventorySection: View {
                             : "Refresh after configuring roots or adding skills."),
                     symbol: selectedView == .duplicates ? "checkmark.circle" : "tablecells"
                 )
+                .accessibilityIdentifier(readyIdentifier)
             } else if selectedView == .duplicates {
                 DuplicateReviewExperience(
                     groups: duplicateReviewGroups,
@@ -427,8 +452,9 @@ struct InventorySection: View {
                         duplicateRemovalIDs.removeAll()
                     }
                 )
+                .accessibilityIdentifier(readyIdentifier)
             } else {
-                skillsTable(presentation)
+                skillsTable(presentation, readyIdentifier: readyIdentifier)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -452,7 +478,11 @@ struct InventorySection: View {
             endDuplicateReview()
         }
         .task(id: model.skillTableRevision) {
+            let revision = model.skillTableRevision
+            loadedSkillTableRevision = nil
             await rebuildRows()
+            guard !Task.isCancelled else { return }
+            loadedSkillTableRevision = revision
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
         .onChange(of: model.isSkillEvaluating) { _, isEvaluating in
@@ -543,7 +573,10 @@ struct InventorySection: View {
     }
 
     @ViewBuilder
-    private func skillsTable(_ presentation: SkillTablePresentation) -> some View {
+    private func skillsTable(
+        _ presentation: SkillTablePresentation,
+        readyIdentifier: String
+    ) -> some View {
         if presentation.usesHierarchy {
             decoratedSkillsTable(
                 Table(
@@ -561,7 +594,8 @@ struct InventorySection: View {
                         .customizationID(column.id)
                         .defaultVisibility(column.defaultVisibility(selectedView))
                     }
-                }
+                },
+                readyIdentifier: readyIdentifier
             )
         } else {
             decoratedSkillsTable(
@@ -579,15 +613,19 @@ struct InventorySection: View {
                         .customizationID(column.id)
                         .defaultVisibility(column.defaultVisibility(selectedView))
                     }
-                }
+                },
+                readyIdentifier: readyIdentifier
             )
         }
     }
 
-    private func decoratedSkillsTable<Content: View>(_ table: Content) -> some View {
+    private func decoratedSkillsTable<Content: View>(
+        _ table: Content,
+        readyIdentifier: String
+    ) -> some View {
         table
             .id("\(selectedView.rawValue):\(grouping.rawValue)")
-            .accessibilityIdentifier("metagent.skills.table.\(selectedView.rawValue).ready")
+            .accessibilityIdentifier(readyIdentifier)
             .tableStyle(.inset)
             .alternatingRowBackgrounds(.enabled)
             .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in

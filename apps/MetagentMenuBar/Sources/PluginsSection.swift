@@ -117,9 +117,19 @@ struct PluginsSection: View {
         let allRows = allRows
         let rows = filteredRows(from: allRows)
         let manualCount = manualCount(in: allRows)
+        let readyIdentifier = presentationReadyIdentifier(
+            section: "plugins",
+            state: [filter.rawValue, searchText, sortPresentationState(sortOrder)],
+            orderedRowIDs: rows.map(\.id)
+        )
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                GlassSearchField(placeholder: "Search plugins", text: $searchText, width: 200)
+                GlassSearchField(
+                    placeholder: "Search plugins",
+                    text: $searchText,
+                    width: 200,
+                    accessibilityIdentifier: "metagent.plugins.search"
+                )
 
                 GlassSelectionMenu(
                     title: "Show",
@@ -128,6 +138,7 @@ struct PluginsSection: View {
                     optionTitle: { $0.title },
                     width: 165
                 )
+                .accessibilityIdentifier("metagent.plugins.show-filter")
 
                 CountChip(text: "\(allRows.count) plugins")
 
@@ -155,6 +166,7 @@ struct PluginsSection: View {
                         : "Clear the search or choose a different filter.",
                     symbol: "puzzlepiece.extension"
                 )
+                .accessibilityIdentifier(readyIdentifier)
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("Plugin", value: \.name) { row in
@@ -212,6 +224,7 @@ struct PluginsSection: View {
                 }
                 .tableStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
+                .accessibilityIdentifier(readyIdentifier)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
