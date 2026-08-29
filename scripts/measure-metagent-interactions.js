@@ -5,6 +5,11 @@ function fail(message) {
   throw new Error(message);
 }
 
+function progress(message) {
+  // `console.log` is emitted on osascript's stderr, keeping stdout valid JSON.
+  console.log(`[metagent-perf] ${message}`);
+}
+
 function monotonicMilliseconds() {
   return Number($.NSProcessInfo.processInfo.systemUptime) * 1000;
 }
@@ -237,6 +242,81 @@ function findDescendantByRoleAndName(root, role, name, requiresPress) {
   return null;
 }
 
+function findSortableHeader(root, name, maximumVisited = 512) {
+  const pending = [root];
+  let visited = 0;
+  while (pending.length > 0 && visited < maximumVisited) {
+    const current = pending.shift();
+    visited += 1;
+    const role = elementRole(current);
+    if (
+      role === "AXButton" &&
+      elementName(current) === name &&
+      current.actions.byName("AXPress").exists()
+    ) {
+      return current;
+    }
+    // A SwiftUI table can expose hundreds of row descendants before its
+    // header group. Header lookup must never enumerate cell contents.
+    if (role === "AXRow") {
+      continue;
+    }
+    let children = [];
+    try {
+      children = current.uiElements();
+    } catch (_) {
+      continue;
+    }
+    const early = [];
+    const ordinary = [];
+    const rows = [];
+    // SwiftUI places the header group after the visible rows on current macOS.
+    // Probe direct children from the end and inspect only a group's immediate
+    // buttons before adding anything to the fallback traversal.
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index];
+      const childRole = elementRole(child);
+      if (
+        childRole === "AXButton" &&
+        elementName(child) === name &&
+        child.actions.byName("AXPress").exists()
+      ) {
+        return child;
+      }
+      if (childRole === "AXGroup") {
+        let groupChildren = [];
+        try {
+          groupChildren = child.uiElements();
+        } catch (_) {
+          groupChildren = [];
+        }
+        for (const groupChild of groupChildren) {
+          if (
+            elementRole(groupChild) === "AXButton" &&
+            elementName(groupChild) === name &&
+            groupChild.actions.byName("AXPress").exists()
+          ) {
+            return groupChild;
+          }
+        }
+        early.push(child);
+      } else if (
+        childRole === "AXScrollArea" ||
+        childRole === "AXOutline" ||
+        childRole === "AXTable"
+      ) {
+        early.push(child);
+      } else if (childRole === "AXRow") {
+        rows.push(child);
+      } else {
+        ordinary.push(child);
+      }
+    }
+    pending.unshift(...early, ...ordinary, ...rows);
+  }
+  return null;
+}
+
 function contentElement(window, section, timeoutMilliseconds) {
   return waitForIdentifierPrefix(
     window,
@@ -302,10 +382,11 @@ function measureSort(
   timeoutMilliseconds
 ) {
   const content = contentElement(window, section, timeoutMilliseconds);
-  // macOS exposes NSTableView headers as siblings on some OS builds and as
-  // descendants on others. The selected tab is the only live destination, so
-  // an exact AXButton name in this window is stable without coordinates.
-  const header = findDescendantByRoleAndName(window, "AXButton", headerName, true);
+  // macOS exposes table headers in different containers across OS builds. A
+  // bounded, row-skipping search keeps the observable exact without walking
+  // every accessible cell and perturbing the app for minutes.
+  const header = findSortableHeader(content, headerName) ||
+    findSortableHeader(window, headerName);
   if (!header) {
     fail(`${section} table header ${headerName} is not exposed with AXPress.`);
   }
@@ -321,12 +402,10 @@ function measureSort(
       window,
       contentReadyPrefix(section)
     );
-    const currentHeader = findDescendantByRoleAndName(
-      window,
-      "AXButton",
-      headerName,
-      true
-    );
+    const currentHeader = currentContent === null
+      ? null
+      : findSortableHeader(currentContent, headerName) ||
+        findSortableHeader(window, headerName);
     return currentContent !== null &&
       currentHeader !== null &&
       elementIdentifier(currentContent) !== previous &&
@@ -367,6 +446,7 @@ function runTabs(window, iterations, timeoutMilliseconds) {
   const destinations = ["Skills", "MCPs", "Plugins", "Projects"];
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     for (const destination of destinations) {
+      progress(`tabs ${iteration}/${iterations}: Overview to ${destination}`);
       const forward = selectTabToContentReady(
         window,
         buttons[destination],
@@ -378,6 +458,11 @@ function runTabs(window, iterations, timeoutMilliseconds) {
         buttons.Overview,
         "Overview",
         timeoutMilliseconds
+      );
+      progress(
+        `tabs ${iteration}/${iterations}: ${destination} round trip ready ` +
+        `(${Math.round(forward.contentReadyMilliseconds)}ms forward, ` +
+        `${Math.round(backward.contentReadyMilliseconds)}ms back)`
       );
       for (const [interaction, measured] of [
         [`Overview to ${destination}`, forward],
@@ -490,6 +575,9 @@ function runCommonInteractions(
     );
     for (let iteration = 1; iteration <= iterations; iteration += 1) {
       for (const option of [specification.alternate, specification.baseline]) {
+        progress(
+          `filters ${specification.section} ${iteration}/${iterations}: ${option}`
+        );
         control = waitForIdentifier(window, specification.control, timeoutMilliseconds);
         const elapsed = chooseMenuOption(
           process,
@@ -515,6 +603,10 @@ function runCommonInteractions(
           presentation_observed: true,
           presentation_fidelity: "accessibility_content_ready",
         });
+        progress(
+          `filters ${specification.section} ${iteration}/${iterations}: ` +
+          `${option} ready (${Math.round(elapsed)}ms)`
+        );
       }
     }
   }
@@ -553,21 +645,29 @@ function runCommonInteractions(
     }
     for (let iteration = 1; iteration <= iterations; iteration += 1) {
       for (const direction of ["toggle", "restore"]) {
+        progress(
+          `sorts ${specification.section} ${iteration}/${iterations}: ${direction}`
+        );
+        const elapsed = measureSort(
+          window,
+          specification.section,
+          specification.header,
+          timeoutMilliseconds
+        );
         samples.push({
           metric: "sort_input_to_ax_content_ready_ms",
           interaction: `${specification.section} ${specification.header} ${direction}`,
           iteration,
-          value_ms: measureSort(
-            window,
-            specification.section,
-            specification.header,
-            timeoutMilliseconds
-          ),
+          value_ms: elapsed,
           ax_content_ready_observed: true,
           presentation_observed: true,
           presentation_fidelity: "accessibility_content_ready",
         });
         observedSortSamples += 1;
+        progress(
+          `sorts ${specification.section} ${iteration}/${iterations}: ` +
+          `${direction} ready (${Math.round(elapsed)}ms)`
+        );
       }
     }
   }

@@ -96,6 +96,19 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertIn('"AXSortDirection"', script)
         self.assertIn('metric: "filter_input_to_ax_content_ready_ms"', script)
         self.assertIn('metric: "sort_input_to_ax_content_ready_ms"', script)
+        self.assertIn("[metagent-perf]", script)
+        self.assertIn("console.log", script)
+        self.assertIn("function findSortableHeader", script)
+        self.assertIn('if (role === "AXRow")', script)
+        self.assertIn("visited < maximumVisited", script)
+        self.assertIn("children.length - 1", script)
+        self.assertNotIn("children.sort", script)
+        self.assertNotIn(
+            'findDescendantByRoleAndName(window, "AXButton", headerName, true)',
+            script,
+        )
+        self.assertIn("findSortableHeader(currentContent, headerName)", script)
+        self.assertIn("findSortableHeader(window, headerName)", script)
         self.assertIn(
             'readyRole !== "AXTable" && readyRole !== "AXOutline"', script
         )
