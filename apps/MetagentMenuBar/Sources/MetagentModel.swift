@@ -90,7 +90,12 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var codebaseSizes: [String: CodebaseSizeReport] = [:]
     @Published private(set) var isCodebaseSizeRefreshing = false
     @Published private(set) var archivedSkills: [ArchivedSkill] = []
+    /// Broad Skills/Overview/History input revision. Usage progress advances
+    /// this even when the expensive Skills rows can be reused.
     @Published private(set) var skillTableRevision = 0
+    /// Inputs consumed by `SkillTableRowStore` only. Keeping this narrower
+    /// prevents parser bookkeeping from cancelling a cold row build.
+    @Published private(set) var skillTableRowRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
     @Published private(set) var isRemovingSkills = false
     @Published private(set) var modelReleases = ModelReleaseSnapshot.empty
@@ -183,10 +188,16 @@ final class MetagentModel: ObservableObject {
         let cached = await Task.detached(priority: .userInitiated) {
             loader()
         }.value
+        var usageChanged = false
         var refreshesSkillPresentation = false
         if let usage = cached.usage {
-            refreshesSkillPresentation = usage != usageSnapshot
-            usageSnapshot = usage
+            let previousUsage = usageSnapshot
+            usageChanged = usage != previousUsage
+            refreshesSkillPresentation = SkillTableUsageSignature(usage)
+                != SkillTableUsageSignature(previousUsage)
+            if usageChanged {
+                usageSnapshot = usage
+            }
             // Rolling usage windows are frozen at materialization time. Make
             // the stale-while-revalidate state explicit until the immediate
             // canonical refresh applies its authoritative status.
@@ -201,13 +212,24 @@ final class MetagentModel: ObservableObject {
         releaseAffirmations = cached.releaseAffirmations
         publicationSnapshot = cached.publications
         updatePublicationStatus()
-        if refreshesSkillPresentation {
+        if usageChanged || refreshesSkillPresentation {
             // Overview health and Skills rows may have rendered their loading
             // state while the detached cache read ran. Publish one coherent
             // revision after every cached input is in place.
             skillTableRevision += 1
         }
+        if refreshesSkillPresentation {
+            skillTableRowRevision += 1
+        }
         hasHydratedLaunchCaches = true
+    }
+
+    /// Most model changes affect both the broad health/history surfaces and
+    /// the derived Skills rows. Usage refreshes intentionally update the two
+    /// revisions separately because progress alone does not change a row.
+    private func bumpSkillPresentationRevision() {
+        skillTableRevision += 1
+        skillTableRowRevision += 1
     }
 
     /// Everything the inventory scan reads that can change behind the app's
@@ -391,7 +413,7 @@ final class MetagentModel: ObservableObject {
             providers.isEmpty ? "none" : providers.joined(separator: ","),
             forKey: Self.trackedModelProvidersKey
         )
-        skillTableRevision += 1
+        bumpSkillPresentationRevision()
     }
 
     /// Polls models.dev at most once a day; the catalog is small and the poll
@@ -401,7 +423,7 @@ final class MetagentModel: ObservableObject {
             let snapshot = await MetagentCore.refreshModelReleaseSnapshot()
             if snapshot != modelReleases {
                 modelReleases = snapshot
-                skillTableRevision += 1
+                bumpSkillPresentationRevision()
             }
         }
     }
@@ -412,7 +434,7 @@ final class MetagentModel: ObservableObject {
         do {
             try MetagentCore.affirmModelReleaseReview(canonicalPath: canonicalPath)
             releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
-            skillTableRevision += 1
+            bumpSkillPresentationRevision()
         } catch {
             lastOutputWasFailure = true
             lastOutputTitle = "Mark reviewed failed"
@@ -1014,10 +1036,16 @@ final class MetagentModel: ObservableObject {
                         try MetagentCore.refreshSkillUsage(options: refreshOptions)
                     }
                 }.value
-                let usageChanged = report.snapshot != usageSnapshot
-                usageSnapshot = report.snapshot
+                let previousUsage = usageSnapshot
+                let usageChanged = report.snapshot != previousUsage
+                let refreshesSkillPresentation = SkillTableUsageSignature(report.snapshot)
+                    != SkillTableUsageSignature(previousUsage)
                 if usageChanged {
+                    usageSnapshot = report.snapshot
                     skillTableRevision += 1
+                }
+                if refreshesSkillPresentation {
+                    skillTableRowRevision += 1
                 }
                 if maintenancePlan != nil {
                     usageMaintenanceSchedule.recordCompletion(wasDeferred: report.wasDeferred)
@@ -1155,7 +1183,7 @@ final class MetagentModel: ObservableObject {
                     total: uniquePaths.count
                 ) {
                     skillEvaluations = updatedEvaluations
-                    skillTableRevision += 1
+                    bumpSkillPresentationRevision()
                 }
             }
             if !failedSkillNames.isEmpty {
@@ -1206,7 +1234,7 @@ final class MetagentModel: ObservableObject {
                     snapshot.applyCodexReviewResult(record)
                 }
                 skillEvaluations = snapshot
-                skillTableRevision += 1
+                bumpSkillPresentationRevision()
                 if outcome.failures.isEmpty {
                     skillEvaluationStatusText = targets.count == 1
                         ? "Codex review complete"
@@ -1385,7 +1413,7 @@ final class MetagentModel: ObservableObject {
             isRunning = true
         }
         pendingSkillRemovalIDs.formUnion(uniqueRequests.map(\.id))
-        skillTableRevision += 1
+        bumpSkillPresentationRevision()
         statusText = uniqueRequests.count == 1
             ? "Removing \(uniqueRequests[0].displayName)…"
             : "Removing \(uniqueRequests.count) skills…"
@@ -1444,7 +1472,7 @@ final class MetagentModel: ObservableObject {
         completedSkillRemovalIDs.formUnion(outcome.succeededIDs.union(outcome.reconciliationIDs))
         accumulatedSkillRemovalLines += outcome.lines
         accumulatedSkillRemovalFailedIDs.formUnion(outcome.failedIDs)
-        skillTableRevision += 1
+        bumpSkillPresentationRevision()
         lastRunText = Self.timestamp()
 
         startNextSkillRemoval(for: key)
@@ -1513,7 +1541,7 @@ final class MetagentModel: ObservableObject {
             }
             isReconcilingSkillRemovals = false
             finishRunningOperation()
-            skillTableRevision += 1
+            bumpSkillPresentationRevision()
             if didRefreshInventory {
                 reconcileCompletedSkillRemovalsIfIdle()
             }
@@ -1610,7 +1638,7 @@ final class MetagentModel: ObservableObject {
                 pendingSkillRemovalIDs.subtract(completedSkillRemovalIDs)
                 completedSkillRemovalIDs.removeAll()
             }
-            skillTableRevision += 1
+            bumpSkillPresentationRevision()
             let warnings = pluginScan.error.map { ["Codex plugin inventory unavailable: \($0.localizedDescription)"] } ?? []
             MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: warnings))
             updateInventorySummary()
@@ -1624,7 +1652,7 @@ final class MetagentModel: ObservableObject {
             )
         } else {
             projects = []
-            skillTableRevision += 1
+            bumpSkillPresentationRevision()
             repoCount = 0
             skillCount = 0
             locationSummaryText = "Skill locations unavailable"

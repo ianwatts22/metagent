@@ -368,7 +368,7 @@ struct InventorySection: View {
         let selectedRows = presentation.resolvedRows(for: selection)
         let selectedRow = selectedRows.count == 1 ? selectedRows[0].inventory : nil
         let countText = countText(presentation, selectedRows: selectedRows)
-        let readyIdentifier = rowStore.isReady(for: model.skillTableRevision)
+        let readyIdentifier = rowStore.isReady(for: model.skillTableRowRevision)
             ? presentationReadyIdentifier(
                 section: "skills",
                 publicState: "usage-\(usageFilter.rawValue)",
@@ -487,8 +487,8 @@ struct InventorySection: View {
         .onDisappear {
             endDuplicateReview()
         }
-        .task(id: model.skillTableRevision) {
-            let revision = model.skillTableRevision
+        .task(id: model.skillTableRowRevision) {
+            let revision = model.skillTableRowRevision
             let loaded = await rowStore.load(
                 revision: revision,
                 inputs: SkillTableBuildInputs(
@@ -503,7 +503,7 @@ struct InventorySection: View {
             )
             guard !Task.isCancelled,
                   loaded,
-                  rowStore.isReady(for: model.skillTableRevision)
+                  rowStore.isReady(for: model.skillTableRowRevision)
             else { return }
             selection.formIntersection(Set(cachedRows.map(\.id)))
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))

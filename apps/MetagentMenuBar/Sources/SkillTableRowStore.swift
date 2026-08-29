@@ -2,6 +2,19 @@ import Foundation
 import MetagentCore
 import SwiftUI
 
+/// The only usage fields that can change Skills table rows. Backfill progress
+/// still publishes through `usageSnapshot`, but must not cancel and restart an
+/// expensive row build when its visible inputs are unchanged.
+struct SkillTableUsageSignature: Sendable, Equatable {
+    let summaries: [SkillUsageSummary]
+    let isBackfillComplete: Bool
+
+    init(_ snapshot: SkillUsageSnapshot) {
+        summaries = snapshot.summaries
+        isBackfillComplete = snapshot.isBackfillComplete
+    }
+}
+
 struct SkillTableBuildInputs: Sendable {
     let projects: [ProjectStatus]
     let usage: SkillUsageSnapshot
