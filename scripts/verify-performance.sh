@@ -15,6 +15,9 @@ fi
 export METAGENT_RUN_PERFORMANCE_TESTS=1
 export SWIFT_DETERMINISTIC_HASHING=1
 
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 -m unittest discover -s "$repo_root/scripts/tests" -p 'test_*.py'
+
 cd "$app_source"
 performance_log="$(mktemp /private/tmp/metagent-performance-log.XXXXXX)"
 performance_result="${METAGENT_PERFORMANCE_RESULT_PATH:-$(mktemp /private/tmp/metagent-performance-result.XXXXXX)}"

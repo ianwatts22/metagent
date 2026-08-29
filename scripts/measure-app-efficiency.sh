@@ -9,9 +9,10 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/measure-app-efficiency.sh [--channel dev|prod] [--duration SECONDS] [--output DIR]
 
-Samples one running Metagent process once per second. The report includes CPU,
-resident memory, thread count, usage-index progress, and a five-second stack
-sample. It reads only aggregate usage metadata, not app content or session history.
+Samples one running Metagent process once per second. The report includes app and
+child-process CPU, resident memory, thread count, burst duty cycle, memory trend,
+per-sample usage-index progress, and a five-second stack sample. It reads only
+aggregate usage metadata, not app content or session history.
 USAGE
 }
 
@@ -70,8 +71,11 @@ fi
 
 samples_path="${output_root}/process-samples.csv"
 summary_path="${output_root}/summary.txt"
+summary_json_path="${output_root}/summary.json"
 stack_path="${output_root}/stack-sample.txt"
-printf 'second,cpu_percent,rss_kib,threads\n' >"$samples_path"
+printf '%s\n' \
+  'second,cpu_percent,rss_kib,threads,processed_usage_bytes,processed_usage_delta_bytes,child_cpu_percent,child_rss_kib,child_processes' \
+  >"$samples_path"
 
 usage_database="${HOME}/Library/Application Support/Metagent/usage.sqlite"
 processed_usage_bytes() {
@@ -91,8 +95,44 @@ cpu_seconds() {
   '
 }
 
+monotonic_seconds() {
+  perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+    'printf "%.6f", clock_gettime(CLOCK_MONOTONIC)'
+}
+
+descendant_pids() {
+  local queue=("$pid")
+  local index=0
+  local child
+  while ((index < ${#queue[@]})); do
+    while IFS= read -r child; do
+      if [[ "$child" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$child"
+        queue+=("$child")
+      fi
+    done < <(pgrep -P "${queue[$index]}" 2>/dev/null || true)
+    index=$((index + 1))
+  done
+}
+
+child_resource_snapshot() {
+  local descendants pid_list
+  descendants="$(descendant_pids)"
+  if [[ -z "$descendants" ]]; then
+    printf '0.00,0,0\n'
+    return
+  fi
+  pid_list="$(paste -sd, <<<"$descendants")"
+  ps -p "$pid_list" -o %cpu=,rss= 2>/dev/null | awk '
+    { cpu += $1; rss += $2; count += 1 }
+    END { printf "%.2f,%d,%d\n", cpu, rss, count }
+  '
+}
+
 previous_cpu_seconds="$(cpu_seconds)"
-starting_processed_bytes="$(processed_usage_bytes)"
+previous_processed_bytes="$(processed_usage_bytes)"
+started_at="$(monotonic_seconds)"
+previous_sample_at="$started_at"
 for ((second = 1; second <= duration; second += 1)); do
   sleep 1
   rss="$(ps -p "$pid" -o rss= | awk '{$1=$1; print}')"
@@ -100,57 +140,47 @@ for ((second = 1; second <= duration; second += 1)); do
     echo "Metagent exited after $((second - 1)) sample(s)." >&2
     break
   fi
+  current_sample_at="$(monotonic_seconds)"
+  elapsed_seconds="$(awk -v current="$current_sample_at" -v started="$started_at" \
+    'BEGIN { printf "%.6f", current - started }')"
+  interval_seconds="$(awk -v current="$current_sample_at" -v previous="$previous_sample_at" \
+    'BEGIN { printf "%.6f", current - previous }')"
+  previous_sample_at="$current_sample_at"
   current_cpu_seconds="$(cpu_seconds)"
   cpu="$(awk -v current="$current_cpu_seconds" -v previous="$previous_cpu_seconds" \
-    'BEGIN { printf "%.2f", (current - previous) * 100 }')"
+    -v elapsed="$interval_seconds" \
+    'BEGIN { printf "%.2f", (elapsed > 0 ? (current - previous) * 100 / elapsed : 0) }')"
   previous_cpu_seconds="$current_cpu_seconds"
   threads="$(ps -M -p "$pid" | awk 'NR > 1 { count += 1 } END { print count + 0 }')"
-  printf '%s,%s,%s,%s\n' "$second" "$cpu" "$rss" "$threads" >>"$samples_path"
+  current_processed_bytes="$(processed_usage_bytes)"
+  processed_delta=""
+  if [[ "$previous_processed_bytes" =~ ^[0-9]+$ \
+        && "$current_processed_bytes" =~ ^[0-9]+$ \
+        && "$current_processed_bytes" -ge "$previous_processed_bytes" ]]; then
+    processed_delta=$((current_processed_bytes - previous_processed_bytes))
+  fi
+  if [[ "$current_processed_bytes" =~ ^[0-9]+$ ]]; then
+    previous_processed_bytes="$current_processed_bytes"
+  fi
+  IFS=, read -r child_cpu child_rss child_count <<<"$(child_resource_snapshot)"
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$elapsed_seconds" "$cpu" "$rss" "$threads" "$current_processed_bytes" \
+    "$processed_delta" "$child_cpu" "$child_rss" "$child_count" \
+    >>"$samples_path"
 done
 
 sample "$pid" 5 1 -file "$stack_path" >/dev/null 2>&1 || true
 
-awk -F, -v channel="$channel" -v pid="$pid" '
-  NR == 1 { next }
-  {
-    count += 1
-    cpu_sum += $2
-    rss_sum += $3
-    if ($2 > cpu_max) cpu_max = $2
-    if ($3 > rss_max) rss_max = $3
-    if ($4 > threads_max) threads_max = $4
-  }
-  END {
-    if (count == 0) exit 1
-    printf "channel: %s\n", channel
-    printf "pid: %s\n", pid
-    printf "samples: %d\n", count
-    printf "average_cpu_percent: %.2f\n", cpu_sum / count
-    printf "peak_cpu_percent: %.2f\n", cpu_max
-    printf "average_rss_mib: %.2f\n", rss_sum / count / 1024
-    printf "peak_rss_mib: %.2f\n", rss_max / 1024
-    printf "peak_threads: %d\n", threads_max
-  }
-' "$samples_path" | tee "$summary_path"
-
-ending_processed_bytes="$(processed_usage_bytes)"
-if [[ "$starting_processed_bytes" =~ ^[0-9]+$ \
-      && "$ending_processed_bytes" =~ ^[0-9]+$ \
-      && "$ending_processed_bytes" -ge "$starting_processed_bytes" ]]; then
-  advanced_bytes=$((ending_processed_bytes - starting_processed_bytes))
-  sample_count="$(awk -F, 'NR > 1 { count += 1 } END { print count + 0 }' "$samples_path")"
-  average_cpu="$(awk -F, 'NR > 1 { sum += $2; count += 1 } END { if (count) printf "%.6f", sum / count }' "$samples_path")"
-  awk -v bytes="$advanced_bytes" -v cpu="$average_cpu" -v samples="$sample_count" '
-    BEGIN {
-      mib = bytes / 1048576
-      cpu_seconds = cpu * samples / 100
-      printf "processed_usage_mib: %.2f\n", mib
-      printf "estimated_cpu_seconds: %.2f\n", cpu_seconds
-      if (mib > 0) printf "cpu_seconds_per_processed_mib: %.4f\n", cpu_seconds / mib
-    }
-  ' | tee -a "$summary_path"
-fi
+summary_arguments=(
+  "$samples_path"
+  "$summary_path"
+  "$summary_json_path"
+  --channel "$channel"
+  --pid "$pid"
+)
+python3 "$(dirname "$0")/summarize-efficiency.py" "${summary_arguments[@]}"
 
 printf 'samples: %s\n' "$samples_path"
 printf 'stack: %s\n' "$stack_path"
 printf 'summary: %s\n' "$summary_path"
+printf 'json: %s\n' "$summary_json_path"
