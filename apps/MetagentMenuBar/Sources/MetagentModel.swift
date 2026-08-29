@@ -35,7 +35,10 @@ struct MetagentLaunchCacheLoader: Sendable {
         },
         loadDeferred: {
             MetagentDeferredLaunchSnapshot(
-                usage: MetagentCore.loadSkillUsageSnapshot(),
+                // Launch hydration is cache-only. The canonical SQLite
+                // aggregation runs immediately afterward in `refreshUsage`,
+                // which also seeds or repairs this materialization.
+                usage: MetagentCore.loadCachedSkillUsageSnapshot(),
                 evaluations: MetagentCore.loadSkillEvaluationSnapshot(),
                 modelReleases: MetagentCore.loadModelReleaseSnapshot(),
                 releaseAffirmations: MetagentCore.loadModelReleaseAffirmations(),
@@ -183,7 +186,10 @@ final class MetagentModel: ObservableObject {
         if let usage = cached.usage {
             refreshesSkillPresentation = usage != usageSnapshot
             usageSnapshot = usage
-            usageStatusText = Self.usageStatus(usage)
+            // Rolling usage windows are frozen at materialization time. Make
+            // the stale-while-revalidate state explicit until the immediate
+            // canonical refresh applies its authoritative status.
+            usageStatusText = "Cached usage · refreshing…"
         }
         refreshesSkillPresentation = refreshesSkillPresentation
             || cached.evaluations != skillEvaluations

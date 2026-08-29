@@ -445,6 +445,13 @@ final class MetagentCorePerformanceTests: XCTestCase {
             try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: database))
         }
         XCTAssertEqual(preflight.summaries.count, 20)
+        let materialized = try assertLatencyBudget(
+            "18k-event materialized launch usage snapshot",
+            seconds: 0.02
+        ) {
+            try XCTUnwrap(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: database))
+        }
+        XCTAssertEqual(materialized, indexed.snapshot)
         var lastSnapshot: SkillUsageSnapshot?
 
         measure(metrics: performanceMetrics, options: measureOptions) {

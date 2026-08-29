@@ -148,10 +148,29 @@ public extension MetagentCore {
         try? SkillUsageStore(path: databasePath).snapshot()
     }
 
+    /// A small, privacy-protected materialization used only to paint warm
+    /// launches. The SQLite event store remains authoritative; callers that
+    /// need current data must use `loadSkillUsageSnapshot` or run a refresh.
+    static func loadCachedSkillUsageSnapshot(databasePath: String? = nil) -> SkillUsageSnapshot? {
+        try? SkillUsageStore(path: databasePath).loadLaunchSnapshot()
+    }
+
     static func refreshSkillUsage(
         options: SkillUsageRefreshOptions = SkillUsageRefreshOptions()
     ) throws -> SkillUsageRefreshReport {
-        try SkillUsageStore(path: options.databasePath).refresh(options: options)
+        let store = try SkillUsageStore(path: options.databasePath)
+        let result = try store.refresh(options: options)
+        // Materialization is an acceleration detail. A permissions or disk
+        // failure must not turn a successful canonical refresh into failure.
+        if !options.reusesSourceCatalog
+            || !store.launchCacheOverlapsSessionRoots(options.sessionRoots)
+        {
+            try? store.saveLaunchSnapshot(
+                result.report.snapshot,
+                databaseGeneration: result.snapshotGeneration
+            )
+        }
+        return result.report
     }
 
     /// Per-day observed reads for every skill identity in the event log, used to
@@ -191,6 +210,7 @@ public extension MetagentCore {
 }
 
 private let skillUsageParserVersion = 17
+private let skillUsageLaunchCacheFormatVersion = 2
 private let skillUsageEventsTable = "skill_usage_events"
 private let skillUsageSourcesTable = "skill_usage_sources"
 private let agentRunsTable = "agent_runs"
@@ -202,6 +222,7 @@ private struct SkillUsageDayKey: Hashable {
 }
 
 private let skillUsageMetadataTable = "skill_usage_metadata"
+private let skillUsageStoreStateTable = "skill_usage_store_state"
 private let previousSkillUsageEventsTable = "skill_usage_events_previous"
 private let previousSkillUsageSourcesTable = "skill_usage_sources_previous"
 private let previousSkillUsageMetadataTable = "skill_usage_metadata_previous"
@@ -347,6 +368,59 @@ private func canonicalUsageWatchPaths(_ paths: [String]) -> [String] {
     })).sorted()
 }
 
+private func skillUsageLaunchCacheURL(for databaseURL: URL) -> URL {
+    databaseURL.deletingLastPathComponent().appendingPathComponent(
+        "\(databaseURL.lastPathComponent)-launch-snapshot.json"
+    )
+}
+
+private struct UsageSourceCatalogOwnedPaths: Sendable {
+    private let exactPaths: Set<String>
+    private let stateDirectoryPath: String
+    private let temporaryCachePrefix: String
+
+    init(databasePath: String) {
+        let databaseURL = URL(fileURLWithPath: databasePath).standardizedFileURL
+        let cacheURL = skillUsageLaunchCacheURL(for: databaseURL)
+        exactPaths = Set(canonicalUsageWatchPaths([
+            databaseURL.path,
+            databaseURL.path + "-journal",
+            databaseURL.path + "-shm",
+            databaseURL.path + "-wal",
+            cacheURL.path,
+            cacheURL.appendingPathExtension("lock").path,
+        ]))
+        stateDirectoryPath = canonicalUsageWatchPaths([
+            databaseURL.deletingLastPathComponent().path,
+        ]).first ?? databaseURL.deletingLastPathComponent().path
+        temporaryCachePrefix = canonicalUsageWatchPaths([
+            cacheURL.deletingLastPathComponent().appendingPathComponent(
+                ".\(cacheURL.lastPathComponent)."
+            ).path,
+        ]).first ?? ""
+    }
+
+    func contains(_ path: String, flags: FSEventStreamEventFlags) -> Bool {
+        let canonical = canonicalUsageWatchPaths([path]).first ?? path
+        if exactPaths.contains(canonical)
+            || (!temporaryCachePrefix.isEmpty && canonical.hasPrefix(temporaryCachePrefix))
+        {
+            return true
+        }
+        guard canonical == stateDirectoryPath else { return false }
+        let structuralFlags = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagItemCreated |
+                kFSEventStreamEventFlagItemRemoved |
+                kFSEventStreamEventFlagItemRenamed |
+                kFSEventStreamEventFlagItemCloned
+        )
+        // File-events mode emits the changed child separately. Ignore only the
+        // directory bookkeeping that accompanies our own atomic SQLite/cache
+        // writes; structural changes and dropped streams remain authoritative.
+        return flags & structuralFlags == 0
+    }
+}
+
 private let stableSystemSymlinkPaths: Set<String> = ["/etc", "/tmp", "/var"]
 
 private func usagePathContainsMutableSymlink(_ path: String) -> Bool {
@@ -402,12 +476,14 @@ private func usageEventInvalidatesRoots(
 
 private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     private let roots: [String]
+    private let ownedPaths: UsageSourceCatalogOwnedPaths?
     private let lock = NSLock()
     private var baselineEventID: FSEventStreamEventId?
     private var dirty = false
 
-    init(roots: [String] = []) {
+    init(roots: [String] = [], databasePath: String? = nil) {
         self.roots = roots
+        ownedPaths = databasePath.map(UsageSourceCatalogOwnedPaths.init(databasePath:))
     }
 
     var isDirty: Bool {
@@ -436,6 +512,12 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
                 kFSEventStreamEventFlagEventIdsWrapped |
                 kFSEventStreamEventFlagRootChanged
         ) != 0
+        if !mustInvalidateWholeTree,
+           let eventPath,
+           ownedPaths?.contains(eventPath, flags: flags) == true
+        {
+            return
+        }
         if !mustInvalidateWholeTree,
            !roots.isEmpty,
            let eventPath,
@@ -505,7 +587,7 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     private var missingIdentityPathsWithoutDescriptors: [String] = []
     private(set) var isStarted = false
 
-    init(paths: [String]) {
+    init(paths: [String], databasePath: String) {
         // A mutable symlink anywhere in a configured root can be retargeted
         // outside every stream created for its old hierarchy. In that rare
         // configuration, decline to cache rather than weaken freshness. The
@@ -515,7 +597,7 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
             return
         }
         let roots = canonicalUsageWatchPaths(paths)
-        state = UsageSourceCatalogWatcherState(roots: roots)
+        state = UsageSourceCatalogWatcherState(roots: roots, databasePath: databasePath)
         // A filesystem-root stream would observe every machine-wide mutation.
         // Keep an explicit `/` scan correct but uncached rather than turning a
         // pathological configuration into a permanent energy hotspot.
@@ -674,7 +756,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         // Start listening before walking. If the tree changes during discovery,
         // the current refresh keeps its normal best-effort view but that view is
         // not retained for a later continuation.
-        let watcher = UsageSourceCatalogWatcher(paths: roots)
+        let watcher = UsageSourceCatalogWatcher(paths: roots, databasePath: key.databasePath)
         let sources = discover()
         let items = sources.map(UsageSourceCatalogItem.init(source:))
         let canRetainCatalog = watcher.canRetainCatalogAfterDiscovery()
@@ -742,6 +824,26 @@ extension MetagentCore {
         UsageSourceCatalogCache.shared.resetForTesting()
     }
 
+    static func skillUsageLaunchCachePathForTesting(databasePath: String) throws -> String {
+        try SkillUsageStore(path: databasePath).launchCachePath.path
+    }
+
+    static func saveSkillUsageLaunchSnapshotForTesting(
+        _ snapshot: SkillUsageSnapshot,
+        databasePath: String,
+        snapshotGeneration: Int64
+    ) throws {
+        let store = try SkillUsageStore(path: databasePath)
+        let current = try store.currentLaunchGeneration()
+        try store.saveLaunchSnapshot(
+            snapshot,
+            databaseGeneration: SkillUsageStoreGeneration(
+                storeID: current.storeID,
+                sequence: snapshotGeneration
+            )
+        )
+    }
+
     static func invalidateSkillUsageSourceCatalogForTesting(databasePath: String? = nil) {
         UsageSourceCatalogCache.shared.invalidate(
             databasePath: databasePath.map(standardizedUsageDatabasePath)
@@ -781,6 +883,21 @@ extension MetagentCore {
         let state = UsageSourceCatalogWatcherState()
         state.arm(baselineEventID: baselineEventID)
         state.handle(flags, eventID: eventID)
+        return state.isDirty
+    }
+
+    static func skillUsageCatalogInvalidatesPathEventForTesting(
+        roots: [String],
+        databasePath: String,
+        eventPath: String,
+        flags: FSEventStreamEventFlags
+    ) -> Bool {
+        let state = UsageSourceCatalogWatcherState(
+            roots: canonicalUsageWatchPaths(roots),
+            databasePath: databasePath
+        )
+        state.arm(baselineEventID: 100)
+        state.handle(flags, eventID: 101, eventPath: eventPath)
         return state.isDirty
     }
 
@@ -915,6 +1032,28 @@ private struct FileParseResult: Sendable {
     let warning: String?
 }
 
+private struct SkillUsageStoredRefreshResult {
+    let report: SkillUsageRefreshReport
+    /// Monotonic generation committed in the same SQLite transaction that
+    /// captures `report.snapshot`. It orders concurrent sidecar writers without
+    /// depending on wall-clock monotonicity.
+    let snapshotGeneration: SkillUsageStoreGeneration
+}
+
+private struct SkillUsageStoreGeneration: Equatable, Sendable {
+    let storeID: String
+    let sequence: Int64
+}
+
+struct SkillUsageLaunchCacheEnvelope: Codable, Equatable {
+    let formatVersion: Int
+    let parserGeneration: Int
+    let storeID: String
+    let snapshotGeneration: Int64
+    let generatedAt: Date
+    let snapshot: SkillUsageSnapshot
+}
+
 private struct ExecutedCommand: Sendable {
     let text: String
     let workdir: String?
@@ -937,7 +1076,7 @@ private final class SkillUsageStore {
         )
     }
 
-    func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageRefreshReport {
+    func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageStoredRefreshResult {
         let parserGenerationChanged = try prepareParserVersion()
         if parserGenerationChanged {
             UsageSourceCatalogCache.shared.invalidate(databasePath: path.standardizedFileURL.path)
@@ -947,16 +1086,19 @@ private final class SkillUsageStore {
             guard let claimedLeaseID = try claimMaintenanceLease(
                 minimumIntervalSeconds: options.minimumMaintenanceIntervalSeconds
             ) else {
-                let current = try snapshot()
-                return SkillUsageRefreshReport(
-                    snapshot: current,
-                    filesRead: 0,
-                    bytesRead: 0,
-                    processedBytesAdvanced: 0,
-                    invocationsAdded: 0,
-                    hasMore: !current.isBackfillComplete,
-                    wasDeferred: true,
-                    warnings: []
+                let (current, snapshotGeneration) = try snapshotWithCurrentLaunchGeneration()
+                return SkillUsageStoredRefreshResult(
+                    report: SkillUsageRefreshReport(
+                        snapshot: current,
+                        filesRead: 0,
+                        bytesRead: 0,
+                        processedBytesAdvanced: 0,
+                        invocationsAdded: 0,
+                        hasMore: !current.isBackfillComplete,
+                        wasDeferred: true,
+                        warnings: []
+                    ),
+                    snapshotGeneration: snapshotGeneration
                 )
             }
             maintenanceLeaseID = claimedLeaseID
@@ -1102,17 +1244,184 @@ private final class SkillUsageStore {
             progress,
             force: filesRead > 0 || !migrations.isEmpty || !resetPaths.isEmpty
         )
-        let snapshot = try snapshot()
-        return SkillUsageRefreshReport(
-            snapshot: snapshot,
-            filesRead: filesRead,
-            bytesRead: bytesRead,
-            processedBytesAdvanced: max(0, progress.processedBytes - startingProcessedBytes),
-            invocationsAdded: invocationsAdded,
-            hasMore: !sources.isEmpty && !progress.isComplete,
-            wasDeferred: false,
-            warnings: warnings
+        let (snapshot, snapshotGeneration) = try snapshotAdvancingLaunchGeneration()
+        return SkillUsageStoredRefreshResult(
+            report: SkillUsageRefreshReport(
+                snapshot: snapshot,
+                filesRead: filesRead,
+                bytesRead: bytesRead,
+                processedBytesAdvanced: max(0, progress.processedBytes - startingProcessedBytes),
+                invocationsAdded: invocationsAdded,
+                hasMore: !sources.isEmpty && !progress.isComplete,
+                wasDeferred: false,
+                warnings: warnings
+            ),
+            snapshotGeneration: snapshotGeneration
         )
+    }
+
+    func loadLaunchSnapshot() throws -> SkillUsageSnapshot? {
+        try loadLaunchEnvelope()?.snapshot
+    }
+
+    func saveLaunchSnapshot(
+        _ snapshot: SkillUsageSnapshot,
+        databaseGeneration: SkillUsageStoreGeneration
+    ) throws {
+        let cachePath = launchCachePath
+        let lockPath = cachePath.appendingPathExtension("lock")
+        let lockDescriptor = Darwin.open(
+            lockPath.path,
+            O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard lockDescriptor >= 0 else {
+            throw launchCacheError("open cache lock")
+        }
+        defer { close(lockDescriptor) }
+        var lockInfo = stat()
+        guard fstat(lockDescriptor, &lockInfo) == 0,
+              lockInfo.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              lockInfo.st_nlink == 1
+        else {
+            throw launchCacheError("validate cache lock")
+        }
+        guard fchmod(lockDescriptor, mode_t(0o600)) == 0 else {
+            throw launchCacheError("protect cache lock")
+        }
+        guard flock(lockDescriptor, LOCK_EX) == 0 else {
+            throw launchCacheError("lock cache")
+        }
+        defer { flock(lockDescriptor, LOCK_UN) }
+
+        // A database can be replaced while an older process is waiting for the
+        // sidecar lock. Only the still-current store and generation may publish.
+        let currentGeneration = try currentLaunchGeneration()
+        guard currentGeneration == databaseGeneration else { return }
+
+        // Never regress the launch view to an older canonical snapshot, even if
+        // wall time moves backward. A new store ID intentionally supersedes any
+        // sidecar left by a database that occupied the same path.
+        if let existing = try? loadLaunchEnvelope(),
+           existing.storeID == databaseGeneration.storeID,
+           existing.snapshotGeneration == databaseGeneration.sequence
+        {
+            return
+        }
+
+        let envelope = SkillUsageLaunchCacheEnvelope(
+            formatVersion: skillUsageLaunchCacheFormatVersion,
+            parserGeneration: skillUsageParserVersion,
+            storeID: databaseGeneration.storeID,
+            snapshotGeneration: databaseGeneration.sequence,
+            generatedAt: Date(),
+            snapshot: snapshot
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(envelope)
+        let temporaryPath = cachePath.deletingLastPathComponent().appendingPathComponent(
+            ".\(cachePath.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: temporaryPath) }
+
+        // Create the unpublished temp as 0600 before writing any path-bearing
+        // bytes. `rename` then makes the complete private file visible
+        // atomically, so readers see the old generation or the new one.
+        try writePrivateLaunchCacheData(data, to: temporaryPath)
+        guard Darwin.rename(temporaryPath.path, cachePath.path) == 0 else {
+            throw launchCacheError("replace cache")
+        }
+    }
+
+    var launchCachePath: URL {
+        path.deletingLastPathComponent().appendingPathComponent(
+            "\(path.lastPathComponent)-launch-snapshot.json"
+        )
+    }
+
+    func launchCacheOverlapsSessionRoots(_ roots: [String]) -> Bool {
+        let cachePath = launchCachePath.standardizedFileURL.path
+        return resolvedSessionRoots(roots).contains { root in
+            let rootPath = root.standardizedFileURL.path
+            return cachePath == rootPath || cachePath.hasPrefix(rootPath + "/")
+        }
+    }
+
+    private func loadLaunchEnvelope() throws -> SkillUsageLaunchCacheEnvelope? {
+        let cachePath = launchCachePath
+        let descriptor = Darwin.open(cachePath.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw launchCacheError("inspect cache")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw launchCacheError("inspect open cache")
+        }
+        let fileType = info.st_mode & mode_t(S_IFMT)
+        let permissions = info.st_mode & mode_t(0o777)
+        guard fileType == mode_t(S_IFREG),
+              permissions == mode_t(0o600),
+              info.st_nlink == 1,
+              info.st_size >= 0,
+              info.st_size <= 64 * 1_024 * 1_024
+        else {
+            return nil
+        }
+
+        let data = try handle.readToEnd() ?? Data()
+        let envelope = try JSONDecoder().decode(SkillUsageLaunchCacheEnvelope.self, from: data)
+        guard envelope.formatVersion == skillUsageLaunchCacheFormatVersion,
+              envelope.parserGeneration == skillUsageParserVersion,
+              !envelope.storeID.isEmpty,
+              envelope.snapshotGeneration >= 0,
+              envelope.snapshot.targetParserVersion == envelope.parserGeneration
+        else { return nil }
+        return envelope
+    }
+
+    private func writePrivateLaunchCacheData(_ data: Data, to path: URL) throws {
+        let descriptor = Darwin.open(
+            path.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw launchCacheError("create private cache")
+        }
+        defer { close(descriptor) }
+
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    bytes.count - offset
+                )
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw launchCacheError("write private cache")
+                }
+                guard written > 0 else {
+                    throw launchCacheError("write private cache")
+                }
+                offset += written
+            }
+        }
+        guard fsync(descriptor) == 0 else {
+            throw launchCacheError("flush private cache")
+        }
+    }
+
+    private func launchCacheError(_ operation: String) -> NSError {
+        NSError(domain: "MetagentSkillUsageLaunchCache", code: Int(errno), userInfo: [
+            NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(errno)))"
+        ])
     }
 
     private func claimMaintenanceLease(minimumIntervalSeconds: TimeInterval) throws -> String? {
@@ -1198,6 +1507,90 @@ private final class SkillUsageStore {
             try? exec(db, "ROLLBACK;")
             throw error
         }
+    }
+
+    private func snapshotAdvancingLaunchGeneration() throws -> (
+        SkillUsageSnapshot,
+        SkillUsageStoreGeneration
+    ) {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        try exec(db, "BEGIN IMMEDIATE;")
+        do {
+            let current = try launchGeneration(db)
+            guard current.sequence < Int64.max else {
+                throw databaseError(db, "advance launch cache generation")
+            }
+            let generation = SkillUsageStoreGeneration(
+                storeID: current.storeID,
+                sequence: current.sequence + 1
+            )
+            var statement: OpaquePointer?
+            try prepare(db, """
+            UPDATE \(skillUsageStoreStateTable)
+            SET launch_snapshot_generation = ?
+            WHERE id = 1 AND store_id = ?;
+            """, &statement)
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int64(statement, 1, generation.sequence)
+            bind(statement, 2, generation.storeID)
+            guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else {
+                throw databaseError(db, "advance launch cache generation")
+            }
+            let snapshot = try snapshot(db)
+            try exec(db, "COMMIT;")
+            return (snapshot, generation)
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func snapshotWithCurrentLaunchGeneration() throws -> (
+        SkillUsageSnapshot,
+        SkillUsageStoreGeneration
+    ) {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        try exec(db, "BEGIN;")
+        do {
+            let generation = try launchGeneration(db)
+            let snapshot = try snapshot(db)
+            try exec(db, "COMMIT;")
+            return (snapshot, generation)
+        } catch {
+            try? exec(db, "ROLLBACK;")
+            throw error
+        }
+    }
+
+    fileprivate func currentLaunchGeneration() throws -> SkillUsageStoreGeneration {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        return try launchGeneration(db)
+    }
+
+    private func launchGeneration(_ db: OpaquePointer?) throws -> SkillUsageStoreGeneration {
+        var statement: OpaquePointer?
+        try prepare(db, """
+        SELECT store_id, launch_snapshot_generation
+        FROM \(skillUsageStoreStateTable)
+        WHERE id = 1;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw databaseError(db, "load launch cache generation")
+        }
+        return SkillUsageStoreGeneration(
+            storeID: text(statement, 0),
+            sequence: sqlite3_column_int64(statement, 1)
+        )
     }
 
     /// Per-day read counts for every observed skill identity, grouped with the
@@ -3225,6 +3618,16 @@ private final class SkillUsageStore {
         CREATE TABLE IF NOT EXISTS skill_usage_metadata (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS skill_usage_store_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          store_id TEXT NOT NULL,
+          launch_snapshot_generation INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO skill_usage_store_state (
+          id, store_id, launch_snapshot_generation
+        ) VALUES (
+          1, lower(hex(randomblob(16))), 0
         );
         """)
         try? exec(db, "ALTER TABLE skill_usage_sources ADD COLUMN file_identity TEXT NOT NULL DEFAULT '';" )

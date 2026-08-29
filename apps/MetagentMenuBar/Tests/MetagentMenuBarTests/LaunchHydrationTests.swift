@@ -74,6 +74,29 @@ private final class LaunchLoadRecorder: @unchecked Sendable {
     #expect(model.hasHydratedLaunchCaches)
 }
 
+@MainActor
+@Test func launchHydrationMarksMaterializedUsageAsProvisional() async {
+    let loader = MetagentLaunchCacheLoader(
+        loadInventory: { nil },
+        loadDeferred: {
+            MetagentDeferredLaunchSnapshot(
+                usage: .empty,
+                evaluations: SkillEvaluationSnapshot(),
+                modelReleases: .empty,
+                releaseAffirmations: [:],
+                publications: .empty
+            )
+        }
+    )
+    let model = MetagentModel(launchCacheLoader: loader)
+
+    await model.hydrateLaunchCaches()
+
+    #expect(model.usageSnapshot == .empty)
+    #expect(model.usageStatusText == "Cached usage · refreshing…")
+    #expect(model.hasHydratedLaunchCaches)
+}
+
 @Test func overviewHealthRefreshWaitsForHydrationAndRetriggersForEveryInput() {
     let waiting = OverviewSkillHealthRefreshTrigger(
         hasHydratedLaunchCaches: false,

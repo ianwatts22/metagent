@@ -21,6 +21,310 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertNotNil(MetagentCore.parseSkillUsageTimestamp("2026-07-19T12:00:00Z"))
     }
 
+    func testRefreshMaterializesPrivateLaunchSnapshotWithoutChangingCanonicalLoad() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/cached-skill",
+            name: "cached-skill"
+        )
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "cache-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.line(type: "turn_context", payload: [
+                "turn_id": "cache-turn",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "cache-call", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-cache.jsonl"))
+
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertNotNil(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertNil(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            "an authoritative read must not silently materialize or fall back through the launch cache"
+        )
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            report.snapshot
+        )
+        XCTAssertEqual(
+            MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path),
+            report.snapshot
+        )
+
+        let cachePath = try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: cachePath)
+        let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber).intValue
+        XCTAssertEqual(permissions & 0o777, 0o600)
+    }
+
+    func testLaunchSnapshotCacheFailsClosedForMissingCorruptInsecureAndIncompatibleFiles() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let validEnvelope = try JSONDecoder().decode(
+            SkillUsageLaunchCacheEnvelope.self,
+            from: Data(contentsOf: cachePath)
+        )
+
+        try Data("not json".utf8).write(to: cachePath, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cachePath.path)
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+
+        try writePrivateLaunchCache(
+            SkillUsageLaunchCacheEnvelope(
+                formatVersion: validEnvelope.formatVersion + 1,
+                parserGeneration: validEnvelope.parserGeneration,
+                storeID: validEnvelope.storeID,
+                snapshotGeneration: validEnvelope.snapshotGeneration,
+                generatedAt: validEnvelope.generatedAt,
+                snapshot: report.snapshot
+            ),
+            to: cachePath
+        )
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+
+        try writePrivateLaunchCache(
+            SkillUsageLaunchCacheEnvelope(
+                formatVersion: validEnvelope.formatVersion,
+                parserGeneration: validEnvelope.parserGeneration + 1,
+                storeID: validEnvelope.storeID,
+                snapshotGeneration: validEnvelope.snapshotGeneration,
+                generatedAt: validEnvelope.generatedAt,
+                snapshot: report.snapshot
+            ),
+            to: cachePath
+        )
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+
+        try writePrivateLaunchCache(
+            SkillUsageLaunchCacheEnvelope(
+                formatVersion: validEnvelope.formatVersion,
+                parserGeneration: validEnvelope.parserGeneration,
+                storeID: validEnvelope.storeID,
+                snapshotGeneration: validEnvelope.snapshotGeneration,
+                generatedAt: validEnvelope.generatedAt,
+                snapshot: replacingTargetParserVersion(
+                    in: report.snapshot,
+                    with: validEnvelope.parserGeneration + 1
+                )
+            ),
+            to: cachePath
+        )
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+
+        try writePrivateLaunchCache(validEnvelope, to: cachePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: cachePath.path)
+        XCTAssertNil(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            "a path-bearing cache with group/world access must be rejected"
+        )
+
+        try FileManager.default.removeItem(at: cachePath)
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+
+        let symlinkTarget = fixture.root.appendingPathComponent("redirected-launch-cache.json")
+        try writePrivateLaunchCache(validEnvelope, to: symlinkTarget)
+        try FileManager.default.createSymbolicLink(at: cachePath, withDestinationURL: symlinkTarget)
+        XCTAssertNil(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            "the launch cache path must be a regular file rather than a redirect"
+        )
+        XCTAssertEqual(
+            MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path),
+            report.snapshot,
+            "cache failures must not affect the SQLite source of truth"
+        )
+    }
+
+    func testOlderRefreshGenerationCannotOverwriteNewerLaunchSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let newer = replacingTotalInvocations(in: report.snapshot, with: 42)
+        let older = replacingTotalInvocations(in: report.snapshot, with: 7)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let generation = try JSONDecoder().decode(
+            SkillUsageLaunchCacheEnvelope.self,
+            from: Data(contentsOf: cachePath)
+        ).snapshotGeneration
+        try FileManager.default.removeItem(at: cachePath)
+
+        try MetagentCore.saveSkillUsageLaunchSnapshotForTesting(
+            newer,
+            databasePath: fixture.database.path,
+            snapshotGeneration: generation
+        )
+        try MetagentCore.saveSkillUsageLaunchSnapshotForTesting(
+            older,
+            databasePath: fixture.database.path,
+            snapshotGeneration: generation - 1
+        )
+
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            newer
+        )
+    }
+
+    func testDatabaseRollbackReplacesAFutureLaunchSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let initial = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let current = try JSONDecoder().decode(
+            SkillUsageLaunchCacheEnvelope.self,
+            from: Data(contentsOf: cachePath)
+        )
+        let future = SkillUsageLaunchCacheEnvelope(
+            formatVersion: current.formatVersion,
+            parserGeneration: current.parserGeneration,
+            storeID: current.storeID,
+            snapshotGeneration: current.snapshotGeneration + 100,
+            generatedAt: current.generatedAt.addingTimeInterval(3_600),
+            snapshot: replacingTotalInvocations(in: initial.snapshot, with: 42)
+        )
+        try writePrivateLaunchCache(future, to: cachePath)
+
+        let refreshed = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let repaired = try JSONDecoder().decode(
+            SkillUsageLaunchCacheEnvelope.self,
+            from: Data(contentsOf: cachePath)
+        )
+
+        XCTAssertEqual(repaired.snapshot, refreshed.snapshot)
+        XCTAssertEqual(repaired.snapshotGeneration, current.snapshotGeneration + 1)
+    }
+
+    func testLaunchCachePathsPreserveTheCompleteDatabaseFilename() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sqliteDatabase = fixture.root.appendingPathComponent("usage.sqlite")
+        let dbDatabase = fixture.root.appendingPathComponent("usage.db")
+
+        let sqliteCache = try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: sqliteDatabase.path
+        )
+        let dbCache = try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: dbDatabase.path
+        )
+
+        XCTAssertNotEqual(sqliteCache, dbCache)
+        XCTAssertTrue(sqliteCache.hasSuffix("usage.sqlite-launch-snapshot.json"))
+        XCTAssertTrue(dbCache.hasSuffix("usage.db-launch-snapshot.json"))
+    }
+
+    func testLaunchCacheWriteFailureDoesNotFailCanonicalRefresh() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        try FileManager.default.createDirectory(at: cachePath, withIntermediateDirectories: true)
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+
+        XCTAssertEqual(report.snapshot.totalInvocations, 0)
+        XCTAssertNotNil(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertNil(MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path))
+    }
+
+    func testLaunchCacheLockRefusesSymlinkWithoutTouchingTarget() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let initial = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let lockPath = cachePath.appendingPathExtension("lock")
+        try FileManager.default.removeItem(at: lockPath)
+        let target = fixture.root.appendingPathComponent("do-not-touch.txt")
+        let sentinel = Data("private sentinel".utf8)
+        try sentinel.write(to: target)
+        try FileManager.default.createSymbolicLink(at: lockPath, withDestinationURL: target)
+
+        let refreshed = try MetagentCore.refreshSkillUsage(options: fixture.options)
+
+        XCTAssertEqual(refreshed.snapshot, initial.snapshot)
+        XCTAssertEqual(try Data(contentsOf: target), sentinel)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            initial.snapshot,
+            "a rejected lock path must preserve the last good private cache"
+        )
+    }
+
+    func testLaunchCacheLockRefusesHardLinkWithoutChangingTargetMode() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let initial = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let lockPath = cachePath.appendingPathExtension("lock")
+        try FileManager.default.removeItem(at: lockPath)
+        let target = fixture.root.appendingPathComponent("do-not-chmod.txt")
+        try Data("shared inode".utf8).write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.linkItem(at: target, to: lockPath)
+
+        let refreshed = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let permissions = try FileManager.default.attributesOfItem(atPath: target.path)[
+            .posixPermissions
+        ] as? NSNumber
+
+        XCTAssertEqual(refreshed.snapshot, initial.snapshot)
+        XCTAssertEqual(permissions?.intValue, 0o644)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            initial.snapshot,
+            "a rejected hard-linked lock must preserve the last good cache"
+        )
+    }
+
+    func testFailedCanonicalRefreshPreservesLastGoodLaunchSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        let cachePath = URL(fileURLWithPath: try MetagentCore.skillUsageLaunchCachePathForTesting(
+            databasePath: fixture.database.path
+        ))
+        let cachedData = try Data(contentsOf: cachePath)
+
+        for path in [
+            fixture.database.path,
+            fixture.database.path + "-wal",
+            fixture.database.path + "-shm",
+        ] where FileManager.default.fileExists(atPath: path) {
+            try FileManager.default.removeItem(atPath: path)
+        }
+        try FileManager.default.createDirectory(at: fixture.database, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try MetagentCore.refreshSkillUsage(options: fixture.options))
+        XCTAssertEqual(try Data(contentsOf: cachePath), cachedData)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            report.snapshot
+        )
+    }
+
     func testContinuationCatalogIgnoresWatcherBookkeepingButInvalidatesForChanges() {
         let bookkeepingFlags: [FSEventStreamEventFlags] = [
             FSEventStreamEventFlags(kFSEventStreamEventFlagNone),
@@ -55,6 +359,33 @@ final class SkillUsageTests: XCTestCase {
                 )
             )
         }
+    }
+
+    func testContinuationCatalogIgnoresOnlyOwnedStateDirectoryBookkeeping() {
+        let root = "/tmp/metagent-sessions"
+        let stateDirectory = root + "/metagent-state"
+        let database = stateDirectory + "/usage.sqlite"
+        let modified = FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)
+        let created = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated)
+
+        XCTAssertFalse(MetagentCore.skillUsageCatalogInvalidatesPathEventForTesting(
+            roots: [root],
+            databasePath: database,
+            eventPath: stateDirectory,
+            flags: modified
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesPathEventForTesting(
+            roots: [root],
+            databasePath: database,
+            eventPath: stateDirectory,
+            flags: created
+        ))
+        XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesPathEventForTesting(
+            roots: [root],
+            databasePath: database,
+            eventPath: root + "/new-session.jsonl",
+            flags: created
+        ))
     }
 
     func testContinuationCatalogArmsOnlyAfterQueuedCallbacksDrain() {
@@ -1428,6 +1759,11 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(rebuilding.snapshot.completedFiles, 1)
         XCTAssertTrue(rebuilding.snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(rebuilding.snapshot.displayParserVersion, 13)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            rebuilding.snapshot,
+            "a current writer may cache the previous display generation during rebuild"
+        )
 
         // Older generations did not have agent_runs_previous. Treat the three
         // core previous tables as the atomic display generation so a restart
@@ -1448,6 +1784,10 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(restartedUpgrade.snapshot.completedFiles, 1)
         XCTAssertTrue(restartedUpgrade.snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(restartedUpgrade.snapshot.displayParserVersion, 13)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            restartedUpgrade.snapshot
+        )
 
         let cutover = try MetagentCore.refreshSkillUsage(options: fixture.options)
         XCTAssertFalse(cutover.hasMore)
@@ -1455,6 +1795,10 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(cutover.snapshot.isBackfillComplete)
         XCTAssertFalse(cutover.snapshot.isParserUpgradeBackfill)
         XCTAssertEqual(cutover.snapshot.displayParserVersion, 17)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            cutover.snapshot
+        )
     }
 
     func testMaintenanceIntervalDefersDuplicateBackgroundWorkButNotManualRefresh() throws {
@@ -1493,6 +1837,11 @@ final class SkillUsageTests: XCTestCase {
         let duplicate = try MetagentCore.refreshSkillUsage(options: maintenanceOptions)
         XCTAssertTrue(duplicate.wasDeferred)
         XCTAssertEqual(duplicate.filesRead, 0)
+        XCTAssertEqual(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: fixture.database.path),
+            duplicate.snapshot,
+            "a deferred process should reuse the canonical snapshot another process just advanced"
+        )
         XCTAssertEqual(duplicate.processedBytesAdvanced, 0)
         XCTAssertTrue(duplicate.hasMore)
 
@@ -1780,6 +2129,49 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testContinuationIgnoresItsDatabaseAndLaunchCacheInsideTheSessionRoot() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/overlapping-cache",
+            name: "overlapping-cache"
+        )
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "overlapping-cache-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "overlapping-cache-read", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-overlapping-cache.jsonl"))
+        let database = fixture.sessions.appendingPathComponent("metagent-state/usage.sqlite")
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20,
+            reusesSourceCatalog: true
+        )
+
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
+            1
+        )
+        usleep(250_000)
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
+            1
+        )
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path),
+            1,
+            "Metagent's own SQLite and launch-cache writes must not dirty the session catalog"
+        )
+        XCTAssertNil(
+            MetagentCore.loadCachedSkillUsageSnapshot(databasePath: database.path),
+            "an overlapping continuation layout must not write into its own watched tree"
+        )
+    }
+
     func testContinuationInvalidationCoversGrowthRewriteRotationAndArchiveRelocation() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1922,6 +2314,57 @@ final class SkillUsageTests: XCTestCase {
             3
         )
     }
+}
+
+private func writePrivateLaunchCache(
+    _ envelope: SkillUsageLaunchCacheEnvelope,
+    to path: URL
+) throws {
+    try JSONEncoder().encode(envelope).write(to: path, options: .atomic)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: path.path
+    )
+}
+
+private func replacingTotalInvocations(
+    in snapshot: SkillUsageSnapshot,
+    with totalInvocations: Int
+) -> SkillUsageSnapshot {
+    SkillUsageSnapshot(
+        summaries: snapshot.summaries,
+        totalInvocations: totalInvocations,
+        totalFiles: snapshot.totalFiles,
+        completedFiles: snapshot.completedFiles,
+        totalBytes: snapshot.totalBytes,
+        processedBytes: snapshot.processedBytes,
+        isBackfillComplete: snapshot.isBackfillComplete,
+        isParserUpgradeBackfill: snapshot.isParserUpgradeBackfill,
+        displayParserVersion: snapshot.displayParserVersion,
+        targetParserVersion: snapshot.targetParserVersion,
+        coverageStartedAt: snapshot.coverageStartedAt,
+        lastUpdatedAt: snapshot.lastUpdatedAt
+    )
+}
+
+private func replacingTargetParserVersion(
+    in snapshot: SkillUsageSnapshot,
+    with targetParserVersion: Int
+) -> SkillUsageSnapshot {
+    SkillUsageSnapshot(
+        summaries: snapshot.summaries,
+        totalInvocations: snapshot.totalInvocations,
+        totalFiles: snapshot.totalFiles,
+        completedFiles: snapshot.completedFiles,
+        totalBytes: snapshot.totalBytes,
+        processedBytes: snapshot.processedBytes,
+        isBackfillComplete: snapshot.isBackfillComplete,
+        isParserUpgradeBackfill: snapshot.isParserUpgradeBackfill,
+        displayParserVersion: snapshot.displayParserVersion,
+        targetParserVersion: targetParserVersion,
+        coverageStartedAt: snapshot.coverageStartedAt,
+        lastUpdatedAt: snapshot.lastUpdatedAt
+    )
 }
 
 private final class Fixture {
