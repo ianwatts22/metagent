@@ -3,6 +3,37 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillDiscoveryTests: XCTestCase {
+    func testGlobalOnlyHomeScanDoesNotRediscoverNestedProjects() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-discovery-home-scope")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let previousHome = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", home.path, 1)
+        defer {
+            if let previousHome {
+                setenv("HOME", previousHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        try writeSkillFixture(
+            at: home.appendingPathComponent(".agents/skills/global-skill"),
+            name: "global-skill"
+        )
+        let nestedProject = home.appendingPathComponent("code_projects/example")
+        try writeSkillFixture(
+            at: nestedProject.appendingPathComponent(".agents/skills/project-skill"),
+            name: "project-skill"
+        )
+
+        let globalOnly = try MetagentCore.scanHomeSkills(maxDepth: 0)
+        let recursive = try MetagentCore.scanHomeSkills(maxDepth: 2)
+
+        XCTAssertEqual(globalOnly.projects.map(\.root), [home.path])
+        XCTAssertEqual(globalOnly.projects.flatMap(\.validSkills), ["global-skill"])
+        XCTAssertEqual(Set(recursive.projects.map(\.root)), Set([home.path, nestedProject.path]))
+    }
+
     func testScanExcludesLinkedGitWorktrees() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-discovery-worktrees")
         defer { try? FileManager.default.removeItem(at: root) }

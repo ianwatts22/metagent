@@ -904,18 +904,15 @@ final class MetagentModel: ObservableObject {
         usageStatusText = usageSnapshot.totalFiles == 0 ? "Discovering Codex history…" : "Updating usage history…"
         let maxBytes = maintenancePlan?.maxBytes ?? Self.usageRefreshSliceBytes
         let maxFiles = maintenancePlan?.maxFiles ?? Self.usageRefreshSliceFiles
-        let minimumMaintenanceInterval = maintenancePlan?.delaySeconds ?? 0
+        let refreshOptions = maintenancePlan?.refreshOptions()
+            ?? SkillUsageRefreshOptions(maxBytes: maxBytes, maxFiles: maxFiles)
 
         Task {
             var shouldContinueMaintenance = false
             do {
                 let report = try await Task.detached(priority: .background) {
                     try autoreleasepool {
-                        try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
-                            maxBytes: maxBytes,
-                            maxFiles: maxFiles,
-                            minimumMaintenanceIntervalSeconds: minimumMaintenanceInterval
-                        ))
+                        try MetagentCore.refreshSkillUsage(options: refreshOptions)
                     }
                 }.value
                 usageSnapshot = report.snapshot
@@ -1013,15 +1010,13 @@ final class MetagentModel: ObservableObject {
         Task {
             var failedSkillNames: [String] = []
             var firstFailureDetail: String?
+            var updatedEvaluations = skillEvaluations
             for (index, path) in uniquePaths.enumerated() {
                 do {
                     let record = try await Task.detached(priority: .utility) {
                         try MetagentCore.evaluateSkillWithPluginEval(at: path)
                     }.value
-                    var snapshot = skillEvaluations
-                    snapshot.applyPluginEvalResult(record)
-                    skillEvaluations = snapshot
-                    skillTableRevision += 1
+                    updatedEvaluations.applyPluginEvalResult(record)
                     skillEvaluationStatusText = uniquePaths.count == 1
                         ? "Plugin Eval complete"
                         : "Plugin Eval \(index + 1) of \(uniquePaths.count)"
@@ -1033,6 +1028,14 @@ final class MetagentModel: ObservableObject {
                     }
                     skillEvaluationStatusText = "Plugin Eval \(index + 1) of \(uniquePaths.count) · \(failedSkillNames.count) failed"
                     skillEvaluationProgress = Double(index + 1) / Double(uniquePaths.count)
+                }
+                let completed = index + 1
+                if SkillEvaluationBatchPolicy.shouldPublish(
+                    completed: completed,
+                    total: uniquePaths.count
+                ) {
+                    skillEvaluations = updatedEvaluations
+                    skillTableRevision += 1
                 }
             }
             if !failedSkillNames.isEmpty {
@@ -1654,7 +1657,11 @@ final class MetagentModel: ObservableObject {
             Result { try MetagentCore.scanSkills() }
         }.value
         async let homeScanResult = Task.detached {
-            Result { try MetagentCore.scanHomeSkills(maxDepth: 2) }
+            // Configured roots own project discovery. This pass exists only
+            // for the three global skill collections in the home directory;
+            // descending into ~/code_projects would rescan the same projects
+            // concurrently and was responsible for a large refresh CPU burst.
+            Result { try MetagentCore.scanHomeSkills(maxDepth: 0) }
         }.value
         async let pluginScanResult = Task.detached {
             Result { try MetagentCore.scanCodexPlugins() }

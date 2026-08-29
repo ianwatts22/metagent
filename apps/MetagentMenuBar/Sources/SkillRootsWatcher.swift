@@ -1,5 +1,6 @@
 import CoreServices
 import Foundation
+import MetagentCore
 
 /// Watches the directories skills live in and reports settled change.
 ///
@@ -42,11 +43,19 @@ final class SkillRootsWatcher {
             release: nil,
             copyDescription: nil
         )
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+        let callback: FSEventStreamCallback = { _, info, eventCount, eventPaths, eventFlags, _ in
             guard let info else { return }
-            Unmanaged<SkillRootsWatcher>.fromOpaque(info)
+            let watcher = Unmanaged<SkillRootsWatcher>.fromOpaque(info)
                 .takeUnretainedValue()
-                .scheduleSettledChange()
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+            let mustRescan = (0..<eventCount).contains { index in
+                let flags = eventFlags[index]
+                return flags & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0
+                    || flags & FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped) != 0
+                    || flags & FSEventStreamEventFlags(kFSEventStreamEventFlagKernelDropped) != 0
+            }
+            guard mustRescan || SkillRootEventFilter.shouldRefresh(paths: paths) else { return }
+            watcher.scheduleSettledChange()
         }
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
@@ -55,7 +64,9 @@ final class SkillRootsWatcher {
             normalized as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            FSEventStreamCreateFlags(0)
+            FSEventStreamCreateFlags(
+                kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents
+            )
         ) else { return }
         self.stream = stream
         FSEventStreamSetDispatchQueue(stream, .main)

@@ -66,6 +66,11 @@ that to 2 MiB or 4 files and waits at least 180 seconds.
 
 Production and dev builds share one SQLite lease. Only one process performs a
 maintenance slice in each interval; an explicit user refresh is never deferred.
+Within each background slice, normal maintenance yields for 25 milliseconds
+after each 512 KiB and constrained maintenance yields for 50 milliseconds after
+each 256 KiB. This adds cooperative pacing between parsed records without
+throttling explicit user refreshes or reducing the amount of history each
+maintenance wake processes.
 This keeps the current index moving toward complete coverage without restoring
 the old sustained full-core parser loop. The app still prioritizes the most
 recent session files, and an explicit refresh remains immediate; the slower
@@ -93,10 +98,26 @@ scripts/measure-app-efficiency.sh --channel dev --duration 60
 ```
 
 It samples CPU, resident memory, and thread count once per second, then writes a
-five-second stack sample. Keep the generated summary, CSV, and stack sample as a
-before result; run the same command on the same Mac, power mode, app state, and
-duration after the change. Compare both average and peak values. A lower average
-with the same peak can still mean the app returns to idle faster.
+five-second stack sample plus text and JSON summaries. The summaries include CPU
+p50/p95/p99, active duty cycle, longest active burst, RSS p95/growth/trend,
+child-process CPU/RSS, and usage-index throughput at each sample. The per-sample
+progress shows whether a CPU burst actually advanced the parser; child-process
+metrics keep an invoked Plugin Eval process from disappearing from the picture.
+Sample intervals use the monotonic clock, so probe overhead does not inflate CPU
+percentages, duty cycle, burst length, or memory trend. Usage progress belongs
+to the SQLite database shared by production and dev; the report labels it as
+global progress and treats selected-app CPU as correlation, not ownership.
+Together these distinguish a controlled refresh burst from frequent wakeups that
+happen to have the same average CPU, and distinguish a temporary allocation peak
+from sustained memory growth.
+
+Keep the generated summary, JSON, CSV, and stack sample as a before result; run
+the same command on the same Mac, power mode, app state, and duration after the
+change. Compare average CPU, p95 CPU, active duty cycle, longest burst, and RSS
+trend together. A lower average with the same peak can still be a real win when
+the duty cycle and longest burst show that the app returns to idle faster. Treat
+RSS trend as a leak signal to investigate over a longer run, not proof of a leak
+from one short sample.
 
 Process sampling cannot attribute wakeups or file-system activity. For those,
 record the same scenario with Xcode Instruments' Time Profiler and File Activity
@@ -105,3 +126,14 @@ do not compare their absolute values across different Macs. Activity Monitor's
 Energy tab is useful as a long-window warning, but its “Energy Impact” score is
 not a stable benchmark. Xcode's Power Profiler template is not supported for a
 macOS process, so do not use it as an automated Metagent gate.
+
+For retained-memory work, capture vmmap's physical, live-allocation, and
+fragmentation views together:
+
+```bash
+scripts/profile-app-memory.sh --channel dev
+```
+
+Compare the same app view before and after a change, and include a return to a
+lighter view. RSS alone includes reclaimable and fragmented pages; a view-cycle
+that releases most live allocations is different from a growing retained heap.
