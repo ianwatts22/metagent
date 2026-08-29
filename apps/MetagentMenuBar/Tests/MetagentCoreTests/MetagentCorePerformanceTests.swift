@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import SQLite3
 import XCTest
 @testable import MetagentCore
 
@@ -272,7 +274,7 @@ final class MetagentCorePerformanceTests: XCTestCase {
         guard runsPerformanceTests else { return }
         let root = try makeTemporaryRoot(prefix: "metagent-performance-usage-discovery")
         let sessions = root.appendingPathComponent("sessions")
-        for index in 0..<1_500 {
+        for index in 0..<15_456 {
             try write(
                 "",
                 to: sessions.appendingPathComponent(
@@ -293,7 +295,7 @@ final class MetagentCorePerformanceTests: XCTestCase {
         ) {
             try MetagentCore.refreshSkillUsage(options: options)
         }
-        XCTAssertEqual(preflight.snapshot.totalFiles, 1_500)
+        XCTAssertEqual(preflight.snapshot.totalFiles, 15_456)
         XCTAssertEqual(preflight.filesRead, 0)
         var lastReport: SkillUsageRefreshReport?
 
@@ -301,9 +303,85 @@ final class MetagentCorePerformanceTests: XCTestCase {
             lastReport = try! MetagentCore.refreshSkillUsage(options: options)
         }
 
-        XCTAssertEqual(lastReport?.snapshot.totalFiles, 1_500)
+        XCTAssertEqual(lastReport?.snapshot.totalFiles, 15_456)
         XCTAssertEqual(lastReport?.filesRead, 0)
         XCTAssertEqual(lastReport?.hasMore, false)
+    }
+
+    func testPerformanceWarmUsageStateMaintenance() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-usage-state")
+        let sessions = root.appendingPathComponent("sessions")
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database
+        ))
+        let sourceCount = 15_456
+        var sourcePaths: [String] = []
+        sourcePaths.reserveCapacity(sourceCount)
+        for index in 0..<sourceCount {
+            let source = sessions.appendingPathComponent(
+                "2026/08/\(index % 28 + 1)/rollout-\(index).jsonl"
+            )
+            try write("", to: source)
+            sourcePaths.append(source.path)
+        }
+        try seedCompletedUsageSources(sourcePaths, database: database)
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 12
+        )
+        let preflight = try assertLatencyBudget(
+            "15k-source first persisted-state maintenance",
+            seconds: 1.25
+        ) {
+            try MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(preflight.snapshot.totalFiles, sourceCount)
+        XCTAssertEqual(preflight.snapshot.completedFiles, sourceCount)
+        XCTAssertEqual(preflight.filesRead, 0)
+        XCTAssertEqual(try usageSourceRowCount(database: database), sourceCount)
+        var lastReport: SkillUsageRefreshReport?
+
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastReport = try! MetagentCore.refreshSkillUsage(options: options)
+        }
+
+        XCTAssertEqual(lastReport?.snapshot.completedFiles, sourceCount)
+        XCTAssertEqual(lastReport?.filesRead, 0)
+        XCTAssertEqual(lastReport?.hasMore, false)
+    }
+
+    func testPerformanceUsageSnapshotAggregation() throws {
+        guard runsPerformanceTests else { return }
+        let fixture = try makeUsageBackfillFixture(sessionCount: 60, readsPerSession: 300)
+        let database = fixture.root.appendingPathComponent("snapshot-usage.sqlite").path
+        let indexed = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: database,
+            maxBytes: 64 * 1_024 * 1_024,
+            maxFiles: 100
+        ))
+        XCTAssertEqual(indexed.snapshot.totalInvocations, 18_000)
+
+        let preflight = try assertLatencyBudget(
+            "18k-event usage snapshot aggregation",
+            seconds: 0.5
+        ) {
+            try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: database))
+        }
+        XCTAssertEqual(preflight.summaries.count, 20)
+        var lastSnapshot: SkillUsageSnapshot?
+
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastSnapshot = MetagentCore.loadSkillUsageSnapshot(databasePath: database)
+        }
+
+        XCTAssertEqual(lastSnapshot?.totalInvocations, 18_000)
+        XCTAssertEqual(lastSnapshot?.summaries.count, 20)
     }
 
     // MARK: - Realistic, deterministic fixtures
@@ -332,6 +410,11 @@ final class MetagentCorePerformanceTests: XCTestCase {
         let startedAt = ProcessInfo.processInfo.systemUptime
         let result = try operation()
         let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+        print(
+            "[Metagent performance] \(label): "
+                + "\(String(format: "%.3f", elapsed))s "
+                + "(budget \(String(format: "%.3f", seconds * multiplier))s)"
+        )
         XCTAssertLessThanOrEqual(
             elapsed,
             seconds * multiplier,
@@ -570,6 +653,81 @@ final class MetagentCorePerformanceTests: XCTestCase {
 
     private func performanceJSONString(_ value: Any) -> String {
         String(decoding: try! JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+    }
+
+    private func seedCompletedUsageSources(_ paths: [String], database: String) throws {
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(database, &connection), SQLITE_OK)
+        let databaseConnection = try XCTUnwrap(connection)
+        defer { sqlite3_close(databaseConnection) }
+        XCTAssertEqual(sqlite3_exec(databaseConnection, "BEGIN;", nil, nil, nil), SQLITE_OK)
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(databaseConnection, """
+        INSERT INTO skill_usage_sources (
+          path, byte_offset, file_size, modified_at, file_identity,
+          prefix_fingerprint, session_id, cwd, turn_id, coverage_started_at,
+          pending_events_json, run_session_id, run_session_started_at, run_kind,
+          parser_version, updated_at
+        ) VALUES (
+          ?, 0, 0, ?, ?, '', '', '', '', '', '{}', '', '', 'unknown',
+          CAST((SELECT value FROM skill_usage_metadata WHERE key = 'parser_version') AS INTEGER),
+          ''
+        );
+        """, -1, &statement, nil), SQLITE_OK)
+        let insert = try XCTUnwrap(statement)
+        defer { sqlite3_finalize(insert) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+        for path in paths {
+            let resolvedPath = realpath(path, nil)
+            XCTAssertNotNil(resolvedPath)
+            let canonicalPath = resolvedPath.map { String(cString: $0) } ?? path
+            free(resolvedPath)
+            var info = stat()
+            XCTAssertEqual(lstat(canonicalPath, &info), 0)
+            let modifiedAt = Double(info.st_mtimespec.tv_sec)
+                + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
+            let fileIdentity = "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+            sqlite3_reset(insert)
+            sqlite3_clear_bindings(insert)
+            sqlite3_bind_text(insert, 1, canonicalPath, -1, transient)
+            sqlite3_bind_double(insert, 2, modifiedAt)
+            sqlite3_bind_text(insert, 3, fileIdentity, -1, transient)
+            XCTAssertEqual(sqlite3_step(insert), SQLITE_DONE)
+        }
+        XCTAssertEqual(sqlite3_exec(databaseConnection, """
+        INSERT INTO skill_usage_metadata (key, value) VALUES
+          ('total_files', CAST((SELECT COUNT(*) FROM skill_usage_sources) AS TEXT)),
+          ('completed_files', CAST((SELECT COUNT(*) FROM skill_usage_sources) AS TEXT)),
+          ('total_bytes', '0'),
+          ('processed_bytes', '0'),
+          ('is_complete', '1')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+        """, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(databaseConnection, "COMMIT;", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_exec(databaseConnection, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil),
+            SQLITE_OK
+        )
+    }
+
+    private func usageSourceRowCount(database: String) throws -> Int {
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(database, &connection), SQLITE_OK)
+        let databaseConnection = try XCTUnwrap(connection)
+        defer { sqlite3_close(databaseConnection) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(
+            databaseConnection,
+            "SELECT COUNT(*) FROM skill_usage_sources;",
+            -1,
+            &statement,
+            nil
+        ), SQLITE_OK)
+        let countStatement = try XCTUnwrap(statement)
+        defer { sqlite3_finalize(countStatement) }
+        XCTAssertEqual(sqlite3_step(countStatement), SQLITE_ROW)
+        return Int(sqlite3_column_int64(countStatement, 0))
     }
 
     private func runGit(_ arguments: [String], in root: URL) throws {

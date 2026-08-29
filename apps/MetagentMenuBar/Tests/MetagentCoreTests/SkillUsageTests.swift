@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 import XCTest
 @testable import MetagentCore
@@ -1351,13 +1352,15 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(first.snapshot.totalFiles, 2)
         XCTAssertTrue(first.hasMore)
 
+        let nestedDirectory = fixture.sessions.appendingPathComponent("2026/08/28")
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
         try fixture.write([
             fixture.line(type: "session_meta", payload: [
                 "id": "new-session-2",
                 "cwd": fixture.root.path
             ]),
             fixture.toolCall(callID: "new-read-2", command: "cat \(skill.path)")
-        ], to: fixture.sessions.appendingPathComponent("rollout-new-2.jsonl"))
+        ], to: nestedDirectory.appendingPathComponent("rollout-new-2.jsonl"))
 
         let second = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(second.filesRead, 1)
@@ -1370,6 +1373,107 @@ final class SkillUsageTests: XCTestCase {
         }
         XCTAssertEqual(report.snapshot.totalInvocations, 3)
         XCTAssertEqual(report.snapshot.completedFiles, 3)
+    }
+
+    func testUsageDiscoverySkipsPackageDescendants() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/packages", name: "packages")
+        let ordinaryDirectory = fixture.sessions.appendingPathComponent("ordinary")
+        let packageDirectory = fixture.sessions.appendingPathComponent("ignored.app/Contents")
+        try FileManager.default.createDirectory(at: ordinaryDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        let lines = [
+            fixture.line(type: "session_meta", payload: [
+                "id": "package-session",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "package-read", command: "cat \(skill.path)")
+        ]
+        try fixture.write(lines, to: ordinaryDirectory.appendingPathComponent("rollout-visible.jsonl"))
+        try fixture.write(lines, to: packageDirectory.appendingPathComponent("rollout-hidden.jsonl"))
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+
+        XCTAssertEqual(report.snapshot.totalFiles, 1)
+        XCTAssertEqual(report.snapshot.totalInvocations, 1)
+    }
+
+    func testUsageDiscoverySkipsSymlinkedSessionFilesLikeFoundationEnumeration() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let oldSkill = try fixture.makeSkill(at: "workspace/.agents/skills/link-old", name: "link-old")
+        let targets = fixture.root.appendingPathComponent("targets")
+        try FileManager.default.createDirectory(at: targets, withIntermediateDirectories: true)
+        let oldTarget = targets.appendingPathComponent("old.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "old-link", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "link-call", command: "cat \(oldSkill.path)")
+        ], to: oldTarget)
+        let link = fixture.sessions.appendingPathComponent("rollout-link.jsonl")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: oldTarget)
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+
+        XCTAssertEqual(report.snapshot.totalFiles, 0)
+        XCTAssertTrue(report.snapshot.summaries.isEmpty)
+    }
+
+    func testUsageDiscoveryCollapsesOverlappingRoots() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/overlap", name: "overlap")
+        let nested = fixture.sessions.appendingPathComponent("2026/08/28")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "overlap", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "overlap-read", command: "cat \(skill.path)")
+        ], to: nested.appendingPathComponent("rollout-overlap.jsonl"))
+
+        let report = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [nested.path, fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 20
+        ))
+
+        XCTAssertEqual(report.snapshot.totalFiles, 1)
+        XCTAssertEqual(report.snapshot.totalInvocations, 1)
+    }
+
+    func testBulkMetadataMatchesExistingStatMetadata() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/identity", name: "identity")
+        let nested = fixture.sessions.appendingPathComponent("2026/08/28")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let rollout = nested.appendingPathComponent("rollout-identity.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "identity", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "identity-read", command: "cat \(skill.path)")
+        ], to: rollout)
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.totalInvocations,
+            1
+        )
+
+        var info = stat()
+        XCTAssertEqual(lstat(rollout.path, &info), 0)
+        let statIdentity = "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        let statModifiedAt = Double(info.st_mtimespec.tv_sec)
+            + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
+        try fixture.executeSQL(
+            """
+            UPDATE skill_usage_sources
+            SET file_identity = '\(statIdentity)',
+                modified_at = \(String(format: "%.17g", statModifiedAt)),
+                prefix_fingerprint = 'not-the-real-prefix';
+            """
+        )
+
+        let warm = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(warm.filesRead, 0)
+        XCTAssertEqual(warm.snapshot.totalInvocations, 1)
     }
 }
 

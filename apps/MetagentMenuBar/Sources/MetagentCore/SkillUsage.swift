@@ -208,6 +208,7 @@ private struct UsageSource: Sendable {
     let modifiedAt: Double
     let fileIdentity: String
     let prefixFingerprint: String
+    var checkpoint: UsageSourceCheckpoint?
 }
 
 private struct UsageSourceMetadata {
@@ -230,6 +231,43 @@ private struct UsageSourceState: Sendable {
     var runSessionID = ""
     var runSessionStartedAt = ""
     var runKind = "unknown"
+}
+
+private struct UsageSourceCheckpoint: Sendable {
+    var offset: Int64
+    var fileSize: Int64
+    var modifiedAt: Double
+    var fileIdentity: String
+    var prefixFingerprint: String
+
+    init(
+        offset: Int64,
+        fileSize: Int64,
+        modifiedAt: Double,
+        fileIdentity: String,
+        prefixFingerprint: String
+    ) {
+        self.offset = offset
+        self.fileSize = fileSize
+        self.modifiedAt = modifiedAt
+        self.fileIdentity = fileIdentity
+        self.prefixFingerprint = prefixFingerprint
+    }
+
+    init(state: UsageSourceState) {
+        self.init(
+            offset: state.offset,
+            fileSize: state.fileSize,
+            modifiedAt: state.modifiedAt,
+            fileIdentity: state.fileIdentity,
+            prefixFingerprint: state.prefixFingerprint
+        )
+    }
+}
+
+private struct UsageSourceCheckpointRecord: Sendable {
+    let path: String
+    let checkpoint: UsageSourceCheckpoint
 }
 
 private struct ParsedSkillIdentity: Codable, Sendable {
@@ -320,20 +358,29 @@ private final class SkillUsageStore {
                 try? finishMaintenanceLease(id: maintenanceLeaseID)
             }
         }
-        var states = try loadSourceStates()
-        let sources = discoverSources(roots: options.sessionRoots, states: states)
+        var checkpoints = try loadSourceCheckpoints()
+        let checkpointsByIdentity = indexCheckpointsByIdentity(checkpoints)
+        var sources = discoverSources(
+            roots: options.sessionRoots,
+            checkpoints: checkpoints,
+            checkpointsByIdentity: checkpointsByIdentity
+        )
         let sourcePaths = Set(sources.map(\.path))
-        var migrations: [(oldPath: String, newPath: String)] = []
-        let orphanedByIdentity = Dictionary(grouping: states.filter {
+        var migrations: [(oldPath: String, newPath: String, sourceIndex: Int)] = []
+        let orphanedByIdentity = Dictionary(grouping: checkpoints.filter {
             !sourcePaths.contains($0.key) && !$0.value.fileIdentity.isEmpty
         }, by: { $0.value.fileIdentity })
-        for source in sources where states[source.path] == nil && !source.fileIdentity.isEmpty {
-            guard let matches = orphanedByIdentity[source.fileIdentity], matches.count == 1 else { continue }
-            migrations.append((matches[0].key, source.path))
+        if !orphanedByIdentity.isEmpty {
+            for (sourceIndex, source) in sources.enumerated()
+                where source.checkpoint == nil && !source.fileIdentity.isEmpty
+            {
+                guard let matches = orphanedByIdentity[source.fileIdentity], matches.count == 1 else { continue }
+                migrations.append((matches[0].key, source.path, sourceIndex))
+            }
         }
         if !migrations.isEmpty {
             for migration in migrations {
-                guard var state = states.removeValue(forKey: migration.oldPath) else { continue }
+                guard var state = try loadSourceState(path: migration.oldPath) else { continue }
                 state.pendingEvents = state.pendingEvents.mapValues { pending in
                     pending.map { event in
                         ParsedUsageEvent(
@@ -349,32 +396,40 @@ private final class SkillUsageStore {
                     }
                 }
                 try migrateSource(from: migration.oldPath, to: migration.newPath, state: state)
-                states[migration.newPath] = state
+                checkpoints.removeValue(forKey: migration.oldPath)
+                let checkpoint = UsageSourceCheckpoint(state: state)
+                checkpoints[migration.newPath] = checkpoint
+                sources[migration.sourceIndex].checkpoint = checkpoint
             }
         }
-        let resetPaths = sources.compactMap { source -> String? in
-            guard let state = states[source.path] else { return nil }
-            let shrank = state.offset > source.size || state.fileSize > source.size
-            let identityChanged = !state.fileIdentity.isEmpty
+        let resetIndices = sources.indices.filter { sourceIndex in
+            let source = sources[sourceIndex]
+            guard let checkpoint = source.checkpoint else { return false }
+            let shrank = checkpoint.offset > source.size || checkpoint.fileSize > source.size
+            let identityChanged = !checkpoint.fileIdentity.isEmpty
                 && !source.fileIdentity.isEmpty
-                && state.fileIdentity != source.fileIdentity
-            let prefixChanged = !state.prefixFingerprint.isEmpty
+                && checkpoint.fileIdentity != source.fileIdentity
+            let prefixChanged = !checkpoint.prefixFingerprint.isEmpty
                 && !source.prefixFingerprint.isEmpty
-                && state.prefixFingerprint != source.prefixFingerprint
-            guard shrank || identityChanged || prefixChanged else { return nil }
-            return source.path
+                && checkpoint.prefixFingerprint != source.prefixFingerprint
+            return shrank || identityChanged || prefixChanged
         }
+        let resetPaths = resetIndices.map { sources[$0].path }
         if !resetPaths.isEmpty {
             try resetSources(resetPaths)
-            for path in resetPaths {
-                states.removeValue(forKey: path)
+            for sourceIndex in resetIndices {
+                let path = sources[sourceIndex].path
+                checkpoints.removeValue(forKey: path)
+                sources[sourceIndex].checkpoint = nil
             }
         }
-        let startingProgress = progress(for: sources, states: states)
-        var candidates = sources.filter { source in
-            (states[source.path]?.offset ?? 0) < source.size
+        let startingProcessedBytes = processedBytes(for: sources)
+        var candidateIndices = sources.indices.filter { index in
+            (sources[index].checkpoint?.offset ?? 0) < sources[index].size
         }
-        candidates.sort { left, right in
+        candidateIndices.sort { leftIndex, rightIndex in
+            let left = sources[leftIndex]
+            let right = sources[rightIndex]
             if left.modifiedAt != right.modifiedAt {
                 return left.modifiedAt > right.modifiedAt
             }
@@ -387,9 +442,10 @@ private final class SkillUsageStore {
         var warnings: [String] = []
         var identityCache: [String: ParsedSkillIdentity] = [:]
 
-        for source in candidates {
+        for sourceIndex in candidateIndices {
             guard filesRead < options.maxFiles, bytesRead < options.maxBytes else { break }
-            let state = states[source.path] ?? UsageSourceState()
+            let source = sources[sourceIndex]
+            let state = try loadSourceState(path: source.path) ?? UsageSourceState()
             let remainingBudget = max(1, options.maxBytes - bytesRead)
             let result = parse(
                 source: source,
@@ -402,7 +458,9 @@ private final class SkillUsageStore {
                 identityCache: &identityCache
             )
             let added = try save(result: result, source: source)
-            states[source.path] = result.state
+            let checkpoint = UsageSourceCheckpoint(state: result.state)
+            checkpoints[source.path] = checkpoint
+            sources[sourceIndex].checkpoint = checkpoint
             filesRead += 1
             bytesRead += result.bytesRead
             invocationsAdded += added
@@ -411,14 +469,17 @@ private final class SkillUsageStore {
             }
         }
 
-        let progress = progress(for: sources, states: states)
-        try saveProgress(progress)
+        let progress = progress(for: sources)
+        try saveProgress(
+            progress,
+            force: filesRead > 0 || !migrations.isEmpty || !resetPaths.isEmpty
+        )
         let snapshot = try snapshot()
         return SkillUsageRefreshReport(
             snapshot: snapshot,
             filesRead: filesRead,
             bytesRead: bytesRead,
-            processedBytesAdvanced: max(0, progress.processedBytes - startingProgress.processedBytes),
+            processedBytesAdvanced: max(0, progress.processedBytes - startingProcessedBytes),
             invocationsAdded: invocationsAdded,
             hasMore: !sources.isEmpty && !progress.isComplete,
             wasDeferred: false,
@@ -761,10 +822,11 @@ private final class SkillUsageStore {
         var info = stat()
         guard lstat(path, &info) == 0 else { return nil }
         if (info.st_mode & S_IFMT) == S_IFLNK {
-            // Preserve the existing behavior for the unusual case of a
-            // symlinked JSONL file: enumerate the target as a regular file,
-            // but identify the directory entry so replacing the link resets
-            // its cursor. Normal session files stay on the one-syscall path.
+            // Preserve Foundation enumeration semantics for the unusual case
+            // of a symlinked JSONL entry. It normally reports `isRegularFile`
+            // as false and excludes the link; if a file system admits it,
+            // identify the directory entry so replacing the link resets its
+            // cursor. Normal session files stay on the bulk-attribute path.
             let url = URL(fileURLWithPath: path)
             let keys: Set<URLResourceKey> = [
                 .isRegularFileKey,
@@ -793,6 +855,10 @@ private final class SkillUsageStore {
         "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
     }
 
+    private func fileIdentity(device: dev_t, fileID: UInt64, createdAt: timespec) -> String {
+        "\(device):\(fileID):\(createdAt.tv_sec):\(createdAt.tv_nsec)"
+    }
+
     private func prefixFingerprint(path: String, maxBytes: Int = 8_192) -> String {
         guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
             return ""
@@ -814,7 +880,8 @@ private final class SkillUsageStore {
 
     private func discoverSources(
         roots: [String],
-        states: [String: UsageSourceState]
+        checkpoints: [String: UsageSourceCheckpoint],
+        checkpointsByIdentity: [String: UsageSourceCheckpointRecord]
     ) -> [UsageSource] {
         let resolvedRoots: [URL]
         if roots.isEmpty {
@@ -827,42 +894,270 @@ private final class SkillUsageStore {
             resolvedRoots = roots.map { URL(fileURLWithPath: $0).standardizedFileURL }
         }
 
-        var seen = Set<String>()
+        // Scanning both a parent and its child produces the same canonical
+        // paths twice. Collapse overlapping configured roots up front so the
+        // hot loop does not need to hash all retained file paths.
+        var scanRoots: [URL] = []
+        for root in resolvedRoots.sorted(by: { $0.path.count < $1.path.count }) {
+            let rootPath = root.path
+            guard !scanRoots.contains(where: {
+                rootPath == $0.path || rootPath.hasPrefix($0.path + "/")
+            }) else { continue }
+            scanRoots.append(root)
+        }
+
         var sources: [UsageSource] = []
-        for root in resolvedRoots where fileManager.fileExists(atPath: root.path) {
+        for root in scanRoots where fileManager.fileExists(atPath: root.path) {
+            var rootSources: [UsageSource] = []
+            if discoverSourcesWithBulkAttributes(
+                in: root,
+                checkpoints: checkpoints,
+                checkpointsByIdentity: checkpointsByIdentity,
+                sources: &rootSources
+            ) {
+                sources.append(contentsOf: rootSources)
+                continue
+            }
+
+            // getattrlistbulk is macOS-specific and can be rejected by some
+            // mounted file systems. Retain the portable Foundation path for
+            // those roots instead of dropping their session history.
             guard let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) else { continue }
             for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
-                let path = fileURL.standardizedFileURL.path
-                guard seen.insert(path).inserted,
-                      let metadata = sourceMetadata(path: path)
-                else { continue }
-                let size = metadata.size
-                let modifiedAt = metadata.modifiedAt
-                let existing = states[path]
-                let shouldCheckPrefix = existing.map {
-                    $0.modifiedAt != modifiedAt
-                        || $0.fileSize != size
-                        || (!$0.fileIdentity.isEmpty && $0.fileIdentity != metadata.fileIdentity)
-                } ?? false
-                sources.append(UsageSource(
+                let path = fileURL.path
+                appendSource(
                     path: path,
-                    size: size,
-                    modifiedAt: modifiedAt,
-                    fileIdentity: metadata.fileIdentity,
-                    prefixFingerprint: shouldCheckPrefix
-                        ? prefixFingerprint(
-                            path: path,
-                            maxBytes: fingerprintByteCount(existing?.prefixFingerprint ?? "") ?? 8_192
-                        )
-                        : (existing?.prefixFingerprint ?? "")
-                ))
+                    metadata: sourceMetadata(path: path),
+                    checkpoints: checkpoints,
+                    checkpointsByIdentity: checkpointsByIdentity,
+                    sources: &sources
+                )
             }
         }
         return sources
+    }
+
+    /// Darwin can return the name, type, size, timestamps, and stable file ID
+    /// for a directory batch in one syscall. Walking retained session trees
+    /// this way removes one `lstat` syscall and Foundation URL normalization
+    /// pass per JSONL file while preserving a complete foreground scan.
+    private func discoverSourcesWithBulkAttributes(
+        in directory: URL,
+        checkpoints: [String: UsageSourceCheckpoint],
+        checkpointsByIdentity: [String: UsageSourceCheckpointRecord],
+        sources: inout [UsageSource]
+    ) -> Bool {
+        let directoryPath = directory.path
+        let descriptor = Darwin.open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+
+        var attributes = attrlist()
+        attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+        var commonAttributes = attrgroup_t(ATTR_CMN_RETURNED_ATTRS)
+        commonAttributes |= attrgroup_t(ATTR_CMN_NAME)
+        commonAttributes |= attrgroup_t(ATTR_CMN_DEVID)
+        commonAttributes |= attrgroup_t(ATTR_CMN_OBJTYPE)
+        commonAttributes |= attrgroup_t(ATTR_CMN_CRTIME)
+        commonAttributes |= attrgroup_t(ATTR_CMN_MODTIME)
+        commonAttributes |= attrgroup_t(ATTR_CMN_FILEID)
+        commonAttributes |= attrgroup_t(ATTR_CMN_ERROR)
+        attributes.commonattr = commonAttributes
+        attributes.fileattr = attrgroup_t(ATTR_FILE_TOTALSIZE)
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+
+        while true {
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                getattrlistbulk(
+                    descriptor,
+                    &attributes,
+                    bytes.baseAddress,
+                    bytes.count,
+                    0
+                )
+            }
+            guard count >= 0 else { return false }
+            if count == 0 { return true }
+
+            var entryOffset = 0
+            for _ in 0..<count {
+                guard entryOffset + MemoryLayout<UInt32>.size <= buffer.count else { return false }
+                let parsed = buffer.withUnsafeBytes { bytes -> BulkDirectoryEntry? in
+                    guard let base = bytes.baseAddress else { return nil }
+                    let entryStart = base.advanced(by: entryOffset)
+                    let length = Int(entryStart.loadUnaligned(as: UInt32.self))
+                    guard length > 0, entryOffset + length <= bytes.count else { return nil }
+                    let entryEnd = entryStart.advanced(by: length)
+                    let fixedAttributeBytes = MemoryLayout<UInt32>.size
+                        + MemoryLayout<attribute_set_t>.size
+                        + MemoryLayout<UInt32>.size
+                        + MemoryLayout<attrreference_t>.size
+                        + MemoryLayout<dev_t>.size
+                        + MemoryLayout<fsobj_type_t>.size
+                        + (2 * MemoryLayout<timespec>.size)
+                        + MemoryLayout<UInt64>.size
+                    guard length >= fixedAttributeBytes else { return nil }
+                    var field = entryStart.advanced(by: MemoryLayout<UInt32>.size)
+
+                    let returned = field.loadUnaligned(as: attribute_set_t.self)
+                    field = field.advanced(by: MemoryLayout<attribute_set_t>.size)
+                    let requiredCommon = attrgroup_t(
+                        ATTR_CMN_ERROR
+                            | ATTR_CMN_NAME
+                            | ATTR_CMN_DEVID
+                            | ATTR_CMN_OBJTYPE
+                            | ATTR_CMN_CRTIME
+                            | ATTR_CMN_MODTIME
+                            | ATTR_CMN_FILEID
+                    )
+                    guard returned.commonattr & requiredCommon == requiredCommon else { return nil }
+
+                    // ATTR_CMN_ERROR is the one exception to numeric attribute
+                    // order: getattrlistbulk places it directly after the
+                    // returned-attribute set.
+                    let entryError = field.loadUnaligned(as: UInt32.self)
+                    field = field.advanced(by: MemoryLayout<UInt32>.size)
+
+                    let nameReferenceAddress = field
+                    let nameReference = field.loadUnaligned(as: attrreference_t.self)
+                    field = field.advanced(by: MemoryLayout<attrreference_t>.size)
+                    let nameAddress = nameReferenceAddress.advanced(by: Int(nameReference.attr_dataoffset))
+                    let nameLength = Int(nameReference.attr_length)
+                    guard nameReference.attr_dataoffset >= 0,
+                          nameLength > 0,
+                          nameAddress >= entryStart,
+                          nameAddress.advanced(by: nameLength) <= entryEnd
+                    else { return nil }
+                    let nameBytes = UnsafeRawBufferPointer(start: nameAddress, count: nameLength - 1)
+                    guard let name = String(bytes: nameBytes, encoding: .utf8) else { return nil }
+
+                    let device = field.loadUnaligned(as: dev_t.self)
+                    field = field.advanced(by: MemoryLayout<dev_t>.size)
+                    let objectType = field.loadUnaligned(as: fsobj_type_t.self)
+                    field = field.advanced(by: MemoryLayout<fsobj_type_t>.size)
+                    let createdAt = field.loadUnaligned(as: timespec.self)
+                    field = field.advanced(by: MemoryLayout<timespec>.size)
+                    let modifiedAt = field.loadUnaligned(as: timespec.self)
+                    field = field.advanced(by: MemoryLayout<timespec>.size)
+                    let fileID = field.loadUnaligned(as: UInt64.self)
+                    field = field.advanced(by: MemoryLayout<UInt64>.size)
+                    let hasFileSize = returned.fileattr & attrgroup_t(ATTR_FILE_TOTALSIZE) != 0
+                    let fileSizeEnd = UInt(bitPattern: field) + UInt(MemoryLayout<off_t>.size)
+                    if hasFileSize, fileSizeEnd > UInt(bitPattern: entryEnd) {
+                        return nil
+                    }
+                    let size = hasFileSize ? field.loadUnaligned(as: off_t.self) : 0
+
+                    let regularFile = objectType == fsobj_type_t(VREG.rawValue)
+                    guard !regularFile || hasFileSize else { return nil }
+
+                    return BulkDirectoryEntry(
+                        length: length,
+                        name: name,
+                        objectType: objectType,
+                        size: Int64(size),
+                        modifiedAt: TimeInterval(modifiedAt.tv_sec)
+                            + TimeInterval(modifiedAt.tv_nsec) / 1_000_000_000,
+                        fileIdentity: fileIdentity(
+                            device: device,
+                            fileID: fileID,
+                            createdAt: createdAt
+                        ),
+                        error: entryError
+                    )
+                }
+                guard let parsed else { return false }
+                entryOffset += parsed.length
+                guard parsed.error == 0,
+                      parsed.name != ".",
+                      parsed.name != "..",
+                      !parsed.name.hasPrefix(".")
+                else { continue }
+
+                let isDirectory = parsed.objectType == fsobj_type_t(VDIR.rawValue)
+                let entryPath = directoryPath + "/" + parsed.name
+                if isDirectory {
+                    let entryURL = URL(fileURLWithPath: entryPath, isDirectory: true)
+                    let packageKeys: Set<URLResourceKey> = [.isPackageKey]
+                    let isPackage = (try? entryURL.resourceValues(forKeys: packageKeys).isPackage) == true
+                    if !isPackage,
+                       !discoverSourcesWithBulkAttributes(
+                           in: entryURL,
+                           checkpoints: checkpoints,
+                           checkpointsByIdentity: checkpointsByIdentity,
+                           sources: &sources
+                       )
+                    {
+                        return false
+                    }
+                    continue
+                }
+                guard parsed.name.hasSuffix(".jsonl") else { continue }
+                let path = entryPath
+                let metadata = parsed.objectType == fsobj_type_t(VLNK.rawValue)
+                    ? sourceMetadata(path: path)
+                    : parsed.objectType == fsobj_type_t(VREG.rawValue)
+                        ? UsageSourceMetadata(
+                            size: parsed.size,
+                            modifiedAt: parsed.modifiedAt,
+                            fileIdentity: parsed.fileIdentity
+                        )
+                        : nil
+                appendSource(
+                    path: path,
+                    metadata: metadata,
+                    checkpoints: checkpoints,
+                    checkpointsByIdentity: checkpointsByIdentity,
+                    sources: &sources
+                )
+            }
+        }
+    }
+
+    private struct BulkDirectoryEntry {
+        let length: Int
+        let name: String
+        let objectType: fsobj_type_t
+        let size: Int64
+        let modifiedAt: Double
+        let fileIdentity: String
+        let error: UInt32
+    }
+
+    private func appendSource(
+        path: String,
+        metadata: UsageSourceMetadata?,
+        checkpoints: [String: UsageSourceCheckpoint],
+        checkpointsByIdentity: [String: UsageSourceCheckpointRecord],
+        sources: inout [UsageSource]
+    ) {
+        guard let metadata else { return }
+        let identityMatch = checkpointsByIdentity[metadata.fileIdentity]
+        let existing = identityMatch?.path == path
+            ? identityMatch?.checkpoint
+            : checkpoints[path]
+        let shouldCheckPrefix = existing.map {
+            $0.modifiedAt != metadata.modifiedAt
+                || $0.fileSize != metadata.size
+                || (!$0.fileIdentity.isEmpty && $0.fileIdentity != metadata.fileIdentity)
+        } ?? false
+        sources.append(UsageSource(
+            path: path,
+            size: metadata.size,
+            modifiedAt: metadata.modifiedAt,
+            fileIdentity: metadata.fileIdentity,
+            prefixFingerprint: shouldCheckPrefix
+                ? prefixFingerprint(
+                    path: path,
+                    maxBytes: fingerprintByteCount(existing?.prefixFingerprint ?? "") ?? 8_192
+                )
+                : (existing?.prefixFingerprint ?? ""),
+            checkpoint: existing
+        ))
     }
 
     private func parse(
@@ -1842,44 +2137,89 @@ private final class SkillUsageStore {
         }
     }
 
-    private func loadSourceStates() throws -> [String: UsageSourceState] {
+    private func loadSourceCheckpoints() throws -> [String: UsageSourceCheckpoint] {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
         try createSchema(db)
         var statement: OpaquePointer?
         try prepare(db, """
-        SELECT path, byte_offset, file_size, modified_at, file_identity, prefix_fingerprint,
-               session_id, cwd, turn_id, coverage_started_at, pending_events_json,
-               run_session_id, run_session_started_at, run_kind
+        SELECT path, byte_offset, file_size, modified_at, file_identity, prefix_fingerprint
         FROM skill_usage_sources
         WHERE parser_version = ?;
         """, &statement)
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int(statement, 1, Int32(skillUsageParserVersion))
-        var states: [String: UsageSourceState] = [:]
+        var checkpoints: [String: UsageSourceCheckpoint] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
-            let pendingJSON = text(statement, 10)
-            let pendingEvents = pendingJSON.data(using: .utf8).flatMap {
-                try? JSONDecoder().decode([String: [ParsedUsageEvent]].self, from: $0)
-            } ?? [:]
-            states[text(statement, 0)] = UsageSourceState(
+            checkpoints[text(statement, 0)] = UsageSourceCheckpoint(
                 offset: sqlite3_column_int64(statement, 1),
                 fileSize: sqlite3_column_int64(statement, 2),
                 modifiedAt: sqlite3_column_double(statement, 3),
                 fileIdentity: text(statement, 4),
-                prefixFingerprint: text(statement, 5),
-                sessionID: text(statement, 6),
-                cwd: text(statement, 7),
-                turnID: text(statement, 8),
-                coverageStartedAt: text(statement, 9),
-                pendingEvents: pendingEvents,
-                runSessionID: text(statement, 11),
-                runSessionStartedAt: text(statement, 12),
-                runKind: text(statement, 13)
+                prefixFingerprint: text(statement, 5)
             )
         }
-        return states
+        return checkpoints
+    }
+
+    private func indexCheckpointsByIdentity(
+        _ checkpoints: [String: UsageSourceCheckpoint]
+    ) -> [String: UsageSourceCheckpointRecord] {
+        var unique: [String: UsageSourceCheckpointRecord] = [:]
+        var ambiguous: Set<String> = []
+        for (path, checkpoint) in checkpoints where !checkpoint.fileIdentity.isEmpty {
+            let identity = checkpoint.fileIdentity
+            guard !ambiguous.contains(identity) else { continue }
+            if unique.removeValue(forKey: identity) != nil {
+                ambiguous.insert(identity)
+                continue
+            }
+            unique[identity] = UsageSourceCheckpointRecord(path: path, checkpoint: checkpoint)
+        }
+        return unique
+    }
+
+    private func loadSourceState(path: String) throws -> UsageSourceState? {
+        var db: OpaquePointer?
+        try open(&db)
+        defer { sqlite3_close(db) }
+        try createSchema(db)
+        var statement: OpaquePointer?
+        try prepare(db, """
+        SELECT byte_offset, file_size, modified_at, file_identity, prefix_fingerprint,
+               session_id, cwd, turn_id, coverage_started_at, pending_events_json,
+               run_session_id, run_session_started_at, run_kind
+        FROM skill_usage_sources
+        WHERE path = ? AND parser_version = ?;
+        """, &statement)
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, path)
+        sqlite3_bind_int(statement, 2, Int32(skillUsageParserVersion))
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        let pendingJSON = text(statement, 9)
+        let pendingEvents: [String: [ParsedUsageEvent]] = if pendingJSON == "{}" || pendingJSON.isEmpty {
+            [:]
+        } else {
+            pendingJSON.data(using: .utf8).flatMap {
+                try? JSONDecoder().decode([String: [ParsedUsageEvent]].self, from: $0)
+            } ?? [:]
+        }
+        return UsageSourceState(
+            offset: sqlite3_column_int64(statement, 0),
+            fileSize: sqlite3_column_int64(statement, 1),
+            modifiedAt: sqlite3_column_double(statement, 2),
+            fileIdentity: text(statement, 3),
+            prefixFingerprint: text(statement, 4),
+            sessionID: text(statement, 5),
+            cwd: text(statement, 6),
+            turnID: text(statement, 7),
+            coverageStartedAt: text(statement, 8),
+            pendingEvents: pendingEvents,
+            runSessionID: text(statement, 10),
+            runSessionStartedAt: text(statement, 11),
+            runKind: text(statement, 12)
+        )
     }
 
     private func migrateSource(
@@ -1979,41 +2319,54 @@ private final class SkillUsageStore {
     }
 
     private func progress(
-        for sources: [UsageSource],
-        states: [String: UsageSourceState]
+        for sources: [UsageSource]
     ) -> (totalFiles: Int, completedFiles: Int, totalBytes: Int64, processedBytes: Int64, isComplete: Bool) {
-        let totalBytes = sources.reduce(Int64(0)) { $0 + $1.size }
-        let processedBytes = sources.reduce(Int64(0)) { total, source in
-            total + min(states[source.path]?.offset ?? 0, source.size)
-        }
-        let completedFiles = sources.reduce(0) { count, source in
-            count + ((states[source.path]?.offset ?? 0) >= source.size ? 1 : 0)
+        var totalBytes: Int64 = 0
+        var processedBytes: Int64 = 0
+        var completedFiles = 0
+        for source in sources {
+            totalBytes += source.size
+            let offset = source.checkpoint?.offset ?? 0
+            processedBytes += min(offset, source.size)
+            if offset >= source.size { completedFiles += 1 }
         }
         return (
             totalFiles: sources.count,
             completedFiles: completedFiles,
             totalBytes: totalBytes,
             processedBytes: processedBytes,
-            isComplete: !sources.isEmpty
-                && sources.allSatisfy { (states[$0.path]?.offset ?? 0) >= $0.size }
+            isComplete: !sources.isEmpty && completedFiles == sources.count
         )
     }
 
+    private func processedBytes(
+        for sources: [UsageSource]
+    ) -> Int64 {
+        sources.reduce(Int64(0)) { total, source in
+            total + min(source.checkpoint?.offset ?? 0, source.size)
+        }
+    }
+
     private func saveProgress(
-        _ progress: (totalFiles: Int, completedFiles: Int, totalBytes: Int64, processedBytes: Int64, isComplete: Bool)
+        _ progress: (totalFiles: Int, completedFiles: Int, totalBytes: Int64, processedBytes: Int64, isComplete: Bool),
+        force: Bool
     ) throws {
         var db: OpaquePointer?
         try open(&db)
         defer { sqlite3_close(db) }
         try createSchema(db)
-        let values = [
+        var values = [
             "total_files": String(progress.totalFiles),
             "completed_files": String(progress.completedFiles),
             "total_bytes": String(progress.totalBytes),
             "processed_bytes": String(progress.processedBytes),
-            "is_complete": progress.isComplete ? "1" : "0",
-            "last_updated_at": iso8601Formatter.string(from: Date())
+            "is_complete": progress.isComplete ? "1" : "0"
         ]
+        if !force {
+            let metadata = try loadMetadata(db, table: skillUsageMetadataTable)
+            if values.allSatisfy({ metadata[$0.key] == $0.value }) { return }
+        }
+        values["last_updated_at"] = iso8601Formatter.string(from: Date())
         try exec(db, "BEGIN IMMEDIATE;")
         do {
             for (key, value) in values {
@@ -2130,6 +2483,11 @@ private final class SkillUsageStore {
         try exec(db, "PRAGMA journal_mode=WAL;")
         try exec(db, "PRAGMA synchronous=NORMAL;")
         try exec(db, "PRAGMA busy_timeout=2500;")
+        // Snapshot aggregation uses window functions and DISTINCT grouping.
+        // Keep those transient sort tables in memory rather than spilling tens
+        // of megabytes to disk on every read; persistent usage data remains in
+        // the WAL-backed database above.
+        try exec(db, "PRAGMA temp_store=MEMORY;")
     }
 
     private func createSchema(_ db: OpaquePointer?) throws {
