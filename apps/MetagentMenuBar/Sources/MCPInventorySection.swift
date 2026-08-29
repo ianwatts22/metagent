@@ -126,6 +126,7 @@ struct MCPInventorySection: View {
         let rows = filteredRows(from: allRows)
         let readyIdentifier = presentationReadyIdentifier(
             section: "mcps",
+            publicState: "filter-\(filter.rawValue)",
             state: [
                 filter.rawValue,
                 searchText,

@@ -71,12 +71,21 @@ render benchmark and is not evidence of input-to-present latency.
 
 An explicit refresh reads at most 8 MiB or 12 session files before returning.
 If history remains, the app continues with background maintenance instead of
-waiting for another launch. Normal maintenance reads at most 8 MiB or 12 files,
-then waits at least 45 seconds. Low Power Mode or serious thermal pressure cuts
-that to 2 MiB or 4 files and waits at least 180 seconds.
+waiting for another launch. The first normal-power continuation reads at most
+8 MiB or 12 files after 45 seconds. Once that continuation has built the reusable
+source catalog, catch-up consolidates three slices into one 24 MiB or 36-file
+wake every 135 seconds. The byte and file rates are unchanged, but two of every
+three repeated database, snapshot, cache, and UI update cycles disappear. Low
+Power Mode or serious thermal pressure uses 2 MiB or 4 files every 180 seconds.
 
-Production and dev builds share one SQLite lease. Only one process performs a
-maintenance slice in each interval; an explicit user refresh is never deferred.
+Production and dev builds share one SQLite lease. The normal-power lease remains
+45 seconds even during the 135-second catch-up cadence, so fewer timer wakeups do
+not lengthen cross-process exclusion. The constrained lease is 180 seconds. Only
+one process performs a maintenance slice in each lease interval; an explicit
+user refresh is never deferred. Deadlines use monotonic uptime and advance from
+the prior deadline so slice duration does not reduce sustained throughput.
+Maintenance timers allow roughly one-ninth of their interval as tolerance, up
+to 30 seconds, so macOS can coalesce wakeups.
 Within each background slice, normal maintenance yields for 25 milliseconds
 after each 512 KiB and constrained maintenance yields for 50 milliseconds after
 each 256 KiB. This adds cooperative pacing between parsed records without
@@ -242,7 +251,17 @@ scripts/measure-app-interactions.sh \
 The selected app must be running with its main window open. The Codex or
 terminal host needs macOS Accessibility permission. Navigation, search, and
 filter controls use exact Accessibility identifiers; the harness never falls
-back to inferred geometry or fixed screen coordinates.
+back to inferred geometry or fixed screen coordinates. A cached native Swift
+probe talks to `AXUIElement` directly and applies
+`AXUIElementSetMessagingTimeout` both process-wide and to the target app, so one
+unresponsive Accessibility request has a hard per-call bound. The shell also
+enforces an independent process-group inactivity timeout five seconds beyond
+`--timeout`. Progress on stderr resets that watchdog. A timeout fails the
+entire run and preserves only the partial raw file for diagnosis; no summary is
+emitted. The compiled helper is content- and Swift-toolchain-addressed under
+the current user's private temporary directory; it adds no shipped app
+dependency. The cache is keyed by source and Swift compiler version, rejects a
+symbolic-link root, and is accessible only to its owning user.
 
 Tab results retain `tab_input_to_selected_state_ms` as an event-loop diagnostic,
 but the product budget uses the stronger view-specific
@@ -250,10 +269,13 @@ but the product budget uses the stronger view-specific
 measures filter and primary-column sort input until the exact ordered content
 and semantic sort state are exposed through Accessibility after SwiftUI
 reconciliation. Sort completion requires both a changed content-ready token and
-the expected `AXSortDirection`. Empty inventory sections are recorded as
-structured skips; at least one real table sort must complete or the scenario
-fails with an explicit fixture-gap error. These observables do not claim the
-first painted or composited pixel.
+the expected `AXSortDirection`. Toggle and restore are recorded as one atomic
+pair: if restore does not complete, neither half becomes a sample. Empty
+inventory sections are recorded as structured skips; at least one real table
+sort must complete or the scenario fails with an explicit fixture-gap error. A
+section whose primary column is not the retained active sort is also skipped,
+rather than changing the user's saved table preference just to produce a sample.
+These observables do not claim the first painted or composited pixel.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
 enabled ready state and then return. A refresh that finishes too quickly for

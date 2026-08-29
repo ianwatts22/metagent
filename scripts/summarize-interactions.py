@@ -83,6 +83,7 @@ def summarize(
         "schema_version": 1,
         "scenario": raw.get("scenario"),
         "automation": raw.get("automation"),
+        "automation_driver": raw.get("automation_driver"),
         "process_name": raw.get("process_name"),
         "navigation_button_count": raw.get("navigation_button_count"),
         "metrics": metrics,
@@ -101,6 +102,7 @@ def text_summary(result: dict[str, object]) -> str:
     lines = [
         f"scenario: {result['scenario']}",
         f"automation: {result['automation']}",
+        f"automation_driver: {result.get('automation_driver', 'unknown')}",
         f"process_name: {result['process_name']}",
         f"repo_commit: {provenance.get('repo_commit', 'unknown')}",
         f"build_commit: {provenance.get('build_commit', 'unknown')}",
@@ -113,6 +115,10 @@ def text_summary(result: dict[str, object]) -> str:
         f"cpu_model: {provenance.get('cpu_model', 'unknown')}",
         f"power_source: {provenance.get('power_source', 'unknown')}",
         f"low_power_mode: {provenance.get('low_power_mode', 'unknown')}",
+        f"probe_source_sha256: {provenance.get('probe_source_sha256', 'unknown')}",
+        f"probe_binary_sha256: {provenance.get('probe_binary_sha256', 'unknown')}",
+        f"probe_compiler_version: {provenance.get('probe_compiler_version', 'unknown')}",
+        f"probe_compile_contract: {provenance.get('probe_compile_contract', 'unknown')}",
     ]
     for name, metric in metrics.items():
         assert isinstance(metric, dict)
@@ -149,6 +155,10 @@ def main() -> int:
     parser.add_argument("--cpu-model", default="unknown")
     parser.add_argument("--power-source", default="unknown")
     parser.add_argument("--low-power-mode", default="unknown")
+    parser.add_argument("--probe-source-sha256", default="unknown")
+    parser.add_argument("--probe-binary-sha256", default="unknown")
+    parser.add_argument("--probe-compiler-version", default="unknown")
+    parser.add_argument("--probe-compile-contract", default="unknown")
     args = parser.parse_args()
 
     try:
@@ -167,6 +177,10 @@ def main() -> int:
                 "cpu_model": args.cpu_model,
                 "power_source": args.power_source,
                 "low_power_mode": args.low_power_mode,
+                "probe_source_sha256": args.probe_source_sha256,
+                "probe_binary_sha256": args.probe_binary_sha256,
+                "probe_compiler_version": args.probe_compiler_version,
+                "probe_compile_contract": args.probe_compile_contract,
             },
         )
         args.text_output.write_text(text_summary(result), encoding="utf-8")

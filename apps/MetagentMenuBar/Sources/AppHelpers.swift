@@ -14,6 +14,7 @@ func formatNumber(_ value: Int) -> String {
 /// text, or row names.
 func presentationReadyIdentifier(
     section: String,
+    publicState: String? = nil,
     state: [String],
     orderedRowIDs: [String]
 ) -> String {
@@ -37,7 +38,8 @@ func presentationReadyIdentifier(
     mix("row-count:\(orderedRowIDs.count)")
     orderedRowIDs.forEach(mix)
     let token = String(hash, radix: 16, uppercase: false)
-    return "metagent.\(section).content.ready.\(String(repeating: "0", count: 16 - token.count))\(token)"
+    let publicStateComponent = publicState.map { ".\($0)" } ?? ""
+    return "metagent.\(section).content.ready\(publicStateComponent).\(String(repeating: "0", count: 16 - token.count))\(token)"
 }
 
 /// The semantic sort state actually supplied to `Table`: column key paths and

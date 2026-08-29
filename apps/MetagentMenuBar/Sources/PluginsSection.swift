@@ -119,6 +119,7 @@ struct PluginsSection: View {
         let manualCount = manualCount(in: allRows)
         let readyIdentifier = presentationReadyIdentifier(
             section: "plugins",
+            publicState: "filter-\(filter.rawValue)",
             state: [filter.rawValue, searchText, sortPresentationState(sortOrder)],
             orderedRowIDs: rows.map(\.id)
         )

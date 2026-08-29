@@ -371,6 +371,7 @@ struct InventorySection: View {
         let readyIdentifier = rowStore.isReady(for: model.skillTableRevision)
             ? presentationReadyIdentifier(
                 section: "skills",
+                publicState: "usage-\(usageFilter.rawValue)",
                 state: [
                     selectedViewRaw,
                     groupingRaw,

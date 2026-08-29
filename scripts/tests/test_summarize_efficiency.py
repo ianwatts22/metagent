@@ -127,6 +127,34 @@ class SummarizeEfficiencyTests(unittest.TestCase):
         self.assertEqual(cpu["high_cpu_bursts_over_one_second"], 1)
         self.assertAlmostEqual(cpu["longest_high_cpu_burst_seconds"], 1.2)
 
+    def test_isolated_high_sample_is_not_a_sustained_burst(self) -> None:
+        result = MODULE.summarize(
+            [
+                MODULE.ProcessSample(
+                    second=1.08, cpu_percent=25, rss_kib=1024, threads=1
+                ),
+                MODULE.ProcessSample(
+                    second=2.16, cpu_percent=0, rss_kib=1024, threads=1
+                ),
+                MODULE.ProcessSample(
+                    second=3.24, cpu_percent=30, rss_kib=1024, threads=1
+                ),
+                MODULE.ProcessSample(
+                    second=4.32, cpu_percent=0, rss_kib=1024, threads=1
+                ),
+            ],
+            channel="dev",
+            pid=1,
+            active_cpu_threshold=2,
+            processed_usage_bytes=None,
+            high_cpu_threshold=20,
+        )
+
+        cpu = result["cpu"]
+        self.assertEqual(cpu["high_cpu_burst_count"], 2)
+        self.assertEqual(cpu["high_cpu_bursts_over_one_second"], 0)
+        self.assertAlmostEqual(cpu["longest_high_cpu_burst_seconds"], 1.08)
+
     def test_percentiles_weight_each_cpu_interval_by_elapsed_time(self) -> None:
         samples = [
             MODULE.ProcessSample(second=1, cpu_percent=100, rss_kib=2048, threads=1),

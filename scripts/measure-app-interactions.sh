@@ -66,8 +66,8 @@ if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || ((timeout_seconds > 300)); the
   echo "Timeout must be a whole number from 1 through 300 seconds." >&2
   exit 2
 fi
-if [[ "$(uname -s)" != "Darwin" ]] || ! command -v osascript >/dev/null 2>&1; then
-  echo "App interaction measurement requires macOS and osascript." >&2
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v xcrun >/dev/null 2>&1; then
+  echo "App interaction measurement requires macOS and the Xcode command-line tools." >&2
   exit 1
 fi
 if [[ -n "$output_root" && -e "$output_root" ]]; then
@@ -110,6 +110,60 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 raw_path="${output_root}/raw.json"
 summary_path="${output_root}/summary.txt"
 summary_json_path="${output_root}/summary.json"
+automation_inactivity_timeout_seconds=$((timeout_seconds + 5))
+probe_source="$repo_root/scripts/metagent-ax-probe.swift"
+probe_cache_base="${TMPDIR:-/private/tmp}"
+probe_cache_root="${probe_cache_base%/}/metagent-ax-probe-cache-$(id -u)"
+probe_source_sha="$(shasum -a 256 "$probe_source" | awk '{print $1}')"
+probe_compiler_version="$(xcrun swiftc -version 2>&1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+probe_compile_contract="swiftc:-O:AppKit:ApplicationServices:v1"
+probe_cache_key="$(printf '%s\n%s\n%s\n' "$probe_source_sha" "$probe_compiler_version" "$probe_compile_contract" | shasum -a 256 | awk '{print $1}')"
+probe_binary="$probe_cache_root/metagent-ax-probe-$probe_cache_key"
+probe_temporary=""
+
+cleanup_probe_temporary() {
+  [[ -n "$probe_temporary" && -e "$probe_temporary" ]] || return 0
+  if command -v trash >/dev/null 2>&1; then
+    trash "$probe_temporary"
+  else
+    unlink "$probe_temporary"
+  fi
+}
+trap cleanup_probe_temporary EXIT
+
+if [[ -L "$probe_cache_root" ]]; then
+  echo "Refusing symbolic-link Accessibility probe cache: $probe_cache_root" >&2
+  exit 1
+fi
+mkdir -p -m 700 "$probe_cache_root"
+if [[ "$(/usr/bin/stat -f %u "$probe_cache_root")" != "$(id -u)" ]]; then
+  echo "Accessibility probe cache is not owned by the current user: $probe_cache_root" >&2
+  exit 1
+fi
+chmod 700 "$probe_cache_root"
+
+if [[ -e "$probe_binary" ]] && { [[ -L "$probe_binary" ]] \
+    || [[ "$(/usr/bin/stat -f %u "$probe_binary")" != "$(id -u)" ]] \
+    || [[ ! -x "$probe_binary" ]]; }; then
+  echo "Refusing unsafe cached Accessibility probe: $probe_binary" >&2
+  exit 1
+fi
+
+if [[ ! -x "$probe_binary" ]]; then
+  probe_temporary="$(mktemp "$probe_cache_root/metagent-ax-probe.XXXXXX")"
+  if ! xcrun swiftc -O \
+    -module-cache-path "$probe_cache_root/swift-module-cache" \
+    -framework AppKit \
+    -framework ApplicationServices \
+    "$probe_source" \
+    -o "$probe_temporary"; then
+    echo "Could not compile the native Accessibility probe." >&2
+    exit 1
+  fi
+  chmod 700 "$probe_temporary"
+  mv "$probe_temporary" "$probe_binary"
+  probe_temporary=""
+fi
 
 plist_value() {
   local key="$1"
@@ -118,12 +172,19 @@ plist_value() {
   printf '%s\n' "${value:-unknown}"
 }
 
-if ! osascript -l JavaScript \
-  "$repo_root/scripts/measure-metagent-interactions.js" \
-  "$app_path" "$process_name" "$scenario" "$iterations" "$((timeout_seconds * 1000))" \
-  >"$raw_path"; then
+automation_status=0
+python3 "$repo_root/scripts/run-with-inactivity-timeout.py" \
+  --inactivity-timeout "$automation_inactivity_timeout_seconds" \
+  --stdout "$raw_path" \
+  -- "$probe_binary" \
+    "$app_path" "$process_name" "$scenario" "$iterations" "$((timeout_seconds * 1000))" \
+  || automation_status=$?
+if [[ "$automation_status" == "124" ]]; then
+  echo "Accessibility automation timed out after producing no progress; partial raw output remains at $raw_path." >&2
+  exit 124
+elif [[ "$automation_status" != "0" ]]; then
   echo "Accessibility automation failed. Grant Accessibility access to the terminal/Codex host, keep the Metagent window open, and retry." >&2
-  exit 1
+  exit "$automation_status"
 fi
 
 repo_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)"
@@ -146,7 +207,11 @@ python3 "$repo_root/scripts/summarize-interactions.py" \
   --hardware-model "$(sysctl -n hw.model 2>/dev/null || printf unknown)" \
   --cpu-model "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || printf unknown)" \
   --power-source "${power_source:-unknown}" \
-  --low-power-mode "${low_power_mode:-unknown}"
+  --low-power-mode "${low_power_mode:-unknown}" \
+  --probe-source-sha256 "$probe_source_sha" \
+  --probe-binary-sha256 "$(shasum -a 256 "$probe_binary" | awk '{print $1}')" \
+  --probe-compiler-version "$probe_compiler_version" \
+  --probe-compile-contract "$probe_compile_contract"
 
 printf 'raw: %s\n' "$raw_path"
 printf 'summary: %s\n' "$summary_path"

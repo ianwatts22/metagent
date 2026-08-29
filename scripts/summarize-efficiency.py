@@ -126,17 +126,22 @@ def longest_active_burst(samples: list[ProcessSample], threshold: float) -> floa
     return longest
 
 
-def active_bursts(samples: list[ProcessSample], threshold: float) -> list[float]:
-    bursts: list[float] = []
+def active_bursts(
+    samples: list[ProcessSample], threshold: float
+) -> list[tuple[float, int]]:
+    bursts: list[tuple[float, int]] = []
     current = 0.0
+    sample_count = 0
     for sample, interval in zip(samples, sample_intervals(samples)):
         if sample.cpu_percent >= threshold:
             current += interval
+            sample_count += 1
         elif current > 0:
-            bursts.append(current)
+            bursts.append((current, sample_count))
             current = 0.0
+            sample_count = 0
     if current > 0:
-        bursts.append(current)
+        bursts.append((current, sample_count))
     return bursts
 
 
@@ -194,9 +199,13 @@ def summarize(
             "high_cpu_threshold_percent": high_cpu_threshold,
             "high_cpu_burst_count": len(high_cpu_bursts),
             "high_cpu_bursts_over_one_second": sum(
-                duration > 1.0 for duration in high_cpu_bursts
+                duration > 1.0 and sample_count > 1
+                for duration, sample_count in high_cpu_bursts
             ),
-            "longest_high_cpu_burst_seconds": max(high_cpu_bursts, default=0.0),
+            "longest_high_cpu_burst_seconds": max(
+                (duration for duration, _sample_count in high_cpu_bursts),
+                default=0.0,
+            ),
         },
         "memory": {
             "time_weighted_average_rss_mib": sum(

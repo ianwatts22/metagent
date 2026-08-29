@@ -22,6 +22,7 @@ class SummarizeInteractionsTests(unittest.TestCase):
             "schema_version": 1,
             "scenario": "tabs",
             "automation": "macos_accessibility",
+            "automation_driver": "native_swift_axui_element",
             "process_name": "Metagent Dev",
             "navigation_button_count": 6,
             "samples": [
@@ -56,8 +57,13 @@ class SummarizeInteractionsTests(unittest.TestCase):
         self.assertFalse(metric["all_presentations_observed"])
         self.assertEqual(metric["interactions"]["switch-5"]["p95"], 80)
         self.assertEqual(result["provenance"]["build_commit"], "abc123")
+        self.assertEqual(result["automation_driver"], "native_swift_axui_element")
         self.assertEqual(result["skipped_sections"][0]["section"], "Plugins")
         self.assertIn("coverage_gap: No presentation sentinel.", MODULE.text_summary(result))
+        self.assertIn(
+            "automation_driver: native_swift_axui_element",
+            MODULE.text_summary(result),
+        )
 
     def test_rejects_invalid_or_empty_samples(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

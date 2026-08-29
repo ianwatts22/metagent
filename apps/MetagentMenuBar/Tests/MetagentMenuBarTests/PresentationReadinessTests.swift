@@ -42,6 +42,19 @@ import Testing
     #expect(sorted != original)
 }
 
+@Test func presentationReadyIdentifierCanExposeOnlyAReviewedPublicState() {
+    let identifier = presentationReadyIdentifier(
+        section: "skills",
+        publicState: "usage-observed",
+        state: ["observed", "/private/path/must-stay-hashed"],
+        orderedRowIDs: ["private-row"]
+    )
+
+    #expect(identifier.hasPrefix("metagent.skills.content.ready.usage-observed."))
+    #expect(!identifier.contains("private"))
+    #expect(!identifier.contains("row"))
+}
+
 @Test func presentationReadyIdentifierSeparatesComponentBoundaries() {
     let first = presentationReadyIdentifier(
         section: "mcps",
