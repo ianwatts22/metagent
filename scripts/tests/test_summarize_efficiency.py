@@ -56,7 +56,7 @@ class SummarizeEfficiencyTests(unittest.TestCase):
         memory = result["memory"]
         progress = result["usage_progress"]
         children = result["children"]
-        self.assertAlmostEqual(cpu["average_percent"], 12.5 / 6)
+        self.assertAlmostEqual(cpu["average_percent"], 12.75 / 6.5)
         self.assertEqual(cpu["p50_percent"], 0.5)
         self.assertEqual(cpu["p95_percent"], 6.0)
         self.assertEqual(cpu["p99_percent"], 6.0)

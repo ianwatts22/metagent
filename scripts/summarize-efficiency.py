@@ -143,7 +143,7 @@ def summarize(
         "pid": pid,
         "samples": len(samples),
         "cpu": {
-            "average_percent": sum(cpu) / len(cpu),
+            "average_percent": estimated_cpu_seconds / total_seconds * 100,
             "p50_percent": nearest_rank(cpu, 50),
             "p95_percent": nearest_rank(cpu, 95),
             "p99_percent": nearest_rank(cpu, 99),
