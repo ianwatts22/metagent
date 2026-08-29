@@ -73,7 +73,7 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.failureCount, 0)
     }
 
-    func testPerformanceAppInventoryCoreRefresh() throws {
+    func testPerformanceConfiguredAndHomeInventoryDiscovery() throws {
         guard runsPerformanceTests else { return }
         let home = try makeTemporaryRoot(prefix: "metagent-performance-app-refresh")
         let configuredRoot = home.appendingPathComponent("code_projects")
@@ -115,7 +115,11 @@ final class MetagentCorePerformanceTests: XCTestCase {
             )
         }
 
-        try assertLatencyBudget("app inventory core refresh", seconds: 2.0, operation: refresh)
+        try assertLatencyBudget(
+            "configured and home inventory discovery",
+            seconds: 2.0,
+            operation: refresh
+        )
         XCTAssertEqual(lastConfigured?.projects.count, 12)
         XCTAssertEqual(Set(lastHome?.projects.map(\.root) ?? []), Set([
             home.path,

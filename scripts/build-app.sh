@@ -131,6 +131,14 @@ cp "$app_source/.build/$configuration/MetagentMenuBar" "$macos/MetagentMenuBar"
 cp "$app_source/.build/$configuration/metagent" "$helpers/metagent"
 cp "$app_source/Info.plist" "$contents/Info.plist"
 
+git_sha="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+/usr/libexec/PlistBuddy \
+  -c "Add :MetagentSourceCommit string $git_sha" \
+  "$contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy \
+    -c "Set :MetagentSourceCommit $git_sha" \
+    "$contents/Info.plist"
+
 if [[ "$channel" == "dev" ]]; then
   # A dev build is a different app, not an older version of the real one.
   # Distinct bundle ID: never shares defaults, login-item registration, or a
@@ -139,7 +147,6 @@ if [[ "$channel" == "dev" ]]; then
   # unconfigured and never starts Sparkle, so the public appcast (whose build
   # numbers always exceed a local build's) can never "update" a dev install
   # back to an older release.
-  git_sha="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   /usr/libexec/PlistBuddy \
     -c "Set :CFBundleIdentifier com.ianwatts.metagent.menu-bar.dev" \
     -c "Set :CFBundleName Metagent Dev" \

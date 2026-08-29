@@ -96,7 +96,10 @@ plist_value() {
 
 repo_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)"
 repo_commit="${repo_commit:-unknown}"
-build_commit="$(plist_value MetagentBuildCommit)"
+build_commit="$(plist_value MetagentSourceCommit)"
+if [[ "$build_commit" == "unknown" ]]; then
+  build_commit="$(plist_value MetagentBuildCommit)"
+fi
 app_version="$(plist_value CFBundleShortVersionString)"
 app_build="$(plist_value CFBundleVersion)"
 executable_sha256="$(shasum -a 256 "$executable_path" 2>/dev/null | awk '{print $1}' || true)"

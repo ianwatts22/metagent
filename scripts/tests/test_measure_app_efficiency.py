@@ -72,6 +72,7 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
             self.write_executable(
                 fake_bin / "plutil",
                 'case "$2" in\n'
+                '  MetagentSourceCommit) printf "test-source\\n" ;;\n'
                 '  MetagentBuildCommit) printf "test-build\\n" ;;\n'
                 '  CFBundleShortVersionString) printf "0.6.0\\n" ;;\n'
                 '  CFBundleVersion) printf "6000\\n" ;;\n'
@@ -173,7 +174,7 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
             self.assertGreater(report["measurement"]["actual_elapsed_seconds"], 0)
             self.assertEqual(report["provenance"]["scenario"], "idle-overview")
             self.assertEqual(report["provenance"]["repo_commit"], "test-repo")
-            self.assertEqual(report["provenance"]["build_commit"], "test-build")
+            self.assertEqual(report["provenance"]["build_commit"], "test-source")
             self.assertEqual(report["provenance"]["executable_sha256"], "fixturehash")
             self.assertEqual(report["provenance"]["os_version"], "15.6")
             self.assertEqual(report["provenance"]["hardware_model"], "MacFixture1,1")

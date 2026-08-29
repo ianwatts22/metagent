@@ -165,6 +165,7 @@ verify_release_bundle() {
 plutil -lint "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist" >/dev/null
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/MacOS/MetagentMenuBar"
 test -x "$repo_root/dist/MetagentMenuBar.app/Contents/Helpers/metagent"
+test "$(plutil -extract MetagentSourceCommit raw -o - "$repo_root/dist/MetagentMenuBar.app/Contents/Info.plist")" != "unknown"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-LICENSE.txt"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-sprite.svg"
 test -f "$repo_root/dist/MetagentMenuBar.app/Contents/Resources/Lucide-tags.json"

@@ -4,8 +4,7 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 
 - skill discovery across 24 projects and 192 skill bundles;
 - Doctor analysis of the same portfolio;
-- an app-shaped inventory refresh combining configured roots with a pruned
-  shallow home scan;
+- dual configured-root and pruned shallow-home inventory discovery;
 - codebase measurement across 251 tracked files and 10,000 source/test lines;
 - cold usage backfill across 10 session files and 300 observed skill reads;
 - usage parsing across 20,000 irrelevant token/message records surrounding 40
@@ -57,6 +56,11 @@ The fixtures are generated locally, contain fixed shapes and content, and do not
 read the user's portfolio, session history, network, or credentials. Fixture
 creation is outside the measured blocks except for the SQLite database creation
 that is part of a cold usage backfill.
+
+The dual-root discovery benchmark intentionally stops at deterministic core
+filesystem work. It does not claim to cover the external Codex plugin process,
+SwiftUI publication, or snapshot persistence; use the running-app sampler for
+those whole-app stages.
 
 ## Usage freshness and energy pacing
 

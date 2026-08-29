@@ -14,6 +14,17 @@ fi
 
 export METAGENT_RUN_PERFORMANCE_TESTS=1
 export SWIFT_DETERMINISTIC_HASHING=1
+performance_iterations="${METAGENT_PERFORMANCE_ITERATIONS:-5}"
+if ! [[ "$performance_iterations" =~ ^[0-9]+$ ]]; then
+  echo "METAGENT_PERFORMANCE_ITERATIONS must be a whole number." >&2
+  exit 2
+fi
+if ((performance_iterations < 1)); then
+  performance_iterations=1
+elif ((performance_iterations > 20)); then
+  performance_iterations=20
+fi
+export METAGENT_PERFORMANCE_ITERATIONS="$performance_iterations"
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 -m unittest discover -s "$repo_root/scripts/tests" -p 'test_*.py'
@@ -32,7 +43,7 @@ summary_arguments=(
   "$performance_result"
   --max-regression-percent "${METAGENT_PERFORMANCE_MAX_REGRESSION_PERCENT:-20}"
   --git-commit "$(git -C "$repo_root" rev-parse HEAD)"
-  --iterations "${METAGENT_PERFORMANCE_ITERATIONS:-5}"
+  --iterations "$performance_iterations"
 )
 if [[ -n "${METAGENT_PERFORMANCE_BASELINE:-}" ]]; then
   summary_arguments+=(--baseline "$METAGENT_PERFORMANCE_BASELINE")
