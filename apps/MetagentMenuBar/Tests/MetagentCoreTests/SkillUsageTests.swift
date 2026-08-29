@@ -579,6 +579,67 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(replacement.snapshot.summaries.map(\.skillName), ["newskill"])
     }
 
+    func testExpandedPrefixDetectsAnInPlaceRewriteAfterAFileGrows() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let oldSkill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/oldskill",
+            name: "oldskill"
+        )
+        _ = try fixture.makeSkill(
+            at: "workspace/.agents/skills/newskill",
+            name: "newskill"
+        )
+        let rollout = fixture.sessions.appendingPathComponent("rollout-growing-prefix.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "prefix-session",
+                "cwd": fixture.root.path
+            ])
+        ], to: rollout)
+        XCTAssertEqual(
+            try MetagentCore.refreshSkillUsage(options: fixture.options).snapshot.totalInvocations,
+            0
+        )
+
+        var appended = [
+            fixture.line(type: "turn_context", payload: [
+                "turn_id": "prefix-turn",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "prefix-call", command: "cat \(oldSkill.path)"),
+        ]
+        appended += (0..<100).map { index in
+            fixture.line(type: "event_msg", payload: [
+                "type": "token_count",
+                "index": index
+            ])
+        }
+        try fixture.append(appended, to: rollout)
+        let grown = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(grown.snapshot.summaries.map(\.skillName), ["oldskill"])
+        XCTAssertGreaterThan(
+            try XCTUnwrap(try rollout.resourceValues(forKeys: [.fileSizeKey]).fileSize),
+            8_192
+        )
+
+        let oldContents = try String(contentsOf: rollout, encoding: .utf8)
+        let oldNameRange = try XCTUnwrap(oldContents.range(of: "oldskill"))
+        let oldNameOffset = oldContents[..<oldNameRange.lowerBound].utf8.count
+        XCTAssertLessThan(oldNameOffset, 8_192)
+        let newContents = oldContents.replacingOccurrences(of: "oldskill", with: "newskill")
+        XCTAssertEqual(oldContents.utf8.count, newContents.utf8.count)
+        try newContents.write(to: rollout, atomically: false, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(2)],
+            ofItemAtPath: rollout.path
+        )
+
+        let rewritten = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(rewritten.snapshot.summaries.map(\.skillName), ["newskill"])
+        XCTAssertEqual(rewritten.snapshot.totalInvocations, 1)
+    }
+
     func testCarriesCursorWhenCodexMovesASessionToArchive() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1257,6 +1318,58 @@ final class SkillUsageTests: XCTestCase {
         let manual = try MetagentCore.refreshSkillUsage(options: manualOptions)
         XCTAssertFalse(manual.wasDeferred)
         XCTAssertEqual(manual.filesRead, 1)
+    }
+
+    func testMaintenanceSlicesDiscoverNewSessionFilesImmediately() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(
+            at: "workspace/.agents/skills/new-session",
+            name: "new-session"
+        )
+        for index in 0..<2 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: [
+                    "id": "existing-session-\(index)",
+                    "cwd": fixture.root.path
+                ]),
+                fixture.toolCall(
+                    callID: "existing-read-\(index)",
+                    command: "cat \(skill.path)"
+                )
+            ], to: fixture.sessions.appendingPathComponent("rollout-existing-\(index).jsonl"))
+        }
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [fixture.sessions.path],
+            databasePath: fixture.database.path,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 1
+        )
+
+        let first = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(first.filesRead, 1)
+        XCTAssertEqual(first.snapshot.totalFiles, 2)
+        XCTAssertTrue(first.hasMore)
+
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "new-session-2",
+                "cwd": fixture.root.path
+            ]),
+            fixture.toolCall(callID: "new-read-2", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-new-2.jsonl"))
+
+        let second = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(second.filesRead, 1)
+        XCTAssertEqual(second.snapshot.totalFiles, 3)
+        XCTAssertTrue(second.hasMore)
+
+        var report = second
+        while report.hasMore {
+            report = try MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(report.snapshot.totalInvocations, 3)
+        XCTAssertEqual(report.snapshot.completedFiles, 3)
     }
 }
 

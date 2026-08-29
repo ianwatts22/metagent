@@ -88,28 +88,16 @@ struct InventorySection: View {
     }
 
     private var rows: [SkillTableRow] {
-        let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cachedRows
-        .filter {
-            guard let removalID = $0.inventory?.removalRequest?.id else { return true }
-            // Completed removals stay hidden too: their rows are already gone
-            // from disk, and only the reconcile rescan may bring a row back.
-            return !model.pendingSkillRemovalIDs.contains(removalID)
-                && !model.completedSkillRemovalIDs.contains(removalID)
-        }
-        .filter { selectedView == .usage || $0.isInstalled }
-        .filter { selectedView != .duplicates || $0.overlap != nil }
-        .filter {
-            guard let selectedProjectRoot else { return true }
-            if isGlobalRoot(selectedProjectRoot) {
-                return $0.scope != "project"
-            }
-            return $0.scope == "project" && $0.projectRoot == selectedProjectRoot
-        }
-        .filter { !hiddenSources.contains($0.sourceCategory) }
-        .filter { scopeFilter.includes($0) }
-        .filter { usageFilter.includes(status: $0.usageStatus, totalInvocations: $0.totalInvocations) }
-        .filter { searchQuery.isEmpty || $0.matches(searchQuery) }
+        SkillTableFilter(
+            selectedView: selectedView,
+            selectedProjectRoot: selectedProjectRoot,
+            hiddenSources: hiddenSources,
+            scope: scopeFilter,
+            usage: usageFilter,
+            query: query,
+            pendingRemovalIDs: model.pendingSkillRemovalIDs,
+            completedRemovalIDs: model.completedSkillRemovalIDs
+        ).apply(to: cachedRows)
     }
 
     private var sortedRows: [SkillTableRow] {

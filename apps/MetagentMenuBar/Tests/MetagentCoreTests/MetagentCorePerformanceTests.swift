@@ -268,6 +268,44 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastSliceCount, 3)
     }
 
+    func testPerformanceWarmUsageSourceDiscovery() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-usage-discovery")
+        let sessions = root.appendingPathComponent("sessions")
+        for index in 0..<1_500 {
+            try write(
+                "",
+                to: sessions.appendingPathComponent(
+                    "2026/08/\(index % 28 + 1)/rollout-\(index).jsonl"
+                )
+            )
+        }
+        let database = root.appendingPathComponent("usage.sqlite").path
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database,
+            maxBytes: 1_024 * 1_024,
+            maxFiles: 12
+        )
+        let preflight = try assertLatencyBudget(
+            "warm usage source discovery",
+            seconds: 1.0
+        ) {
+            try MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(preflight.snapshot.totalFiles, 1_500)
+        XCTAssertEqual(preflight.filesRead, 0)
+        var lastReport: SkillUsageRefreshReport?
+
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastReport = try! MetagentCore.refreshSkillUsage(options: options)
+        }
+
+        XCTAssertEqual(lastReport?.snapshot.totalFiles, 1_500)
+        XCTAssertEqual(lastReport?.filesRead, 0)
+        XCTAssertEqual(lastReport?.hasMore, false)
+    }
+
     // MARK: - Realistic, deterministic fixtures
 
     private var performanceMetrics: [any XCTMetric] {

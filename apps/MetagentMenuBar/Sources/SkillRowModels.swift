@@ -55,6 +55,70 @@ enum SkillScopeFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// The complete Skills table predicate, kept as one pass over the cached rows.
+///
+/// `InventorySection` is recomputed for selection, sorting, search, and model
+/// updates. Chaining one `filter` per condition used to allocate as many as
+/// eight intermediate row arrays on every recomputation. Resolving the root
+/// scope once also avoids normalizing the same path for every candidate row.
+struct SkillTableFilter {
+    let selectedView: SkillTableView
+    let selectedProjectRoot: String?
+    let selectedProjectIsGlobal: Bool
+    let hiddenSources: Set<SkillSourceCategory>
+    let scope: SkillScopeFilter
+    let usage: UsageFilter
+    let searchQuery: String
+    let pendingRemovalIDs: Set<String>
+    let completedRemovalIDs: Set<String>
+
+    init(
+        selectedView: SkillTableView,
+        selectedProjectRoot: String?,
+        hiddenSources: Set<SkillSourceCategory>,
+        scope: SkillScopeFilter,
+        usage: UsageFilter,
+        query: String,
+        pendingRemovalIDs: Set<String>,
+        completedRemovalIDs: Set<String>
+    ) {
+        self.selectedView = selectedView
+        self.selectedProjectRoot = selectedProjectRoot
+        self.selectedProjectIsGlobal = selectedProjectRoot.map(isGlobalRoot) ?? false
+        self.hiddenSources = hiddenSources
+        self.scope = scope
+        self.usage = usage
+        self.searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.pendingRemovalIDs = pendingRemovalIDs
+        self.completedRemovalIDs = completedRemovalIDs
+    }
+
+    func apply(to candidates: [SkillTableRow]) -> [SkillTableRow] {
+        candidates.filter(includes)
+    }
+
+    func includes(_ row: SkillTableRow) -> Bool {
+        if let removalID = row.inventory?.removalRequest?.id,
+           pendingRemovalIDs.contains(removalID) || completedRemovalIDs.contains(removalID) {
+            return false
+        }
+        if selectedView != .usage, !row.isInstalled { return false }
+        if selectedView == .duplicates, row.overlap == nil { return false }
+        if let selectedProjectRoot {
+            if selectedProjectIsGlobal {
+                if row.scope == "project" { return false }
+            } else if row.scope != "project" || row.projectRoot != selectedProjectRoot {
+                return false
+            }
+        }
+        if hiddenSources.contains(row.sourceCategory) { return false }
+        if !scope.includes(row) { return false }
+        if !usage.includes(status: row.usageStatus, totalInvocations: row.totalInvocations) { return false }
+        if !searchQuery.isEmpty, !row.matches(searchQuery) { return false }
+        return true
+    }
+}
+
 enum SkillGrouping: String, CaseIterable, Identifiable {
     case none
     case source

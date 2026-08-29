@@ -59,6 +59,11 @@ let package = Package(
             name: "MetagentCLITests",
             dependencies: ["MetagentCLI"],
             path: "Tests/MetagentCLITests"
+        ),
+        .testTarget(
+            name: "MetagentMenuBarTests",
+            dependencies: ["MetagentMenuBar"],
+            path: "Tests/MetagentMenuBarTests"
         )
     ]
 )

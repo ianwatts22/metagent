@@ -210,6 +210,12 @@ private struct UsageSource: Sendable {
     let prefixFingerprint: String
 }
 
+private struct UsageSourceMetadata {
+    let size: Int64
+    let modifiedAt: Double
+    let fileIdentity: String
+}
+
 private struct UsageSourceState: Sendable {
     var offset: Int64 = 0
     var fileSize: Int64 = 0
@@ -747,10 +753,44 @@ private final class SkillUsageStore {
         )
     }
 
-    private func fileIdentity(path: String) -> String {
+    /// Reads the regular-file check, size, modification time, and stable
+    /// identity from one metadata snapshot. Source discovery used to ask
+    /// Foundation for size/time and then call `lstat` again for identity,
+    /// doubling metadata syscalls for every retained session on every slice.
+    private func sourceMetadata(path: String) -> UsageSourceMetadata? {
         var info = stat()
-        guard lstat(path, &info) == 0 else { return "" }
-        return "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        guard lstat(path, &info) == 0 else { return nil }
+        if (info.st_mode & S_IFMT) == S_IFLNK {
+            // Preserve the existing behavior for the unusual case of a
+            // symlinked JSONL file: enumerate the target as a regular file,
+            // but identify the directory entry so replacing the link resets
+            // its cursor. Normal session files stay on the one-syscall path.
+            let url = URL(fileURLWithPath: path)
+            let keys: Set<URLResourceKey> = [
+                .isRegularFileKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ]
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true
+            else { return nil }
+            return UsageSourceMetadata(
+                size: Int64(values.fileSize ?? 0),
+                modifiedAt: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                fileIdentity: fileIdentity(info)
+            )
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return UsageSourceMetadata(
+            size: Int64(info.st_size),
+            modifiedAt: TimeInterval(info.st_mtimespec.tv_sec)
+                + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000,
+            fileIdentity: fileIdentity(info)
+        )
+    }
+
+    private func fileIdentity(_ info: stat) -> String {
+        "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
     }
 
     private func prefixFingerprint(path: String, maxBytes: Int = 8_192) -> String {
@@ -789,33 +829,30 @@ private final class SkillUsageStore {
 
         var seen = Set<String>()
         var sources: [UsageSource] = []
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
         for root in resolvedRoots where fileManager.fileExists(atPath: root.path) {
             guard let enumerator = fileManager.enumerator(
                 at: root,
-                includingPropertiesForKeys: keys,
+                includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) else { continue }
             for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
                 let path = fileURL.standardizedFileURL.path
                 guard seen.insert(path).inserted,
-                      let values = try? fileURL.resourceValues(forKeys: Set(keys)),
-                      values.isRegularFile == true
+                      let metadata = sourceMetadata(path: path)
                 else { continue }
-                let size = Int64(values.fileSize ?? 0)
-                let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+                let size = metadata.size
+                let modifiedAt = metadata.modifiedAt
                 let existing = states[path]
-                let fileIdentity = fileIdentity(path: path)
                 let shouldCheckPrefix = existing.map {
                     $0.modifiedAt != modifiedAt
                         || $0.fileSize != size
-                        || (!$0.fileIdentity.isEmpty && $0.fileIdentity != fileIdentity)
+                        || (!$0.fileIdentity.isEmpty && $0.fileIdentity != metadata.fileIdentity)
                 } ?? false
                 sources.append(UsageSource(
                     path: path,
                     size: size,
                     modifiedAt: modifiedAt,
-                    fileIdentity: fileIdentity,
+                    fileIdentity: metadata.fileIdentity,
                     prefixFingerprint: shouldCheckPrefix
                         ? prefixFingerprint(
                             path: path,
@@ -864,7 +901,15 @@ private final class SkillUsageStore {
         state.fileSize = source.size
         state.modifiedAt = source.modifiedAt
         state.fileIdentity = source.fileIdentity
-        state.prefixFingerprint = prefixFingerprint(path: source.path)
+        // Discovery already fingerprints changed sources so reset detection
+        // and the saved cursor can usually reuse the same view of the file.
+        // A file that grew beyond its old fingerprint still needs one read to
+        // extend coverage to the normal 8 KiB prefix.
+        let desiredFingerprintBytes = Int(min(Int64(8_192), max(0, source.size)))
+        state.prefixFingerprint = fingerprintByteCount(source.prefixFingerprint)
+            == desiredFingerprintBytes
+            ? source.prefixFingerprint
+            : prefixFingerprint(path: source.path)
         var events: [ParsedUsageEvent] = []
         var runs: [ParsedAgentRun] = []
         var warning: String?
