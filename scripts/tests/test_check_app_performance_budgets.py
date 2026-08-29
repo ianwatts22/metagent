@@ -20,12 +20,16 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
             "schema_version": 2,
             "metadata": {
                 "channel": "dev",
+                "pid": 4242,
                 "scenario": scenario,
                 "executable_path": "/fixture/Metagent",
                 "executable_sha256": "abc",
                 "app_version": "0.6.0",
                 "os_version": "15.6",
                 "process_launched_at": "2026-08-28 12:00:00",
+                "settle_seconds": 3,
+                "sample_count": 3,
+                "sample_interval_seconds": 1,
             },
             "malloc": {"allocated_mib": allocated_mib},
         }
@@ -99,6 +103,42 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
                 memory_before=before,
                 memory_after=after,
             )
+
+    def test_rejects_memory_comparison_with_different_sampling_protocols(self) -> None:
+        before = self.memory(25, "overview-before")
+        after = self.memory(25, "overview-after-skills")
+        after["metadata"]["sample_count"] = 5
+
+        with self.assertRaisesRegex(ValueError, "sample_count"):
+            MODULE.observed_metrics(
+                interactions=None,
+                efficiency=None,
+                memory_before=before,
+                memory_after=after,
+            )
+
+    def test_records_scenario_validation_waiver(self) -> None:
+        budgets = {
+            "schema_version": 1,
+            "budgets": {
+                "metric": {
+                    "limit": 1,
+                    "comparison": "max",
+                    "status": "proposed",
+                }
+            },
+        }
+
+        result = MODULE.evaluate(
+            budgets,
+            {"metric": 1},
+            [],
+            include_proposed=True,
+            allow_scenario_mismatch=True,
+        )
+
+        self.assertTrue(result["allow_scenario_mismatch"])
+        self.assertIn("scenario_validation: waived", MODULE.text_summary(result))
 
     def test_rejects_active_work_as_settled_overview(self) -> None:
         with self.assertRaisesRegex(ValueError, "settled Overview CPU budgets require"):

@@ -226,7 +226,10 @@ function runRefresh(window, iterations, timeoutMilliseconds) {
           return false;
         }
       } catch (_) {
-        transitionObserved = true;
+        // SwiftUI can replace the accessibility object while the control is
+        // still logically ready. A transient read failure is not evidence
+        // that Reload left its enabled state; retry until we observe the
+        // control missing or disabled and then enabled again.
         return false;
       }
       return transitionObserved;

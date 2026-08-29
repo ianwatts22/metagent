@@ -24,11 +24,15 @@ def same_memory_identity(before: dict[str, Any], after: dict[str, Any]) -> None:
         raise ValueError("memory artifacts are missing metadata")
     identity_keys = (
         "channel",
+        "pid",
         "executable_path",
         "executable_sha256",
         "app_version",
         "os_version",
         "process_launched_at",
+        "settle_seconds",
+        "sample_count",
+        "sample_interval_seconds",
     )
     mismatches = [
         key for key in identity_keys if before_metadata.get(key) != after_metadata.get(key)
@@ -201,6 +205,7 @@ def evaluate(
     gaps: list[str],
     *,
     include_proposed: bool,
+    allow_scenario_mismatch: bool = False,
 ) -> dict[str, Any]:
     budgets = budget_document.get("budgets")
     if budget_document.get("schema_version") != 1 or not isinstance(budgets, dict):
@@ -239,6 +244,7 @@ def evaluate(
     return {
         "schema_version": 1,
         "include_proposed": include_proposed,
+        "allow_scenario_mismatch": allow_scenario_mismatch,
         "evaluations": evaluations,
         "coverage_gaps": gaps,
         "violations": violations,
@@ -247,7 +253,9 @@ def evaluate(
 
 def text_summary(result: dict[str, Any]) -> str:
     lines = [
-        "mode: " + ("proposed-and-enforced" if result["include_proposed"] else "enforced-only")
+        "mode: " + ("proposed-and-enforced" if result["include_proposed"] else "enforced-only"),
+        "scenario_validation: "
+        + ("waived" if result.get("allow_scenario_mismatch") else "required"),
     ]
     for item in result["evaluations"]:
         if item["observed"] is None:
@@ -300,6 +308,7 @@ def main() -> int:
             observed,
             gaps,
             include_proposed=args.include_proposed,
+            allow_scenario_mismatch=args.allow_scenario_mismatch,
         )
         rendered = text_summary(result)
         if args.output is not None:
