@@ -38,7 +38,9 @@ class SummarizeInteractionsTests(unittest.TestCase):
                 {
                     "interaction": "sort",
                     "section": "Plugins",
-                    "reason": "ready content role AXGroup is not AXTable",
+                    "reason": (
+                        "ready content role AXGroup is neither AXTable nor AXOutline"
+                    ),
                 }
             ],
             "coverage_gaps": ["No presentation sentinel."],

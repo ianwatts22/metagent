@@ -542,11 +542,12 @@ function runCommonInteractions(
       timeoutMilliseconds
     );
     const readyRole = elementRole(readyContent);
-    if (readyRole !== "AXTable") {
+    if (readyRole !== "AXTable" && readyRole !== "AXOutline") {
       skippedSections.push({
         interaction: "sort",
         section: specification.section,
-        reason: `ready content role ${readyRole || "unknown"} is not AXTable`,
+        reason:
+          `ready content role ${readyRole || "unknown"} is neither AXTable nor AXOutline`,
       });
       continue;
     }
@@ -576,7 +577,7 @@ function runCommonInteractions(
       .map((skipped) => `${skipped.section}: ${skipped.reason}`)
       .join("; ");
     fail(
-      "Common interactions observed no real sortable AXTable transition. " +
+      "Common interactions observed no real sortable AXTable/AXOutline transition. " +
       `Fixture gap: ${details || "no sortable inventory content was exposed"}.`
     );
   }

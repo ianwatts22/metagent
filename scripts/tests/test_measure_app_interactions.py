@@ -96,9 +96,13 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertIn('"AXSortDirection"', script)
         self.assertIn('metric: "filter_input_to_ax_content_ready_ms"', script)
         self.assertIn('metric: "sort_input_to_ax_content_ready_ms"', script)
-        self.assertIn('readyRole !== "AXTable"', script)
+        self.assertIn(
+            'readyRole !== "AXTable" && readyRole !== "AXOutline"', script
+        )
         self.assertIn("skipped_sections: skippedSections", script)
-        self.assertIn("observed no real sortable AXTable transition", script)
+        self.assertIn(
+            "observed no real sortable AXTable/AXOutline transition", script
+        )
         self.assertNotIn("possibleNavigationRows", script)
         self.assertNotIn("fixed screen coordinates", script)
         self.assertNotIn(".position()", script)
