@@ -198,8 +198,8 @@ do not use it to compare two views captured in one process.
 records the initial product targets separately from measurement output. They are
 all `proposed` today:
 
-- common tab, filter, or sort input-to-present p95 at or below 150 ms, with
-  100 ms as the desired center of the range;
+- common tab, filter, or sort input-to-Accessibility-content-ready p95 at or
+  below 150 ms, with 100 ms as the desired center of the range;
 - warm process launch to an Accessibility-ready window at or below 1 second;
 - cold process launch to the same ready point at or below 2 seconds;
 - settled Overview average CPU at or below 0.5%, time-weighted p95 at or below
@@ -228,26 +228,32 @@ scripts/measure-app-interactions.sh \
 
 scripts/measure-app-interactions.sh \
   --channel dev \
+  --scenario common-interactions \
+  --iterations 5 \
+  --output /private/tmp/metagent-common-interactions-$(date +%Y%m%d-%H%M%S)
+
+scripts/measure-app-interactions.sh \
+  --channel dev \
   --scenario refresh \
   --iterations 5 \
   --output /private/tmp/metagent-refresh-$(date +%Y%m%d-%H%M%S)
 ```
 
 The selected app must be running with its main window open. The Codex or
-terminal host needs macOS Accessibility permission. The harness identifies the
-single five- or six-button navigation row, supports both the current layout and
-the future layout without History, and fails if that shape is ambiguous. It
-never falls back to fixed screen coordinates.
+terminal host needs macOS Accessibility permission. Navigation, search, and
+filter controls use exact Accessibility identifiers; the harness never falls
+back to inferred geometry or fixed screen coordinates.
 
-Tab results currently end when the destination button exposes `AXSelected`.
-That is useful for detecting event-loop stalls, but it is named
-`tab_input_to_selected_state_ms` and is not compared with the
-input-to-present product target. SwiftUI does not expose stable, inexpensive
-view-specific ready sentinels for all five pages; traversing the Skills table's
-Accessibility tree would measure the traversal itself. Filter and sort
-input-to-present latency share this coverage gap. Add stable Accessibility
-identifiers or an app-owned UI-test readiness hook before enforcing those
-budgets.
+Tab results retain `tab_input_to_selected_state_ms` as an event-loop diagnostic,
+but the product budget uses the stronger view-specific
+`tab_input_to_ax_content_ready_ms`. The `common-interactions` scenario also
+measures filter and primary-column sort input until the exact ordered content
+and semantic sort state are exposed through Accessibility after SwiftUI
+reconciliation. Sort completion requires both a changed content-ready token and
+the expected `AXSortDirection`. Empty inventory sections are recorded as
+structured skips; at least one real table sort must complete or the scenario
+fails with an explicit fixture-gap error. These observables do not claim the
+first painted or composited pixel.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
 enabled ready state and then return. A refresh that finishes too quickly for
@@ -341,7 +347,8 @@ interaction metrics must match their launch or refresh scenario. The explicit
 `--allow-scenario-mismatch` escape hatch exists for investigations, not routine
 gating, and should be recorded with the result whenever used.
 
-Remaining gaps are explicit: visual presentation after tab/filter/sort input,
-complete attribution of short-lived child processes, wakeup and file-I/O
-counts without Instruments, and truly controlled cold OS cache state. Core-only
-benchmarks must not be used as substitutes for those observables.
+Remaining gaps are explicit: first-pixel and compositor completion after
+tab/filter/sort input, complete attribution of short-lived child processes,
+wakeup and file-I/O counts without Instruments, and truly controlled cold OS
+cache state. Core-only benchmarks must not be used as substitutes for those
+observables.
