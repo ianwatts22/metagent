@@ -329,6 +329,7 @@ Combine whatever artifacts a scenario produced:
 ```bash
 scripts/check-app-performance-budgets.py \
   --interactions /private/tmp/metagent-launch-warm-TIMESTAMP/summary.json \
+  --interactions /private/tmp/metagent-common-interactions-TIMESTAMP/summary.json \
   --interactions /private/tmp/metagent-refresh-TIMESTAMP/summary.json \
   --efficiency /private/tmp/metagent-idle-overview-TIMESTAMP/summary.json \
   --memory-before /private/tmp/metagent-memory-before-TIMESTAMP/summary.json \
