@@ -461,6 +461,10 @@ struct InventorySection: View {
             guard !isEvaluating else { return }
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
+        .onChange(of: model.hasHydratedLaunchCaches) { _, hasHydrated in
+            guard hasHydrated else { return }
+            model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
+        }
         .onChange(of: selectedViewRaw) { oldRawValue, rawValue in
             let oldView = SkillTableView(rawValue: oldRawValue) ?? .summary
             let view = SkillTableView(rawValue: rawValue) ?? .summary

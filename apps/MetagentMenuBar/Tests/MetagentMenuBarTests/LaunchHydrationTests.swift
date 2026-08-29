@@ -30,6 +30,7 @@ private final class LaunchLoadRecorder: @unchecked Sendable {
             recorder.record("deferred")
             return MetagentDeferredLaunchSnapshot(
                 usage: nil,
+                evaluations: SkillEvaluationSnapshot(),
                 modelReleases: .empty,
                 releaseAffirmations: [:],
                 publications: .empty
@@ -46,5 +47,29 @@ private final class LaunchLoadRecorder: @unchecked Sendable {
     #expect(model.usageSnapshot == .empty)
     #expect(model.modelReleases == .empty)
     #expect(model.publicationSnapshot == .empty)
+    #expect(model.hasHydratedLaunchCaches)
     #expect(model.skillTableRevision == initialRevision)
+}
+
+@MainActor
+@Test func automaticEvaluationWaitsForLaunchCacheHydration() async {
+    let loader = MetagentLaunchCacheLoader(
+        loadInventory: { nil },
+        loadDeferred: {
+            MetagentDeferredLaunchSnapshot(
+                usage: nil,
+                evaluations: SkillEvaluationSnapshot(),
+                modelReleases: .empty,
+                releaseAffirmations: [:],
+                publications: .empty
+            )
+        }
+    )
+    let model = MetagentModel(launchCacheLoader: loader)
+
+    model.evaluateMissingSkills(paths: ["/private/tmp/should-not-run-before-hydration"])
+    #expect(!model.isSkillEvaluating)
+
+    await model.hydrateLaunchCaches()
+    #expect(model.hasHydratedLaunchCaches)
 }

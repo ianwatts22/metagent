@@ -19,6 +19,7 @@ private struct SkillRemovalOutcome: Sendable {
 /// SwiftUI has had a chance to present the window.
 struct MetagentDeferredLaunchSnapshot: Sendable {
     let usage: SkillUsageSnapshot?
+    let evaluations: SkillEvaluationSnapshot
     let modelReleases: ModelReleaseSnapshot
     let releaseAffirmations: [String: Date]
     let publications: SkillPublicationSnapshot
@@ -35,6 +36,7 @@ struct MetagentLaunchCacheLoader: Sendable {
         loadDeferred: {
             MetagentDeferredLaunchSnapshot(
                 usage: MetagentCore.loadSkillUsageSnapshot(),
+                evaluations: MetagentCore.loadSkillEvaluationSnapshot(),
                 modelReleases: MetagentCore.loadModelReleaseSnapshot(),
                 releaseAffirmations: MetagentCore.loadModelReleaseAffirmations(),
                 publications: MetagentCore.loadSkillPublicationSnapshot()
@@ -93,6 +95,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var publicationSnapshot = SkillPublicationSnapshot.empty
     @Published private(set) var isPublicationSyncing = false
     @Published private(set) var publicationStatusText = "No skills selected for publishing"
+    @Published private(set) var hasHydratedLaunchCaches = false
 
     private let fileManager = FileManager.default
     private var statusRefreshGeneration = 0
@@ -183,8 +186,10 @@ final class MetagentModel: ObservableObject {
             usageStatusText = Self.usageStatus(usage)
         }
         refreshesSkillPresentation = refreshesSkillPresentation
+            || cached.evaluations != skillEvaluations
             || cached.modelReleases != modelReleases
             || cached.releaseAffirmations != releaseAffirmations
+        skillEvaluations = cached.evaluations
         modelReleases = cached.modelReleases
         releaseAffirmations = cached.releaseAffirmations
         publicationSnapshot = cached.publications
@@ -195,6 +200,7 @@ final class MetagentModel: ObservableObject {
             // revision after every cached input is in place.
             skillTableRevision += 1
         }
+        hasHydratedLaunchCaches = true
     }
 
     /// Everything the inventory scan reads that can change behind the app's
@@ -1068,7 +1074,7 @@ final class MetagentModel: ObservableObject {
     /// Paths are recorded before the run so a skill whose evaluation fails is
     /// not retried forever; an explicit re-run is still available per skill.
     func evaluateMissingSkills(paths: [String]) {
-        guard !isRunning, !isSkillEvaluating else { return }
+        guard hasHydratedLaunchCaches, !isRunning, !isSkillEvaluating else { return }
         let missing = paths.filter {
             skillEvaluations.records[$0] == nil && !autoEvaluatedPaths.contains($0)
         }
