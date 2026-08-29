@@ -183,6 +183,11 @@ verify_update_archive() (
   test ! -e "$update_verification/MetagentMenuBar.app"
 )
 
+verify_performance_rails() {
+  METAGENT_PERFORMANCE_ITERATIONS="${METAGENT_PERFORMANCE_ITERATIONS:-1}" \
+    "$repo_root/scripts/verify-performance.sh"
+}
+
 verify_helper_smoke() {
 "$swift_helper" skills scan --root "$repo_root" --max-depth 3 --json >/dev/null
 "$swift_helper" skills doctor --root "$repo_root" --max-depth 3 >/dev/null
@@ -957,6 +962,7 @@ run_integration_lane() {
 }
 
 run_release_lane() {
+  run_stage "Performance regression rails" "<2m" verify_performance_rails
   run_stage "App bundle and signatures" "<30s incremental" verify_release_bundle
   run_stage "Sparkle update archive" "<15s" verify_update_archive
 }

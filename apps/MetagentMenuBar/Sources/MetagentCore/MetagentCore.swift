@@ -154,7 +154,20 @@ public enum MetagentCore {
         pruningConfiguredRoots: Bool = false
     ) throws -> SkillScanReport {
         let config = try loadUserConfig()
-        let home = homeURL()
+        return try scanHomeSkills(
+            home: homeURL(),
+            maxDepth: maxDepth,
+            pruningConfiguredRoots: pruningConfiguredRoots,
+            config: config
+        )
+    }
+
+    static func scanHomeSkills(
+        home: URL,
+        maxDepth: Int,
+        pruningConfiguredRoots: Bool,
+        config: MetagentConfig
+    ) throws -> SkillScanReport {
         let normalizedHome = canonicalProjectPath(home)
         let ignoreProjects = Set(config.ignoreProjects.map { canonicalProjectPath(expandPath($0)) })
         let traversalPruneRoots = pruningConfiguredRoots

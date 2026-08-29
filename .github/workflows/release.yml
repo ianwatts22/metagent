@@ -89,6 +89,18 @@ jobs:
         working-directory: apps/MetagentMenuBar
         run: swift test --disable-sandbox
 
+      - name: Run performance regression rails
+        env:
+          METAGENT_PERFORMANCE_ITERATIONS: 1
+          METAGENT_PERFORMANCE_RESULT_PATH: ${{ runner.temp }}/metagent-performance.json
+        run: ./scripts/verify-performance.sh
+
+      - name: Preserve performance measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: metagent-performance-${{ steps.meta.outputs.tag }}
+          path: ${{ runner.temp }}/metagent-performance.json
+
       # Developer ID is the only identity Gatekeeper accepts for a download, and
       # the only one the notary service will process. It lives in a throwaway
       # keychain so nothing leaks into the runner's login keychain.

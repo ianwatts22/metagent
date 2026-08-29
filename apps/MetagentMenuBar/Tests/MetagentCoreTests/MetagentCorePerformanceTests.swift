@@ -73,6 +73,63 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.failureCount, 0)
     }
 
+    func testPerformanceAppInventoryCoreRefresh() throws {
+        guard runsPerformanceTests else { return }
+        let home = try makeTemporaryRoot(prefix: "metagent-performance-app-refresh")
+        let configuredRoot = home.appendingPathComponent("code_projects")
+        for projectIndex in 0..<12 {
+            for skillIndex in 0..<8 {
+                try writeSkillFixture(
+                    at: configuredRoot.appendingPathComponent(
+                        "group-\(projectIndex / 4)/project-\(projectIndex)/.agents/skills/skill-\(skillIndex)"
+                    ),
+                    name: "skill-\(skillIndex)",
+                    description: "Configured refresh fixture \(projectIndex)-\(skillIndex)"
+                )
+            }
+        }
+        try writeSkillFixture(
+            at: home.appendingPathComponent(".agents/skills/global-skill"),
+            name: "global-skill"
+        )
+        try writeSkillFixture(
+            at: home.appendingPathComponent("Desktop/example/.agents/skills/desktop-skill"),
+            name: "desktop-skill"
+        )
+
+        let config = MetagentConfig(roots: [configuredRoot.path], maxDepth: 6)
+        let options = SkillScanOptions(
+            roots: config.roots,
+            maxDepth: config.maxDepth,
+            respectConfiguredIgnores: false
+        )
+        var lastConfigured: SkillScanReport?
+        var lastHome: SkillScanReport?
+        let refresh = {
+            lastConfigured = try MetagentCore.scanSkills(options: options, config: config)
+            lastHome = try MetagentCore.scanHomeSkills(
+                home: home,
+                maxDepth: 2,
+                pruningConfiguredRoots: true,
+                config: config
+            )
+        }
+
+        try assertLatencyBudget("app inventory core refresh", seconds: 2.0, operation: refresh)
+        XCTAssertEqual(lastConfigured?.projects.count, 12)
+        XCTAssertEqual(Set(lastHome?.projects.map(\.root) ?? []), Set([
+            home.path,
+            home.appendingPathComponent("Desktop/example").path,
+        ]))
+
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            try! refresh()
+        }
+
+        XCTAssertEqual(lastConfigured?.projects.flatMap(\.skills).count, 96)
+        XCTAssertEqual(lastHome?.projects.flatMap(\.skills).count, 2)
+    }
+
     func testPerformanceTrackedCodebaseMeasurement() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeTrackedCodebase(fileCount: 250, linesPerFile: 40)
@@ -245,16 +302,19 @@ final class MetagentCorePerformanceTests: XCTestCase {
         sessions: String,
         database: String
     ) throws -> (report: SkillUsageRefreshReport, slices: Int) {
+        let plan = SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false)
         var report: SkillUsageRefreshReport?
         var slices = 0
         repeat {
             let next = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
                 sessionRoots: [sessions],
                 databasePath: database,
-                maxBytes: 8 * 1_024 * 1_024,
-                maxFiles: 12
+                maxBytes: plan.maxBytes,
+                maxFiles: plan.maxFiles,
+                throttleEveryBytes: plan.throttleEveryBytes,
+                throttleDelayMilliseconds: plan.throttleDelayMilliseconds
             ))
-            XCTAssertLessThanOrEqual(next.filesRead, 12)
+            XCTAssertLessThanOrEqual(next.filesRead, plan.maxFiles)
             XCTAssertGreaterThan(next.processedBytesAdvanced, 0)
             report = next
             slices += 1
