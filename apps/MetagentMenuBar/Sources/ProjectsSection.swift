@@ -4,6 +4,14 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+func projectStatusesByCanonicalRoot(
+    _ projects: [ProjectStatus]
+) -> [String: [ProjectStatus]] {
+    Dictionary(grouping: projects) {
+        standardizedDirectoryPath($0.root)
+    }
+}
+
 struct ProjectDirectoryRow: Identifiable {
     enum LinkState: String, Comparable {
         case healthy = "Connected"
@@ -38,42 +46,54 @@ struct ProjectDirectoryRow: Identifiable {
 
     init(
         directory: DirectoryFilterOption,
-        projects: [ProjectStatus],
-        mcpHealth: MCPHealthSnapshot,
-        doctorIssues: [DoctorIssue],
+        matchingProjects: [ProjectStatus],
+        mcpCount: Int,
+        matchingDoctorIssues: [DoctorIssue],
         codebaseSizes: [String: CodebaseSizeReport]
     ) {
         root = directory.root
         isGlobal = isGlobalRoot(directory.root)
         name = isGlobal ? "Global" : directory.name
         codebaseSize = codebaseSizes[standardizedDirectoryPath(directory.root)]
-        let matchingProjects = projects.filter {
-            standardizedDirectoryPath($0.root) == standardizedDirectoryPath(directory.root)
-        }
-        skillCount = Set(matchingProjects.flatMap { project in
-            project.skills.map { skill in
-                skill.canonicalPath.isEmpty ? "\(skill.name):\(skill.location)" : standardizedDirectoryPath(skill.canonicalPath)
+        self.mcpCount = mcpCount
+
+        var skillIDs = Set<String>()
+        var agentsPaths = Set<String>()
+        var codexPaths = Set<String>()
+        var claudePaths = Set<String>()
+        var hasAgentSkills = false
+        var hasPersonalSkills = false
+        for project in matchingProjects {
+            for skill in project.skills {
+                skillIDs.insert(skill.canonicalPath.isEmpty
+                    ? "\(skill.name):\(skill.location)"
+                    : standardizedDirectoryPath(skill.canonicalPath))
+                switch skill.location {
+                case "agents":
+                    hasAgentSkills = true
+                    hasPersonalSkills = hasPersonalSkills || skill.manager != "skills-cli"
+                    if skill.representation == "canonical" {
+                        agentsPaths.insert(standardizedDirectoryPath(
+                            skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
+                        ))
+                    }
+                case "codex" where skill.representation == "canonical" && skill.authority != "codex-system":
+                    codexPaths.insert(standardizedDirectoryPath(
+                        skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
+                    ))
+                case "claude" where skill.representation == "canonical":
+                    claudePaths.insert(standardizedDirectoryPath(
+                        skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
+                    ))
+                default:
+                    break
+                }
             }
-        }).count
-        mcpCount = mcpHealth.projectOnly(at: directory.root).inventory.count
-        let agentsPaths = Set(matchingProjects.flatMap { project in
-            project.skills
-                .filter { $0.location == "agents" && $0.representation == "canonical" }
-                .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
-        })
-        let hasAgentSkills = matchingProjects.contains { project in
-            project.skills.contains { $0.location == "agents" }
         }
-        let hasPersonalSkills = matchingProjects.contains { project in
-            project.skills.contains {
-                $0.location == "agents"
-                    && $0.manager != "skills-cli"
-            }
-        }
-        let hasProjectionWarning = doctorIssues.contains {
+        skillCount = skillIDs.count
+        let hasProjectionWarning = matchingDoctorIssues.contains {
             $0.severity != .ok
                 && $0.category == .projection
-                && $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
         }
         claudeState = Self.claudeLinkState(
             root: directory.root,
@@ -82,26 +102,9 @@ struct ProjectDirectoryRow: Identifiable {
             hasPersonalSkills: hasPersonalSkills,
             hasProjectionWarning: hasProjectionWarning
         )
-        let codexPaths = Set(matchingProjects.flatMap { project in
-            project.skills
-                .filter {
-                    $0.location == "codex"
-                        && $0.representation == "canonical"
-                        && $0.authority != "codex-system"
-                }
-                .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
-        })
-        let claudePaths = Set(matchingProjects.flatMap { project in
-            project.skills
-                .filter { $0.location == "claude" && $0.representation == "canonical" }
-                .map { standardizedDirectoryPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath) }
-        })
         codexOnlyCount = codexPaths.subtracting(agentsPaths).subtracting(claudePaths).count
         claudeOnlyCount = claudePaths.subtracting(agentsPaths).subtracting(codexPaths).count
-        issueCount = groupedDoctorActionCount(doctorIssues.filter {
-            $0.severity != .ok
-                && $0.projectRoot.map(standardizedDirectoryPath) == standardizedDirectoryPath(directory.root)
-        })
+        issueCount = groupedDoctorActionCount(matchingDoctorIssues.filter { $0.severity != .ok })
     }
 
     static func rows(
@@ -111,7 +114,7 @@ struct ProjectDirectoryRow: Identifiable {
         codebaseSizes: [String: CodebaseSizeReport],
         selectedProjectRoot: String?
     ) -> [ProjectDirectoryRow] {
-        directoryFilterOptions(
+        let directories = directoryFilterOptions(
             projects: projects,
             mcpHealth: mcpHealth,
             doctorIssues: doctorIssues
@@ -120,12 +123,24 @@ struct ProjectDirectoryRow: Identifiable {
             guard let selectedProjectRoot else { return true }
             return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
         }
-        .map {
-            ProjectDirectoryRow(
-                directory: $0,
-                projects: projects,
-                mcpHealth: mcpHealth,
-                doctorIssues: doctorIssues,
+
+        let projectsByRoot = projectStatusesByCanonicalRoot(projects)
+        let doctorIssuesByRoot = Dictionary(grouping: doctorIssues.compactMap { issue in
+            issue.projectRoot.map { (standardizedDirectoryPath($0), issue) }
+        }, by: \.0).mapValues { $0.map(\.1) }
+        let mcpNamesByRoot = mcpHealth.servers.reduce(into: [String: Set<String>]()) { namesByRoot, server in
+            for projectState in server.projectStates {
+                namesByRoot[projectState.path, default: []].insert(server.name)
+            }
+        }
+
+        return directories.map { directory in
+            let canonicalRoot = standardizedDirectoryPath(directory.root)
+            return ProjectDirectoryRow(
+                directory: directory,
+                matchingProjects: projectsByRoot[canonicalRoot] ?? [],
+                mcpCount: mcpNamesByRoot[directory.root]?.count ?? 0,
+                matchingDoctorIssues: doctorIssuesByRoot[canonicalRoot] ?? [],
                 codebaseSizes: codebaseSizes
             )
         }

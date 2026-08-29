@@ -29,7 +29,6 @@ struct MetagentPanel: View {
             VStack(alignment: .leading, spacing: showsOpenWindowButton ? 12 : 14) {
                 topBar
                 panelContent
-                    .animation(.snappy(duration: 0.25), value: selectedSection)
 
                 if showsOpenWindowButton {
                     compactFooter
@@ -221,9 +220,10 @@ struct MetagentPanel: View {
                     section: section,
                     isSelected: selectedSection == section
                 ) {
-                    withAnimation(.snappy(duration: 0.25)) {
-                        selectedSection = section
-                    }
+                    // A tab switch replaces the whole destination subtree.
+                    // Animating both the selection and that initial layout made
+                    // navigation wait on animation work before it became usable.
+                    selectedSection = section
                 }
             }
         }

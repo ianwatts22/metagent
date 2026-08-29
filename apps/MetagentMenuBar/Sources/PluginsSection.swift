@@ -96,13 +96,13 @@ struct PluginsSection: View {
         pluginInventoryRows(model.pluginInventory, report: model.pluginUpdateReport)
     }
 
-    private var rows: [PluginInventoryRow] {
+    private func filteredRows(from allRows: [PluginInventoryRow]) -> [PluginInventoryRow] {
         allRows
             .filter { filter.includes($0) && $0.matches(searchText) }
             .sorted(using: sortOrder)
     }
 
-    private var manualCount: Int {
+    private func manualCount(in allRows: [PluginInventoryRow]) -> Int {
         allRows.filter { $0.record.updatePolicy == .manual }.count
     }
 
@@ -114,6 +114,9 @@ struct PluginsSection: View {
     }
 
     var body: some View {
+        let allRows = allRows
+        let rows = filteredRows(from: allRows)
+        let manualCount = manualCount(in: allRows)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 GlassSearchField(placeholder: "Search plugins", text: $searchText, width: 200)

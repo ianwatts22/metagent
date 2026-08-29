@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import MetagentCore
 import Testing
@@ -46,6 +47,87 @@ import Testing
     let removalID = try #require(duplicate.inventory?.removalRequest?.id)
     #expect(filter(view: .summary, pendingRemovalIDs: [removalID]).apply(to: [duplicate]).isEmpty)
     #expect(filter(view: .summary, completedRemovalIDs: [removalID]).apply(to: [duplicate]).isEmpty)
+}
+
+@Test func skillTablePresentationPreservesFlatGroupingSortingAndSelectionSemantics() throws {
+    let projectBeta = skillTableRow(name: "beta", root: "/tmp/project-b", scope: "project")
+    let globalAlpha = skillTableRow(name: "alpha", root: NSHomeDirectory(), scope: "global")
+    let candidates = [projectBeta, globalAlpha]
+    let sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
+
+    let flat = SkillTablePresentation(
+        candidates: candidates,
+        filter: filter(view: .summary),
+        grouping: .none,
+        sortOrder: sortOrder
+    )
+    #expect(!flat.usesHierarchy)
+    #expect(flat.rows.map(\.skillName) == ["beta", "alpha"])
+    #expect(flat.displayRows.map(\.skillName) == ["alpha", "beta"])
+    #expect(flat.resolvedRows(for: []).isEmpty)
+    #expect(flat.resolvedRows(for: [globalAlpha.id]).map(\.skillName) == ["alpha"])
+
+    let grouped = SkillTablePresentation(
+        candidates: candidates,
+        filter: filter(view: .summary),
+        grouping: .location,
+        sortOrder: sortOrder
+    )
+    #expect(grouped.usesHierarchy)
+    #expect(Set(grouped.displayRows.map(\.skillName)) == ["Global", "project-b"])
+    let projectGroup = try #require(grouped.displayRows.first { $0.skillName == "project-b" })
+    #expect(grouped.resolvedRows(for: [projectGroup.id]).map(\.skillName) == ["beta"])
+    #expect(grouped.resolvedRows(for: [projectBeta.id]).map(\.skillName) == ["beta"])
+}
+
+/// Reproduces the row-pipeline work the old `InventorySection.body` performed
+/// independently for its count, empty state, selection, and table. This is a
+/// deliberately narrow proxy: live profiling remains the authority for
+/// SwiftUI/AttributeGraph allocations.
+@Test func skillTablePresentationPerformanceProxy() {
+    guard ProcessInfo.processInfo.environment["METAGENT_PERFORMANCE_TESTS"] == "1" else { return }
+    let candidates = (0..<600).map { index in
+        historicalSkillTableRow(name: "skill-\(600 - index)", scope: "global")
+    }
+    let tableFilter = filter(view: .usage)
+    let sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
+    let iterations = 200
+
+    let legacy = benchmark(iterations: iterations) {
+        let wideCountRows = tableFilter.apply(to: candidates).sorted(using: sortOrder)
+        let narrowCountRows = tableFilter.apply(to: candidates).sorted(using: sortOrder)
+        let emptyRows = tableFilter.apply(to: candidates)
+        let selectedRows = tableFilter.apply(to: candidates).sorted(using: sortOrder)
+        let tableRows = tableFilter.apply(to: candidates).sorted(using: sortOrder)
+        return wideCountRows.count
+            + narrowCountRows.count
+            + emptyRows.count
+            + selectedRows.count
+            + tableRows.count
+    }
+    let current = benchmark(iterations: iterations) {
+        let presentation = SkillTablePresentation(
+            candidates: candidates,
+            filter: tableFilter,
+            grouping: .none,
+            sortOrder: sortOrder
+        )
+        return presentation.rows.count + presentation.displayRows.count * 4
+    }
+
+    print("Skills row-pipeline proxy: legacy=\(legacy.elapsedMilliseconds)ms current=\(current.elapsedMilliseconds)ms")
+    #expect(legacy.checksum == current.checksum)
+    #expect(current.elapsedMilliseconds < legacy.elapsedMilliseconds * 0.75)
+}
+
+private func benchmark(iterations: Int, operation: () -> Int) -> (elapsedMilliseconds: Double, checksum: Int) {
+    let started = DispatchTime.now().uptimeNanoseconds
+    var checksum = 0
+    for _ in 0..<iterations {
+        checksum += operation()
+    }
+    let elapsed = DispatchTime.now().uptimeNanoseconds - started
+    return (Double(elapsed) / 1_000_000, checksum)
 }
 
 private func filter(

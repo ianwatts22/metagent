@@ -87,7 +87,7 @@ struct InventorySection: View {
         }
     }
 
-    private var rows: [SkillTableRow] {
+    private var rowFilter: SkillTableFilter {
         SkillTableFilter(
             selectedView: selectedView,
             selectedProjectRoot: selectedProjectRoot,
@@ -97,50 +97,20 @@ struct InventorySection: View {
             query: query,
             pendingRemovalIDs: model.pendingSkillRemovalIDs,
             completedRemovalIDs: model.completedSkillRemovalIDs
-        ).apply(to: cachedRows)
+        )
     }
 
-    private var sortedRows: [SkillTableRow] {
-        rows.sorted(using: sortOrder)
+    private var rows: [SkillTableRow] {
+        rowFilter.apply(to: cachedRows)
     }
 
-    private var displayRows: [SkillTableRow] {
-        guard grouping != .none else { return sortedRows }
-        let groupedRows = Dictionary(grouping: rows, by: grouping.key(for:))
-            .map { key, children in
-                SkillTableRow.group(
-                    id: "\(grouping.rawValue):\(key)",
-                    title: children.first.map(grouping.title(for:)) ?? key,
-                    children: children.sorted(using: sortOrder)
-                )
-            }
-        return groupedRows.sorted { left, right in
-            guard let leftChild = left.children?.first, let rightChild = right.children?.first else {
-                return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
-            }
-            for comparator in sortOrder {
-                switch comparator.compare(leftChild, rightChild) {
-                case .orderedAscending: return true
-                case .orderedDescending: return false
-                case .orderedSame: continue
-                }
-            }
-            return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
-        }
-    }
-
-    private var selectedRow: InventorySkillRow? {
-        let resolved = resolvedRows(for: selection)
-        guard resolved.count == 1 else { return nil }
-        return resolved.first?.inventory
-    }
-
-    private var selectedRows: [SkillTableRow] {
-        resolvedRows(for: selection)
-    }
-
-    private var selectedRemovalRows: [InventorySkillRow] {
-        selectedRows.compactMap(\.inventory).filter { $0.removalRequest != nil }
+    private var presentation: SkillTablePresentation {
+        SkillTablePresentation(
+            candidates: cachedRows,
+            filter: rowFilter,
+            grouping: grouping,
+            sortOrder: sortOrder
+        )
     }
 
     private var visibleInventoryRows: [InventorySkillRow] {
@@ -206,12 +176,7 @@ struct InventorySection: View {
     }
 
     private func resolvedRows(for ids: Set<SkillTableRow.ID>) -> [SkillTableRow] {
-        displayRows.flatMap { row -> [SkillTableRow] in
-            if ids.contains(row.id) {
-                return row.children ?? [row]
-            }
-            return row.children?.filter { ids.contains($0.id) } ?? []
-        }
+        presentation.resolvedRows(for: ids)
     }
 
     private func copyPaths(_ rows: [SkillTableRow]) {
@@ -254,7 +219,10 @@ struct InventorySection: View {
         hiddenSourceRawBeforeDuplicateReview = nil
     }
 
-    private var countText: String {
+    private func countText(
+        _ presentation: SkillTablePresentation,
+        selectedRows: [SkillTableRow]
+    ) -> String {
         if selectedView == .published {
             let enabled = model.publicationSnapshot.records.filter(\.automaticMirroringEnabled).count
             return "\(enabled) mirrored"
@@ -263,9 +231,9 @@ struct InventorySection: View {
             return "\(selectedRows.count) selected"
         }
         if selectedView == .duplicates {
-            return "\(visibleOverlapGroupCount) groups · \(rows.count) copies"
+            return "\(visibleOverlapGroupCount) groups · \(presentation.rows.count) copies"
         }
-        return "\(rows.count) skills"
+        return "\(presentation.rows.count) skills"
     }
 
     /// How many of the tucked-away controls are off their default, so the menu
@@ -281,7 +249,7 @@ struct InventorySection: View {
     }
 
     @ViewBuilder
-    private var toolbarControls: some View {
+    private func toolbarControls(countText: String) -> some View {
         SkillViewSelector(selection: selectedViewBinding)
         CountChip(text: countText)
         if selectedView != .published {
@@ -380,11 +348,15 @@ struct InventorySection: View {
     }
 
     var body: some View {
+        let presentation = presentation
+        let selectedRows = presentation.resolvedRows(for: selection)
+        let selectedRow = selectedRows.count == 1 ? selectedRows[0].inventory : nil
+        let countText = countText(presentation, selectedRows: selectedRows)
         VStack(alignment: .leading, spacing: 10) {
             // One row when the window allows it, two only when it does not.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    toolbarControls
+                    toolbarControls(countText: countText)
                     Spacer(minLength: 0)
                 }
 
@@ -414,7 +386,7 @@ struct InventorySection: View {
                         },
                     onChooseSkill: { publicationTarget = $0 }
                 )
-            } else if rows.isEmpty {
+            } else if presentation.rows.isEmpty {
                 EmptyStateView(
                     title: selectedView == .duplicates
                         ? (hasActiveFilter ? "No matching duplicates" : "No duplicate installations")
@@ -456,7 +428,7 @@ struct InventorySection: View {
                     }
                 )
             } else {
-                skillsTable
+                skillsTable(presentation)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -566,29 +538,56 @@ struct InventorySection: View {
         }
     }
 
-    private var skillsTable: some View {
-        Table(
-            displayRows,
-            children: \.children,
-            selection: $selection,
-            sortOrder: $sortOrder,
-            columnCustomization: columnCustomization
-        ) {
-            TableColumnForEach(skillColumnSpecs) { column in
-                TableColumn(column.title, sortUsing: column.comparator) { row in
-                    SkillTableColumnCell(column: column, row: row)
+    @ViewBuilder
+    private func skillsTable(_ presentation: SkillTablePresentation) -> some View {
+        if presentation.usesHierarchy {
+            decoratedSkillsTable(
+                Table(
+                    presentation.displayRows,
+                    children: \.children,
+                    selection: $selection,
+                    sortOrder: $sortOrder,
+                    columnCustomization: columnCustomization
+                ) {
+                    TableColumnForEach(skillColumnSpecs) { column in
+                        TableColumn(column.title, sortUsing: column.comparator) { row in
+                            SkillTableColumnCell(column: column, row: row)
+                        }
+                        .width(min: column.minWidth, ideal: column.idealWidth)
+                        .customizationID(column.id)
+                        .defaultVisibility(column.defaultVisibility(selectedView))
+                    }
                 }
-                .width(min: column.minWidth, ideal: column.idealWidth)
-                .customizationID(column.id)
-                .defaultVisibility(column.defaultVisibility(selectedView))
+            )
+        } else {
+            decoratedSkillsTable(
+                Table(
+                    presentation.displayRows,
+                    selection: $selection,
+                    sortOrder: $sortOrder,
+                    columnCustomization: columnCustomization
+                ) {
+                    TableColumnForEach(skillColumnSpecs) { column in
+                        TableColumn(column.title, sortUsing: column.comparator) { row in
+                            SkillTableColumnCell(column: column, row: row)
+                        }
+                        .width(min: column.minWidth, ideal: column.idealWidth)
+                        .customizationID(column.id)
+                        .defaultVisibility(column.defaultVisibility(selectedView))
+                    }
+                }
+            )
+        }
+    }
+
+    private func decoratedSkillsTable<Content: View>(_ table: Content) -> some View {
+        table
+            .id("\(selectedView.rawValue):\(grouping.rawValue)")
+            .tableStyle(.inset)
+            .alternatingRowBackgrounds(.enabled)
+            .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
+                skillContextMenu(for: contextSelection)
             }
-        }
-        .id("\(selectedView.rawValue):\(grouping.rawValue)")
-        .tableStyle(.inset)
-        .alternatingRowBackgrounds(.enabled)
-        .contextMenu(forSelectionType: SkillTableRow.ID.self) { contextSelection in
-            skillContextMenu(for: contextSelection)
-        }
     }
 
     @ViewBuilder

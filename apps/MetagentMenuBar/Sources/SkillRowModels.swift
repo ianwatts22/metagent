@@ -119,6 +119,66 @@ struct SkillTableFilter {
     }
 }
 
+/// The filtered, sorted rows for one `InventorySection.body` evaluation.
+///
+/// SwiftUI evaluates both branches of `ViewThatFits`, and the Skills screen
+/// needs the same row set for its count, selection, and table. Keeping that
+/// work in one value prevents each consumer from independently filtering and
+/// sorting the full portfolio.
+struct SkillTablePresentation {
+    let rows: [SkillTableRow]
+    let displayRows: [SkillTableRow]
+    let usesHierarchy: Bool
+
+    init(
+        candidates: [SkillTableRow],
+        filter: SkillTableFilter,
+        grouping: SkillGrouping,
+        sortOrder: [KeyPathComparator<SkillTableRow>]
+    ) {
+        let rows = filter.apply(to: candidates)
+        self.rows = rows
+        usesHierarchy = grouping != .none
+
+        guard grouping != .none else {
+            displayRows = rows.sorted(using: sortOrder)
+            return
+        }
+
+        let groupedRows = Dictionary(grouping: rows, by: grouping.key(for:))
+            .map { key, children in
+                SkillTableRow.group(
+                    id: "\(grouping.rawValue):\(key)",
+                    title: children.first.map(grouping.title(for:)) ?? key,
+                    children: children.sorted(using: sortOrder)
+                )
+            }
+        displayRows = groupedRows.sorted { left, right in
+            guard let leftChild = left.children?.first, let rightChild = right.children?.first else {
+                return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
+            }
+            for comparator in sortOrder {
+                switch comparator.compare(leftChild, rightChild) {
+                case .orderedAscending: return true
+                case .orderedDescending: return false
+                case .orderedSame: continue
+                }
+            }
+            return left.skillName.localizedCaseInsensitiveCompare(right.skillName) == .orderedAscending
+        }
+    }
+
+    func resolvedRows(for ids: Set<SkillTableRow.ID>) -> [SkillTableRow] {
+        guard !ids.isEmpty else { return [] }
+        return displayRows.flatMap { row -> [SkillTableRow] in
+            if ids.contains(row.id) {
+                return row.children ?? [row]
+            }
+            return row.children?.filter { ids.contains($0.id) } ?? []
+        }
+    }
+}
+
 enum SkillGrouping: String, CaseIterable, Identifiable {
     case none
     case source

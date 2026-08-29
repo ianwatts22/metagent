@@ -12,6 +12,37 @@ private struct SkillRemovalOutcome: Sendable {
     let lines: [String]
 }
 
+/// Launch cache reads are deliberately split by whether the first frame needs
+/// them. Inventory is small enough to make the initial view useful immediately;
+/// the usage snapshot can run a comparatively expensive SQLite aggregation and
+/// model releases can decode a megabyte-scale catalog, so both hydrate after
+/// SwiftUI has had a chance to present the window.
+struct MetagentDeferredLaunchSnapshot: Sendable {
+    let usage: SkillUsageSnapshot?
+    let modelReleases: ModelReleaseSnapshot
+    let releaseAffirmations: [String: Date]
+    let publications: SkillPublicationSnapshot
+}
+
+struct MetagentLaunchCacheLoader: Sendable {
+    let loadInventory: @Sendable () -> SkillScanReport?
+    let loadDeferred: @Sendable () -> MetagentDeferredLaunchSnapshot
+
+    static let live = MetagentLaunchCacheLoader(
+        loadInventory: {
+            MetagentCore.loadInventorySnapshot()
+        },
+        loadDeferred: {
+            MetagentDeferredLaunchSnapshot(
+                usage: MetagentCore.loadSkillUsageSnapshot(),
+                modelReleases: MetagentCore.loadModelReleaseSnapshot(),
+                releaseAffirmations: MetagentCore.loadModelReleaseAffirmations(),
+                publications: MetagentCore.loadSkillPublicationSnapshot()
+            )
+        }
+    )
+}
+
 @MainActor
 final class MetagentModel: ObservableObject {
     @Published private(set) var isRunning = false
@@ -82,6 +113,9 @@ final class MetagentModel: ObservableObject {
     private var usageForegroundRefreshQueued = false
     private var publicationSyncQueued = false
     private var codebaseSizeRefreshQueued = false
+    private let launchCacheLoader: MetagentLaunchCacheLoader
+    private var hasStarted = false
+    private var isHydratingLaunchCaches = false
 
     /// A refresh advances recent usage by one bounded slice. Historical parser
     /// upgrades can span tens of gigabytes; the menu-bar app must never turn
@@ -89,27 +123,15 @@ final class MetagentModel: ObservableObject {
     private static let usageRefreshSliceBytes: Int64 = 8 * 1_024 * 1_024
     private static let usageRefreshSliceFiles = 12
 
-    init() {
-        if let snapshot = MetagentCore.loadInventorySnapshot() {
+    init(launchCacheLoader: MetagentLaunchCacheLoader = .live) {
+        self.launchCacheLoader = launchCacheLoader
+        if let snapshot = launchCacheLoader.loadInventory() {
             projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
             updateInventorySummary()
             rootsText = "cached SQLite snapshot"
             statusText = "\(repoCount) cached locations, \(skillCount) skills"
             systemImage = "externaldrive"
         }
-        if let usage = MetagentCore.loadSkillUsageSnapshot() {
-            usageSnapshot = usage
-            usageStatusText = Self.usageStatus(usage)
-        }
-        modelReleases = MetagentCore.loadModelReleaseSnapshot()
-        releaseAffirmations = MetagentCore.loadModelReleaseAffirmations()
-        publicationSnapshot = MetagentCore.loadSkillPublicationSnapshot()
-        updatePublicationStatus()
-        refreshStatus()
-        refreshUsage()
-        refreshModelReleases()
-        startWatchingSkillRoots()
-        reconcileSkillPublications()
     }
 
     // MARK: - Liveness
@@ -120,6 +142,59 @@ final class MetagentModel: ObservableObject {
 
     private lazy var skillRootsWatcher = SkillRootsWatcher { [weak self] in
         self?.skillRootsChangedExternally()
+    }
+
+    /// Starts launch hydration exactly once. Scene appearance is the boundary:
+    /// constructing the model no longer blocks AppKit launch on the large usage
+    /// aggregation, but every previously automatic refresh still starts as soon
+    /// as the first app surface is actually visible.
+    private func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+        isHydratingLaunchCaches = true
+        Task { [weak self] in
+            // Let the current SwiftUI/AppKit update reach presentation before
+            // scheduling cache I/O, even on an otherwise idle machine.
+            await Task.yield()
+            guard let self else { return }
+            await hydrateLaunchCaches()
+            isHydratingLaunchCaches = false
+
+            refreshStatus()
+            refreshUsage()
+            refreshModelReleases()
+            startWatchingSkillRoots()
+            reconcileSkillPublications()
+        }
+    }
+
+    /// Shared by launch and a deterministic unit test. The expensive loader is
+    /// always detached from the main actor; applying the immutable result stays
+    /// on the main actor so observers see one coherent cache generation.
+    func hydrateLaunchCaches() async {
+        let loader = launchCacheLoader.loadDeferred
+        let cached = await Task.detached(priority: .userInitiated) {
+            loader()
+        }.value
+        var refreshesSkillPresentation = false
+        if let usage = cached.usage {
+            refreshesSkillPresentation = usage != usageSnapshot
+            usageSnapshot = usage
+            usageStatusText = Self.usageStatus(usage)
+        }
+        refreshesSkillPresentation = refreshesSkillPresentation
+            || cached.modelReleases != modelReleases
+            || cached.releaseAffirmations != releaseAffirmations
+        modelReleases = cached.modelReleases
+        releaseAffirmations = cached.releaseAffirmations
+        publicationSnapshot = cached.publications
+        updatePublicationStatus()
+        if refreshesSkillPresentation {
+            // Overview health and Skills rows may have rendered their loading
+            // state while the detached cache read ran. Publish one coherent
+            // revision after every cached input is in place.
+            skillTableRevision += 1
+        }
     }
 
     /// Everything the inventory scan reads that can change behind the app's
@@ -156,6 +231,11 @@ final class MetagentModel: ObservableObject {
     /// Refreshes when the last landed scan is old enough to matter. Called when
     /// a window or panel opens, which is exactly when staleness becomes visible.
     func refreshIfStale(maxAgeSeconds: TimeInterval = 60) {
+        guard hasStarted else {
+            start()
+            return
+        }
+        guard !isHydratingLaunchCaches else { return }
         guard Date().timeIntervalSince(lastStatusAppliedAt) > maxAgeSeconds else { return }
         guard !isRunning else { return }
         refreshAll()

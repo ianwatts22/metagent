@@ -115,13 +115,15 @@ struct MCPInventorySection: View {
         mcpInventoryRows(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
     }
 
-    private var rows: [MCPInventoryRow] {
+    private func filteredRows(from allRows: [MCPInventoryRow]) -> [MCPInventoryRow] {
         allRows
             .filter { filter.includes($0) && $0.matches(searchText) }
             .sorted(using: sortOrder)
     }
 
     var body: some View {
+        let allRows = allRows
+        let rows = filteredRows(from: allRows)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 GlassSearchField(placeholder: "Search MCPs", text: $searchText, width: 220)
