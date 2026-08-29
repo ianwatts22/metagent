@@ -35,6 +35,13 @@ private struct SortMeasurement {
     let contentIdentifier: String
 }
 
+private struct FilterMeasurement {
+    let totalMilliseconds: Double
+    let pressCallMilliseconds: Double
+    let controlReadyMilliseconds: Double
+    let contentReadyMilliseconds: Double
+}
+
 private func monotonicMilliseconds() -> Double {
     Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000
 }
@@ -409,7 +416,7 @@ private final class AccessibilityProbe {
         option: String,
         expectedContentState: String,
         measured: Bool
-    ) throws -> Double? {
+    ) throws -> FilterMeasurement? {
         let control = try waitForIdentifier(window, identifier: controlIdentifier)
         if try value(control) == option { return nil }
         try performPress(control, description: "\(section) filter")
@@ -420,34 +427,60 @@ private final class AccessibilityProbe {
         }
         let timer = MonotonicTimer()
         try performPress(item, description: "\(section) filter option \(option)")
+        let pressCallMilliseconds = timer.elapsedMilliseconds
         var currentContent = content
-        var nextReplacementSearch = replacementSearchIntervalMilliseconds
+        // A filter can replace a table with an empty-state container. Search
+        // once immediately so the phase timestamp is not inflated by the
+        // normal retry backoff, then keep later tree walks bounded.
+        var nextReplacementSearch = 0.0
+        var controlReadyMilliseconds: Double?
+        var contentReadyMilliseconds: Double?
         try waitUntil("\(section) filter value and AX content-ready token \(option)") {
             guard let current = try self.findByIdentifier(
                 window,
                 identifier: controlIdentifier
             ) else { return false }
             let controlHasExpectedValue = try self.value(current) == option
+            if controlHasExpectedValue, controlReadyMilliseconds == nil {
+                controlReadyMilliseconds = timer.elapsedMilliseconds
+            }
 
-            if timer.elapsedMilliseconds >= nextReplacementSearch,
-               let replacement = try self.findByIdentifierPrefix(
-                   window,
-                   prefix: self.contentReadyPrefix(section)
-               ) {
-                currentContent = replacement
-                nextReplacementSearch = timer.elapsedMilliseconds
-                    + replacementSearchIntervalMilliseconds
-            }
-            guard let currentIdentifier = try self.identifier(currentContent) else {
-                return false
-            }
             let expectedPrefix = self.contentReadyPrefix(section)
                 + expectedContentState + "."
-            return controlHasExpectedValue
-                && currentIdentifier != previous
-                && currentIdentifier.hasPrefix(expectedPrefix)
+            let retainedIdentifier = try self.identifier(currentContent)
+            var contentHasExpectedState = retainedIdentifier != previous
+                && retainedIdentifier?.hasPrefix(expectedPrefix) == true
+            if !contentHasExpectedState {
+                let elapsedMilliseconds = timer.elapsedMilliseconds
+                if elapsedMilliseconds >= nextReplacementSearch {
+                    nextReplacementSearch = elapsedMilliseconds
+                        + replacementSearchIntervalMilliseconds
+                    if let replacement = try self.findByIdentifierPrefix(
+                        window,
+                        prefix: self.contentReadyPrefix(section)
+                    ) {
+                        currentContent = replacement
+                        let replacementIdentifier = try self.identifier(replacement)
+                        contentHasExpectedState = replacementIdentifier != previous
+                            && replacementIdentifier?.hasPrefix(expectedPrefix) == true
+                    }
+                }
+            }
+            if contentHasExpectedState, contentReadyMilliseconds == nil {
+                contentReadyMilliseconds = timer.elapsedMilliseconds
+            }
+            return controlHasExpectedValue && contentHasExpectedState
         }
-        return measured ? timer.elapsedMilliseconds : nil
+        guard measured else { return nil }
+        guard let controlReadyMilliseconds, let contentReadyMilliseconds else {
+            throw ProbeError.state("\(section) filter completed without phase observations.")
+        }
+        return FilterMeasurement(
+            totalMilliseconds: timer.elapsedMilliseconds,
+            pressCallMilliseconds: pressCallMilliseconds,
+            controlReadyMilliseconds: controlReadyMilliseconds,
+            contentReadyMilliseconds: contentReadyMilliseconds
+        )
     }
 
     func normalizeSkillsSummary(window: AXUIElement) throws {
@@ -799,7 +832,7 @@ private func runCommonInteractions(
         for iteration in 1...iterations {
             for option in [alternate, baseline] {
                 progress("filters \(section) \(iteration)/\(iterations): \(option.label)")
-                guard let elapsed = try probe.chooseMenuOption(
+                guard let measurement = try probe.chooseMenuOption(
                     appElement: appElement,
                     window: window,
                     section: section,
@@ -816,7 +849,40 @@ private func runCommonInteractions(
                     metric: "filter_input_to_ax_content_ready_ms",
                     interaction: "\(section) filter to \(option.label)",
                     iteration: iteration,
-                    value: elapsed,
+                    value: measurement.totalMilliseconds,
+                    extra: [
+                        "ax_content_ready_observed": true,
+                        "presentation_observed": true,
+                        "presentation_fidelity": "accessibility_content_ready",
+                    ]
+                ))
+                samples.append(sample(
+                    metric: "filter_ax_press_call_ms",
+                    interaction: "\(section) filter to \(option.label)",
+                    iteration: iteration,
+                    value: measurement.pressCallMilliseconds,
+                    extra: ["presentation_observed": false]
+                ))
+                samples.append(sample(
+                    metric: "filter_press_return_to_control_state_ms",
+                    interaction: "\(section) filter to \(option.label)",
+                    iteration: iteration,
+                    value: max(
+                        0,
+                        measurement.controlReadyMilliseconds
+                            - measurement.pressCallMilliseconds
+                    ),
+                    extra: ["presentation_observed": false]
+                ))
+                samples.append(sample(
+                    metric: "filter_press_return_to_semantic_content_ready_ms",
+                    interaction: "\(section) filter to \(option.label)",
+                    iteration: iteration,
+                    value: max(
+                        0,
+                        measurement.contentReadyMilliseconds
+                            - measurement.pressCallMilliseconds
+                    ),
                     extra: [
                         "ax_content_ready_observed": true,
                         "presentation_observed": true,
@@ -825,7 +891,8 @@ private func runCommonInteractions(
                 ))
                 progress(
                     "filters \(section) \(iteration)/\(iterations): \(option.label) ready "
-                        + "(\(Int(elapsed.rounded()))ms)"
+                        + "(\(Int(measurement.totalMilliseconds.rounded()))ms total, "
+                        + "\(Int(measurement.pressCallMilliseconds.rounded()))ms AXPress)"
                 )
             }
         }

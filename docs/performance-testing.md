@@ -277,6 +277,15 @@ section whose primary column is not the retained active sort is also skipped,
 rather than changing the user's saved table preference just to produce a sample.
 These observables do not claim the first painted or composited pixel.
 
+Filter results retain the end-to-end
+`filter_input_to_ax_content_ready_ms` product observable and split it into three
+diagnostics: time inside the option's `AXPress` call, time after that call until
+the control exposes its new value, and time after that call until the section's
+semantic content-ready token changes. Compare those phases before optimizing a
+slow filter. If control and content become ready together, the delay precedes
+app reconciliation (for example, menu dismissal); if content trails the control,
+the app's filter or presentation work is the likely target.
+
 Reload is stronger: a valid sample must observe the Reload control leave its
 enabled ready state and then return. A refresh that finishes too quickly for
 that transition to be observed fails the scenario rather than inventing a

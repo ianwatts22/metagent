@@ -77,8 +77,18 @@ class MetagentAXProbeTests(unittest.TestCase):
         )[0]
         self.assertIn("controlHasExpectedValue", menu_measurement)
         self.assertIn("expectedContentState", menu_measurement)
-        self.assertIn("currentIdentifier != previous", menu_measurement)
-        self.assertIn("currentIdentifier.hasPrefix(expectedPrefix)", menu_measurement)
+        self.assertIn("retainedIdentifier != previous", menu_measurement)
+        self.assertIn("retainedIdentifier?.hasPrefix(expectedPrefix)", menu_measurement)
+        self.assertIn("replacementIdentifier != previous", menu_measurement)
+        self.assertIn("var nextReplacementSearch = 0.0", menu_measurement)
+        self.assertLess(
+            menu_measurement.index("nextReplacementSearch = elapsedMilliseconds"),
+            menu_measurement.index("if let replacement"),
+        )
+        self.assertLess(
+            menu_measurement.index("let retainedIdentifier"),
+            menu_measurement.index("if let replacement"),
+        )
 
     def test_ax_walks_are_bounded_indexed_queues(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
@@ -149,6 +159,9 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"automation_driver": "native_swift_axui_element"', source)
         self.assertIn('"tab_input_to_ax_content_ready_ms"', source)
         self.assertIn('"filter_input_to_ax_content_ready_ms"', source)
+        self.assertIn('"filter_ax_press_call_ms"', source)
+        self.assertIn('"filter_press_return_to_control_state_ms"', source)
+        self.assertIn('"filter_press_return_to_semantic_content_ready_ms"', source)
         self.assertIn('"sort_input_to_ax_content_ready_ms"', source)
 
     @unittest.skipUnless(sys.platform == "darwin", "native AX probe is macOS-only")
