@@ -149,6 +149,34 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
                 memory_after=None,
             )
 
+    def test_common_interaction_budget_requires_a_real_sort_metric(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "missing AX content-ready metric sort_input"
+        ):
+            MODULE.observed_metrics(
+                interactions=[{
+                    "scenario": "common-interactions",
+                    "automation": "macos_accessibility",
+                    "metrics": {
+                        "tab_input_to_ax_content_ready_ms": {
+                            "p95": 90,
+                            "all_presentations_observed": True,
+                        },
+                        "filter_input_to_ax_content_ready_ms": {
+                            "p95": 130,
+                            "all_presentations_observed": True,
+                        },
+                    },
+                    "skipped_sections": [
+                        {"interaction": "sort", "section": "Plugins"}
+                    ],
+                    "coverage_gaps": [],
+                }],
+                efficiency=None,
+                memory_before=None,
+                memory_after=None,
+            )
+
     def test_rejects_memory_comparison_across_processes(self) -> None:
         before = self.memory(25, "overview-before")
         after = self.memory(25, "overview-after")

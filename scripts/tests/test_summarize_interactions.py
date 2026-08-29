@@ -34,6 +34,13 @@ class SummarizeInteractionsTests(unittest.TestCase):
                 }
                 for index, value in enumerate([10, 30, 20, 40, 80], start=1)
             ],
+            "skipped_sections": [
+                {
+                    "interaction": "sort",
+                    "section": "Plugins",
+                    "reason": "ready content role AXGroup is not AXTable",
+                }
+            ],
             "coverage_gaps": ["No presentation sentinel."],
         }
 
@@ -47,6 +54,7 @@ class SummarizeInteractionsTests(unittest.TestCase):
         self.assertFalse(metric["all_presentations_observed"])
         self.assertEqual(metric["interactions"]["switch-5"]["p95"], 80)
         self.assertEqual(result["provenance"]["build_commit"], "abc123")
+        self.assertEqual(result["skipped_sections"][0]["section"], "Plugins")
         self.assertIn("coverage_gap: No presentation sentinel.", MODULE.text_summary(result))
 
     def test_rejects_invalid_or_empty_samples(self) -> None:

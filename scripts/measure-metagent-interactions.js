@@ -443,6 +443,7 @@ function runCommonInteractions(
   const tabResult = runTabs(window, iterations, timeoutMilliseconds);
   const buttons = navigationButtons(window);
   const samples = tabResult.samples.slice();
+  const skippedSections = [];
 
   const filters = [
     {
@@ -524,6 +525,7 @@ function runCommonInteractions(
     { tab: "Plugins", section: "Plugins", header: "Plugin" },
     { tab: "Projects", section: "Projects", header: "Project" },
   ];
+  let observedSortSamples = 0;
   for (const specification of sorts) {
     selectTabToContentReady(
       window,
@@ -533,6 +535,20 @@ function runCommonInteractions(
     );
     if (specification.section === "Skills") {
       normalizeSkillsSummary(window, timeoutMilliseconds);
+    }
+    const readyContent = contentElement(
+      window,
+      specification.section,
+      timeoutMilliseconds
+    );
+    const readyRole = elementRole(readyContent);
+    if (readyRole !== "AXTable") {
+      skippedSections.push({
+        interaction: "sort",
+        section: specification.section,
+        reason: `ready content role ${readyRole || "unknown"} is not AXTable`,
+      });
+      continue;
     }
     for (let iteration = 1; iteration <= iterations; iteration += 1) {
       for (const direction of ["toggle", "restore"]) {
@@ -550,16 +566,32 @@ function runCommonInteractions(
           presentation_observed: true,
           presentation_fidelity: "accessibility_content_ready",
         });
+        observedSortSamples += 1;
       }
     }
+  }
+
+  if (observedSortSamples === 0) {
+    const details = skippedSections
+      .map((skipped) => `${skipped.section}: ${skipped.reason}`)
+      .join("; ");
+    fail(
+      "Common interactions observed no real sortable AXTable transition. " +
+      `Fixture gap: ${details || "no sortable inventory content was exposed"}.`
+    );
   }
 
   return {
     automation: "macos_accessibility",
     navigation_button_count: buttons.count,
     samples,
+    skipped_sections: skippedSections,
     coverage_gaps: [
       "AX content-ready proves SwiftUI exposed the destination state through Accessibility; it does not observe the first painted or composited pixel.",
+      ...skippedSections.map(
+        (skipped) =>
+          `${skipped.section} sort skipped: ${skipped.reason}.`
+      ),
     ],
   };
 }

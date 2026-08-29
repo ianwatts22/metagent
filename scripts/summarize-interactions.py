@@ -87,6 +87,7 @@ def summarize(
         "navigation_button_count": raw.get("navigation_button_count"),
         "metrics": metrics,
         "samples": samples,
+        "skipped_sections": raw.get("skipped_sections", []),
         "coverage_gaps": raw.get("coverage_gaps", []),
         "provenance": provenance,
     }
