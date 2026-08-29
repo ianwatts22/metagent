@@ -121,6 +121,7 @@ func discoverProjectRoots(
     root: URL,
     maxDepth: Int,
     ignoreProjects: Set<String>,
+    traversalPruneRoots: Set<String>,
     projectRoots: inout Set<String>
 ) {
     let standardized = root.resolvingSymlinksInPath().standardizedFileURL
@@ -133,6 +134,7 @@ func discoverProjectRoots(
         queue.removeFirst()
         let path = canonicalProjectPath(current)
         guard visited.insert(path).inserted else { continue }
+        guard !traversalPruneRoots.contains(path) else { continue }
 
         // A linked Git worktree repeats its repository's project-local skills.
         // Treat it as generated workspace state, not as another project. The

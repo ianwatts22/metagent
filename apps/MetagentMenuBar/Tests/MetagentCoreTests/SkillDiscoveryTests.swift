@@ -34,6 +34,67 @@ final class SkillDiscoveryTests: XCTestCase {
         XCTAssertEqual(Set(recursive.projects.map(\.root)), Set([home.path, nestedProject.path]))
     }
 
+    func testHomeScanPrunesConfiguredRootsButKeepsOtherShallowProjects() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-discovery-pruned-home")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let previousHome = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", home.path, 1)
+        defer {
+            if let previousHome {
+                setenv("HOME", previousHome, 1)
+            } else {
+                unsetenv("HOME")
+            }
+        }
+
+        let configuredRoot = home.appendingPathComponent("code_projects")
+        let configuredProject = configuredRoot.appendingPathComponent("configured")
+        try writeSkillFixture(
+            at: configuredProject.appendingPathComponent(".agents/skills/configured-skill"),
+            name: "configured-skill"
+        )
+        let desktopProject = home.appendingPathComponent("Desktop/example")
+        try writeSkillFixture(
+            at: desktopProject.appendingPathComponent(".agents/skills/desktop-skill"),
+            name: "desktop-skill"
+        )
+        let obsoleteProjection = desktopProject.appendingPathComponent(".codex/skills/desktop-skill")
+        try FileManager.default.createDirectory(
+            at: obsoleteProjection.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: obsoleteProjection,
+            withDestinationURL: desktopProject.appendingPathComponent(".agents/skills/desktop-skill")
+        )
+        let configDirectory = home.appendingPathComponent(".config/metagent")
+        try FileManager.default.createDirectory(
+            at: configDirectory,
+            withIntermediateDirectories: true
+        )
+        try """
+        roots = ["\(configuredRoot.path)"]
+        max_depth = 6
+        """.write(
+            to: configDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let report = try MetagentCore.scanHomeSkills(
+            maxDepth: 2,
+            pruningConfiguredRoots: true
+        )
+
+        XCTAssertEqual(report.projects.map(\.root), [desktopProject.path])
+        XCTAssertEqual(report.projects.flatMap(\.validSkills), ["desktop-skill"])
+
+        let doctor = MetagentCore.doctor(reports: [SkillScanReport(projects: []), report])
+        XCTAssertTrue(doctor.issues.contains {
+            $0.projectRoot == desktopProject.path && $0.category == .projection
+        })
+    }
+
     func testScanExcludesLinkedGitWorktrees() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-discovery-worktrees")
         defer { try? FileManager.default.removeItem(at: root) }

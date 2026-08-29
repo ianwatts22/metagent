@@ -136,6 +136,7 @@ public enum MetagentCore {
                 root: root,
                 maxDepth: maxDepth,
                 ignoreProjects: ignoreProjects,
+                traversalPruneRoots: [],
                 projectRoots: &projectRoots
             )
         }
@@ -148,11 +149,17 @@ public enum MetagentCore {
         return SkillScanReport(projects: projects)
     }
 
-    public static func scanHomeSkills(maxDepth: Int = 2) throws -> SkillScanReport {
+    public static func scanHomeSkills(
+        maxDepth: Int = 2,
+        pruningConfiguredRoots: Bool = false
+    ) throws -> SkillScanReport {
         let config = try loadUserConfig()
         let home = homeURL()
         let normalizedHome = canonicalProjectPath(home)
         let ignoreProjects = Set(config.ignoreProjects.map { canonicalProjectPath(expandPath($0)) })
+        let traversalPruneRoots = pruningConfiguredRoots
+            ? Set(config.roots.map { canonicalProjectPath(expandPath($0)) })
+            : []
         var projectRoots = Set<String>()
 
         if !ignoreProjects.contains(normalizedHome) {
@@ -167,6 +174,7 @@ public enum MetagentCore {
             root: home,
             maxDepth: maxDepth,
             ignoreProjects: ignoreProjects,
+            traversalPruneRoots: traversalPruneRoots,
             projectRoots: &projectRoots
         )
 
@@ -315,6 +323,21 @@ public enum MetagentCore {
         }
 
         return DoctorReport(issues: issues)
+    }
+
+    /// Audits several already-scanned inventory slices without dropping
+    /// projects that were discovered outside the configured roots.
+    public static func doctor(reports: [SkillScanReport]) -> DoctorReport {
+        var projects: [String: SkillProject] = [:]
+        for report in reports {
+            for project in report.projects {
+                let root = canonicalProjectPath(URL(fileURLWithPath: project.root))
+                projects[root] = projects[root].map {
+                    mergeSkillProjects($0, project)
+                } ?? project
+            }
+        }
+        return doctor(projects: projects.values.sorted { $0.root < $1.root })
     }
 
     public static func repairSkills(options: SkillsRepairOptions = SkillsRepairOptions()) throws -> SkillsRepairReport {

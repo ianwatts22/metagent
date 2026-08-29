@@ -1657,11 +1657,14 @@ final class MetagentModel: ObservableObject {
             Result { try MetagentCore.scanSkills() }
         }.value
         async let homeScanResult = Task.detached {
-            // Configured roots own project discovery. This pass exists only
-            // for the three global skill collections in the home directory;
-            // descending into ~/code_projects would rescan the same projects
-            // concurrently and was responsible for a large refresh CPU burst.
-            Result { try MetagentCore.scanHomeSkills(maxDepth: 0) }
+            // Preserve shallow project discovery outside configured roots while
+            // avoiding a concurrent rescan of roots such as ~/code_projects.
+            Result {
+                try MetagentCore.scanHomeSkills(
+                    maxDepth: 2,
+                    pruningConfiguredRoots: true
+                )
+            }
         }.value
         async let pluginScanResult = Task.detached {
             Result { try MetagentCore.scanCodexPlugins() }
@@ -1684,17 +1687,7 @@ final class MetagentModel: ObservableObject {
             case .success(let report):
                 homeReport = report
             }
-            var projects = report.projects
-            let homePath = FileManager.default.homeDirectoryForCurrentUser
-                .standardizedFileURL.path
-            if let homeProject = homeReport.projects.first(where: {
-                URL(fileURLWithPath: $0.root).standardizedFileURL.path == homePath
-            }), !projects.contains(where: {
-                URL(fileURLWithPath: $0.root).standardizedFileURL.path == homePath
-            }) {
-                projects.append(homeProject)
-            }
-            return .success(MetagentCore.doctor(projects: projects))
+            return .success(MetagentCore.doctor(reports: [report, homeReport]))
         }
     }
 
