@@ -101,6 +101,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertIn("function findSortableHeader", script)
         self.assertIn('if (role === "AXRow")', script)
         self.assertIn("visited < maximumVisited", script)
+        self.assertIn("preferredCursor < preferred.length", script)
         self.assertIn("children.length - 1", script)
         self.assertNotIn("children.sort", script)
         self.assertNotIn(
@@ -119,6 +120,55 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertNotIn("possibleNavigationRows", script)
         self.assertNotIn("fixed screen coordinates", script)
         self.assertNotIn(".position()", script)
+
+    def test_ax_walks_are_bounded_indexed_queues_without_array_shift(self) -> None:
+        script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("const maximumAccessibilityTraversalElements = 8192", script)
+        self.assertGreaterEqual(script.count("let cursor = 0;"), 3)
+        self.assertGreaterEqual(
+            script.count("cursor < pending.length && cursor < maximumVisited"), 3
+        )
+        self.assertIn("let preferredCursor = 0;", script)
+        self.assertIn("let ordinaryCursor = 0;", script)
+        self.assertIn("let rowCursor = 0;", script)
+        self.assertNotIn(".shift()", script)
+        self.assertNotIn("pending.unshift", script)
+
+    def test_filter_and_sort_poll_retained_ax_roots_before_bounded_fallback(self) -> None:
+        script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
+            encoding="utf-8"
+        )
+        filter_measurement = script.split("function chooseMenuOption", 1)[1].split(
+            "function measureSort", 1
+        )[0]
+        sort_measurement = script.split("function measureSort", 1)[1].split(
+            "function findReloadControl", 1
+        )[0]
+        content_wait = script.split("function waitForContentIdentifierChange", 1)[1].split(
+            "function menuItem", 1
+        )[0]
+
+        self.assertIn("const content = contentElement", filter_measurement)
+        self.assertIn("waitForContentIdentifierChange(\n    content,", filter_measurement)
+        self.assertIn("elementIdentifier(retainedContent)", content_wait)
+        self.assertIn("replacementContentSearchIntervalMilliseconds", content_wait)
+        self.assertIn("if (now < nextReplacementSearchAt)", content_wait)
+        self.assertIn("findDescendantByIdentifierPrefix(window, prefix)", content_wait)
+
+        self.assertIn("let currentContent = content", sort_measurement)
+        self.assertIn("let currentHeader = header", sort_measurement)
+        self.assertIn("elementIdentifier(currentContent)", sort_measurement)
+        self.assertIn(
+            'elementAttributeValue(currentHeader, "AXSortDirection")', sort_measurement
+        )
+        self.assertIn("findSortableHeader(currentContent, headerName)", sort_measurement)
+        self.assertIn("findSortableHeader(window, headerName)", sort_measurement)
+        self.assertIn("if (now < nextReplacementSearchAt)", sort_measurement)
+        self.assertIn("currentIdentifier !== previous", sort_measurement)
+        self.assertIn("currentDirection !== previousDirection", sort_measurement)
 
     @unittest.skipUnless(sys.platform == "darwin", "interaction harness is macOS-only")
     def test_refuses_to_overwrite_existing_output(self) -> None:

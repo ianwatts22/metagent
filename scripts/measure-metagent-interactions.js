@@ -1,6 +1,9 @@
 ObjC.import("stdlib");
 ObjC.import("Foundation");
 
+const maximumAccessibilityTraversalElements = 8192;
+const replacementContentSearchIntervalMilliseconds = 100;
+
 function fail(message) {
   throw new Error(message);
 }
@@ -63,10 +66,16 @@ function elementIdentifier(element) {
   }
 }
 
-function findDescendantByIdentifier(root, identifier) {
+function findDescendantByIdentifier(
+  root,
+  identifier,
+  maximumVisited = maximumAccessibilityTraversalElements
+) {
   const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.shift();
+  let cursor = 0;
+  while (cursor < pending.length && cursor < maximumVisited) {
+    const current = pending[cursor];
+    cursor += 1;
     if (elementIdentifier(current) === identifier) {
       return current;
     }
@@ -83,10 +92,16 @@ function findDescendantByIdentifier(root, identifier) {
   return null;
 }
 
-function findDescendantByIdentifierPrefix(root, prefix) {
+function findDescendantByIdentifierPrefix(
+  root,
+  prefix,
+  maximumVisited = maximumAccessibilityTraversalElements
+) {
   const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.shift();
+  let cursor = 0;
+  while (cursor < pending.length && cursor < maximumVisited) {
+    const current = pending[cursor];
+    cursor += 1;
     const identifier = elementIdentifier(current);
     if (identifier && identifier.indexOf(prefix) === 0) {
       return current;
@@ -220,10 +235,18 @@ function elementName(element) {
   }
 }
 
-function findDescendantByRoleAndName(root, role, name, requiresPress) {
+function findDescendantByRoleAndName(
+  root,
+  role,
+  name,
+  requiresPress,
+  maximumVisited = maximumAccessibilityTraversalElements
+) {
   const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.shift();
+  let cursor = 0;
+  while (cursor < pending.length && cursor < maximumVisited) {
+    const current = pending[cursor];
+    cursor += 1;
     if (elementRole(current) === role && elementName(current) === name) {
       if (!requiresPress || current.actions.byName("AXPress").exists()) {
         return current;
@@ -243,10 +266,32 @@ function findDescendantByRoleAndName(root, role, name, requiresPress) {
 }
 
 function findSortableHeader(root, name, maximumVisited = 512) {
-  const pending = [root];
+  const preferred = [root];
+  const ordinary = [];
+  const rowFallback = [];
+  let preferredCursor = 0;
+  let ordinaryCursor = 0;
+  let rowCursor = 0;
   let visited = 0;
-  while (pending.length > 0 && visited < maximumVisited) {
-    const current = pending.shift();
+  while (
+    visited < maximumVisited &&
+    (
+      preferredCursor < preferred.length ||
+      ordinaryCursor < ordinary.length ||
+      rowCursor < rowFallback.length
+    )
+  ) {
+    let current;
+    if (preferredCursor < preferred.length) {
+      current = preferred[preferredCursor];
+      preferredCursor += 1;
+    } else if (ordinaryCursor < ordinary.length) {
+      current = ordinary[ordinaryCursor];
+      ordinaryCursor += 1;
+    } else {
+      current = rowFallback[rowCursor];
+      rowCursor += 1;
+    }
     visited += 1;
     const role = elementRole(current);
     if (
@@ -267,9 +312,9 @@ function findSortableHeader(root, name, maximumVisited = 512) {
     } catch (_) {
       continue;
     }
-    const early = [];
-    const ordinary = [];
-    const rows = [];
+    const earlyChildren = [];
+    const ordinaryChildren = [];
+    const rowChildren = [];
     // SwiftUI places the header group after the visible rows on current macOS.
     // Probe direct children from the end and inspect only a group's immediate
     // buttons before adding anything to the fallback traversal.
@@ -299,20 +344,22 @@ function findSortableHeader(root, name, maximumVisited = 512) {
             return groupChild;
           }
         }
-        early.push(child);
+        earlyChildren.push(child);
       } else if (
         childRole === "AXScrollArea" ||
         childRole === "AXOutline" ||
         childRole === "AXTable"
       ) {
-        early.push(child);
+        earlyChildren.push(child);
       } else if (childRole === "AXRow") {
-        rows.push(child);
+        rowChildren.push(child);
       } else {
-        ordinary.push(child);
+        ordinaryChildren.push(child);
       }
     }
-    pending.unshift(...early, ...ordinary, ...rows);
+    preferred.push(...earlyChildren);
+    ordinary.push(...ordinaryChildren);
+    rowFallback.push(...rowChildren);
   }
   return null;
 }
@@ -326,14 +373,38 @@ function contentElement(window, section, timeoutMilliseconds) {
 }
 
 function waitForContentIdentifierChange(
+  retainedContent,
   window,
   section,
   previousIdentifier,
   timeoutMilliseconds
 ) {
   let changed = null;
+  let nextReplacementSearchAt = monotonicMilliseconds() +
+    replacementContentSearchIntervalMilliseconds;
   waitUntil(() => {
-    changed = findDescendantByIdentifierPrefix(window, contentReadyPrefix(section));
+    const prefix = contentReadyPrefix(section);
+    const retainedIdentifier = elementIdentifier(retainedContent);
+    if (
+      retainedIdentifier &&
+      retainedIdentifier.indexOf(prefix) === 0 &&
+      retainedIdentifier !== previousIdentifier
+    ) {
+      changed = retainedContent;
+      return true;
+    }
+
+    // SwiftUI normally preserves the Table/Outline AX object for filter and
+    // sort changes. Polling that retained object is constant work. If SwiftUI
+    // replaces it on another macOS build, periodically perform one bounded
+    // fallback search so replacement remains supported without walking the
+    // entire Accessibility tree every 10ms.
+    const now = monotonicMilliseconds();
+    if (now < nextReplacementSearchAt) {
+      return false;
+    }
+    nextReplacementSearchAt = now + replacementContentSearchIntervalMilliseconds;
+    changed = findDescendantByIdentifierPrefix(window, prefix);
     return changed !== null && elementIdentifier(changed) !== previousIdentifier;
   }, timeoutMilliseconds, `${section} AX content-ready token to change`);
   return changed;
@@ -362,10 +433,17 @@ function chooseMenuOption(
   }
   press(control);
   const item = menuItem(process, option, timeoutMilliseconds);
-  const previous = elementIdentifier(contentElement(window, section, timeoutMilliseconds));
+  const content = contentElement(window, section, timeoutMilliseconds);
+  const previous = elementIdentifier(content);
   const started = monotonicMilliseconds();
   press(item);
-  waitForContentIdentifierChange(window, section, previous, timeoutMilliseconds);
+  waitForContentIdentifierChange(
+    content,
+    window,
+    section,
+    previous,
+    timeoutMilliseconds
+  );
   const elapsed = monotonicMilliseconds() - started;
   waitUntil(
     () => elementValue(control) === option,
@@ -397,19 +475,41 @@ function measureSort(
   }
   const started = monotonicMilliseconds();
   press(header);
+  let currentContent = content;
+  let currentHeader = header;
+  let nextReplacementSearchAt = monotonicMilliseconds() +
+    replacementContentSearchIntervalMilliseconds;
   waitUntil(() => {
-    const currentContent = findDescendantByIdentifierPrefix(
+    const currentIdentifier = elementIdentifier(currentContent);
+    const currentDirection = elementAttributeValue(currentHeader, "AXSortDirection");
+    if (
+      currentIdentifier &&
+      currentIdentifier.indexOf(contentReadyPrefix(section)) === 0 &&
+      currentIdentifier !== previous &&
+      currentDirection &&
+      currentDirection !== previousDirection
+    ) {
+      return true;
+    }
+
+    const now = monotonicMilliseconds();
+    if (now < nextReplacementSearchAt) {
+      return false;
+    }
+    nextReplacementSearchAt = now + replacementContentSearchIntervalMilliseconds;
+    const replacementContent = findDescendantByIdentifierPrefix(
       window,
       contentReadyPrefix(section)
     );
-    const currentHeader = currentContent === null
-      ? null
-      : findSortableHeader(currentContent, headerName) ||
-        findSortableHeader(window, headerName);
-    return currentContent !== null &&
-      currentHeader !== null &&
-      elementIdentifier(currentContent) !== previous &&
-      elementAttributeValue(currentHeader, "AXSortDirection") !== previousDirection;
+    if (replacementContent !== null) {
+      currentContent = replacementContent;
+    }
+    const replacementHeader = findSortableHeader(currentContent, headerName) ||
+      findSortableHeader(window, headerName);
+    if (replacementHeader !== null) {
+      currentHeader = replacementHeader;
+    }
+    return false;
   }, timeoutMilliseconds, `${section} sorted AX table content and direction to change`);
   return monotonicMilliseconds() - started;
 }
@@ -509,14 +609,21 @@ function normalizeSkillsSummary(window, timeoutMilliseconds) {
   if (isSelected(summary)) {
     return;
   }
-  const previous = elementIdentifier(contentElement(window, "Skills", timeoutMilliseconds));
+  const content = contentElement(window, "Skills", timeoutMilliseconds);
+  const previous = elementIdentifier(content);
   press(summary);
   waitUntil(
     () => isSelected(summary),
     timeoutMilliseconds,
     "Skills Summary view selected state"
   );
-  waitForContentIdentifierChange(window, "Skills", previous, timeoutMilliseconds);
+  waitForContentIdentifierChange(
+    content,
+    window,
+    "Skills",
+    previous,
+    timeoutMilliseconds
+  );
 }
 
 function runCommonInteractions(
