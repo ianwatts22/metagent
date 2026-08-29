@@ -6,11 +6,10 @@ import UniformTypeIdentifiers
 
 struct InventorySection: View {
     @ObservedObject var model: MetagentModel
+    @ObservedObject var rowStore: SkillTableRowStore
     let selectedProjectRoot: String?
     @State private var selection = Set<SkillTableRow.ID>()
     @State private var sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
-    @State private var cachedRows: [SkillTableRow] = []
-    @State private var loadedSkillTableRevision: Int?
     @State private var query = ""
     @State private var usageFilter = UsageFilter.all
     @State private var scopeFilter = SkillScopeFilter.all
@@ -41,6 +40,10 @@ struct InventorySection: View {
 
     private var selectedView: SkillTableView {
         SkillTableView(rawValue: selectedViewRaw) ?? .summary
+    }
+
+    private var cachedRows: [SkillTableRow] {
+        rowStore.rows
     }
 
     private var selectedViewBinding: Binding<SkillTableView> {
@@ -365,7 +368,7 @@ struct InventorySection: View {
         let selectedRows = presentation.resolvedRows(for: selection)
         let selectedRow = selectedRows.count == 1 ? selectedRows[0].inventory : nil
         let countText = countText(presentation, selectedRows: selectedRows)
-        let readyIdentifier = loadedSkillTableRevision == model.skillTableRevision
+        let readyIdentifier = rowStore.isReady(for: model.skillTableRevision)
             ? presentationReadyIdentifier(
                 section: "skills",
                 state: [
@@ -485,10 +488,23 @@ struct InventorySection: View {
         }
         .task(id: model.skillTableRevision) {
             let revision = model.skillTableRevision
-            loadedSkillTableRevision = nil
-            await rebuildRows()
-            guard !Task.isCancelled else { return }
-            loadedSkillTableRevision = revision
+            let loaded = await rowStore.load(
+                revision: revision,
+                inputs: SkillTableBuildInputs(
+                    projects: model.projects,
+                    usage: model.usageSnapshot,
+                    evaluations: model.skillEvaluations,
+                    pluginInventoryAvailable: model.isPluginInventoryAvailable,
+                    modelReleases: model.modelReleases,
+                    releaseAffirmations: model.releaseAffirmations,
+                    trackedModelProviders: model.trackedModelProviders
+                )
+            )
+            guard !Task.isCancelled,
+                  loaded,
+                  rowStore.isReady(for: model.skillTableRevision)
+            else { return }
+            selection.formIntersection(Set(cachedRows.map(\.id)))
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
         .onChange(of: model.isSkillEvaluating) { _, isEvaluating in
@@ -740,46 +756,6 @@ struct InventorySection: View {
         }
     }
 
-    private func rebuildRows() async {
-        AppBrand.clearSkillIconCache()
-        let projects = model.projects
-        let usage = model.usageSnapshot
-        let evaluations = model.skillEvaluations
-        let pluginInventoryAvailable = model.isPluginInventoryAvailable
-        let modelReleases = model.modelReleases
-        let releaseAffirmations = model.releaseAffirmations
-        let trackedModelProviders = model.trackedModelProviders
-        let rows = await Task.detached(priority: .utility) {
-            var canonicalizer = SkillPathCanonicalizer()
-            let inventoryRows = InventorySkillRow.rows(
-                from: projects,
-                usage: usage,
-                evaluations: evaluations,
-                modelReleases: modelReleases,
-                releaseAffirmations: releaseAffirmations,
-                trackedModelProviders: trackedModelProviders,
-                canonicalizer: &canonicalizer
-            )
-            let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill.coreSkill })
-            return SkillTableRow.rows(
-                inventoryRows: inventoryRows,
-                usageRows: UsageSkillRow.rows(
-                    projects: projects,
-                    summaries: usage.summaries,
-                    isBackfillComplete: usage.isBackfillComplete,
-                    canonicalizer: &canonicalizer
-                ),
-                projectRoots: projects.map(\.root),
-                pluginInventoryAvailable: pluginInventoryAvailable,
-                isBackfillComplete: usage.isBackfillComplete,
-                overlaps: overlaps,
-                canonicalizer: &canonicalizer
-            )
-        }.value
-        guard !Task.isCancelled else { return }
-        cachedRows = rows
-        selection.formIntersection(Set(cachedRows.map(\.id)))
-    }
 }
 
 struct SkillsMenuSection: View {

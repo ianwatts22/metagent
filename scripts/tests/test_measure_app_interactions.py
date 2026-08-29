@@ -121,6 +121,60 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
         self.assertNotIn("fixed screen coordinates", script)
         self.assertNotIn(".position()", script)
 
+    def test_launch_uses_one_navigation_container_sentinel_before_diagnostics(self) -> None:
+        script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
+            encoding="utf-8"
+        )
+        launch_measurement = script.split(
+            "function launchToNavigationReady", 1
+        )[1].split("function runLaunch", 1)[0]
+        run_launch = script.split("function runLaunch", 1)[1].split(
+            "function run(argv)", 1
+        )[0]
+        panel_chrome = (
+            REPO_ROOT
+            / "apps"
+            / "MetagentMenuBar"
+            / "Sources"
+            / "PanelChrome.swift"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"metagent.navigation.container"', panel_chrome)
+        self.assertIn(
+            'waitForIdentifier(\n    window,\n    "metagent.navigation.container"',
+            launch_measurement,
+        )
+        self.assertLess(
+            launch_measurement.index("const navigationReadyMilliseconds = recordPhase()"),
+            launch_measurement.index("const buttons = navigationButtons(window)"),
+        )
+        self.assertNotIn("Application(appPath)", launch_measurement)
+        self.assertIn("value_ms: measured.navigation_ready_ms", run_launch)
+
+    def test_launch_emits_monotonic_process_window_navigation_and_diagnostic_phases(
+        self,
+    ) -> None:
+        script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
+            encoding="utf-8"
+        )
+        launch_measurement = script.split(
+            "function launchToNavigationReady", 1
+        )[1].split("function runLaunch", 1)[0]
+        run_function = script.split("function run(argv)", 1)[1]
+
+        self.assertIn(
+            "previousPhaseMilliseconds = Math.max(previousPhaseMilliseconds, elapsed)",
+            launch_measurement,
+        )
+        for phase in [
+            "process_ready_ms",
+            "window_ready_ms",
+            "navigation_ready_ms",
+            "diagnostic_ready_ms",
+        ]:
+            self.assertGreaterEqual(script.count(phase), 2, phase)
+        self.assertIn("const application = Application(appPath)", run_function)
+
     def test_ax_walks_are_bounded_indexed_queues_without_array_shift(self) -> None:
         script = (REPO_ROOT / "scripts" / "measure-metagent-interactions.js").read_text(
             encoding="utf-8"

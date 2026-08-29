@@ -924,35 +924,58 @@ function waitForProcessState(systemEvents, processName, exists, timeoutMilliseco
   );
 }
 
-function quitApp(systemEvents, appPath, processName, timeoutMilliseconds) {
+function quitApp(systemEvents, application, processName, timeoutMilliseconds) {
   if (!systemEvents.processes.byName(processName).exists()) {
     return;
   }
-  Application(appPath).quit();
+  application.quit();
   waitForProcessState(systemEvents, processName, false, timeoutMilliseconds);
 }
 
 function launchToNavigationReady(
   systemEvents,
-  appPath,
+  application,
   processName,
   timeoutMilliseconds
 ) {
   const started = monotonicMilliseconds();
-  Application(appPath).activate();
+  let previousPhaseMilliseconds = 0;
+  const recordPhase = () => {
+    const elapsed = monotonicMilliseconds() - started;
+    previousPhaseMilliseconds = Math.max(previousPhaseMilliseconds, elapsed);
+    return previousPhaseMilliseconds;
+  };
+
+  application.activate();
   waitForProcessState(systemEvents, processName, true, timeoutMilliseconds);
+  const processReadyMilliseconds = recordPhase();
   const process = processFor(systemEvents, processName);
   const window = mainWindow(process, timeoutMilliseconds);
+  const windowReadyMilliseconds = recordPhase();
+  waitForIdentifier(
+    window,
+    "metagent.navigation.container",
+    timeoutMilliseconds
+  );
+  const navigationReadyMilliseconds = recordPhase();
+
+  // The enclosing navigation container is the one semantic launch-ready
+  // sentinel. Validate its individual controls only after the primary timer
+  // stops so changes in diagnostic traversal cost cannot distort launch time.
   const buttons = navigationButtons(window);
+  const diagnosticReadyMilliseconds = recordPhase();
   return {
-    value_ms: monotonicMilliseconds() - started,
+    process_ready_ms: processReadyMilliseconds,
+    window_ready_ms: windowReadyMilliseconds,
+    navigation_ready_ms: navigationReadyMilliseconds,
+    diagnostic_ready_ms: diagnosticReadyMilliseconds,
     navigation_button_count: buttons.count,
   };
 }
 
 function runLaunch(
   systemEvents,
-  appPath,
+  application,
   processName,
   scenario,
   iterations,
@@ -969,14 +992,14 @@ function runLaunch(
   const samples = [];
   let navigationButtonCount = null;
   if (scenario === "launch-warm") {
-    quitApp(systemEvents, appPath, processName, timeoutMilliseconds);
-    launchToNavigationReady(systemEvents, appPath, processName, timeoutMilliseconds);
-    quitApp(systemEvents, appPath, processName, timeoutMilliseconds);
+    quitApp(systemEvents, application, processName, timeoutMilliseconds);
+    launchToNavigationReady(systemEvents, application, processName, timeoutMilliseconds);
+    quitApp(systemEvents, application, processName, timeoutMilliseconds);
   }
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
     const measured = launchToNavigationReady(
       systemEvents,
-      appPath,
+      application,
       processName,
       timeoutMilliseconds
     );
@@ -988,13 +1011,17 @@ function runLaunch(
           : "cold_launch_to_navigation_ready_ms",
       interaction: scenario,
       iteration,
-      value_ms: measured.value_ms,
+      value_ms: measured.navigation_ready_ms,
+      process_ready_ms: measured.process_ready_ms,
+      window_ready_ms: measured.window_ready_ms,
+      navigation_ready_ms: measured.navigation_ready_ms,
+      diagnostic_ready_ms: measured.diagnostic_ready_ms,
       navigation_ready_observed: true,
       presentation_observed: true,
       os_cache_state_controlled: false,
     });
     if (iteration < iterations) {
-      quitApp(systemEvents, appPath, processName, timeoutMilliseconds);
+      quitApp(systemEvents, application, processName, timeoutMilliseconds);
     }
   }
   return {
@@ -1019,9 +1046,12 @@ function run(argv) {
   const systemEvents = Application("System Events");
   let result;
   if (scenario === "launch-warm" || scenario === "launch-cold") {
+    // Constructing the JXA application proxy is harness setup, not app launch.
+    // Keep it outside every measured region.
+    const application = Application(appPath);
     result = runLaunch(
       systemEvents,
-      appPath,
+      application,
       processName,
       scenario,
       iterations,

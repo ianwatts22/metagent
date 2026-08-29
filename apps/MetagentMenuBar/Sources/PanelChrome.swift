@@ -13,6 +13,7 @@ struct MetagentPanel: View {
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
     @State private var showsFailureDetails = false
+    @StateObject private var skillTableRows = SkillTableRowStore()
 
     private var directoryOptions: [DirectoryFilterOption] {
         directoryFilterOptions(
@@ -230,6 +231,8 @@ struct MetagentPanel: View {
         .padding(4)
         .glassEffect(.regular, in: Capsule())
         .frame(maxWidth: showsOpenWindowButton ? .infinity : 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("metagent.navigation.container")
     }
 
     private func openMainWindow() {
@@ -270,7 +273,11 @@ struct MetagentPanel: View {
                     openMainWindow: openMainWindow
                 )
             } else {
-                InventorySection(model: model, selectedProjectRoot: selectedProjectRoot)
+                InventorySection(
+                    model: model,
+                    rowStore: skillTableRows,
+                    selectedProjectRoot: selectedProjectRoot
+                )
             }
         case .mcps:
             if showsOpenWindowButton {
