@@ -4,6 +4,19 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The complete identity of one Overview health calculation. Keeping launch
+/// hydration in the identity lets SwiftUI cancel the intentionally inert
+/// pre-hydration task and schedule exactly one real calculation when cached
+/// usage and evaluation inputs become available.
+struct OverviewSkillHealthRefreshTrigger: Hashable {
+    let hasHydratedLaunchCaches: Bool
+    let skillTableRevision: Int
+    let selectedProjectRoot: String?
+    let trendRange: String
+
+    var shouldRefresh: Bool { hasHydratedLaunchCaches }
+}
+
 struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
     let isCompact: Bool
@@ -15,7 +28,7 @@ struct OverviewSection: View {
     @State private var repairProjectRoot: String?
     @State private var skillHealth = SkillSystemHealth.empty
     @State private var isSkillHealthLoading = true
-    @State private var loadedSkillHealthRefreshID: String?
+    @State private var loadedSkillHealthRefreshID: OverviewSkillHealthRefreshTrigger?
     @State private var historyTrends = SkillHistoryTrends.empty
     @State private var agentRunStats = AgentRunDurationStats.empty
     @AppStorage("metagent.overview.trend-range.v1") private var storedTrendRange = HistoryRange.month.rawValue
@@ -31,8 +44,10 @@ struct OverviewSection: View {
             overviewContent
         }
         .scrollIndicators(.hidden)
-        .task(id: skillHealthRefreshID) {
-            await refreshSkillHealth()
+        .task(id: skillHealthRefreshTrigger) {
+            let trigger = skillHealthRefreshTrigger
+            guard !Task.isCancelled, trigger.shouldRefresh else { return }
+            await refreshSkillHealth(trigger: trigger)
         }
         .sheet(isPresented: $showsDoctorFindings) {
             DoctorFindingsView(model: model, findings: doctorFindings) { projectRoot in
@@ -157,12 +172,17 @@ struct OverviewSection: View {
         "How far back the lines and deltas on these cards look, currently \(trendRange.phrase). This changes the charts only; each card still counts exactly what its title says."
     }
 
-    private var skillHealthRefreshID: String {
-        "\(model.skillTableRevision):\(selectedProjectRoot ?? "all"):\(trendRange.rawValue)"
+    private var skillHealthRefreshTrigger: OverviewSkillHealthRefreshTrigger {
+        OverviewSkillHealthRefreshTrigger(
+            hasHydratedLaunchCaches: model.hasHydratedLaunchCaches,
+            skillTableRevision: model.skillTableRevision,
+            selectedProjectRoot: selectedProjectRoot,
+            trendRange: trendRange.rawValue
+        )
     }
 
     private var isSkillHealthStale: Bool {
-        isSkillHealthLoading || loadedSkillHealthRefreshID != skillHealthRefreshID
+        isSkillHealthLoading || loadedSkillHealthRefreshID != skillHealthRefreshTrigger
     }
 
     private var skillHealthScope: SkillSystemHealthScope {
@@ -378,8 +398,8 @@ struct OverviewSection: View {
     }
 
     @MainActor
-    private func refreshSkillHealth() async {
-        let refreshID = skillHealthRefreshID
+    private func refreshSkillHealth(trigger refreshID: OverviewSkillHealthRefreshTrigger) async {
+        guard !Task.isCancelled, refreshID.shouldRefresh else { return }
         isSkillHealthLoading = true
         let projects = model.projects.map(\.coreProject)
         let usage = model.usageSnapshot
@@ -410,7 +430,7 @@ struct OverviewSection: View {
                     : .empty
             )
         }.value
-        guard !Task.isCancelled, refreshID == skillHealthRefreshID else { return }
+        guard !Task.isCancelled, refreshID == skillHealthRefreshTrigger else { return }
         skillHealth = health
         historyTrends = trends
         agentRunStats = runStats

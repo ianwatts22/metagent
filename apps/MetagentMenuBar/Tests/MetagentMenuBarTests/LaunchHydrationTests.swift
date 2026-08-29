@@ -73,3 +73,40 @@ private final class LaunchLoadRecorder: @unchecked Sendable {
     await model.hydrateLaunchCaches()
     #expect(model.hasHydratedLaunchCaches)
 }
+
+@Test func overviewHealthRefreshWaitsForHydrationAndRetriggersForEveryInput() {
+    let waiting = OverviewSkillHealthRefreshTrigger(
+        hasHydratedLaunchCaches: false,
+        skillTableRevision: 7,
+        selectedProjectRoot: nil,
+        trendRange: "30d"
+    )
+    let hydrated = OverviewSkillHealthRefreshTrigger(
+        hasHydratedLaunchCaches: true,
+        skillTableRevision: 7,
+        selectedProjectRoot: nil,
+        trendRange: "30d"
+    )
+
+    #expect(!waiting.shouldRefresh)
+    #expect(hydrated.shouldRefresh)
+    #expect(waiting != hydrated)
+    #expect(hydrated != OverviewSkillHealthRefreshTrigger(
+        hasHydratedLaunchCaches: true,
+        skillTableRevision: 8,
+        selectedProjectRoot: nil,
+        trendRange: "30d"
+    ))
+    #expect(hydrated != OverviewSkillHealthRefreshTrigger(
+        hasHydratedLaunchCaches: true,
+        skillTableRevision: 7,
+        selectedProjectRoot: "/private/tmp/project",
+        trendRange: "30d"
+    ))
+    #expect(hydrated != OverviewSkillHealthRefreshTrigger(
+        hasHydratedLaunchCaches: true,
+        skillTableRevision: 7,
+        selectedProjectRoot: nil,
+        trendRange: "90d"
+    ))
+}
