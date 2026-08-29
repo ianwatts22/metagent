@@ -89,9 +89,15 @@ struct InventorySection: View {
     }
 
     private var rowFilter: SkillTableFilter {
-        SkillTableFilter(
+        let selectedProjectRootKey = selectedProjectRoot.flatMap { selectedRoot in
+            cachedRows.first { $0.projectRoot == selectedRoot }?.projectRootKey
+        }
+        let globalRootKey = cachedRows.first { $0.projectRoot == NSHomeDirectory() }?.projectRootKey
+        return SkillTableFilter(
             selectedView: selectedView,
             selectedProjectRoot: selectedProjectRoot,
+            selectedProjectRootKey: selectedProjectRootKey,
+            globalRootKey: globalRootKey,
             hiddenSources: hiddenSources,
             scope: scopeFilter,
             usage: usageFilter,
@@ -744,13 +750,15 @@ struct InventorySection: View {
         let releaseAffirmations = model.releaseAffirmations
         let trackedModelProviders = model.trackedModelProviders
         let rows = await Task.detached(priority: .utility) {
+            var canonicalizer = SkillPathCanonicalizer()
             let inventoryRows = InventorySkillRow.rows(
                 from: projects,
                 usage: usage,
                 evaluations: evaluations,
                 modelReleases: modelReleases,
                 releaseAffirmations: releaseAffirmations,
-                trackedModelProviders: trackedModelProviders
+                trackedModelProviders: trackedModelProviders,
+                canonicalizer: &canonicalizer
             )
             let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill.coreSkill })
             return SkillTableRow.rows(
@@ -758,12 +766,14 @@ struct InventorySection: View {
                 usageRows: UsageSkillRow.rows(
                     projects: projects,
                     summaries: usage.summaries,
-                    isBackfillComplete: usage.isBackfillComplete
+                    isBackfillComplete: usage.isBackfillComplete,
+                    canonicalizer: &canonicalizer
                 ),
                 projectRoots: projects.map(\.root),
                 pluginInventoryAvailable: pluginInventoryAvailable,
                 isBackfillComplete: usage.isBackfillComplete,
-                overlaps: overlaps
+                overlaps: overlaps,
+                canonicalizer: &canonicalizer
             )
         }.value
         guard !Task.isCancelled else { return }

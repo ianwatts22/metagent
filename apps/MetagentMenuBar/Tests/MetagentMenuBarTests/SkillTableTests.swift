@@ -80,6 +80,98 @@ import Testing
     #expect(grouped.resolvedRows(for: [projectBeta.id]).map(\.skillName) == ["beta"])
 }
 
+@Test func skillTableBuildCanonicalizesEachRawPathOnceAndHotPathsStayPure() throws {
+    let fixture = skillTableRow(name: "shared-helper", root: "/alias/work", scope: "project")
+    let project = try #require(fixture.inventory?.project)
+    let realRoot = "/real/work"
+    let realSkill = realRoot + "/.agents/skills/shared-helper"
+    let aliases = [
+        project.root: realRoot,
+        project.skills[0].path: realSkill,
+    ]
+    var resolutionCounts: [String: Int] = [:]
+    var canonicalizer = SkillPathCanonicalizer { path in
+        resolutionCounts[path, default: 0] += 1
+        return aliases[path] ?? URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    let inventoryRows = InventorySkillRow.rows(
+        from: [project],
+        usage: .empty,
+        evaluations: SkillEvaluationSnapshot(),
+        canonicalizer: &canonicalizer
+    )
+    let usageRows = UsageSkillRow.rows(
+        projects: [project],
+        summaries: [],
+        isBackfillComplete: true,
+        canonicalizer: &canonicalizer
+    )
+    let rows = SkillTableRow.rows(
+        inventoryRows: inventoryRows,
+        usageRows: usageRows,
+        projectRoots: [project.root],
+        pluginInventoryAvailable: true,
+        isBackfillComplete: true,
+        overlaps: [],
+        canonicalizer: &canonicalizer
+    )
+
+    #expect(resolutionCounts == [project.root: 1, project.skills[0].path: 1])
+    let countsAfterBuild = resolutionCounts
+    let row = try #require(rows.first)
+    let tableFilter = filter(
+        view: .summary,
+        selectedRoot: project.root,
+        selectedRootKey: realRoot,
+        query: "SHARED"
+    )
+    for _ in 0..<20 {
+        _ = row.id
+        _ = row.inventory?.id
+        _ = row.canonicalPathKey
+        _ = row.projectRootKey
+        _ = tableFilter.includes(row)
+        _ = SkillGrouping.location.key(for: row)
+        _ = [row].sorted(using: [KeyPathComparator(\SkillTableRow.skillName)])
+    }
+    #expect(resolutionCounts == countsAfterBuild)
+}
+
+@Test func skillTableHistoricalRootInferenceUsesCanonicalLongestPrefix() throws {
+    let usage = UsageSkillRow.placeholder(
+        id: "historical:nested",
+        skillName: "nested",
+        canonicalPath: "/alias/work/nested/.agents/skills/nested",
+        scope: "project",
+        status: .neverObserved
+    )
+    let aliases = [
+        "/alias/work": "/real/work",
+        "/alias/work/nested": "/real/work/nested",
+        "/alias/work/nested/.agents/skills/nested": "/real/work/nested/.agents/skills/nested",
+    ]
+    var canonicalizer = SkillPathCanonicalizer { aliases[$0] ?? $0 }
+    let rows = SkillTableRow.rows(
+        inventoryRows: [],
+        usageRows: [usage],
+        projectRoots: ["/alias/work", "/alias/work/nested"],
+        pluginInventoryAvailable: true,
+        isBackfillComplete: true,
+        overlaps: [],
+        canonicalizer: &canonicalizer
+    )
+    let row = try #require(rows.first)
+
+    #expect(row.projectRoot == "/real/work/nested")
+    #expect(row.projectRootKey == "/real/work/nested")
+    #expect(filter(
+        view: .usage,
+        selectedRoot: "/alias/work/nested",
+        selectedRootKey: "/real/work/nested"
+    ).includes(row))
+}
+
 /// Reproduces the row-pipeline work the old `InventorySection.body` performed
 /// independently for its count, empty state, selection, and table. This is a
 /// deliberately narrow proxy: live profiling remains the authority for
@@ -133,6 +225,7 @@ private func benchmark(iterations: Int, operation: () -> Int) -> (elapsedMillise
 private func filter(
     view: SkillTableView,
     selectedRoot: String? = nil,
+    selectedRootKey: String? = nil,
     hiddenSources: Set<SkillSourceCategory> = [],
     scope: SkillScopeFilter = .all,
     usage: UsageFilter = .all,
@@ -143,6 +236,7 @@ private func filter(
     SkillTableFilter(
         selectedView: view,
         selectedProjectRoot: selectedRoot,
+        selectedProjectRootKey: selectedRootKey,
         hiddenSources: hiddenSources,
         scope: scope,
         usage: usage,

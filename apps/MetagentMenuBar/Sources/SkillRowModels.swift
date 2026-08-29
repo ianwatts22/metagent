@@ -64,6 +64,7 @@ enum SkillScopeFilter: String, CaseIterable, Identifiable {
 struct SkillTableFilter {
     let selectedView: SkillTableView
     let selectedProjectRoot: String?
+    let selectedProjectRootKey: String?
     let selectedProjectIsGlobal: Bool
     let hiddenSources: Set<SkillSourceCategory>
     let scope: SkillScopeFilter
@@ -75,6 +76,8 @@ struct SkillTableFilter {
     init(
         selectedView: SkillTableView,
         selectedProjectRoot: String?,
+        selectedProjectRootKey: String? = nil,
+        globalRootKey: String? = nil,
         hiddenSources: Set<SkillSourceCategory>,
         scope: SkillScopeFilter,
         usage: UsageFilter,
@@ -82,9 +85,13 @@ struct SkillTableFilter {
         pendingRemovalIDs: Set<String>,
         completedRemovalIDs: Set<String>
     ) {
+        let rootKey = selectedProjectRootKey
+            ?? selectedProjectRoot.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
         self.selectedView = selectedView
         self.selectedProjectRoot = selectedProjectRoot
-        self.selectedProjectIsGlobal = selectedProjectRoot.map(isGlobalRoot) ?? false
+        self.selectedProjectRootKey = rootKey
+        self.selectedProjectIsGlobal = rootKey == (globalRootKey
+            ?? URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path)
         self.hiddenSources = hiddenSources
         self.scope = scope
         self.usage = usage
@@ -104,10 +111,10 @@ struct SkillTableFilter {
         }
         if selectedView != .usage, !row.isInstalled { return false }
         if selectedView == .duplicates, row.overlap == nil { return false }
-        if let selectedProjectRoot {
+        if selectedProjectRoot != nil {
             if selectedProjectIsGlobal {
                 if row.scope == "project" { return false }
-            } else if row.scope != "project" || row.projectRoot != selectedProjectRoot {
+            } else if row.scope != "project" || row.projectRootKey != selectedProjectRootKey {
                 return false
             }
         }
@@ -211,7 +218,7 @@ enum SkillGrouping: String, CaseIterable, Identifiable {
         case .location:
             row.displaysGlobalLocation
                 ? "global"
-                : "project:\(row.projectRoot ?? row.displayLocationSortValue)"
+                : "project:\(row.projectRootKey ?? row.displayLocationSortValue)"
         case .upstream: row.upstreamText
         }
     }
@@ -282,10 +289,29 @@ struct UsageSkillRow: Identifiable, Sendable {
         summaries: [SkillUsageSummary],
         isBackfillComplete: Bool
     ) -> [UsageSkillRow] {
+        var canonicalizer = SkillPathCanonicalizer()
+        return rows(
+            projects: projects,
+            summaries: summaries,
+            isBackfillComplete: isBackfillComplete,
+            canonicalizer: &canonicalizer
+        )
+    }
+
+    static func rows(
+        projects: [ProjectStatus],
+        summaries: [SkillUsageSummary],
+        isBackfillComplete: Bool,
+        canonicalizer: inout SkillPathCanonicalizer
+    ) -> [UsageSkillRow] {
         var rows = summaries.map { summary in
-            from(summary: summary, isBackfillComplete: isBackfillComplete)
+            from(
+                summary: summary,
+                canonicalPath: canonicalizer.canonicalPath(summary.canonicalPath),
+                isBackfillComplete: isBackfillComplete
+            )
         }
-        let summaryPaths = Set(summaries.compactMap(\.canonicalPath).map(standardizedDirectoryPath))
+        let summaryPaths = Set(rows.compactMap(\.canonicalPath))
         let summaryPluginKeys = Set(summaries.compactMap {
             pluginUsageMatchKey(id: $0.id, canonicalPath: $0.canonicalPath)
         })
@@ -294,7 +320,7 @@ struct UsageSkillRow: Identifiable, Sendable {
         for (project, skill) in projects.flatMap({ project in
             project.skills.map { (project, $0) }
         }) {
-            let directory = standardizedDirectoryPath(skill.path)
+            let directory = canonicalizer.canonicalPath(skill.path)
             let pluginAlreadyRepresented = pluginUsageMatchKey(skill).map(summaryPluginKeys.contains) ?? false
             guard !summaryPaths.contains(directory),
                   !pluginAlreadyRepresented,
@@ -316,6 +342,7 @@ struct UsageSkillRow: Identifiable, Sendable {
 
     private static func from(
         summary: SkillUsageSummary,
+        canonicalPath: String?,
         isBackfillComplete: Bool
     ) -> UsageSkillRow {
         let lastDate = MetagentCore.parseSkillUsageTimestamp(summary.lastUsedAt)
@@ -323,7 +350,7 @@ struct UsageSkillRow: Identifiable, Sendable {
         return UsageSkillRow(
             id: summary.id,
             skillName: summary.skillName,
-            canonicalPath: summary.canonicalPath,
+            canonicalPath: canonicalPath,
             scope: summary.scope,
             totalInvocations: summary.totalInvocations,
             invocations7d: summary.invocations7d,
@@ -522,15 +549,46 @@ struct SkillOverlapMembership: Sendable {
 }
 
 struct SkillTableRow: Identifiable, Sendable {
+    let id: String
     let inventory: InventorySkillRow?
     let usage: UsageSkillRow
     let historicalProjectRoot: String?
     let pluginInventoryAvailable: Bool
+    let canonicalPathKey: String?
+    let projectRootKey: String?
     var overlap: SkillOverlapMembership? = nil
     var groupTitle: String? = nil
     var children: [SkillTableRow]? = nil
 
-    var id: String { groupTitle == nil ? (inventory?.id ?? "historical:\(usage.id)") : usage.id }
+    init(
+        inventory: InventorySkillRow?,
+        usage: UsageSkillRow,
+        historicalProjectRoot: String?,
+        pluginInventoryAvailable: Bool,
+        canonicalPathKey: String? = nil,
+        projectRootKey: String? = nil,
+        overlap: SkillOverlapMembership? = nil,
+        groupTitle: String? = nil,
+        children: [SkillTableRow]? = nil,
+        id: String? = nil
+    ) {
+        self.inventory = inventory
+        self.usage = usage
+        self.historicalProjectRoot = historicalProjectRoot
+        self.pluginInventoryAvailable = pluginInventoryAvailable
+        self.canonicalPathKey = canonicalPathKey
+            ?? inventory?.canonicalPathKey
+            ?? usage.canonicalPath.map(standardizedDirectoryPath)
+        self.projectRootKey = projectRootKey
+            ?? inventory?.projectRootKey
+            ?? historicalProjectRoot.map(standardizedDirectoryPath)
+        self.overlap = overlap
+        self.groupTitle = groupTitle
+        self.children = children
+        self.id = id
+            ?? (groupTitle == nil ? (inventory?.id ?? "historical:\(usage.id)") : usage.id)
+    }
+
     var isGroup: Bool { children != nil }
     var skillName: String { inventory?.skillName ?? usage.skillName }
     var projectName: String {
@@ -709,9 +767,31 @@ struct SkillTableRow: Identifiable, Sendable {
         isBackfillComplete: Bool,
         overlaps: [SkillOverlapGroup]
     ) -> [SkillTableRow] {
+        var canonicalizer = SkillPathCanonicalizer()
+        return rows(
+            inventoryRows: inventoryRows,
+            usageRows: usageRows,
+            projectRoots: projectRoots,
+            pluginInventoryAvailable: pluginInventoryAvailable,
+            isBackfillComplete: isBackfillComplete,
+            overlaps: overlaps,
+            canonicalizer: &canonicalizer
+        )
+    }
+
+    static func rows(
+        inventoryRows: [InventorySkillRow],
+        usageRows: [UsageSkillRow],
+        projectRoots: [String],
+        pluginInventoryAvailable: Bool,
+        isBackfillComplete: Bool,
+        overlaps: [SkillOverlapGroup],
+        canonicalizer: inout SkillPathCanonicalizer
+    ) -> [SkillTableRow] {
+        let canonicalProjectRoots = projectRoots.map { canonicalizer.canonicalPath($0) }
         let usageByPath = Dictionary(grouping: usageRows.compactMap { row -> (String, UsageSkillRow)? in
             guard let path = row.canonicalPath else { return nil }
-            return (standardizedDirectoryPath(path), row)
+            return (canonicalizer.canonicalPath(path), row)
         }, by: \.0).compactMapValues { $0.first?.1 }
         let usageByPlugin = Dictionary(grouping: usageRows.compactMap { row in
             pluginUsageMatchKey(id: row.id, canonicalPath: row.canonicalPath).map { ($0, row) }
@@ -721,7 +801,7 @@ struct SkillTableRow: Identifiable, Sendable {
             overlaps.flatMap { group in
                 group.members.map { member in
                     (
-                        standardizedDirectoryPath(member.canonicalPath),
+                        canonicalizer.canonicalPath(member.canonicalPath),
                         SkillOverlapMembership(
                             groupID: group.id,
                             kind: group.kind,
@@ -735,7 +815,8 @@ struct SkillTableRow: Identifiable, Sendable {
         )
 
         var rows = inventoryRows.map { inventory -> SkillTableRow in
-            let matched = usageByPath[standardizedDirectoryPath(inventory.canonicalPath)]
+            let canonicalPath = inventory.canonicalPathKey
+            let matched = usageByPath[canonicalPath]
                 ?? pluginUsageMatchKey(inventory.skill).flatMap { usageByPlugin[$0] }
             if let matched { matchedUsageIDs.insert(matched.id) }
             let usage = matched ?? UsageSkillRow.inventoryPlaceholder(
@@ -751,20 +832,28 @@ struct SkillTableRow: Identifiable, Sendable {
                 usage: usage,
                 historicalProjectRoot: nil,
                 pluginInventoryAvailable: pluginInventoryAvailable,
+                canonicalPathKey: canonicalPath,
+                projectRootKey: inventory.projectRootKey,
                 overlap: inventory.skill.representation == "projection"
                     ? nil
-                    : overlapsByPath[standardizedDirectoryPath(inventory.canonicalPath)]
+                    : overlapsByPath[canonicalPath]
             )
         }
 
         rows.append(contentsOf: usageRows
             .filter { !matchedUsageIDs.contains($0.id) }
             .map { usage in
-                SkillTableRow(
+                let historicalProjectRoot = inferredProjectRoot(
+                    forCanonicalPath: canonicalizer.canonicalPath(usage.canonicalPath),
+                    canonicalRoots: canonicalProjectRoots
+                )
+                return SkillTableRow(
                     inventory: nil,
                     usage: usage,
-                    historicalProjectRoot: inferredProjectRoot(for: usage.canonicalPath, roots: projectRoots),
-                    pluginInventoryAvailable: pluginInventoryAvailable
+                    historicalProjectRoot: historicalProjectRoot,
+                    pluginInventoryAvailable: pluginInventoryAvailable,
+                    canonicalPathKey: canonicalizer.canonicalPath(usage.canonicalPath),
+                    projectRootKey: historicalProjectRoot
                 )
             })
         return rows
@@ -787,11 +876,12 @@ struct SkillTableRow: Identifiable, Sendable {
         )
     }
 
-    private static func inferredProjectRoot(for path: String?, roots: [String]) -> String? {
-        guard let path else { return nil }
-        let canonicalPath = standardizedDirectoryPath(path)
-        return roots
-            .map(standardizedDirectoryPath)
+    private static func inferredProjectRoot(
+        forCanonicalPath canonicalPath: String?,
+        canonicalRoots: [String]
+    ) -> String? {
+        guard let canonicalPath else { return nil }
+        return canonicalRoots
             .filter { canonicalPath == $0 || canonicalPath.hasPrefix($0 + "/") }
             .max { $0.count < $1.count }
     }
@@ -860,6 +950,43 @@ struct InventorySkillRow: Identifiable, Sendable {
     var modelReviewTargets: [ModelReviewTarget] = []
     var modelReleaseCatalogFetchedAt: Date? = nil
     var advisories: [SkillAdvisory] = []
+    let canonicalPathKey: String
+    let projectRootKey: String
+    private let canonicalIdentityKey: String
+
+    init(
+        project: ProjectStatus,
+        skill: SkillStatus,
+        variants: [SkillStatus],
+        metagentScore: MetagentSkillScore,
+        pluginEval: PluginEvalSkillAssessment?,
+        codexReview: CodexSkillReview?,
+        pluginEvalIsStale: Bool,
+        codexReviewIsStale: Bool,
+        modelReviewTargets: [ModelReviewTarget] = [],
+        modelReleaseCatalogFetchedAt: Date? = nil,
+        advisories: [SkillAdvisory] = [],
+        canonicalPathKey: String? = nil,
+        projectRootKey: String? = nil,
+        canonicalIdentityKey: String? = nil
+    ) {
+        let resolvedCanonicalPath = canonicalPathKey ?? standardizedDirectoryPath(skill.canonicalPath)
+        self.project = project
+        self.skill = skill
+        self.variants = variants
+        self.metagentScore = metagentScore
+        self.pluginEval = pluginEval
+        self.codexReview = codexReview
+        self.pluginEvalIsStale = pluginEvalIsStale
+        self.codexReviewIsStale = codexReviewIsStale
+        self.modelReviewTargets = modelReviewTargets
+        self.modelReleaseCatalogFetchedAt = modelReleaseCatalogFetchedAt
+        self.advisories = advisories
+        self.canonicalPathKey = resolvedCanonicalPath
+        self.projectRootKey = projectRootKey ?? standardizedDirectoryPath(project.root)
+        self.canonicalIdentityKey = canonicalIdentityKey
+            ?? Self.canonicalSkillIdentity(skill, canonicalPathKey: resolvedCanonicalPath)
+    }
 
     static func rows(
         from projects: [ProjectStatus],
@@ -869,9 +996,30 @@ struct InventorySkillRow: Identifiable, Sendable {
         releaseAffirmations: [String: Date] = [:],
         trackedModelProviders: [String] = MetagentCore.defaultTrackedModelProviders
     ) -> [InventorySkillRow] {
+        var canonicalizer = SkillPathCanonicalizer()
+        return rows(
+            from: projects,
+            usage: usage,
+            evaluations: evaluations,
+            modelReleases: modelReleases,
+            releaseAffirmations: releaseAffirmations,
+            trackedModelProviders: trackedModelProviders,
+            canonicalizer: &canonicalizer
+        )
+    }
+
+    static func rows(
+        from projects: [ProjectStatus],
+        usage: SkillUsageSnapshot,
+        evaluations: SkillEvaluationSnapshot,
+        modelReleases: ModelReleaseSnapshot = .empty,
+        releaseAffirmations: [String: Date] = [:],
+        trackedModelProviders: [String] = MetagentCore.defaultTrackedModelProviders,
+        canonicalizer: inout SkillPathCanonicalizer
+    ) -> [InventorySkillRow] {
         let usageByPath = Dictionary(grouping: usage.summaries.compactMap { summary -> (String, SkillUsageSummary)? in
             guard let canonicalPath = summary.canonicalPath else { return nil }
-            return (standardizedDirectoryPath(canonicalPath), summary)
+            return (canonicalizer.canonicalPath(canonicalPath), summary)
         }, by: \.0).compactMapValues { values in
             values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
         }
@@ -886,14 +1034,24 @@ struct InventorySkillRow: Identifiable, Sendable {
             values.map(\.1).max { $0.totalInvocations < $1.totalInvocations }
         }
         let evaluationsByPath = Dictionary(evaluations.records.values.map {
-            (standardizedDirectoryPath($0.canonicalPath), $0)
+            (canonicalizer.canonicalPath($0.canonicalPath), $0)
         }, uniquingKeysWith: { first, _ in first })
         let portfolioVariantsByName = Dictionary(grouping: projects.flatMap(\.skills), by: \.name)
         return projects.flatMap { project in
-            Dictionary(grouping: project.skills, by: canonicalSkillIdentity).values.map { variants in
+            let projectRootKey = canonicalizer.canonicalPath(project.root)
+            let variantsByIdentity = Dictionary(grouping: project.skills) { skill in
+                let pathKey = canonicalizer.canonicalPath(skill.canonicalPath)
+                return canonicalSkillIdentity(skill, canonicalPathKey: pathKey, canonicalizer: &canonicalizer)
+            }
+            return variantsByIdentity.values.map { variants in
                 let sortedVariants = variants.sorted(by: canonicalSkillOrder)
                 let skill = sortedVariants[0]
-                let canonicalPath = standardizedDirectoryPath(skill.canonicalPath)
+                let canonicalPath = canonicalizer.canonicalPath(skill.canonicalPath)
+                let identityKey = canonicalSkillIdentity(
+                    skill,
+                    canonicalPathKey: canonicalPath,
+                    canonicalizer: &canonicalizer
+                )
                 let matchedUsage = usageByPath[canonicalPath]
                     ?? pluginUsageMatchKey(skill).flatMap { pluginUsageByKey[$0] }
                     ?? (skill.canonicalPath.isEmpty ? usageByIdentity["\(skill.name):\(skill.scope)"] : nil)
@@ -919,7 +1077,10 @@ struct InventorySkillRow: Identifiable, Sendable {
                     codexReviewIsStale: evaluations.staleCodexReviewPaths.contains(canonicalPath),
                     modelReviewTargets: modelReviewTargets,
                     modelReleaseCatalogFetchedAt: modelReleases.fetchedAt,
-                    advisories: MetagentCore.modelReleaseAdvisory(targets: modelReviewTargets).map { [$0] } ?? []
+                    advisories: MetagentCore.modelReleaseAdvisory(targets: modelReviewTargets).map { [$0] } ?? [],
+                    canonicalPathKey: canonicalPath,
+                    projectRootKey: projectRootKey,
+                    canonicalIdentityKey: identityKey
                 )
             }
         }
@@ -940,18 +1101,35 @@ struct InventorySkillRow: Identifiable, Sendable {
         return left.path < right.path
     }
 
-    private static func canonicalSkillIdentity(_ skill: SkillStatus) -> String {
+    private static func canonicalSkillIdentity(
+        _ skill: SkillStatus,
+        canonicalPathKey: String
+    ) -> String {
         if let pluginKey = pluginUsageMatchKey(skill) {
             return "plugin:\(pluginKey)"
         }
         if !skill.canonicalPath.isEmpty {
-            return "path:\(standardizedDirectoryPath(skill.canonicalPath))"
+            return "path:\(canonicalPathKey)"
         }
         return "installed:\(skill.location):\(standardizedDirectoryPath(skill.path))"
     }
 
+    private static func canonicalSkillIdentity(
+        _ skill: SkillStatus,
+        canonicalPathKey: String,
+        canonicalizer: inout SkillPathCanonicalizer
+    ) -> String {
+        if let pluginKey = pluginUsageMatchKey(skill) {
+            return "plugin:\(pluginKey)"
+        }
+        if !skill.canonicalPath.isEmpty {
+            return "path:\(canonicalPathKey)"
+        }
+        return "installed:\(skill.location):\(canonicalizer.canonicalPath(skill.path))"
+    }
+
     var id: String {
-        "\(project.root):\(Self.canonicalSkillIdentity(skill))"
+        "\(project.root):\(canonicalIdentityKey)"
     }
 
     var skillName: String { skill.name }

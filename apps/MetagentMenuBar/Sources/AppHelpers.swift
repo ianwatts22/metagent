@@ -152,6 +152,39 @@ func standardizedDirectoryPath(_ path: String) -> String {
     return url.path
 }
 
+/// Revision-local path normalization for Skills row construction.
+///
+/// Resolving symlinks touches the filesystem. Skills row construction compares
+/// the same paths in several indexes, so keeping one cache for the complete
+/// detached build makes each distinct raw path pay that cost at most once.
+/// Rows retain the resulting immutable keys; SwiftUI filtering, sorting, and
+/// identity never call this resolver.
+struct SkillPathCanonicalizer {
+    typealias Resolver = (String) -> String
+
+    private let resolver: Resolver
+    private var pathsByRawValue: [String: String] = [:]
+
+    init(resolver: @escaping Resolver = standardizedDirectoryPath) {
+        self.resolver = resolver
+    }
+
+    mutating func canonicalPath(_ rawPath: String) -> String {
+        if let cached = pathsByRawValue[rawPath] { return cached }
+        let canonical = resolver(rawPath)
+        pathsByRawValue[rawPath] = canonical
+        // Downstream stages pass canonical keys back through this same build
+        // context. Treat a resolved result as its own known key so that handoff
+        // does not perform a second filesystem lookup.
+        pathsByRawValue[canonical] = canonical
+        return canonical
+    }
+
+    mutating func canonicalPath(_ rawPath: String?) -> String? {
+        rawPath.map { canonicalPath($0) }
+    }
+}
+
 func isGlobalRoot(_ path: String) -> Bool {
     standardizedDirectoryPath(path) == standardizedDirectoryPath(NSHomeDirectory())
 }
