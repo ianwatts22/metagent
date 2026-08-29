@@ -41,7 +41,7 @@ class SummarizeEfficiencyTests(unittest.TestCase):
                     "5.5,2.0,106496,5,10486760,0,0,0,0",
                     "6.5,0.0,107520,4,10486760,0,0,0,0",
                 ],
-                "second,cpu_percent,rss_kib,threads,processed_usage_bytes,processed_usage_delta_bytes,child_cpu_percent,child_rss_kib,child_processes",
+                "second,cpu_percent,rss_kib,threads,processed_usage_bytes,processed_usage_delta_bytes,observed_descendant_reported_cpu_percent,observed_descendant_rss_kib,observed_descendant_processes",
             )
             samples = MODULE.read_samples(samples_path)
             result = MODULE.summarize(
@@ -50,39 +50,73 @@ class SummarizeEfficiencyTests(unittest.TestCase):
                 pid=4242,
                 active_cpu_threshold=1.0,
                 processed_usage_bytes=None,
+                provenance={"scenario": "idle-overview", "build_commit": "abc123"},
             )
 
         cpu = result["cpu"]
         memory = result["memory"]
-        progress = result["usage_progress"]
-        children = result["children"]
+        progress = result["global_usage_progress"]
+        descendants = result["observed_descendants"]
         self.assertAlmostEqual(cpu["average_percent"], 12.75 / 6.5)
-        self.assertEqual(cpu["p50_percent"], 0.5)
-        self.assertEqual(cpu["p95_percent"], 6.0)
-        self.assertEqual(cpu["p99_percent"], 6.0)
+        self.assertEqual(cpu["time_weighted_p50_percent"], 0.5)
+        self.assertEqual(cpu["time_weighted_p95_percent"], 6.0)
+        self.assertEqual(cpu["time_weighted_p99_percent"], 6.0)
         self.assertEqual(cpu["active_samples"], 3)
         self.assertAlmostEqual(cpu["active_seconds"], 3.0)
         self.assertAlmostEqual(cpu["active_duty_cycle_percent"], 300 / 6.5)
         self.assertEqual(cpu["longest_active_burst_seconds"], 3.0)
         self.assertAlmostEqual(cpu["estimated_cpu_seconds"], 0.1275)
-        self.assertEqual(memory["average_rss_mib"], 102.5)
+        self.assertAlmostEqual(memory["time_weighted_average_rss_mib"], 665.5 / 6.5)
+        self.assertEqual(memory["time_weighted_p95_rss_mib"], 105.0)
         self.assertEqual(memory["peak_rss_mib"], 105.0)
         self.assertEqual(memory["rss_growth_mib"], 5.0)
         self.assertAlmostEqual(memory["rss_trend_mib_per_minute"], 55.670103092783506)
         self.assertEqual(result["threads"]["peak"], 7)
-        self.assertEqual(progress["processed_usage_mib"], 10.0)
-        self.assertAlmostEqual(progress["cpu_seconds_per_processed_mib"], 0.01275)
-        self.assertEqual(progress["scope"], "shared_database")
-        self.assertEqual(progress["active_samples"], 1)
-        self.assertAlmostEqual(progress["active_seconds"], 1.0)
-        self.assertAlmostEqual(progress["active_duty_cycle_percent"], 100 / 6.5)
-        self.assertEqual(progress["largest_sample_mib"], 10.0)
+        self.assertEqual(progress["global_processed_usage_mib"], 10.0)
         self.assertAlmostEqual(
-            progress["selected_app_cpu_seconds_in_progress_intervals"], 0.04
+            progress["global_processed_usage_mib_per_second"], 10 / 6.5
         )
-        self.assertEqual(children["peak_reported_cpu_percent"], 8.0)
-        self.assertEqual(children["peak_rss_mib"], 20.0)
-        self.assertEqual(children["peak_processes"], 1)
+        self.assertEqual(progress["scope"], "shared_database_global")
+        self.assertEqual(progress["global_progress_sample_count"], 1)
+        self.assertAlmostEqual(progress["global_progress_observed_seconds"], 1.0)
+        self.assertAlmostEqual(
+            progress["global_progress_observed_duty_cycle_percent"], 100 / 6.5
+        )
+        self.assertEqual(progress["largest_global_progress_interval_mib"], 10.0)
+        self.assertNotIn("cpu_seconds_per_processed_mib", progress)
+        self.assertNotIn(
+            "selected_app_cpu_seconds_in_progress_intervals", progress
+        )
+        self.assertEqual(descendants["scope"], "point_in_time_samples_only")
+        self.assertFalse(descendants["captures_processes_between_samples"])
+        self.assertEqual(descendants["sample_peak_reported_cpu_percent"], 8.0)
+        self.assertEqual(descendants["sample_peak_rss_mib"], 20.0)
+        self.assertEqual(descendants["sample_peak_processes"], 1)
+        self.assertEqual(result["measurement"]["actual_elapsed_seconds"], 6.5)
+        self.assertEqual(result["provenance"]["scenario"], "idle-overview")
+
+        summary = MODULE.text_summary(result)
+        self.assertIn("global_usage_progress_scope: shared_database_global", summary)
+        self.assertIn("observed_descendants_capture_between_samples: false", summary)
+        self.assertNotIn("cpu_seconds_per_processed_mib", summary)
+
+    def test_percentiles_weight_each_cpu_interval_by_elapsed_time(self) -> None:
+        samples = [
+            MODULE.ProcessSample(second=1, cpu_percent=100, rss_kib=2048, threads=1),
+            MODULE.ProcessSample(second=11, cpu_percent=0, rss_kib=1024, threads=1),
+        ]
+        result = MODULE.summarize(
+            samples,
+            channel="prod",
+            pid=99,
+            active_cpu_threshold=1,
+            processed_usage_bytes=None,
+        )
+
+        self.assertEqual(result["cpu"]["time_weighted_p50_percent"], 0)
+        self.assertEqual(result["cpu"]["time_weighted_p95_percent"], 100)
+        self.assertAlmostEqual(result["cpu"]["average_percent"], 100 / 11)
+        self.assertEqual(result["memory"]["time_weighted_p95_rss_mib"], 2)
 
     def test_rejects_empty_or_non_monotonic_samples(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

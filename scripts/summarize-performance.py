@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,12 +95,35 @@ def print_speed_summary(metrics: list[dict[str, object]]) -> None:
         )
 
 
+def system_provenance(git_commit: str, iterations: int) -> dict[str, object]:
+    try:
+        hardware_model = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.model"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        hardware_model = "unknown"
+    return {
+        "git_commit": git_commit,
+        "build_configuration": "release",
+        "iterations": iterations,
+        "os_version": platform.mac_ver()[0] or platform.platform(),
+        "architecture": platform.machine(),
+        "hardware_model": hardware_model,
+        "logical_cpu_count": os.cpu_count(),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("log", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--max-regression-percent", type=float, default=20.0)
+    parser.add_argument("--git-commit", default="unknown")
+    parser.add_argument("--iterations", type=int, default=5)
     args = parser.parse_args()
 
     try:
@@ -107,8 +133,9 @@ def main() -> int:
         return 2
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "provenance": system_provenance(args.git_commit, args.iterations),
         "metrics": metrics,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

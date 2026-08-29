@@ -31,6 +31,8 @@ summary_arguments=(
   "$performance_log"
   "$performance_result"
   --max-regression-percent "${METAGENT_PERFORMANCE_MAX_REGRESSION_PERCENT:-20}"
+  --git-commit "$(git -C "$repo_root" rev-parse HEAD)"
+  --iterations "${METAGENT_PERFORMANCE_ITERATIONS:-5}"
 )
 if [[ -n "${METAGENT_PERFORMANCE_BASELINE:-}" ]]; then
   summary_arguments+=(--baseline "$METAGENT_PERFORMANCE_BASELINE")
