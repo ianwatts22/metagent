@@ -26,14 +26,23 @@ public struct SkillOverlapGroup: Codable, Equatable, Identifiable, Sendable {
 
 extension MetagentCore {
     public static func detectSkillOverlaps(_ skills: [SkillInventoryItem]) -> [SkillOverlapGroup] {
+        detectSkillOverlaps(skills, canonicalize: canonicalExistingPath)
+    }
+
+    // Resolve filesystem identity once per input, not again for each pair.
+    // The resolver seam lets tests guard this independently of machine speed.
+    static func detectSkillOverlaps(
+        _ skills: [SkillInventoryItem],
+        canonicalize: (String) -> String
+    ) -> [SkillOverlapGroup] {
         let canonicalSkills = Dictionary(
             skills
                 .filter { $0.representation != "projection" }
-                .map { (canonicalExistingPath($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
+                .map { (canonicalize($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
             uniquingKeysWith: preferredOverlapItem
-        ).values
+        ).map { CanonicalOverlapSkill(path: $0.key, item: $0.value) }
 
-        return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.name) })
+        return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.item.name) })
             .values
             .filter { $0.count > 1 }
             .compactMap(makeOverlapGroup)
@@ -46,56 +55,49 @@ extension MetagentCore {
     }
 }
 
+private struct CanonicalOverlapSkill {
+    let path: String
+    let item: SkillInventoryItem
+}
+
 private struct ComparableSkillDocument {
     let exactText: String
     let comparableText: String
     let words: Set<String>
 }
 
-private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillOverlapGroup? {
+private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> SkillOverlapGroup? {
     let skills = unorderedSkills.sorted {
-        if overlapMemberPriority($0) != overlapMemberPriority($1) {
-            return overlapMemberPriority($0) < overlapMemberPriority($1)
+        if overlapMemberPriority($0.item) != overlapMemberPriority($1.item) {
+            return overlapMemberPriority($0.item) < overlapMemberPriority($1.item)
         }
-        return $0.path < $1.path
+        return $0.item.path < $1.item.path
     }
     guard let first = skills.first else { return nil }
 
-    let documents = Dictionary(uniqueKeysWithValues: skills.map { skill in
-        let path = canonicalExistingPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
-        return (path, comparableSkillDocument(at: path))
-    })
-    let pairSimilarities = skills.enumerated().flatMap { index, left in
-        skills.dropFirst(index + 1).map { right in
-            documentSimilarity(
-                documents[canonicalExistingPath(left.canonicalPath.isEmpty ? left.path : left.canonicalPath)] ?? nil,
-                documents[canonicalExistingPath(right.canonicalPath.isEmpty ? right.path : right.canonicalPath)] ?? nil
-            )
+    // These documents are local to this invocation. A later refresh still
+    // rereads them, including same-path edits and formerly missing files.
+    let documents = skills.map { comparableSkillDocument(at: $0.path) }
+    var allPairSimilarity = 0.0
+    var pluginStandaloneSimilarity = 0.0
+    var memberPluginSimilarities = Array(repeating: 0.0, count: skills.count)
+    for left in skills.indices {
+        for right in (left + 1)..<skills.count {
+            let similarity = documentSimilarity(documents[left], documents[right])
+            allPairSimilarity = max(allPairSimilarity, similarity)
+            let leftIsPlugin = skills[left].item.manager == "codex-plugin"
+            let rightIsPlugin = skills[right].item.manager == "codex-plugin"
+            guard leftIsPlugin != rightIsPlugin else { continue }
+            pluginStandaloneSimilarity = max(pluginStandaloneSimilarity, similarity)
+            let standalone = leftIsPlugin ? right : left
+            memberPluginSimilarities[standalone] = max(memberPluginSimilarities[standalone], similarity)
         }
     }
-    let hasPlugin = skills.contains { $0.manager == "codex-plugin" }
-    let hasStandalone = skills.contains { $0.manager != "codex-plugin" }
-    let pluginStandaloneSimilarities = skills
-        .filter { $0.manager == "codex-plugin" }
-        .flatMap { plugin in
-            skills
-                .filter { $0.manager != "codex-plugin" }
-                .map { standalone in
-                    documentSimilarity(
-                        documents[canonicalExistingPath(
-                            plugin.canonicalPath.isEmpty ? plugin.path : plugin.canonicalPath
-                        )] ?? nil,
-                        documents[canonicalExistingPath(
-                            standalone.canonicalPath.isEmpty ? standalone.path : standalone.canonicalPath
-                        )] ?? nil
-                    )
-                }
-        }
-    let pluginStandaloneSimilarity = pluginStandaloneSimilarities.max() ?? 0
-    let allPairSimilarity = pairSimilarities.max() ?? 0
-    let scopes = Set(skills.map(\.scope))
-    let allDocumentsMatch = Set(documents.values.compactMap { $0?.exactText }).count == 1
-        && documents.values.allSatisfy { $0 != nil }
+    let hasPlugin = skills.contains { $0.item.manager == "codex-plugin" }
+    let hasStandalone = skills.contains { $0.item.manager != "codex-plugin" }
+    let scopes = Set(skills.map(\.item.scope))
+    let allDocumentsMatch = Set(documents.compactMap { $0?.exactText }).count == 1
+        && documents.allSatisfy { $0 != nil }
 
     let kind: SkillOverlapKind
     if hasPlugin, hasStandalone, pluginStandaloneSimilarity >= 0.55 {
@@ -109,33 +111,23 @@ private func makeOverlapGroup(_ unorderedSkills: [SkillInventoryItem]) -> SkillO
     }
     let similarity = kind == .pluginReplacement ? pluginStandaloneSimilarity : allPairSimilarity
 
-    let normalizedName = normalizedSkillName(first.name)
+    let normalizedName = normalizedSkillName(first.item.name)
     return SkillOverlapGroup(
         id: "\(normalizedName):\(kind.rawValue)",
-        skillName: first.name,
+        skillName: first.item.name,
         kind: kind,
         similarity: similarity,
-        members: skills.map { skill in
-            let canonicalPath = canonicalExistingPath(skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath)
-            let memberDocument = documents[canonicalPath] ?? nil
-            let pluginSimilarity = skills
-                .filter { $0.manager == "codex-plugin" }
-                .map { plugin in
-                    let pluginPath = canonicalExistingPath(
-                        plugin.canonicalPath.isEmpty ? plugin.path : plugin.canonicalPath
-                    )
-                    return documentSimilarity(memberDocument, documents[pluginPath] ?? nil)
-                }
-                .max() ?? 0
+        members: skills.enumerated().map { index, prepared in
+            let skill = prepared.item
             return SkillOverlapMember(
-                canonicalPath: canonicalPath,
+                canonicalPath: prepared.path,
                 scope: skill.scope,
                 manager: skill.manager,
                 authority: skill.authority,
                 suggestedRemoval: kind == .pluginReplacement
                     && skill.manager != "codex-plugin"
                     && skill.scope == "global"
-                    && pluginSimilarity >= 0.55
+                    && memberPluginSimilarities[index] >= 0.55
             )
         }
     )

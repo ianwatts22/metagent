@@ -75,6 +75,33 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.failureCount, 0)
     }
 
+    func testPerformanceSkillOverlapPortfolio() throws {
+        guard runsPerformanceTests else { return }
+        // Shared skill names across projects exercise the pairwise comparison
+        // path. Keep discovery outside the measurement: this is the work done
+        // when the Skills table already has an inventory snapshot.
+        let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
+        let report = try MetagentCore.scanSkills(options: SkillScanOptions(
+            roots: [fixture.path],
+            maxDepth: 2,
+            respectConfiguredIgnores: false
+        ))
+        let skills = report.projects.flatMap(\.skills)
+        XCTAssertEqual(skills.count, 192)
+        let preflight = assertLatencyBudget("skill overlap portfolio", seconds: 0.5) {
+            MetagentCore.detectSkillOverlaps(skills)
+        }
+        XCTAssertEqual(preflight.count, 8)
+        XCTAssertTrue(preflight.allSatisfy { $0.members.count == 24 })
+        var lastGroups: [SkillOverlapGroup] = []
+
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastGroups = MetagentCore.detectSkillOverlaps(skills)
+        }
+
+        XCTAssertEqual(lastGroups, preflight)
+    }
+
     func testPerformanceConfiguredAndHomeInventoryDiscovery() throws {
         guard runsPerformanceTests else { return }
         let home = try makeTemporaryRoot(prefix: "metagent-performance-app-refresh")

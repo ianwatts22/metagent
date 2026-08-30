@@ -4,6 +4,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 
 - skill discovery across 24 projects and 192 skill bundles;
 - Doctor analysis of the same portfolio;
+- duplicate-skill comparison across eight same-name groups of 24 skills each,
+  with discovery excluded from the measured work;
 - dual configured-root and pruned shallow-home inventory discovery;
 - codebase measurement across 251 tracked files and 10,000 source/test lines;
 - cold usage backfill across 10 session files and 300 observed skill reads;
@@ -56,6 +58,12 @@ The fixtures are generated locally, contain fixed shapes and content, and do not
 read the user's portfolio, session history, network, or credentials. Fixture
 creation is outside the measured blocks except for the SQLite database creation
 that is part of a cold usage backfill.
+
+The overlap workload measures document reads, normalization, and pairwise
+similarity together. A separate deterministic test requires one canonical-path
+resolution per non-projection input, preventing filesystem work from growing
+with the number of pairs. Documents are reread on each invocation; same-path
+edits, missing files that appear, and retargeted symlinks must remain fresh.
 
 The dual-root discovery benchmark intentionally stops at deterministic core
 filesystem work. It does not claim to cover the external Codex plugin process,

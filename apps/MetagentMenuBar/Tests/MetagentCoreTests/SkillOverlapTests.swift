@@ -96,6 +96,128 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertTrue(MetagentCore.detectSkillOverlaps([canonical, projection]).isEmpty)
     }
 
+    func testCanonicalizationWorkIsLinearInInventorySize() throws {
+        let root = try fixtureRoot("resolution-count")
+        let skills = (0..<192).map { index in
+            SkillInventoryItem.fixture(
+                name: "skill-\(index % 8)",
+                path: root.appendingPathComponent("project-\(index / 8)/skill-\(index % 8)").path
+            )
+        }
+        var projection = skills[0]
+        projection.representation = "projection"
+        var resolved: [String] = []
+        let groups = MetagentCore.detectSkillOverlaps(skills + [projection]) { path in
+            resolved.append(path)
+            return path
+        }
+
+        XCTAssertEqual(resolved, skills.map(\.path))
+        XCTAssertEqual(groups.count, 8)
+        XCTAssertTrue(groups.allSatisfy { $0.members.count == 24 })
+    }
+
+    func testCanonicalAliasesKeepPreferredRepresentativeAndOriginalTieOrder() throws {
+        let root = try fixtureRoot("canonical-alias")
+        let target = try writeSkill(root: root, relativePath: "target", body: "Shared instructions.")
+        let other = try writeSkill(root: root, relativePath: "other", body: "Shared instructions.")
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        var firstPlugin = makeSkill(path: target.path, scope: "plugin", manager: "codex-plugin")
+        firstPlugin.authority = "first-plugin"
+        var laterPlugin = makeSkill(path: alias.path, scope: "plugin", manager: "codex-plugin")
+        laterPlugin.authority = "later-plugin"
+
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: alias.path, scope: "global", manager: "local"),
+            firstPlugin,
+            laterPlugin,
+            makeSkill(path: other.path, scope: "global", manager: "local"),
+        ]).first)
+
+        XCTAssertEqual(group.members.count, 2)
+        XCTAssertEqual(group.members.first?.canonicalPath, target.path)
+        XCTAssertEqual(group.members.first?.authority, "first-plugin")
+        XCTAssertEqual(group.members.filter(\.suggestedRemoval).map(\.canonicalPath), [other.path])
+    }
+
+    func testProviderPathNormalizationPreservesExactDuplicates() throws {
+        let root = try fixtureRoot("provider-normalization")
+        let first = try writeSkill(root: root, relativePath: "one", body: "Read .agents/skills/demo/SKILL.md.\nThen verify.")
+        let second = try writeSkill(root: root, relativePath: "two", body: "Read .claude/skills/demo/SKILL.md.  Then verify.")
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "global", manager: "local"),
+        ]).first)
+
+        XCTAssertEqual(group.kind, .exactDuplicate)
+        XCTAssertEqual(group.similarity, 1)
+    }
+
+    func testMissingDocumentsAreNotExactAndAreRecheckedOnNextCall() throws {
+        let root = try fixtureRoot("missing-document")
+        let first = try writeSkill(root: root, relativePath: "one", body: "Shared instructions.")
+        let missing = root.appendingPathComponent("two")
+        let skills = [
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: missing.path, scope: "global", manager: "local"),
+        ]
+        let initial = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        XCTAssertEqual(initial.kind, .sameName)
+        XCTAssertEqual(initial.similarity, 0)
+
+        _ = try writeSkill(root: root, relativePath: "two", body: "Shared instructions.")
+        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills).first?.kind, .exactDuplicate)
+        _ = try writeSkill(root: root, relativePath: "two", body: "Changed at the same path.")
+        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills).first?.kind, .sameName)
+    }
+
+    func testMixedPluginsKeepPerMemberSuggestionsAndPairMaximum() throws {
+        let root = try fixtureRoot("mixed-plugins")
+        let alpha = "apple apricot avocado banana blackberry blueberry cherry coconut cranberry date fig grape guava"
+        let beta = "anchor barge buoy canal captain cargo compass crew deck ferry harbor hull marina rudder sail vessel"
+        let unrelated = "algebra arithmetic calculus cosine derivative equation exponent formula fraction integral logarithm matrix polynomial quotient sine tangent vector"
+        let fixtures: [(String, String, String, String)] = [
+            ("plugin-a", "plugin", "codex-plugin", alpha),
+            ("plugin-b", "plugin", "codex-plugin", beta),
+            ("global-a", "global", "local", alpha),
+            ("global-b", "global", "local", beta),
+            ("project-a", "project", "local", alpha),
+            ("unrelated", "global", "local", unrelated),
+        ]
+        let skills = try fixtures.map { name, scope, manager, body in
+            let path = try writeSkill(root: root, relativePath: name, body: body)
+            return makeSkill(path: path.path, scope: scope, manager: manager)
+        }
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+
+        XCTAssertEqual(group.kind, .pluginReplacement)
+        XCTAssertEqual(group.similarity, 1)
+        XCTAssertEqual(Set(group.members.filter(\.suggestedRemoval).map(\.canonicalPath)), Set([
+            root.appendingPathComponent("global-a").path,
+            root.appendingPathComponent("global-b").path,
+        ]))
+        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills.reversed()), [group])
+    }
+
+    func testSymlinkRetargetIsObservedBetweenCalls() throws {
+        let root = try fixtureRoot("retarget")
+        let first = try writeSkill(root: root, relativePath: "one", body: "Shared instructions.")
+        let second = try writeSkill(root: root, relativePath: "two", body: "Shared instructions.")
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first)
+        let skills = [
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: alias.path, scope: "global", manager: "local"),
+        ]
+        XCTAssertTrue(MetagentCore.detectSkillOverlaps(skills).isEmpty)
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: second)
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        XCTAssertEqual(group.kind, .exactDuplicate)
+        XCTAssertEqual(Set(group.members.map(\.canonicalPath)), Set([first.path, second.path]))
+    }
+
     func testSkillDocumentSeparatesFrontmatterDescriptionAndBody() throws {
         let root = try fixtureRoot("reader")
         let skill = root.appendingPathComponent("demo")
