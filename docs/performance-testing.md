@@ -75,6 +75,13 @@ explicitly. That deterministic model-layer proxy compares the old repeated
 filter/sort row pipeline with the shared one-pass pipeline. It is not a SwiftUI
 render benchmark and is not evidence of input-to-present latency.
 
+The native interaction probe services the main run loop while waiting for app
+termination, launch completion, and exact-PID registration. AppKit's
+[`runningApplications`](https://developer.apple.com/documentation/appkit/nsworkspace/runningapplications)
+registry only updates when that loop runs; sleep-only polling can falsely report
+that an exited app is still running. The compiled probe self-test checks queued
+run-loop delivery and monotonic timeout behavior without Accessibility access.
+
 ## Usage freshness and energy pacing
 
 An explicit refresh reads at most 8 MiB or 12 session files before returning.

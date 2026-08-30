@@ -29,6 +29,42 @@ private struct MonotonicTimer {
     }
 }
 
+/// AppKit updates its running-application registry on the main run loop.
+/// Sleeping or blocking on a semaphore alone leaves terminated PIDs cached.
+/// Keep this outside the AX-gated probe so the real wait has headless tests.
+@discardableResult
+private func waitWithAppKitEvents(
+    _ description: String,
+    timeoutMilliseconds: Double,
+    heartbeat: (String) -> Void = { _ in },
+    predicate: () throws -> Bool
+) throws -> Double {
+    guard Thread.isMainThread else {
+        throw ProbeError.state("AppKit lifecycle waits must run on the main thread.")
+    }
+    let timer = MonotonicTimer()
+    var lastError: Error?
+    while timer.elapsedMilliseconds <= timeoutMilliseconds {
+        do {
+            if try predicate() { return timer.elapsedMilliseconds }
+            lastError = nil
+        } catch {
+            lastError = error
+        }
+        heartbeat(description)
+        let remaining = (timeoutMilliseconds - timer.elapsedMilliseconds) / 1_000
+        guard remaining > 0 else { break }
+        let interval = min(0.01, remaining)
+        let result = CFRunLoopRunInMode(.defaultMode, interval, true)
+        if result == .finished {
+            // A headless run loop may have no sources; do not busy-spin.
+            Thread.sleep(forTimeInterval: interval)
+        }
+    }
+    let detail = lastError.map { " Last bounded AX error: \($0)." } ?? ""
+    throw ProbeError.timeout("Timed out after \(Int(timeoutMilliseconds))ms waiting for \(description).\(detail)")
+}
+
 private struct SortMeasurement {
     let elapsedMilliseconds: Double
     let direction: String
@@ -246,21 +282,12 @@ private final class AccessibilityProbe {
         timeout: Double? = nil,
         predicate: () throws -> Bool
     ) throws -> Double {
-        let timer = MonotonicTimer()
-        let limit = timeout ?? timeoutMilliseconds
-        var lastError: Error?
-        while timer.elapsedMilliseconds <= limit {
-            do {
-                if try predicate() { return timer.elapsedMilliseconds }
-                lastError = nil
-            } catch {
-                lastError = error
-            }
-            heartbeat(description)
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        let detail = lastError.map { " Last bounded AX error: \($0)." } ?? ""
-        throw ProbeError.timeout("Timed out after \(Int(limit))ms waiting for \(description).\(detail)")
+        try waitWithAppKitEvents(
+            description,
+            timeoutMilliseconds: timeout ?? timeoutMilliseconds,
+            heartbeat: heartbeat,
+            predicate: predicate
+        )
     }
 
     func mainWindow(_ appElement: AXUIElement) throws -> AXUIElement {
@@ -691,14 +718,8 @@ private final class AccessibilityProbe {
             lock.unlock()
             completion.signal()
         }
-        let timer = MonotonicTimer()
-        while completion.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
-            heartbeat("NSWorkspace to launch \(expectedProcessName)")
-            if timer.elapsedMilliseconds > timeoutMilliseconds {
-                throw ProbeError.timeout(
-                    "Timed out after \(Int(timeoutMilliseconds))ms waiting for NSWorkspace to launch \(expectedProcessName)."
-                )
-            }
+        try waitUntil("NSWorkspace to launch \(expectedProcessName)") {
+            completion.wait(timeout: .now()) == .success
         }
         lock.lock()
         let application = launchedApplication
@@ -710,13 +731,18 @@ private final class AccessibilityProbe {
         guard let application else {
             throw ProbeError.state("NSWorkspace returned no app and no error while launching \(appPath).")
         }
-        guard let exact = try runningApplication() else {
-            throw ProbeError.state("Launch returned without an exact-path running process.")
+        // Completion can arrive before AppKit publishes its registry update,
+        // including when the completion semaphore was already signaled.
+        var registeredApplication: NSRunningApplication?
+        try waitUntil("exact launched process PID \(application.processIdentifier)") {
+            guard let candidate = try self.runningApplication(required: false),
+                  candidate.processIdentifier == application.processIdentifier
+            else { return false }
+            registeredApplication = candidate
+            return true
         }
-        guard exact.processIdentifier == application.processIdentifier else {
-            throw ProbeError.state(
-                "Launch returned PID \(application.processIdentifier), but exact-path validation found PID \(exact.processIdentifier)."
-            )
+        guard let exact = registeredApplication else {
+            throw ProbeError.state("Launch returned without an exact-path running process.")
         }
         return exact
     }
@@ -1195,6 +1221,20 @@ private func selfTest() throws {
     Thread.sleep(forTimeInterval: 0.002)
     guard timer.elapsedMilliseconds > 0 else {
         throw ProbeError.state("Monotonic timer did not advance.")
+    }
+    let delivered = DispatchSemaphore(value: 0)
+    RunLoop.main.perform(inModes: [.default]) { delivered.signal() }
+    try waitWithAppKitEvents("queued main-run-loop callback", timeoutMilliseconds: 1_000) {
+        delivered.wait(timeout: .now()) == .success
+    }
+    let deadlineTimer = MonotonicTimer()
+    do {
+        try waitWithAppKitEvents("false predicate", timeoutMilliseconds: 20) { false }
+        throw ProbeError.state("A false predicate bypassed the wait deadline.")
+    } catch ProbeError.timeout {
+        guard deadlineTimer.elapsedMilliseconds >= 20,
+              deadlineTimer.elapsedMilliseconds < 5_000
+        else { throw ProbeError.state("The monotonic wait deadline was not respected.") }
     }
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {

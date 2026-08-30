@@ -55,6 +55,23 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"metagent.plugins.show-filter"', source)
         self.assertNotIn("fixed screen", source)
 
+    def test_lifecycle_waits_service_appkit_events_and_validate_registered_pid(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        wait = source.split("func waitUntil(", 1)[1].split("func mainWindow", 1)[0]
+        launch = source.split("func launch()", 1)[1].split("private func sample", 1)[0]
+
+        self.assertIn("waitWithAppKitEvents(", wait)
+        self.assertIn("CFRunLoopRunInMode(.defaultMode, interval, true)", source)
+        self.assertIn("Thread.isMainThread", source)
+        self.assertIn("completion.wait(timeout: .now()) == .success", launch)
+        self.assertNotIn("completion.wait(timeout: .now() +", launch)
+        self.assertIn('try waitUntil("exact launched process PID', launch)
+        self.assertIn("candidate.processIdentifier == application.processIdentifier", launch)
+        # The compiled self-test exercises the actual wait without requiring
+        # Accessibility access or launching/killing any app.
+        self.assertIn("RunLoop.main.perform(inModes: [.default])", source)
+        self.assertIn('waitWithAppKitEvents("false predicate"', source)
+
     def test_common_interactions_require_changed_content_and_sort_state(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
         content_wait = source.split("private func waitForContentChange", 1)[1].split(
