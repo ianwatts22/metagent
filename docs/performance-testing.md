@@ -81,6 +81,11 @@ termination, launch completion, and exact-PID registration. AppKit's
 registry only updates when that loop runs; sleep-only polling can falsely report
 that an exited app is still running. The compiled probe self-test checks queued
 run-loop delivery and monotonic timeout behavior without Accessibility access.
+Readiness discovery also treats content roots, tables, and outlines as leaves:
+it checks their actual ready identifier without enumerating lazy cells. Walking
+those cells while a retained table is marked loading can force offscreen views
+into existence and contaminate navigation timing. Headless tests reject such
+child access and distinguish loading, ready, wrong-section, and empty states.
 
 ## Usage freshness and energy pacing
 

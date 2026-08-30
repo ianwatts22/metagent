@@ -65,6 +65,35 @@ private func waitWithAppKitEvents(
     throw ProbeError.timeout("Timed out after \(Int(timeoutMilliseconds))ms waiting for \(description).\(detail)")
 }
 
+/// A readiness sentinel belongs to a content container, never one of its
+/// cells. Asking AX for lazy table children can instantiate offscreen hosting
+/// views and delay the very publication this probe is trying to measure.
+private func findContentSentinel<Node>(
+    _ root: Node,
+    prefix: String,
+    maximumVisited: Int = maximumTraversalElements,
+    identifier: (Node) throws -> String?,
+    role: (Node) throws -> String?,
+    children: (Node) throws -> [Node]
+) rethrows -> Node? {
+    var pending = [root]
+    var cursor = 0
+    while cursor < pending.count, cursor < maximumVisited {
+        let current = pending[cursor]
+        cursor += 1
+        let currentIdentifier = try identifier(current)
+        if currentIdentifier?.hasPrefix(prefix) == true { return current }
+        if let currentIdentifier,
+           currentIdentifier.hasPrefix("metagent."),
+           currentIdentifier.contains(".content.")
+        { continue }
+        let currentRole = try role(current)
+        if currentRole == kAXTableRole || currentRole == kAXOutlineRole { continue }
+        pending.append(contentsOf: try children(current))
+    }
+    return nil
+}
+
 private struct SortMeasurement {
     let elapsedMilliseconds: Double
     let direction: String
@@ -322,7 +351,13 @@ private final class AccessibilityProbe {
     }
 
     func findByIdentifierPrefix(_ root: AXUIElement, prefix: String) throws -> AXUIElement? {
-        try findDescendant(of: root) { (try self.identifier($0))?.hasPrefix(prefix) == true }
+        try findContentSentinel(
+            root,
+            prefix: prefix,
+            identifier: identifier,
+            role: role,
+            children: children
+        )
     }
 
     func waitForIdentifier(_ root: AXUIElement, identifier: String) throws -> AXUIElement {
@@ -1236,11 +1271,56 @@ private func selfTest() throws {
               deadlineTimer.elapsedMilliseconds < 5_000
         else { throw ProbeError.state("The monotonic wait deadline was not respected.") }
     }
+    try sentinelTraversalSelfTest()
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {
         throw ProbeError.state("JSON self-test payload is invalid.")
     }
     print("metagent-ax-probe self-test passed")
+}
+
+private func sentinelTraversalSelfTest() throws {
+    // Node zero is a window. Its child accessor must never be called on a
+    // loading/ready/wrong-section content root or a lazy table/outline.
+    let expected = "metagent.skills.content.ready."
+    func search(
+        identifier contentIdentifier: String?,
+        role contentRole: String?,
+        maximumVisited: Int = maximumTraversalElements
+    ) throws -> Int? {
+        try findContentSentinel(
+            0,
+            prefix: expected,
+            maximumVisited: maximumVisited,
+            identifier: { $0 == 1 ? contentIdentifier : nil },
+            role: { $0 == 1 ? contentRole : kAXWindowRole },
+            children: { node in
+                guard node == 0 else {
+                    throw ProbeError.state("Sentinel lookup traversed lazy content children.")
+                }
+                return [1]
+            }
+        )
+    }
+    for (identifier, role): (String?, String?) in [
+        ("metagent.skills.content.loading", kAXTableRole),
+        ("metagent.skills.content.loading", kAXGroupRole),
+        ("metagent.mcps.content.ready.fixture", kAXGroupRole),
+        (nil, kAXTableRole),
+        (nil, kAXOutlineRole),
+    ] {
+        guard try search(identifier: identifier, role: role) == nil else {
+            throw ProbeError.state("Loading or wrong-section content was marked ready.")
+        }
+    }
+    for role in [kAXGroupRole, kAXTableRole, kAXOutlineRole] {
+        guard try search(identifier: expected + "fixture", role: role) == 1 else {
+            throw ProbeError.state("A ready empty state or table was not found.")
+        }
+    }
+    guard try search(identifier: expected + "fixture", role: kAXTableRole, maximumVisited: 1) == nil else {
+        throw ProbeError.state("Sentinel lookup exceeded its traversal bound.")
+    }
 }
 
 do {
