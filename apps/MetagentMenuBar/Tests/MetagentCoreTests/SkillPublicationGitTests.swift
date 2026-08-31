@@ -111,6 +111,27 @@ final class SkillPublicationGitTests: XCTestCase {
         XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), first.commit)
     }
 
+    func testPublishPreviewRejectsContentFiltersBeforeGitStatusCanExecuteThem() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let marker = fixture.root.appendingPathComponent("publish-filter-executed")
+        let helper = fixture.root.appendingPathComponent("publish-filter-helper.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        try fixture.git(["config", "filter.unsafe.clean", helper.path])
+        try fixture.git(["config", "filter.unsafe.required", "true"])
+        try fixture.write("skills/** filter=unsafe\n", at: ".gitattributes")
+        try fixture.writeSkill("Changed after filter configuration")
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("content filters") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testCanonicalGitHubLinksAndInstallCommand() {
         for remote in ["https://github.com/acme/skills.git", "git@github.com:acme/skills.git", "ssh://git@github.com/acme/skills"] {
             let links = SkillPublicationLinks(remoteURL: remote, skillName: "my-skill")

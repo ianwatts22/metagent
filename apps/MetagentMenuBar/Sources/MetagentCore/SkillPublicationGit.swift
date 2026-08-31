@@ -432,6 +432,9 @@ public extension MetagentCore {
                 return blocked("The remote branch does not exist yet. Push the repository's existing history yourself, then try again.")
             }
 
+            guard try !repository.hasContentFilters() else {
+                return blocked("This repository configures Git content filters. Publish it manually so Metagent never executes those helpers.")
+            }
             let dirtyPaths = try repository.dirtyPaths()
             guard dirtyPaths.allSatisfy({ repository.contains($0, in: destinationPath) }) else {
                 return blocked("This checkout has changes outside \(destinationPath). Commit, discard, or move those changes before publishing this skill.")
@@ -439,10 +442,6 @@ public extension MetagentCore {
             guard try !repository.hasIgnoredFiles(in: destinationPath) else {
                 return blocked("This skill contains ignored files. Review the repository's ignore rules before publishing.")
             }
-            guard try !repository.hasContentFilters() else {
-                return blocked("This repository configures Git content filters. Publish it manually so Metagent never executes those helpers.")
-            }
-
             if head != remoteHead {
                 let parent = try repository.output(["rev-parse", "--verify", "HEAD^"])
                 let message = try repository.output(["log", "-1", "--format=%B", "HEAD"])

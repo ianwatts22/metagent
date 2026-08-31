@@ -26,7 +26,14 @@ Git checkout for publication through [skills.sh](https://skills.sh).
    **Start Publishing**.
 4. Use the **Published** view to check status, sync now, open the public copy,
    or stop mirroring.
-5. Review the Git diff, commit, and push separately.
+5. Use **Publish…** or **Publish Update…** to review the exact destination,
+   branch, and file changes, then explicitly choose **Commit & Publish**.
+
+Metagent blocks explicit publishing when the checkout contains unrelated work,
+unpublished or diverged history, configured content filters, or a preview that
+changed after approval. It never stashes, pulls, rebases, resets, or
+force-pushes. A rejected push leaves its exact local commit available for a
+safe retry.
 
 The machine-local publication map is stored at
 `~/Library/Application Support/Metagent/skill-publications-v1.json`. Paths and
