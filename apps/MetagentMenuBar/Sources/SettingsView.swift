@@ -79,6 +79,9 @@ struct SettingsView: View {
         .task {
             load()
         }
+        .onChange(of: updater.presentationDismissalRequest) {
+            dismiss()
+        }
     }
 
     private var settingsForm: some View {
@@ -218,10 +221,10 @@ struct SettingsView: View {
                     // Sparkle owns its update windows. Close this sheet first so
                     // its progress and install UI cannot be hidden behind a
                     // sheet attached to the app window.
-                    dismiss()
-                    DispatchQueue.main.async {
-                        updater.checkForUpdates()
-                    }
+                    performSettingsUpdateCheck(
+                        dismiss: { dismiss() },
+                        checkForUpdates: updater.checkForUpdates
+                    )
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.capsule)
@@ -261,6 +264,20 @@ struct SettingsView: View {
             saveError = error.localizedDescription
         }
     }
+}
+
+@MainActor
+func performSettingsUpdateCheck(
+    dismiss: @escaping () -> Void,
+    schedule: (@escaping @MainActor () -> Void) -> Void = { action in
+        DispatchQueue.main.async {
+            action()
+        }
+    },
+    checkForUpdates: @escaping @MainActor () -> Void
+) {
+    dismiss()
+    schedule(checkForUpdates)
 }
 
 struct PathListEditor: View {
