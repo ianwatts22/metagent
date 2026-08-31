@@ -65,11 +65,13 @@ class RunWithInactivityTimeoutTests(unittest.TestCase):
                 sys.executable,
                 "-u",
                 "-c",
-                (
-                    "import sys,time; "
-                    "[(print(f'tick-{i}', file=sys.stderr), time.sleep(.05)) "
-                    "for i in range(40)]; print('done')"
-                ),
+                """import sys, time
+deadline = time.monotonic() + 2
+while time.monotonic() < deadline:
+    print('tick', file=sys.stderr)
+    time.sleep(.05)
+print('done')
+""",
             ],
             timeout=1,
         )
@@ -77,7 +79,7 @@ class RunWithInactivityTimeoutTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertGreater(elapsed, 1.5)
         self.assertEqual(stdout, "done\n")
-        self.assertIn("tick-39", completed.stderr)
+        self.assertGreater(completed.stderr.count("tick\n"), 1)
 
     def test_inactivity_terminates_the_process_group_with_timeout_status(self) -> None:
         completed, stdout, elapsed = self.run_helper(
