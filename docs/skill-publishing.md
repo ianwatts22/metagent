@@ -3,6 +3,45 @@
 This repo publishes the `metagent` skill for `npx skills` / skills.sh consumers.
 The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metagent/SKILL.md).
 
+## Publishing selected skills from the app
+
+In **Skills → Published**, choose one canonical `~/.agents/skills` skill and a
+separate, existing Git checkout. Previous destinations can be reused. **Start
+Local Mirroring** checks the bundle and copies only that skill to
+`skills/<destination-name>`; source-file changes continue to mirror one way.
+The broader private skills directory is never exported. Stopping mirroring
+leaves the last copy in place. Nothing commits, pushes, changes repository
+visibility, or runs an install automatically.
+
+Each card separates **mirror state** from an explicit **Check Git Status**:
+
+- **Local changes to commit** includes staged, unstaged, untracked, and ignored
+  files in this skill only. Ignored files need review before publishing.
+- **Committed; no remote tracking branch** also covers a detached checkout.
+- **Matches / differs from known upstream** compares this skill's committed
+  tree with the locally stored remote tracking ref, not the whole repository.
+  No fetch is run. Even a match is not proof of the current remote contents,
+  public visibility, or skills.sh indexing.
+
+Checks are user-triggered, run off the UI thread with a five-second deadline,
+and display their check time. There is no background Git polling. A new mirror
+snapshot invalidates an old result; changes made directly in Git require
+another check. Git index writes, fsmonitor hooks, and network protocols are
+disabled. Only existing Git configuration-location environment variables are
+forwarded; injected config/routing/token variables are not. Effective local,
+global, and system content filters cause a fail-closed result before status
+checks, without executing those helpers. Attribute configuration is retained
+so stripping user configuration cannot silently change Git's interpretation.
+
+A credential-free GitHub `origin` and a supported current `SKILL.md` name
+provide repository/skills.sh links and a copyable, single-skill install command.
+Renaming the destination folder does not change the manifest's install name.
+The command installs from the repository's default branch; review the local
+diff and push there before sharing it. A link is a destination, not a verified
+live listing, and private repositories cannot be installed by unauthenticated
+users. Metagent explicitly marks per-skill install counts unavailable until
+official API-backed reporting exists; it never substitutes a guessed number.
+
 ## What "published" means
 
 skills.sh has no separate upload or publish endpoint. A valid skill in a public

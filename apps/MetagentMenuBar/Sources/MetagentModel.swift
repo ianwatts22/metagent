@@ -102,6 +102,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var releaseAffirmations: [String: Date] = [:]
     @Published private(set) var publicationSnapshot = SkillPublicationSnapshot.empty
     @Published private(set) var isPublicationSyncing = false
+    @Published private(set) var isPublicationPublishing = false
     @Published private(set) var publicationStatusText = "No skills selected for publishing"
     @Published private(set) var hasHydratedLaunchCaches = false
 
@@ -506,7 +507,7 @@ final class MetagentModel: ObservableObject {
         repositoryPath: String,
         destinationName: String
     ) -> Bool {
-        guard !isPublicationSyncing else {
+        guard !isPublicationSyncing, !isPublicationPublishing else {
             publicationStatusText = "Finish the current sync, then try publishing again."
             return false
         }
@@ -558,7 +559,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func disableSkillPublication(recordID: String) {
-        guard !isPublicationSyncing else { return }
+        guard !isPublicationSyncing, !isPublicationPublishing else { return }
         isPublicationSyncing = true
         Task { [weak self] in
             let result = await Task.detached(priority: .utility) {
@@ -582,7 +583,7 @@ final class MetagentModel: ObservableObject {
     }
 
     func reconcileSkillPublications() {
-        guard !isPublicationSyncing else {
+        guard !isPublicationSyncing, !isPublicationPublishing else {
             publicationSyncQueued = true
             return
         }
@@ -623,6 +624,35 @@ final class MetagentModel: ObservableObject {
             isPublicationSyncing = false
             finishQueuedPublicationSyncIfNeeded()
         }
+    }
+
+    func commitAndPublishSkill(
+        preview: SkillPublicationPublishPreview,
+        record: SkillPublicationRecord,
+        catalog: SkillPublicationCatalog,
+        commitMessage: String
+    ) async -> SkillPublicationPublishResult {
+        guard !isPublicationSyncing, !isPublicationPublishing else {
+            return SkillPublicationPublishResult(
+                outcome: .blocked,
+                message: "Finish the current publication sync, then try again.",
+                commit: nil
+            )
+        }
+        isPublicationPublishing = true
+        publicationStatusText = "Publishing \(record.skillName)…"
+        let result = await Task.detached(priority: .utility) {
+            MetagentCore.commitAndPublishSkill(
+                preview: preview,
+                record: record,
+                catalog: catalog,
+                commitMessage: commitMessage
+            )
+        }.value
+        isPublicationPublishing = false
+        publicationStatusText = result.message
+        finishQueuedPublicationSyncIfNeeded()
+        return result
     }
 
     private func finishQueuedPublicationSyncIfNeeded() {
