@@ -73,6 +73,8 @@ public struct ProjectAnalysisFinding: Codable, Equatable, Sendable {
 public struct ProjectAnalysisCounts: Codable, Equatable, Sendable {
     public let instructionFiles: Int
     public let projectSkills: Int
+    public let projectSkillRepresentations: Int
+    public let projectSkillProjections: Int
     public let invalidSkillDirectories: Int
     public let doctorWarnings: Int
     public let doctorFailures: Int
@@ -84,6 +86,8 @@ public struct ProjectAnalysisCounts: Codable, Equatable, Sendable {
     public init(
         instructionFiles: Int,
         projectSkills: Int,
+        projectSkillRepresentations: Int,
+        projectSkillProjections: Int,
         invalidSkillDirectories: Int,
         doctorWarnings: Int,
         doctorFailures: Int,
@@ -94,6 +98,8 @@ public struct ProjectAnalysisCounts: Codable, Equatable, Sendable {
     ) {
         self.instructionFiles = instructionFiles
         self.projectSkills = projectSkills
+        self.projectSkillRepresentations = projectSkillRepresentations
+        self.projectSkillProjections = projectSkillProjections
         self.invalidSkillDirectories = invalidSkillDirectories
         self.doctorWarnings = doctorWarnings
         self.doctorFailures = doctorFailures
@@ -105,7 +111,7 @@ public struct ProjectAnalysisCounts: Codable, Equatable, Sendable {
 }
 
 public struct ProjectAnalysisSummary: Codable, Equatable, Sendable {
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
 
     public let schemaVersion: Int
     public let scope: String
@@ -308,7 +314,8 @@ public extension MetagentCore {
             codexExecutableOverride: codexExecutableOverride,
             generatedAt: generatedAt
         )
-        let skills = snapshot.skills.projects.flatMap(\.skills)
+        let skillRepresentations = snapshot.skills.projects.flatMap(\.skills)
+        let skills = snapshot.skills.projects.flatMap(canonicalInventorySkills)
         let invalidSkillDirectories = snapshot.skills.projects
             .reduce(0) { $0 + $1.invalidSkillDirs.count }
         var sections: [ProjectAnalysisSection] = []
@@ -326,6 +333,10 @@ public extension MetagentCore {
             counts: ProjectAnalysisCounts(
                 instructionFiles: snapshot.instructions.count,
                 projectSkills: skills.count,
+                projectSkillRepresentations: skillRepresentations.count,
+                projectSkillProjections: skillRepresentations.count(where: {
+                    $0.representation == "projection"
+                }),
                 invalidSkillDirectories: invalidSkillDirectories,
                 doctorWarnings: snapshot.doctor.warningCount,
                 doctorFailures: snapshot.doctor.failureCount,
@@ -405,7 +416,7 @@ public extension MetagentCore {
             observedAt: allMCP.observedAt
         )
         let projectMCP = allMCP.projectOnly(at: rootURL.path)
-        let canonicalSkillPaths = Set(skills.projects.flatMap(\.skills).map {
+        let canonicalSkillPaths = Set(skills.projects.flatMap(canonicalInventorySkills).map {
             URL(fileURLWithPath: $0.canonicalPath).standardizedFileURL.path
         })
         let usageSnapshot = loadSkillUsageSnapshot() ?? .empty

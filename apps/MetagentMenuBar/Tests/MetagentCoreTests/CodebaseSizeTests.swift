@@ -82,7 +82,15 @@ final class CodebaseSizeTests: XCTestCase {
         XCTAssertEqual(report.codeLines, 2)
         XCTAssertEqual(report.signals.medianCodeFileLines, 2)
         XCTAssertEqual(report.signals.largestCodeFileLines, 2)
-        XCTAssertEqual(report.warnings, ["1 tracked file(s) could not be read as text"])
+        XCTAssertEqual(report.unreadableFiles, [
+            CodebaseUnreadableFile(
+                path: "Sources/TooLarge.swift",
+                reason: "exceeds 20-byte read limit"
+            )
+        ])
+        XCTAssertEqual(report.warnings, [
+            "1 tracked file(s) could not be read as text: Sources/TooLarge.swift (exceeds 20-byte read limit)"
+        ])
     }
 
     func testReportsFolderWithoutGitAsUnmeasured() throws {

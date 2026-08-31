@@ -64,11 +64,15 @@ projection-level record is genuinely needed.
 MCP clients can use `metagent mcp --stdio`, which exposes the same surfaces
 without a second scanner: `analyze_project`, `get_project_analysis_details`,
 `list_skills`, `list_projects`, `find_duplicate_skills`, `get_skill`,
-`measure_codebase_size`, `doctor_project`, and `remove_skills`.
+`measure_codebase_size`, `doctor_project`, `list_archived_skills`,
+`archive_skills`, `restore_skill`, and `remove_skills`. `list_projects` defaults
+to real project roots; request `kind: all` when global and plugin installation
+roots are intentionally in scope. Expected errors remain MCP errors and carry a
+structured JSON body.
 
-## Skill Removal Permission
+## Skill Lifecycle Permission
 
-Removal is the only destructive surface here, so it has a hard rule:
+Removal, archiving, and restoration change files, so they have hard rules:
 
 - Dry run is the default and stays the default. Run `metagent skills remove
   NAME` (or `remove_skills` with `apply: false`), show the user the resulting
@@ -82,6 +86,9 @@ Removal is the only destructive surface here, so it has a hard rule:
 - Applying moves the skill and its projections into Metagent's recovery state
   rather than hard-deleting them, and reports the recovery path. Pass the
   recovery path on to the user; it is how they undo the removal.
+- Archive and restore follow the same preview-and-confirm boundary. Show the
+  exact named skill and destination first; call `archive_skills` or
+  `restore_skill` with `apply: true` only after the human confirms that plan.
 
 ## MCP Analysis
 

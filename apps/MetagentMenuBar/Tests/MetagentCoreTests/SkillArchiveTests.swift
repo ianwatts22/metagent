@@ -162,6 +162,31 @@ final class SkillArchiveTests: XCTestCase {
         ))
     }
 
+    func testRestoreOperationPreviewsWithoutMutatingThenApplies() throws {
+        let root = try canonicalFixture("operation")
+        let target = try XCTUnwrap(MetagentCore.resolveSkillRemovalTarget(
+            projectRoot: root.path,
+            skillName: "demo"
+        ))
+        XCTAssertTrue(MetagentCore.archiveSkills(targets: [target], apply: true)
+            .outcomes.allSatisfy(\.succeeded))
+
+        let preview = try MetagentCore.restoreArchivedSkillOperation(named: "demo")
+        XCTAssertFalse(preview.apply)
+        XCTAssertEqual(preview.projectionCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".agents/skills/demo").path
+        ))
+        XCTAssertEqual(MetagentCore.listArchivedSkills().map(\.skillName), ["demo"])
+
+        let applied = try MetagentCore.restoreArchivedSkillOperation(named: "demo", apply: true)
+        XCTAssertTrue(applied.apply)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".agents/skills/demo/SKILL.md").path
+        ))
+        XCTAssertTrue(MetagentCore.listArchivedSkills().isEmpty)
+    }
+
     func testRestoreRefusesOccupiedDestination() throws {
         let root = try canonicalFixture("occupied")
         let target = try XCTUnwrap(MetagentCore.resolveSkillRemovalTarget(

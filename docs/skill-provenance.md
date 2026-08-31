@@ -123,9 +123,10 @@ For MCP clients, configure the installed binary as a local stdio server:
 metagent mcp --stdio
 ```
 
-The server exposes `analyze_project`, `get_project_analysis_details`,
-`list_skills`, and `doctor_project`. These are read-only wrappers around the
-same `MetagentCore` implementation used by the CLI and app. The default project
-analysis is a compact project-only summary with no global plugin or MCP noise.
-Use `get_project_analysis_details` with a section and optional cursor for
+The server exposes the shared analysis, skill query, project query, duplicate,
+archive, restore, Doctor, and codebase-sizing surfaces. Read tools wrap the same
+`MetagentCore` implementation used by the CLI and app. Mutations are preview
+first and require explicit approval for the exact plan. The default project
+analysis is a compact project-only summary with no global plugin or MCP noise;
+use `get_project_analysis_details` with a section and optional cursor for
 bounded records.

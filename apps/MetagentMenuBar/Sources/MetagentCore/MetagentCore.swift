@@ -335,7 +335,13 @@ public enum MetagentCore {
             issues.append(contentsOf: doctorClaudeSkillProjection(project: project))
         }
 
-        return DoctorReport(issues: issues)
+        let representations = projects.flatMap(\.skills)
+        return DoctorReport(
+            issues: issues,
+            canonicalSkillCount: projects.flatMap(canonicalInventorySkills).count,
+            representationCount: representations.count,
+            projectionCount: representations.count(where: { $0.representation == "projection" })
+        )
     }
 
     /// Audits several already-scanned inventory slices without dropping

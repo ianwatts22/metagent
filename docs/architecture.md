@@ -140,12 +140,14 @@ The stdio server is:
 metagent mcp --stdio
 ```
 
-It uses the pinned official MCP Swift SDK and exposes eight read-only tools plus
-one gated destructive tool: `analyze_project`, `get_project_analysis_details`,
+It uses the pinned official MCP Swift SDK and exposes nine read-only tools plus
+three gated mutation tools: `analyze_project`, `get_project_analysis_details`,
 `list_skills`, `list_projects`, `find_duplicate_skills`, `get_skill`,
-`measure_codebase_size`, `doctor_project`, and `remove_skills`.
+`measure_codebase_size`, `list_archived_skills`, `doctor_project`,
+`remove_skills`, `archive_skills`, and `restore_skill`.
 `analyze_project` defaults to a compact
-schema-version-2 project-only summary: counts, usage coverage, and at most five
+schema-version-3 project-only summary: canonical and representation counts,
+usage coverage, and at most five
 prioritized findings. It deliberately excludes global plugin inventories and
 global MCP servers. `get_project_analysis_details` retrieves one project-only
 section at a time (`instructions`, `skills`, `doctor`, `mcp`, or `usage`), caps
@@ -153,14 +155,18 @@ pages at 100 records, and returns an opaque cursor when another page exists.
 `list_skills` returns the same compact paginated projection as `skills list`
 (`root`, `scope`, `sort`, `order`, `limit`, `cursor`, `name_contains`, `manager`,
 `mutability`, `min_score`, `unused_only`, `used_within_days`,
-`include_projections`, `include_descriptions`). `list_projects` is a small global
-overview of every root with its skill count and per-location breakdown.
+`include_projections`, `include_descriptions`). `list_projects` defaults to real
+project roots and can filter for global, plugin, or all roots. Its opaque cursor
+pages canonical counts separately from representation and projection counts.
 `find_duplicate_skills` takes `root` and `scope`; `get_skill` takes `path`,
 `include_body`, and `max_body_characters`; `doctor_project` now takes `scope`
 alongside `root`. `remove_skills` takes `skill_names`, `root`, and `apply`, which
 defaults to `false`; applying is destructive, requires explicit user
 confirmation for that specific removal, and moves content into recovery state
-instead of hard-deleting it. All tools call `MetagentCore`; the server owns no
+instead of hard-deleting it. Archive follows the same preview gate. Restore is
+also preview-first and reports a bounded destination and projection count before
+`apply: true`. Expected tool errors use a stable JSON envelope while preserving
+the MCP `isError` signal. All tools call `MetagentCore`; the server owns no
 parallel scanner or cache. Add Rust or Python workers only for measured hot
 paths or exploratory analysis that Swift plus SQLite cannot handle cleanly.
 
