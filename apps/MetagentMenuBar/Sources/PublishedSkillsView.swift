@@ -470,7 +470,7 @@ struct SkillPublicationSetupSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Prepare \(row.skillName) for publishing")
                 .font(.title2.bold())
-            Text("Metagent continuously mirrors only this skill into a separate Git checkout. It never commits or pushes; unsafe updates keep the last safe copy in place. You control when the repository becomes public.")
+            Text("Metagent continuously mirrors only this skill into a separate Git checkout. Automatic mirroring never commits or pushes; unsafe updates keep the last safe copy in place. After mirroring, you can review and explicitly publish.")
                 .foregroundStyle(.secondary)
 
             LabeledContent("Canonical source") {
@@ -505,7 +505,7 @@ struct SkillPublicationSetupSheet: View {
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
             }
-            Text("Next: review the local diff, commit and push yourself, then share the install command. Repository visibility is not checked here.")
+            Text("Next: review the mirrored copy and use Publish when ready, then share the install command. Repository visibility is checked separately.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
