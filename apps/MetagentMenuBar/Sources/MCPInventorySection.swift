@@ -110,6 +110,7 @@ struct MCPInventorySection: View {
     @State private var searchText = ""
     @State private var filter = MCPInventoryFilter.all
     @State private var sortOrder = [KeyPathComparator(\MCPInventoryRow.name)]
+    @State private var inspectedEntry: MCPInventoryEntry?
 
     private var allRows: [MCPInventoryRow] {
         mcpInventoryRows(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
@@ -177,9 +178,11 @@ struct MCPInventorySection: View {
             } else {
                 Table(rows, sortOrder: $sortOrder) {
                     TableColumn("MCP", value: \.name) { row in
-                        Text(row.name)
-                            .font(.callout.weight(.medium))
-                            .help(row.name)
+                        Button { inspectedEntry = row.entry } label: {
+                            Text(row.name).font(.callout.weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Inspect \(row.name) configuration and tool schemas")
                     }
                     .width(min: 220, ideal: 320)
 
@@ -204,6 +207,7 @@ struct MCPInventorySection: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .sheet(item: $inspectedEntry) { entry in MCPInspectorView(entry: entry) }
     }
 }
 
