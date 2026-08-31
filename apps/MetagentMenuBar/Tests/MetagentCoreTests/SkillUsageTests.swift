@@ -956,6 +956,63 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(summaries.allSatisfy { $0.id.hasPrefix("path:") })
     }
 
+    func testSnapshotProjectionPreservesIdentityTiesAndAllUsageCounts() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        try fixture.executeSQL("""
+        INSERT INTO skill_usage_events (
+          event_id, skill_id, skill_name, canonical_path, scope, occurred_at,
+          session_id, turn_id, cwd, evidence, invocation_kind, confidence,
+          source_path, call_id
+        ) VALUES
+          ('old', 'old-id', 'Old name', '/fixture/skill', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-35 days'),
+           'session-1', 'turn-1', '', 'inferred', 'read', 'high', '', ''),
+          ('middle', 'middle-id', 'Middle name', '/fixture/skill', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-8 days'),
+           'session-1', 'turn-2', '', 'otel', 'read', 'high', '', ''),
+          ('tied-first', 'previous-id', 'Previous name', '/fixture/skill', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           'session-2', 'turn-1', '', 'inferred', 'read', 'high', '', ''),
+          ('tied-last', 'latest-id', 'Latest name', '/fixture/skill', 'global',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           'session-2', 'turn-1', '', 'otel', 'read', 'high', '', '');
+        """)
+        let before = try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        let summary = try XCTUnwrap(before.summaries.first)
+        XCTAssertEqual(before.summaries.count, 1)
+        XCTAssertEqual(summary.id, "latest-id")
+        XCTAssertEqual(summary.skillName, "Latest name")
+        XCTAssertEqual(summary.canonicalPath, "/fixture/skill")
+        XCTAssertEqual(summary.scope, "global")
+        XCTAssertEqual(summary.totalInvocations, 4)
+        XCTAssertEqual(summary.invocations7d, 2)
+        XCTAssertEqual(summary.invocations30d, 3)
+        XCTAssertEqual(summary.activeTurns, 3)
+        XCTAssertEqual(summary.distinctThreads, 2)
+        XCTAssertEqual(summary.repeatInvocations, 1)
+        XCTAssertEqual(summary.directInvocations, 2)
+        XCTAssertEqual(summary.inferredInvocations, 2)
+        XCTAssertLessThan(summary.firstUsedAt, summary.lastUsedAt)
+
+        // These columns remain canonical source provenance, but none is an
+        // input to the displayed summary (including equal-time rowid ranking).
+        try fixture.executeSQL("""
+        UPDATE skill_usage_events SET
+          event_id = 'changed-' || event_id,
+          cwd = '/fixture/' || hex(zeroblob(256)),
+          invocation_kind = 'changed-kind',
+          confidence = 'changed-confidence',
+          source_path = '/sessions/' || hex(zeroblob(256)),
+          call_id = 'changed-call';
+        """)
+        XCTAssertEqual(
+            MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path),
+            before
+        )
+    }
+
     func testDefersAnIncompleteFinalRecordUntilItIsTerminated() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
