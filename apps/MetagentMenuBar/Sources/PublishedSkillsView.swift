@@ -265,7 +265,11 @@ struct SkillPublicationSetupSheet: View {
     }
 
     private var readinessInput: String {
-        "\(repositoryPath)\u{1f}\(destinationName)"
+        "\(repositoryPath)\u{1f}\(destinationName)\u{1f}\(skillsRelativePath)"
+    }
+
+    private var skillsRelativePath: String {
+        publicationSkillsRelativePath(repositoryPath: repositoryPath, catalogs: model.publicationSnapshot.catalogs)
     }
 
     var body: some View {
@@ -303,7 +307,7 @@ struct SkillPublicationSetupSheet: View {
                     .frame(width: 240)
             }
             if !repositoryPath.isEmpty {
-                Text("Only this skill's files → \(displayUserPath(repositoryPath))/skills/\(destinationName)")
+                Text("Only this skill's files → \(displayUserPath(repositoryPath))/\(skillsRelativePath)/\(destinationName)")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
             }
@@ -362,10 +366,12 @@ struct SkillPublicationSetupSheet: View {
             let sourcePath = row.canonicalPath
             let repositoryPath = repositoryPath
             let destinationName = destinationName
+            let skillsRelativePath = skillsRelativePath
             let result = await Task.detached(priority: .utility) {
                 MetagentCore.assessSkillPublicationReadiness(
                     sourcePath: sourcePath,
                     repositoryPath: repositoryPath,
+                    skillsRelativePath: skillsRelativePath,
                     destinationName: destinationName
                 )
             }.value
@@ -385,6 +391,15 @@ struct SkillPublicationSetupSheet: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         repositoryPath = url.standardizedFileURL.path
     }
+}
+
+/// The preview and readiness gate must use the same destination as enablement,
+/// which preserves a previously configured catalog's relative skills folder.
+func publicationSkillsRelativePath(repositoryPath: String, catalogs: [SkillPublicationCatalog]) -> String {
+    let repository = URL(fileURLWithPath: repositoryPath).resolvingSymlinksInPath().standardizedFileURL.path
+    return catalogs.first {
+        URL(fileURLWithPath: $0.localRepositoryPath).resolvingSymlinksInPath().standardizedFileURL.path == repository
+    }?.skillsRelativePath ?? "skills"
 }
 
 private extension SkillPublicationState {

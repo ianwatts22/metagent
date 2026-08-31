@@ -77,6 +77,28 @@ public extension MetagentCore {
         catalog: SkillPublicationCatalog,
         now: Date = Date()
     ) -> SkillPublicationGitStatus {
+        inspectSkillPublicationGit(record: record, catalog: catalog, now: now,
+            configurationEnvironment: ProcessInfo.processInfo.environment)
+    }
+
+    internal static func inspectSkillPublicationGitForTesting(
+        record: SkillPublicationRecord,
+        catalog: SkillPublicationCatalog,
+        now: Date = Date(),
+        configurationEnvironment: [String: String] = [
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        ]
+    ) -> SkillPublicationGitStatus {
+        inspectSkillPublicationGit(record: record, catalog: catalog, now: now,
+            configurationEnvironment: configurationEnvironment)
+    }
+
+    private static func inspectSkillPublicationGit(
+        record: SkillPublicationRecord,
+        catalog: SkillPublicationCatalog,
+        now: Date,
+        configurationEnvironment: [String: String]
+    ) -> SkillPublicationGitStatus {
         let repository = URL(fileURLWithPath: catalog.localRepositoryPath).standardizedFileURL
         let relativePath = "\(catalog.skillsRelativePath)/\(record.destinationName)"
         let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
@@ -97,18 +119,22 @@ public extension MetagentCore {
         }
 
         let deadline = ProcessInfo.processInfo.systemUptime + 5
+        // Preserve only existing configuration-location variables so attribute
+        // semantics and the filter probe agree with the user's Git. Never pass
+        // inherited Git routing, injected config entries, tokens, or helpers.
+        let configurationLocations = [
+            "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+        ].compactMap { name in configurationEnvironment[name].map { "\(name)=\($0)" } }
         func git(_ arguments: [String]) throws -> SubprocessResult {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0 else { throw PublicationGitError.unavailable }
-            // Ignore inherited Git routing/config and suppress fsmonitor hooks,
+            // Ignore inherited Git routing and suppress fsmonitor hooks,
             // index writes, external diffs, and partial-clone lazy fetching.
             let result = try runSubprocess(
                 executable: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: [
-                    "-i", "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1",
-                    "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_LAZY_FETCH=1",
+                arguments: ["-i", "PATH=/usr/bin:/bin"] + configurationLocations + [
+                    "GIT_NO_LAZY_FETCH=1",
                     "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=",
-                    "GIT_ATTR_NOSYSTEM=1",
                     "/usr/bin/git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                     "-c", "core.hooksPath=/dev/null", "-C", repository.path,
                 ] + arguments,
@@ -221,7 +247,7 @@ public extension MetagentCore {
                 upstream: upstreamCommit)
         } catch {
             // Never surface Git stderr or raw remotes: they can contain secrets.
-            return status(.unavailable, "Git could not finish a safe local check within five seconds. Check the repository and try again.")
+            return status(.unavailable, "The local Git check could not complete. Repository data may be incomplete or the check may have timed out. Inspect the repository and try again.")
         }
     }
 }

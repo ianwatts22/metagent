@@ -116,7 +116,7 @@ final class SkillPublicationGitTests: XCTestCase {
         let checkout = fixture.root.appendingPathComponent("linked-checkout")
         try fixture.git(["worktree", "add", "--detach", checkout.path])
         let catalog = SkillPublicationCatalog(id: "catalog", localRepositoryPath: checkout.path)
-        let result = MetagentCore.inspectSkillPublicationGit(record: fixture.record, catalog: catalog)
+        let result = MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: catalog)
         XCTAssertEqual(result.state, .noUpstream)
         XCTAssertNotNil(result.links)
     }
@@ -152,19 +152,19 @@ final class SkillPublicationGitTests: XCTestCase {
         try fixture.commit()
         let record = SkillPublicationRecord(id: "missing", sourceCanonicalPath: "/unused", skillName: "missing",
             catalogID: "catalog", destinationName: "missing")
-        XCTAssertEqual(MetagentCore.inspectSkillPublicationGit(record: record, catalog: fixture.catalog).state, .notCommitted)
+        XCTAssertEqual(MetagentCore.inspectSkillPublicationGitForTesting(record: record, catalog: fixture.catalog).state, .notCommitted)
     }
 
     func testInvalidRepositoryAndTraversalAreUnavailable() throws {
         let fixture = try GitPublicationFixture()
         defer { fixture.remove() }
         let nested = SkillPublicationCatalog(id: "catalog", localRepositoryPath: fixture.root.appendingPathComponent("skills").path)
-        XCTAssertEqual(MetagentCore.inspectSkillPublicationGit(record: fixture.record, catalog: nested).state, .unavailable)
+        XCTAssertEqual(MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: nested).state, .unavailable)
         let unsafe = SkillPublicationRecord(id: "unsafe", sourceCanonicalPath: "/unused", skillName: "unsafe",
             catalogID: "catalog", destinationName: "../../elsewhere")
-        XCTAssertEqual(MetagentCore.inspectSkillPublicationGit(record: unsafe, catalog: fixture.catalog).state, .unavailable)
+        XCTAssertEqual(MetagentCore.inspectSkillPublicationGitForTesting(record: unsafe, catalog: fixture.catalog).state, .unavailable)
         let rootMismatch = SkillPublicationCatalog(id: "other-catalog", localRepositoryPath: fixture.root.path)
-        XCTAssertEqual(MetagentCore.inspectSkillPublicationGit(record: fixture.record, catalog: rootMismatch).state, .unavailable)
+        XCTAssertEqual(MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: rootMismatch).state, .unavailable)
     }
 
     func testRepositoryFiltersAndFSMonitorAreNotExecuted() throws {
@@ -196,6 +196,51 @@ final class SkillPublicationGitTests: XCTestCase {
         try fixture.write("changed", at: "skills/folder-name/SKILL.md")
         XCTAssertEqual(fixture.inspect().state, .localChanges)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testGlobalFiltersAndAttributesFailClosedWithoutExecutingHelper() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        let marker = fixture.root.appendingPathComponent("global-helper-executed")
+        let attributes = fixture.root.appendingPathComponent("global-attributes")
+        let config = fixture.root.appendingPathComponent("global-gitconfig")
+        try fixture.write("skills/** filter=normalize\n", at: "global-attributes")
+        try fixture.write("#!/bin/sh\ntouch '\(marker.path)'\ncat\n", at: "global-helper.sh")
+        try fixture.write("""
+            [core]
+                attributesFile = \(attributes.path)
+            [filter "normalize"]
+                clean = /bin/sh '\(fixture.root.appendingPathComponent("global-helper.sh").path)'
+                required = true
+            """, at: "global-gitconfig")
+        // Rewriting the file's bytes is enough to make status consult filters.
+        let manifest = fixture.root.appendingPathComponent("skills/folder-name/SKILL.md")
+        let text = try String(contentsOf: manifest, encoding: .utf8)
+        try text.write(to: manifest, atomically: true, encoding: .utf8)
+        for environment in [
+            ["GIT_CONFIG_GLOBAL": config.path, "GIT_CONFIG_NOSYSTEM": "1"],
+            ["GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": config.path],
+        ] {
+            let result = MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: fixture.catalog,
+                configurationEnvironment: environment)
+            XCTAssertEqual(result.state, .unavailable)
+            XCTAssertTrue(result.detail.contains("content filters"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testInjectedGitConfigurationAndRoutingAreNotForwarded() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        let result = MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: fixture.catalog,
+            configurationEnvironment: [
+                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_DIR": "/nonexistent-git-directory", "GIT_WORK_TREE": "/nonexistent-tree",
+                "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "filter.fake.clean", "GIT_CONFIG_VALUE_0": "false",
+            ])
+        XCTAssertEqual(result.state, .noUpstream, result.detail)
     }
 
     func testPartialCloneMissingTreeCannotFetchOrRunRemoteHelper() throws {
@@ -235,7 +280,7 @@ final class SkillPublicationGitTests: XCTestCase {
         try fixture.git(["remote", "remove", "origin"])
         let stale = SkillPublicationCatalog(id: "catalog", localRepositoryPath: fixture.root.path,
             remoteURL: "https://github.com/stale/repository")
-        XCTAssertNil(MetagentCore.inspectSkillPublicationGit(record: fixture.record, catalog: stale).links)
+        XCTAssertNil(MetagentCore.inspectSkillPublicationGitForTesting(record: fixture.record, catalog: stale).links)
     }
 }
 
@@ -290,7 +335,7 @@ private struct GitPublicationFixture {
     }
 
     func inspect() -> SkillPublicationGitStatus {
-        MetagentCore.inspectSkillPublicationGit(record: record, catalog: catalog,
+        MetagentCore.inspectSkillPublicationGitForTesting(record: record, catalog: catalog,
             now: Date(timeIntervalSince1970: 1_800_000_000))
     }
 
