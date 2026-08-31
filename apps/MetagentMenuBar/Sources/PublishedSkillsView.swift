@@ -51,7 +51,7 @@ struct PublishedSkillsView: View {
                     Image(systemName: "shippingbox")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                    Text("No published skills")
+                    Text("No skills selected for publishing")
                         .font(.callout.weight(.semibold))
                     Text("Choose a canonical skill from ~/.agents/skills. Metagent will keep its public-repository copy current without committing or pushing.")
                         .font(.caption)
@@ -128,6 +128,7 @@ struct PublishedSkillsView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                SkillPublicationGitDetails(record: record, catalog: catalog)
             }
             if let lastMirroredAt = record.lastMirroredAt {
                 Text("Last mirrored \(lastMirroredAt.formatted(date: .abbreviated, time: .shortened))")
@@ -150,6 +151,102 @@ struct PublishedSkillsView: View {
     }
 }
 
+private struct SkillPublicationGitDetails: View {
+    let record: SkillPublicationRecord
+    let catalog: SkillPublicationCatalog
+    @State private var status: SkillPublicationGitStatus?
+    @State private var isChecking = false
+    @State private var generation = UUID()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            HStack {
+                Label(status?.state.title ?? "Git status not checked", systemImage: "arrow.triangle.branch")
+                    .font(.callout.weight(.medium))
+                Spacer()
+                Button(isChecking ? "Checking…" : "Check Git Status") { checkGit() }
+                    .disabled(isChecking)
+            }
+            if let status {
+                HStack {
+                    Text("Local check \(status.checkedAt.formatted(date: .abbreviated, time: .shortened))")
+                    if let commit = status.checkoutCommit {
+                        Text("Checkout \(commit.prefix(8))")
+                            .font(.caption.monospaced())
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if let links = status.links {
+                    HStack {
+                        Link("GitHub Repository", destination: links.repositoryURL)
+                        Link("View on skills.sh ↗", destination: links.skillsURL)
+                        Spacer()
+                        Button("Copy Install Command", systemImage: "doc.on.doc") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(links.installCommand, forType: .string)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .font(.caption)
+                } else {
+                    Text("Install links require a credential-free github.com origin and a supported SKILL.md name.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                DisclosureGroup("Details and next steps") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(status.detail)
+                        if let links = status.links {
+                            Text(links.installCommand)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                            Text("Installs from the repository's default branch. Review your diff, commit and push there, then confirm public visibility before sharing.")
+                        }
+                        Text("The skills.sh page may not exist until a normal CLI install indexes the skill. Its install telemetry is not downloads or active users.")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                }
+                .font(.caption)
+            }
+            Text("Local Git only · Public listing unverified · Installs not connected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("Mirroring never commits or pushes. Git checks read local tracking refs, without fetching. GitHub visibility, current remote contents, and skills.sh indexing are not verified; per-skill installs are unavailable in Metagent.")
+        }
+        .onChange(of: record) { _, _ in invalidateStatus() }
+        .onChange(of: catalog) { _, _ in invalidateStatus() }
+        .onDisappear { invalidateStatus() }
+    }
+
+    private func checkGit() {
+        isChecking = true
+        let expectedRecord = record
+        let expectedCatalog = catalog
+        let expectedGeneration = generation
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                MetagentCore.inspectSkillPublicationGit(record: expectedRecord, catalog: expectedCatalog)
+            }.value
+            // A sync can finish while Git is being inspected. Its old result
+            // must not be presented as a check of the newly mirrored snapshot.
+            if generation == expectedGeneration {
+                status = result
+            }
+            isChecking = false
+        }
+    }
+
+    private func invalidateStatus() {
+        status = nil
+        generation = UUID()
+    }
+}
+
 struct SkillPublicationSetupSheet: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
@@ -163,6 +260,8 @@ struct SkillPublicationSetupSheet: View {
         self.model = model
         self.row = row
         _destinationName = State(initialValue: row.skillName.lowercased().replacingOccurrences(of: "_", with: "-"))
+        let catalogs = model.publicationSnapshot.catalogs
+        _repositoryPath = State(initialValue: catalogs.count == 1 ? catalogs[0].localRepositoryPath : "")
     }
 
     private var readinessInput: String {
@@ -171,9 +270,9 @@ struct SkillPublicationSetupSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Publish \(row.skillName)")
+            Text("Prepare \(row.skillName) for publishing")
                 .font(.title2.bold())
-            Text("Metagent will continuously mirror this canonical skill into an existing public Git checkout. It will never commit or push; unsafe updates keep the last safe public copy in place.")
+            Text("Metagent continuously mirrors only this skill into a separate Git checkout. It never commits or pushes; unsafe updates keep the last safe copy in place. You control when the repository becomes public.")
                 .foregroundStyle(.secondary)
 
             LabeledContent("Canonical source") {
@@ -181,19 +280,36 @@ struct SkillPublicationSetupSheet: View {
                     .font(.callout.monospaced())
                     .textSelection(.enabled)
             }
-            LabeledContent("Public repository") {
+            LabeledContent("Destination repository") {
                 HStack {
                     Text(repositoryPath.isEmpty ? "Choose a local checkout" : displayUserPath(repositoryPath))
                         .font(.callout.monospaced())
                         .lineLimit(1)
                     Button("Choose…") { chooseRepository() }
+                    if !model.publicationSnapshot.catalogs.isEmpty {
+                        Menu("Recent") {
+                            ForEach(model.publicationSnapshot.catalogs) { catalog in
+                                Button(displayUserPath(catalog.localRepositoryPath)) {
+                                    repositoryPath = catalog.localRepositoryPath
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            LabeledContent("Public skill name") {
+            LabeledContent("Destination folder name") {
                 TextField("skill-name", text: $destinationName)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
             }
+            if !repositoryPath.isEmpty {
+                Text("Only this skill's files → \(displayUserPath(repositoryPath))/skills/\(destinationName)")
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+            Text("Next: review the local diff, commit and push yourself, then share the install command. Repository visibility is not checked here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if isCheckingReadiness {
                 Label("Checking publication safety…", systemImage: "arrow.triangle.2.circlepath")
@@ -216,7 +332,7 @@ struct SkillPublicationSetupSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Start Publishing") {
+                Button("Start Local Mirroring") {
                     let accepted = model.enableSkillPublication(
                         sourcePath: row.canonicalPath,
                         skillName: row.skillName,
