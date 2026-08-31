@@ -311,6 +311,7 @@ private struct SkillPublicationPublishSheet: View {
                 Spacer()
                 Button(result?.succeeded == true ? "Done" : "Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(model.isPublicationPublishing)
                 if result?.succeeded != true {
                     Button("Commit & Publish") { publish() }
                         .keyboardShortcut(.defaultAction)
@@ -320,6 +321,7 @@ private struct SkillPublicationPublishSheet: View {
         }
         .padding(22)
         .frame(minWidth: 680, minHeight: 500)
+        .interactiveDismissDisabled(model.isPublicationPublishing)
         .task { prepare() }
     }
 
