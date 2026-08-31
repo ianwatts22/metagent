@@ -65,12 +65,12 @@ private func waitWithAppKitEvents(
     throw ProbeError.timeout("Timed out after \(Int(timeoutMilliseconds))ms waiting for \(description).\(detail)")
 }
 
-/// A readiness sentinel belongs to a content container, never one of its
-/// cells. Asking AX for lazy table children can instantiate offscreen hosting
-/// views and delay the very publication this probe is trying to measure.
-private func findContentSentinel<Node>(
+/// Navigation/filter controls live outside inventory content, and readiness
+/// identifiers belong to content containers, never their cells. Both lookups
+/// must avoid AX children that instantiate lazy offscreen hosting views.
+private func findStructuralElement<Node>(
     _ root: Node,
-    prefix: String,
+    matchesIdentifier: (String?) -> Bool,
     maximumVisited: Int = maximumTraversalElements,
     identifier: (Node) throws -> String?,
     role: (Node) throws -> String?,
@@ -82,7 +82,7 @@ private func findContentSentinel<Node>(
         let current = pending[cursor]
         cursor += 1
         let currentIdentifier = try identifier(current)
-        if currentIdentifier?.hasPrefix(prefix) == true { return current }
+        if matchesIdentifier(currentIdentifier) { return current }
         if let currentIdentifier,
            currentIdentifier.hasPrefix("metagent."),
            currentIdentifier.contains(".content.")
@@ -347,13 +347,19 @@ private final class AccessibilityProbe {
     }
 
     func findByIdentifier(_ root: AXUIElement, identifier expected: String) throws -> AXUIElement? {
-        try findDescendant(of: root) { try self.identifier($0) == expected }
+        try findStructuralElement(
+            root,
+            matchesIdentifier: { $0 == expected },
+            identifier: identifier,
+            role: role,
+            children: children
+        )
     }
 
     func findByIdentifierPrefix(_ root: AXUIElement, prefix: String) throws -> AXUIElement? {
-        try findContentSentinel(
+        try findStructuralElement(
             root,
-            prefix: prefix,
+            matchesIdentifier: { $0?.hasPrefix(prefix) == true },
             identifier: identifier,
             role: role,
             children: children
@@ -1272,6 +1278,7 @@ private func selfTest() throws {
         else { throw ProbeError.state("The monotonic wait deadline was not respected.") }
     }
     try sentinelTraversalSelfTest()
+    try controlTraversalSelfTest()
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {
         throw ProbeError.state("JSON self-test payload is invalid.")
@@ -1288,9 +1295,9 @@ private func sentinelTraversalSelfTest() throws {
         role contentRole: String?,
         maximumVisited: Int = maximumTraversalElements
     ) throws -> Int? {
-        try findContentSentinel(
+        try findStructuralElement(
             0,
-            prefix: expected,
+            matchesIdentifier: { $0?.hasPrefix(expected) == true },
             maximumVisited: maximumVisited,
             identifier: { $0 == 1 ? contentIdentifier : nil },
             role: { $0 == 1 ? contentRole : kAXWindowRole },
@@ -1320,6 +1327,50 @@ private func sentinelTraversalSelfTest() throws {
     }
     guard try search(identifier: expected + "fixture", role: kAXTableRole, maximumVisited: 1) == nil else {
         throw ProbeError.state("Sentinel lookup exceeded its traversal bound.")
+    }
+}
+
+private func controlTraversalSelfTest() throws {
+    // Content is encountered before the nested toolbar control, including
+    // while the desired control is absent during SwiftUI replacement. A
+    // generic BFS would request content children before reaching the control.
+    let expected = "metagent.skills.usage-filter"
+    for contentRole in [kAXTableRole, kAXOutlineRole, kAXGroupRole] {
+        for controlPresent in [false, true] {
+            var visited: [Int] = []
+            let result = try findStructuralElement(
+                0,
+                matchesIdentifier: { $0 == expected },
+                identifier: { node in
+                    if node == 1 { return "metagent.skills.content.loading" }
+                    if node == 3, controlPresent { return expected }
+                    return nil
+                },
+                role: { $0 == 1 ? contentRole : kAXGroupRole },
+                children: { node in
+                    visited.append(node)
+                    switch node {
+                    case 0: return [1, 2]
+                    case 1: throw ProbeError.state("Control lookup traversed lazy content children.")
+                    case 2: return [3]
+                    default: return []
+                    }
+                }
+            )
+            guard result == (controlPresent ? 3 : nil), !visited.contains(1) else {
+                throw ProbeError.state("Structural control lookup lost a replacement or expanded content.")
+            }
+        }
+    }
+    let similarIdentifier = try findStructuralElement(
+        0,
+        matchesIdentifier: { $0 == expected },
+        identifier: { _ in expected + ".other" },
+        role: { _ in kAXGroupRole },
+        children: { _ in [] }
+    )
+    guard similarIdentifier == nil else {
+        throw ProbeError.state("Exact control lookup accepted a prefix-only match.")
     }
 }
 

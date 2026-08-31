@@ -3,7 +3,19 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
-## v0.6.0 — 2026-08-26
+## v0.6.0 — 2026-08-30
+
+- Faster launch and navigation reuse cached inventory, usage, and Skills rows
+  instead of rebuilding them on every visit. Duplicate comparisons reuse
+  normalized skill identities and pair results within each scan.
+- Background history indexing uses bounded, paced work and fewer repeated
+  maintenance cycles, with smaller slices under Low Power Mode or thermal
+  pressure. Manual refresh stays immediate.
+- Performance regression coverage now checks core workloads, native interaction
+  readiness, and measurement accuracy, with full verification on pull requests.
+- MCP attention rows have clearer labels and an Authenticate action that opens
+  the supported terminal authentication flow. MCP icons are consistent, and
+  Command-comma opens Settings.
 
 - Model readiness is visible in the Skills table: OpenAI and Anthropic badges
   flag skills last changed or reviewed before each provider's newest tracked
