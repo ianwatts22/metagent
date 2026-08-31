@@ -20,8 +20,6 @@ jobs:
       # granting pull requests access to Developer ID or notarization secrets.
       METAGENT_CODE_SIGN_IDENTITY: "-"
       METAGENT_PERFORMANCE_ITERATIONS: "1"
-      METAGENT_PERFORMANCE_RESULT_PATH: ${{ runner.temp }}/metagent-performance.json
-      METAGENT_VERIFY_LOG_DIR: ${{ runner.temp }}/metagent-verify-logs
       METAGENT_VERIFY_KEEP_LOGS: "1"
 
     steps:
@@ -33,6 +31,9 @@ jobs:
         run: brew install librsvg
 
       - name: Run complete verification
+        env:
+          METAGENT_PERFORMANCE_RESULT_PATH: ${{ runner.temp }}/metagent-performance.json
+          METAGENT_VERIFY_LOG_DIR: ${{ runner.temp }}/metagent-verify-logs
         run: ./scripts/verify.sh
 
       - name: Preserve verification evidence
