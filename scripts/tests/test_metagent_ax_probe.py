@@ -77,16 +77,27 @@ class MetagentAXProbeTests(unittest.TestCase):
         lookup = source.split("func findByIdentifierPrefix(", 1)[1].split(
             "func waitForIdentifier(", 1
         )[0]
-        search = source.split("func findContentSentinel<Node>(", 1)[1].split(
+        search = source.split("func findStructuralElement<Node>(", 1)[1].split(
             "private struct SortMeasurement", 1
         )[0]
 
-        self.assertIn("findContentSentinel(", lookup)
+        self.assertIn("findStructuralElement(", lookup)
         self.assertIn("currentRole == kAXTableRole || currentRole == kAXOutlineRole", search)
-        self.assertLess(search.index("hasPrefix(prefix)"), search.index("try children(current)"))
+        self.assertLess(search.index("matchesIdentifier(currentIdentifier)"), search.index("try children(current)"))
         self.assertIn('currentIdentifier.contains(".content.")', search)
         self.assertIn("try sentinelTraversalSelfTest()", source)
         self.assertIn("Sentinel lookup traversed lazy content children", source)
+
+    def test_control_lookup_uses_the_same_non_intrusive_traversal(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        lookup = source.split("func findByIdentifier(", 1)[1].split(
+            "func findByIdentifierPrefix(", 1
+        )[0]
+        self.assertIn("findStructuralElement(", lookup)
+        self.assertIn("matchesIdentifier: { $0 == expected }", lookup)
+        self.assertNotIn("findDescendant", lookup)
+        self.assertIn("try controlTraversalSelfTest()", source)
+        self.assertIn("Control lookup traversed lazy content children", source)
 
     def test_common_interactions_require_changed_content_and_sort_state(self) -> None:
         source = PROBE.read_text(encoding="utf-8")

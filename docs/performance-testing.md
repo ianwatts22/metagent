@@ -19,6 +19,15 @@ Run it from the repository root:
 scripts/verify-performance.sh
 ```
 
+Pull requests run the complete `scripts/verify.sh` suite in the `Verify / verify`
+GitHub check, including this performance lane and the compiled headless probe
+tests. Each run retains stage logs and performance JSON for 14 days, even on
+failure. The runner uses one measured iteration for broad regression detection,
+not a device-specific responsiveness or energy baseline. Packaging uses ad-hoc
+signing and never receives release credentials, installs an app, or publishes a
+release. Installed-app Accessibility and idle-energy measurements remain local
+acceptance gates; green CI is not a substitute for them.
+
 The lane builds optimized code in release mode, enables the test-only hooks used
 by the existing suite, and reports Apple XCTest wall-clock, CPU, peak memory,
 and storage metrics. It also writes a machine-readable JSON result in
@@ -302,9 +311,13 @@ Filter results retain the end-to-end
 diagnostics: time inside the option's `AXPress` call, time after that call until
 the control exposes its new value, and time after that call until the section's
 semantic content-ready token changes. Compare those phases before optimizing a
-slow filter. If control and content become ready together, the delay precedes
-app reconciliation (for example, menu dismissal); if content trails the control,
-the app's filter or presentation work is the likely target.
+slow filter. If control and content become ready together, the phases alone
+cannot distinguish menu dismissal from work that publishes both states together.
+Use a stack sample or app-side timing before attributing the delay. If content
+trails the control, investigate the app's filter/presentation work and probe
+overhead. Both exact control lookup and content-ready discovery prune inventory
+content, tables, and outlines; asking for lazy cell children can itself create
+offscreen hosting views and distort latency and retained-memory measurements.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
 enabled ready state and then return. A refresh that finishes too quickly for

@@ -1,0 +1,47 @@
+name: Verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      # Exercise nested-code signing and Sparkle archive integrity without
+      # granting pull requests access to Developer ID or notarization secrets.
+      METAGENT_CODE_SIGN_IDENTITY: "-"
+      METAGENT_PERFORMANCE_ITERATIONS: "1"
+      METAGENT_PERFORMANCE_RESULT_PATH: ${{ runner.temp }}/metagent-performance.json
+      METAGENT_VERIFY_LOG_DIR: ${{ runner.temp }}/metagent-verify-logs
+      METAGENT_VERIFY_KEEP_LOGS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install asset tooling
+        run: brew install librsvg
+
+      - name: Run complete verification
+        run: ./scripts/verify.sh
+
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metagent-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/metagent-verify-logs
+            ${{ runner.temp }}/metagent-performance.json
+          if-no-files-found: warn
+          retention-days: 14
