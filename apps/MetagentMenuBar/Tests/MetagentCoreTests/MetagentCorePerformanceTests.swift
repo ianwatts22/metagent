@@ -489,6 +489,57 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastSnapshot?.summaries.count, 20)
     }
 
+    func testPerformanceUsageSnapshotWithWideProvenance() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-wide-usage")
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path],
+            databasePath: database
+        ))
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(database, &connection), SQLITE_OK)
+        let db = try XCTUnwrap(connection)
+        defer { sqlite3_close(db) }
+        // Synthetic paths model wide provenance without creating 60k source
+        // files. Fixture insertion is intentionally outside the timed section.
+        XCTAssertEqual(sqlite3_exec(db, """
+        WITH RECURSIVE events(n) AS (
+          SELECT 0 UNION ALL SELECT n + 1 FROM events WHERE n < 59999
+        )
+        INSERT INTO skill_usage_events (
+          event_id, skill_id, skill_name, canonical_path, scope, occurred_at,
+          session_id, turn_id, cwd, evidence, invocation_kind, confidence,
+          source_path, call_id
+        )
+        SELECT
+          'event-' || n, 'skill-' || (n % 200), 'Skill ' || (n % 200),
+          '/fixture/skills/' || (n % 200), 'project',
+          '2026-08-01T12:00:00.000Z', 'session-' || (n % 600),
+          'turn-' || (n % 4000), '/fixture/workspace/' || hex(zeroblob(60)),
+          CASE WHEN n % 3 = 0 THEN 'inferred' ELSE 'otel' END,
+          'read', 'high', '/fixture/sessions/' || hex(zeroblob(90)) || '.jsonl',
+          'call-' || n
+        FROM events;
+        """, nil, nil, nil), SQLITE_OK)
+        let preflight = try assertLatencyBudget(
+            "60k-event wide-provenance usage snapshot aggregation",
+            seconds: 1.0
+        ) {
+            try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: database))
+        }
+        XCTAssertEqual(preflight.totalInvocations, 60_000)
+        XCTAssertEqual(preflight.summaries.count, 200)
+        XCTAssertTrue(preflight.summaries.allSatisfy { $0.totalInvocations == 300 })
+        var lastSnapshot: SkillUsageSnapshot?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastSnapshot = MetagentCore.loadSkillUsageSnapshot(databasePath: database)
+        }
+        XCTAssertEqual(lastSnapshot, preflight)
+    }
+
     // MARK: - Realistic, deterministic fixtures
 
     private var performanceMetrics: [any XCTMetric] {
