@@ -833,18 +833,19 @@ private struct PublicationGitRepository {
 
     func changes(from base: String, to tree: String, destinationPath: String) throws -> [SkillPublicationChange] {
         let result = try git([
-            "diff-tree", "--no-commit-id", "--name-status", "-r", base, tree,
+            "diff-tree", "--no-commit-id", "--name-status", "-z", "-r", base, tree,
             "--", ":(literal)\(destinationPath)",
         ])
         guard result.status == 0 else { throw PublicationGitError.unavailable }
-        let lines = String(decoding: result.standardOutput, as: UTF8.self).split(separator: "\n")
-        return try lines.map { line in
-            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard parts.count == 2,
-                  let status = parts.first?.first,
-                  let path = parts.last.map(String.init),
-                  contains(path, in: destinationPath),
-                  !path.contains(where: { $0.isNewline || $0 == "\0" || $0 == "\t" })
+        let fields = result.standardOutput.split(separator: 0)
+        guard fields.count.isMultiple(of: 2) else { throw PublicationGitError.unavailable }
+        return try stride(from: 0, to: fields.count, by: 2).map { index in
+            let statusField = String(decoding: fields[index], as: UTF8.self)
+            let path = String(decoding: fields[index + 1], as: UTF8.self)
+            guard statusField.count == 1,
+                  let status = statusField.first,
+                  !path.isEmpty,
+                  contains(path, in: destinationPath)
             else { throw PublicationGitError.unavailable }
             let kind: SkillPublicationChangeKind
             switch status {
@@ -859,12 +860,8 @@ private struct PublicationGitRepository {
     func changedPaths(from base: String, to commit: String) throws -> [String] {
         let result = try git(["diff", "--name-only", "-z", base, commit])
         guard result.status == 0 else { throw PublicationGitError.unavailable }
-        return try result.standardOutput.split(separator: 0).map { bytes in
-            let path = String(decoding: bytes, as: UTF8.self)
-            guard !path.contains(where: { $0.isNewline || $0 == "\0" }) else {
-                throw PublicationGitError.unavailable
-            }
-            return path
+        return result.standardOutput.split(separator: 0).map {
+            String(decoding: $0, as: UTF8.self)
         }
     }
 
@@ -904,16 +901,10 @@ private struct PublicationGitRepository {
             }
             let status = entry.prefix(2)
             let path = String(decoding: entry.dropFirst(3), as: UTF8.self)
-            guard !path.contains(where: { $0.isNewline || $0 == "\0" }) else {
-                throw PublicationGitError.unavailable
-            }
             paths.append(path)
             if status.contains(82) || status.contains(67) {
                 guard !fields.isEmpty else { throw PublicationGitError.unavailable }
                 let source = String(decoding: fields.removeFirst(), as: UTF8.self)
-                guard !source.contains(where: { $0.isNewline || $0 == "\0" }) else {
-                    throw PublicationGitError.unavailable
-                }
                 paths.append(source)
             }
         }
