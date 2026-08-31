@@ -3,7 +3,7 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
-## v0.6.0 — 2026-08-30
+## v0.6.0 — 2026-08-31
 
 - Faster launch and navigation reuse cached inventory, usage, and Skills rows
   instead of rebuilding them on every visit. Duplicate comparisons reuse
@@ -18,7 +18,6 @@ AGENTS.md for the release procedure.
   Command-comma opens Settings.
 - MCP clients now get canonical skill counts, typed and paginated project roots,
   structured errors, preview-first restores, and actionable unreadable-file details.
-
 - Model readiness is visible in the Skills table: OpenAI and Anthropic badges
   flag skills last changed or reviewed before each provider's newest tracked
   frontier release. Hover for the exact model, release date, review baseline,
