@@ -227,7 +227,10 @@ private struct SkillPublicationGitDetails: View {
         .onChange(of: record) { _, _ in invalidateStatus() }
         .onChange(of: catalog) { _, _ in invalidateStatus() }
         .onDisappear { invalidateStatus() }
-        .sheet(isPresented: $showsPublishSheet) {
+        .sheet(isPresented: $showsPublishSheet, onDismiss: {
+            invalidateStatus()
+            checkGit()
+        }) {
             SkillPublicationPublishSheet(model: model, record: record, catalog: catalog)
         }
     }
