@@ -27,6 +27,9 @@ AGENTS.md for the release procedure.
   opt-out.
 - Published Skills now has a direct skill picker, and Sync stays disabled until
   at least one skill is selected for local mirroring.
+- Publish or update a mirrored skill from an exact file-and-branch preview;
+  Metagent blocks unrelated or divergent Git state and never rebases or
+  force-pushes.
 - Overview puts skill, duplicate, and MCP connection actions ahead of passive
   charts, with one Review path instead of competing Review and Resolve buttons.
 - Agent run timing now counts direct user-requested tasks rather than automation,

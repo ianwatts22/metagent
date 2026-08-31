@@ -3,6 +3,114 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillPublicationGitTests: XCTestCase {
+    func testExplicitPublishCommitsOnlyApprovedNewSkillAndPushesIt() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.removePath("skills")
+        try fixture.write("Repository\n", at: "README.md")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.writeSkill("First public version")
+
+        let preview = fixture.preparePublish()
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(preview.action, .publish)
+        XCTAssertEqual(preview.branch, "main")
+        XCTAssertEqual(preview.changes, [
+            SkillPublicationChange(path: "skills/folder-name/SKILL.md", kind: .added),
+        ])
+        let before = try fixture.git(["rev-parse", "HEAD"])
+
+        let result = fixture.publish(preview, message: "Publish manifest-name")
+        XCTAssertEqual(result.outcome, .published, result.message)
+        XCTAssertNotEqual(result.commit, before)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), result.commit)
+        XCTAssertEqual(try fixture.git(["status", "--porcelain"]), "")
+        XCTAssertEqual(fixture.inspect().state, .matchesKnownUpstream)
+        XCTAssertEqual(try fixture.git(["show", "--format=", "--name-only", result.commit!]),
+            "skills/folder-name/SKILL.md")
+    }
+
+    func testPublishUpdatePreviewsExactAddsModificationsAndDeletes() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.write("old note", at: "skills/folder-name/old.txt")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.writeSkill("Updated public version")
+        try fixture.removePath("skills/folder-name/old.txt")
+        try fixture.write("new note", at: "skills/folder-name/new.txt")
+
+        let preview = fixture.preparePublish()
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(preview.action, .update)
+        XCTAssertEqual(Set(preview.changes), Set([
+            SkillPublicationChange(path: "skills/folder-name/SKILL.md", kind: .modified),
+            SkillPublicationChange(path: "skills/folder-name/old.txt", kind: .deleted),
+            SkillPublicationChange(path: "skills/folder-name/new.txt", kind: .added),
+        ]))
+        XCTAssertEqual(fixture.publish(preview, message: "Update manifest-name").outcome, .published)
+    }
+
+    func testPublishBlocksUnrelatedDirtyAndUnpublishedHistory() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.writeSkill("Changed")
+        try fixture.write("private", at: "private.txt")
+        var preview = fixture.preparePublish()
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("outside") == true)
+
+        try fixture.commit()
+        preview = fixture.preparePublish()
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("histories differ") == true)
+    }
+
+    func testPublishApprovalExpiresWhenMirroredBytesChange() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.writeSkill("Approved")
+        let preview = fixture.preparePublish()
+        let head = try fixture.git(["rev-parse", "HEAD"])
+
+        try fixture.writeSkill("Changed after approval")
+        let result = fixture.publish(preview, message: "Update manifest-name")
+        XCTAssertEqual(result.outcome, .previewExpired)
+        XCTAssertEqual(try fixture.git(["rev-parse", "HEAD"]), head)
+        XCTAssertNotEqual(fixture.preparePublish().plannedTree, preview.plannedTree)
+    }
+
+    func testRejectedPushKeepsExactCommitForSafeRetry() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.writeSkill("Pending publication")
+        let preview = fixture.preparePublish()
+        try fixture.rejectPushes()
+
+        let first = fixture.publish(preview, message: "Update manifest-name")
+        XCTAssertEqual(first.outcome, .committedLocally, first.message)
+        XCTAssertEqual(try fixture.git(["rev-parse", "HEAD"]), first.commit)
+        XCTAssertEqual(try fixture.git(["status", "--porcelain"]), "")
+        XCTAssertNotEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), first.commit)
+
+        let retry = fixture.preparePublish()
+        XCTAssertTrue(retry.isReady, retry.blocker ?? "")
+        XCTAssertEqual(retry.action, .retryPush)
+        XCTAssertEqual(retry.commitToPush, first.commit)
+        try fixture.allowPushes()
+        let second = fixture.publish(retry, message: "Ignored for exact retry")
+        XCTAssertEqual(second.outcome, .published, second.message)
+        XCTAssertEqual(second.commit, first.commit)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), first.commit)
+    }
+
     func testCanonicalGitHubLinksAndInstallCommand() {
         for remote in ["https://github.com/acme/skills.git", "git@github.com:acme/skills.git", "ssh://git@github.com/acme/skills"] {
             let links = SkillPublicationLinks(remoteURL: remote, skillName: "my-skill")
@@ -286,12 +394,16 @@ final class SkillPublicationGitTests: XCTestCase {
 
 private struct GitPublicationFixture {
     let root: URL
+    let bareRemote: URL
     let record = SkillPublicationRecord(id: "record", sourceCanonicalPath: "/unused", skillName: "old-name",
         catalogID: "catalog", destinationName: "folder-name")
     var catalog: SkillPublicationCatalog { SkillPublicationCatalog(id: "catalog", localRepositoryPath: root.path) }
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("metagent-publication-git-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        bareRemote = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-publication-remote-\(UUID().uuidString).git")
             .resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try git(["init", "--initial-branch=main"])
@@ -306,6 +418,18 @@ private struct GitPublicationFixture {
         let url = root.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    func writeSkill(_ body: String) throws {
+        try write("---\nname: manifest-name\ndescription: A test skill.\n---\n\(body)\n",
+            at: "skills/folder-name/SKILL.md")
+    }
+
+    func removePath(_ path: String) throws {
+        let url = root.appendingPathComponent(path)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 
     @discardableResult
@@ -334,10 +458,72 @@ private struct GitPublicationFixture {
         try git(["config", "branch.main.merge", "refs/heads/main"])
     }
 
+    func configureBareRemote() throws {
+        let result = try runSubprocess(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [
+                "-i", "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+                "GIT_ALLOW_PROTOCOL=file", "/usr/bin/git", "clone", "--bare", root.path, bareRemote.path,
+            ],
+            timeout: 10
+        )
+        guard !result.timedOut, result.status == 0 else {
+            throw NSError(domain: "GitPublicationFixture", code: Int(result.status))
+        }
+        try git(["remote", "set-url", "origin", bareRemote.path])
+        try git(["config", "branch.main.remote", "origin"])
+        try git(["config", "branch.main.merge", "refs/heads/main"])
+        try git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+    }
+
+    func bareGit(_ arguments: [String]) throws -> String {
+        let result = try runSubprocess(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [
+                "-i", "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+                "/usr/bin/git", "--git-dir", bareRemote.path,
+            ] + arguments,
+            timeout: 5
+        )
+        guard !result.timedOut, result.status == 0 else {
+            throw NSError(domain: "GitPublicationFixture", code: Int(result.status), userInfo: [
+                NSLocalizedDescriptionKey: String(decoding: result.standardError, as: UTF8.self),
+            ])
+        }
+        return String(decoding: result.standardOutput, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func rejectPushes() throws {
+        let hook = bareRemote.appendingPathComponent("hooks/pre-receive")
+        try "#!/bin/sh\nexit 1\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+    }
+
+    func allowPushes() throws {
+        let hook = bareRemote.appendingPathComponent("hooks/pre-receive")
+        if FileManager.default.fileExists(atPath: hook.path) {
+            try FileManager.default.removeItem(at: hook)
+        }
+    }
+
+    func preparePublish() -> SkillPublicationPublishPreview {
+        MetagentCore.prepareSkillPublicationPublishForTesting(record: record, catalog: catalog)
+    }
+
+    func publish(_ preview: SkillPublicationPublishPreview, message: String) -> SkillPublicationPublishResult {
+        MetagentCore.commitAndPublishSkillForTesting(
+            preview: preview, record: record, catalog: catalog, commitMessage: message
+        )
+    }
+
     func inspect() -> SkillPublicationGitStatus {
         MetagentCore.inspectSkillPublicationGitForTesting(record: record, catalog: catalog,
             now: Date(timeIntervalSince1970: 1_800_000_000))
     }
 
-    func remove() { try? FileManager.default.removeItem(at: root) }
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: bareRemote)
+    }
 }

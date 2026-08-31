@@ -43,7 +43,7 @@ struct PublishedSkillsView: View {
                 Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") {
                     model.reconcileSkillPublications()
                 }
-                .disabled(model.isPublicationSyncing || !hasEnabledRecords)
+                .disabled(model.isPublicationSyncing || model.isPublicationPublishing || !hasEnabledRecords)
             }
 
             if records.isEmpty {
@@ -88,7 +88,7 @@ struct PublishedSkillsView: View {
                 }
             }
         }
-        .disabled(selectableSkills.isEmpty || model.isPublicationSyncing)
+        .disabled(selectableSkills.isEmpty || model.isPublicationSyncing || model.isPublicationPublishing)
         .buttonStyle(.borderedProminent)
     }
 
@@ -119,7 +119,7 @@ struct PublishedSkillsView: View {
                         model.disableSkillPublication(recordID: record.id)
                     }
                     .buttonStyle(.borderless)
-                    .disabled(model.isPublicationSyncing)
+                    .disabled(model.isPublicationSyncing || model.isPublicationPublishing)
                 }
             }
 
@@ -128,7 +128,7 @@ struct PublishedSkillsView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                SkillPublicationGitDetails(record: record, catalog: catalog)
+                SkillPublicationGitDetails(model: model, record: record, catalog: catalog)
             }
             if let lastMirroredAt = record.lastMirroredAt {
                 Text("Last mirrored \(lastMirroredAt.formatted(date: .abbreviated, time: .shortened))")
@@ -152,11 +152,13 @@ struct PublishedSkillsView: View {
 }
 
 private struct SkillPublicationGitDetails: View {
+    @ObservedObject var model: MetagentModel
     let record: SkillPublicationRecord
     let catalog: SkillPublicationCatalog
     @State private var status: SkillPublicationGitStatus?
     @State private var isChecking = false
     @State private var generation = UUID()
+    @State private var showsPublishSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -165,6 +167,10 @@ private struct SkillPublicationGitDetails: View {
                 Label(status?.state.title ?? "Git status not checked", systemImage: "arrow.triangle.branch")
                     .font(.callout.weight(.medium))
                 Spacer()
+                Button(status?.suggestedPublishAction.map { "\($0.title)…" } ?? "Publish…") {
+                    showsPublishSheet = true
+                }
+                .disabled(isChecking || model.isPublicationSyncing || model.isPublicationPublishing)
                 Button(isChecking ? "Checking…" : "Check Git Status") { checkGit() }
                     .disabled(isChecking)
             }
@@ -221,6 +227,9 @@ private struct SkillPublicationGitDetails: View {
         .onChange(of: record) { _, _ in invalidateStatus() }
         .onChange(of: catalog) { _, _ in invalidateStatus() }
         .onDisappear { invalidateStatus() }
+        .sheet(isPresented: $showsPublishSheet) {
+            SkillPublicationPublishSheet(model: model, record: record, catalog: catalog)
+        }
     }
 
     private func checkGit() {
@@ -244,6 +253,186 @@ private struct SkillPublicationGitDetails: View {
     private func invalidateStatus() {
         status = nil
         generation = UUID()
+    }
+}
+
+private struct SkillPublicationPublishSheet: View {
+    @ObservedObject var model: MetagentModel
+    let record: SkillPublicationRecord
+    let catalog: SkillPublicationCatalog
+    @Environment(\.dismiss) private var dismiss
+    @State private var preview: SkillPublicationPublishPreview?
+    @State private var result: SkillPublicationPublishResult?
+    @State private var isPreparing = false
+    @State private var commitMessage: String
+
+    init(model: MetagentModel, record: SkillPublicationRecord, catalog: SkillPublicationCatalog) {
+        self.model = model
+        self.record = record
+        self.catalog = catalog
+        _commitMessage = State(initialValue: "Publish \(record.skillName)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(preview?.action?.title ?? "Review publication")
+                        .font(.title2.bold())
+                    Text(record.skillName)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let repositoryURL = preview?.repositoryURL {
+                    Link("GitHub Repository", destination: repositoryURL)
+                }
+            }
+
+            if isPreparing {
+                ProgressView("Checking the branch and remote…")
+                    .controlSize(.small)
+            } else if let preview {
+                publicationPreview(preview)
+            }
+
+            if let result {
+                Label(result.message, systemImage: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(result.succeeded ? .green : .orange)
+            }
+
+            Spacer()
+            HStack {
+                Button("Refresh Preview", systemImage: "arrow.clockwise") { prepare() }
+                    .disabled(isPreparing || model.isPublicationPublishing)
+                Spacer()
+                Button(result?.succeeded == true ? "Done" : "Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                if result?.succeeded != true {
+                    Button("Commit & Publish") { publish() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(preview?.isReady != true || isPreparing || model.isPublicationPublishing)
+                }
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 680, minHeight: 500)
+        .task { prepare() }
+    }
+
+    @ViewBuilder
+    private func publicationPreview(_ preview: SkillPublicationPublishPreview) -> some View {
+        if let blocker = preview.blocker {
+            Label(blocker, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        } else {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 7) {
+                GridRow {
+                    Text("Repository").foregroundStyle(.secondary)
+                    Text(displayUserPath(preview.repositoryPath)).font(.callout.monospaced())
+                }
+                GridRow {
+                    Text("Branch").foregroundStyle(.secondary)
+                    Text(preview.branch ?? "—").font(.callout.monospaced())
+                }
+                GridRow {
+                    Text("Push target").foregroundStyle(.secondary)
+                    Text(preview.pushDestination ?? "—")
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                }
+                GridRow {
+                    Text("Skill folder").foregroundStyle(.secondary)
+                    Text(preview.destinationPath).font(.callout.monospaced())
+                }
+                GridRow {
+                    Text("Starting commit").foregroundStyle(.secondary)
+                    Text(preview.baseCommit.map { String($0.prefix(12)) } ?? "—")
+                        .font(.callout.monospaced())
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Exact files in this publication")
+                    .font(.headline)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 5) {
+                        ForEach(preview.changes) { change in
+                            HStack(spacing: 8) {
+                                Text(change.kind.shortLabel)
+                                    .font(.caption.monospaced().weight(.semibold))
+                                    .foregroundStyle(change.kind.color)
+                                    .frame(width: 18, alignment: .leading)
+                                Text(change.path)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 150)
+            }
+
+            LabeledContent("Commit message") {
+                TextField("Publish \(record.skillName)", text: $commitMessage)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 360)
+            }
+            Text("Metagent will commit only the files above and push this exact commit to the branch shown. It will not stash, pull, rebase, or force-push. Any change invalidates this preview.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func prepare() {
+        isPreparing = true
+        result = nil
+        let expectedRecord = record
+        let expectedCatalog = catalog
+        Task {
+            let prepared = await Task.detached(priority: .utility) {
+                MetagentCore.prepareSkillPublicationPublish(record: expectedRecord, catalog: expectedCatalog)
+            }.value
+            preview = prepared
+            if prepared.action == .update, commitMessage == "Publish \(record.skillName)" {
+                commitMessage = "Update \(record.skillName)"
+            }
+            isPreparing = false
+        }
+    }
+
+    private func publish() {
+        guard let preview else { return }
+        Task {
+            result = await model.commitAndPublishSkill(
+                preview: preview,
+                record: record,
+                catalog: catalog,
+                commitMessage: commitMessage
+            )
+            if result?.outcome == .previewExpired {
+                self.preview = nil
+            }
+        }
+    }
+}
+
+private extension SkillPublicationChangeKind {
+    var shortLabel: String {
+        switch self {
+        case .added: "A"
+        case .modified: "M"
+        case .deleted: "D"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .added: .green
+        case .modified: .orange
+        case .deleted: .red
+        }
     }
 }
 
