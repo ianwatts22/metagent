@@ -106,6 +106,37 @@ public struct SkillRestoreReport: Codable, Equatable, Sendable {
     }
 }
 
+/// Bounded MCP/automation contract for previewing and applying one restore.
+/// It deliberately reports a projection count instead of expanding every
+/// archived path into an unbounded response.
+public struct SkillRestoreOperationReport: Codable, Equatable, Sendable {
+    public let apply: Bool
+    public let skillName: String
+    public let projectRoot: String
+    public let destinationPath: String
+    public let archivePath: String
+    public let projectionCount: Int
+    public let lines: [String]
+
+    public init(
+        apply: Bool,
+        skillName: String,
+        projectRoot: String,
+        destinationPath: String,
+        archivePath: String,
+        projectionCount: Int,
+        lines: [String]
+    ) {
+        self.apply = apply
+        self.skillName = skillName
+        self.projectRoot = projectRoot
+        self.destinationPath = destinationPath
+        self.archivePath = archivePath
+        self.projectionCount = projectionCount
+        self.lines = lines
+    }
+}
+
 extension MetagentCore {
 
     static let skillArchiveManifestName = "ARCHIVE.json"
@@ -420,6 +451,61 @@ extension MetagentCore {
             restoredPath: destination.path,
             lines: lines
         )
+    }
+
+    /// Safe-by-default restore surface for MCP and other automation clients.
+    /// The existing CLI/UI restore function remains the explicit apply path.
+    public static func restoreArchivedSkillOperation(
+        named skillName: String,
+        apply: Bool = false
+    ) throws -> SkillRestoreOperationReport {
+        let entry = try validatedArchivedSkillForRestore(named: skillName)
+        let archivePath = entry.archivePath ?? ""
+        guard apply else {
+            return SkillRestoreOperationReport(
+                apply: false,
+                skillName: entry.skillName,
+                projectRoot: entry.projectRoot,
+                destinationPath: entry.skillPath,
+                archivePath: archivePath,
+                projectionCount: entry.projections.count,
+                lines: [
+                    "would restore \(entry.skillName) to \(entry.skillPath)",
+                    "would restore up to \(entry.projections.count) projection link(s)",
+                    "archive entry: \(archivePath)"
+                ]
+            )
+        }
+
+        let restored = try restoreArchivedSkill(named: skillName)
+        return SkillRestoreOperationReport(
+            apply: true,
+            skillName: restored.skillName,
+            projectRoot: restored.projectRoot,
+            destinationPath: restored.restoredPath,
+            archivePath: archivePath,
+            projectionCount: entry.projections.count,
+            lines: restored.lines
+        )
+    }
+
+    private static func validatedArchivedSkillForRestore(named skillName: String) throws -> ArchivedSkill {
+        guard let entry = archivedSkill(named: skillName), let archivePath = entry.archivePath else {
+            let known = listArchivedSkills().map(\.skillName)
+            throw archiveError(8, known.isEmpty
+                ? "no archived skill named \(skillName); the archive is empty"
+                : "no archived skill named \(skillName); archived: \(known.joined(separator: ", "))")
+        }
+        let entryDir = URL(fileURLWithPath: archivePath)
+        let archivedBundle = entryDir.appendingPathComponent(entry.skillName)
+        let destination = URL(fileURLWithPath: entry.skillPath)
+        guard fileManager.fileExists(atPath: archivedBundle.path) else {
+            throw archiveError(9, "archive entry at \(entryDir.path) has no \(entry.skillName) bundle; restore it by hand")
+        }
+        guard !fileManager.fileExists(atPath: destination.path), !isSymlink(destination) else {
+            throw archiveError(10, "\(destination.path) already exists; resolve it before restoring \(entry.skillName)")
+        }
+        return entry
     }
 
     private static func archiveError(_ code: Int, _ message: String) -> NSError {

@@ -29,8 +29,8 @@ enum MetagentMCPServer {
                 ),
                 Tool(
                     name: "list_projects",
-                    description: "Compact global overview of every known project root: the root path, its skill count, and a per-location breakdown. Use list_skills for the skills themselves.",
-                    inputSchema: emptyInputSchema
+                    description: "Page through logical skill roots with canonical skill counts and explicit project, global, or plugin root typing. Defaults to real project roots; pass kind=all to include global and plugin installation roots.",
+                    inputSchema: listProjectsInputSchema
                 ),
                 Tool(
                     name: "find_duplicate_skills",
@@ -66,7 +66,7 @@ enum MetagentMCPServer {
                 ),
                 Tool(
                     name: "restore_skill",
-                    description: "Restore a previously archived skill: the bundle returns to its original canonical path and its projection links are put back, so every agent runtime sees it again. Use list_archived_skills to see what can be restored.",
+                    description: "Preview restoration of a previously archived skill. Defaults to apply=false and returns a bounded destination/projection plan. Set apply=true only after the human confirms that specific preview.",
                     inputSchema: restoreSkillInputSchema
                 ),
                 Tool(
@@ -137,7 +137,9 @@ enum MetagentMCPServer {
                         options: skillQueryOptions(arguments: params.arguments, root: root)
                     ))
                 case "list_projects":
-                    text = try encodeJSON(projectOverview(MetagentCore.scanPortfolio()))
+                    text = try encodeJSON(MetagentCore.queryProjects(
+                        options: try projectQueryOptions(arguments: params.arguments)
+                    ))
                 case "find_duplicate_skills":
                     text = try encodeJSON(MetagentCore.findDuplicateSkills(
                         scope: try queryScope(
@@ -165,7 +167,10 @@ enum MetagentMCPServer {
                     else {
                         throw mcpError(code: 10, "skill_name is required")
                     }
-                    text = try encodeJSON(MetagentCore.restoreArchivedSkill(named: skillName))
+                    text = try encodeJSON(MetagentCore.restoreArchivedSkillOperation(
+                        named: skillName,
+                        apply: params.arguments?["apply"]?.boolValue ?? false
+                    ))
                 case "list_archived_skills":
                     text = try encodeJSON(MetagentCore.listArchivedSkills())
                 case "doctor_project":
@@ -190,9 +195,15 @@ enum MetagentMCPServer {
                         options: options
                     ))
                 default:
+                    let payload = MCPToolErrorResponse(
+                        tool: params.name,
+                        domain: "MetagentMCP",
+                        code: 404,
+                        message: "unknown tool: \(params.name)"
+                    )
                     return .init(
                         content: [.text(
-                            text: "Unknown tool: \(params.name)",
+                            text: (try? encodeJSON(payload)) ?? "{\"error\":{\"message\":\"unknown tool\"}}",
                             annotations: nil,
                             _meta: nil
                         )],
@@ -204,9 +215,16 @@ enum MetagentMCPServer {
                     isError: false
                 )
             } catch {
+                let nsError = error as NSError
+                let payload = MCPToolErrorResponse(
+                    tool: params.name,
+                    domain: nsError.domain,
+                    code: nsError.code,
+                    message: error.localizedDescription
+                )
                 return .init(
                     content: [.text(
-                        text: error.localizedDescription,
+                        text: (try? encodeJSON(payload)) ?? "{\"error\":{\"message\":\"tool failed\"}}",
                         annotations: nil,
                         _meta: nil
                     )],
@@ -318,48 +336,43 @@ enum MetagentMCPServer {
         )
     }
 
-    private struct ProjectOverviewEntry: Encodable {
-        let root: String
-        let skillCount: Int
-        let locations: [String: Int]
+    private struct MCPToolErrorResponse: Encodable {
+        static let schemaVersion = 1
 
-        private enum CodingKeys: String, CodingKey {
-            case root
-            case skillCount = "skill_count"
-            case locations
+        struct Detail: Encodable {
+            let domain: String
+            let code: Int
+            let message: String
+            let retryable = false
+        }
+
+        let schemaVersion = Self.schemaVersion
+        let tool: String
+        let error: Detail
+
+        init(tool: String, domain: String, code: Int, message: String) {
+            self.tool = tool
+            self.error = Detail(domain: domain, code: code, message: message)
         }
     }
 
-    private struct ProjectOverview: Encodable {
-        let projectCount: Int
-        let skillCount: Int
-        let projects: [ProjectOverviewEntry]
-        let warnings: [String]
-
-        private enum CodingKeys: String, CodingKey {
-            case projectCount = "project_count"
-            case skillCount = "skill_count"
-            case projects
-            case warnings
+    private static func projectQueryOptions(
+        arguments: [String: Value]?
+    ) throws -> ProjectQueryOptions {
+        let kinds: Set<ProjectRootKind>
+        switch arguments?["kind"]?.stringValue ?? "project" {
+        case "all":
+            kinds = Set(ProjectRootKind.allCases)
+        case let value:
+            guard let kind = ProjectRootKind(rawValue: value) else {
+                throw mcpError(code: 11, "kind must be project, global, plugin, or all")
+            }
+            kinds = [kind]
         }
-    }
-
-    private static func projectOverview(_ report: SkillScanReport) -> ProjectOverview {
-        let projects = report.projects.map { project in
-            ProjectOverviewEntry(
-                root: project.root,
-                skillCount: project.skills.count,
-                locations: Dictionary(
-                    grouping: project.skills,
-                    by: \.location
-                ).mapValues(\.count)
-            )
-        }
-        return ProjectOverview(
-            projectCount: projects.count,
-            skillCount: projects.reduce(0) { $0 + $1.skillCount },
-            projects: projects,
-            warnings: report.warnings
+        return ProjectQueryOptions(
+            kinds: kinds,
+            limit: arguments?["limit"]?.intValue ?? ProjectQueryOptions.defaultLimit,
+            cursor: arguments?["cursor"]?.stringValue
         )
     }
 
@@ -376,6 +389,29 @@ enum MetagentMCPServer {
     private static let emptyInputSchema = Value.object([
         "type": .string("object"),
         "properties": .object([:]),
+        "additionalProperties": .bool(false)
+    ])
+
+    private static let listProjectsInputSchema = Value.object([
+        "type": .string("object"),
+        "properties": .object([
+            "kind": .object([
+                "type": .string("string"),
+                "enum": .array(["project", "global", "plugin", "all"].map(Value.string)),
+                "default": .string("project"),
+                "description": .string("Root category to return. Use all for the legacy whole-portfolio view.")
+            ]),
+            "limit": .object([
+                "type": .string("integer"),
+                "minimum": .int(1),
+                "maximum": .int(ProjectQueryOptions.maximumLimit),
+                "default": .int(ProjectQueryOptions.defaultLimit)
+            ]),
+            "cursor": .object([
+                "type": .string("string"),
+                "description": .string("Opaque next_cursor from the previous page for the same kind filter.")
+            ])
+        ]),
         "additionalProperties": .bool(false)
     ])
 
@@ -554,6 +590,11 @@ enum MetagentMCPServer {
             "skill_name": .object([
                 "type": .string("string"),
                 "description": .string("Name of an archived skill, as listed by list_archived_skills.")
+            ]),
+            "apply": .object([
+                "type": .string("boolean"),
+                "default": .bool(false),
+                "description": .string("Leave false to preview. Set true only after the human confirms this exact restore plan.")
             ])
         ]),
         "required": .array([.string("skill_name")]),

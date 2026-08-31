@@ -59,6 +59,16 @@ public struct CodebaseFileSize: Codable, Equatable, Sendable {
     }
 }
 
+public struct CodebaseUnreadableFile: Codable, Equatable, Sendable {
+    public var path: String
+    public var reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
 /// Derived ratios that answer "is this codebase carrying slop?" without the
 /// caller having to redo the arithmetic.
 public struct CodebaseSizeSignals: Codable, Equatable, Sendable {
@@ -114,6 +124,8 @@ public struct CodebaseSizeReport: Codable, Equatable, Sendable {
     public var signals: CodebaseSizeSignals
     public var longFileThreshold: Int
     public var warnings: [String]
+    /// Bounded diagnostics for tracked text-like files that were not counted.
+    public var unreadableFiles: [CodebaseUnreadableFile]
 
     public init(
         root: String,
@@ -127,7 +139,8 @@ public struct CodebaseSizeReport: Codable, Equatable, Sendable {
         largestFiles: [CodebaseFileSize] = [],
         signals: CodebaseSizeSignals = CodebaseSizeSignals(),
         longFileThreshold: Int = CodebaseSizeOptions.defaultLongFileThreshold,
-        warnings: [String] = []
+        warnings: [String] = [],
+        unreadableFiles: [CodebaseUnreadableFile] = []
     ) {
         self.root = root
         self.isGitRepository = isGitRepository
@@ -141,6 +154,7 @@ public struct CodebaseSizeReport: Codable, Equatable, Sendable {
         self.signals = signals
         self.longFileThreshold = longFileThreshold
         self.warnings = warnings
+        self.unreadableFiles = unreadableFiles
     }
 
     public func lines(in category: CodebaseFileCategory) -> Int {
@@ -226,7 +240,7 @@ public extension MetagentCore {
         var codeFileLines: [Int] = []
         var longFileCount = 0
         var longFileLines = 0
-        var unreadableCount = 0
+        var unreadableFiles: [CodebaseUnreadableFile] = []
 
         for relativePath in relativePaths {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
@@ -234,14 +248,22 @@ public extension MetagentCore {
             }
             let category = categorize(relativePath: relativePath)
             let fileURL = rootURL.appendingPathComponent(relativePath)
-            let lines = countableCategories.contains(category)
+            let lineResult = countableCategories.contains(category)
                 ? lineCount(at: fileURL, maximumBytes: options.maximumFileBytes)
-                : 0
+                : .count(0)
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw codebaseTimeoutError(rootURL)
             }
-            if lines == nil {
-                unreadableCount += 1
+            let lines: Int?
+            switch lineResult {
+            case let .count(value):
+                lines = value
+            case let .unreadable(reason):
+                lines = nil
+                unreadableFiles.append(CodebaseUnreadableFile(
+                    path: relativePath,
+                    reason: reason
+                ))
             }
             let counted = lines ?? 0
 
@@ -270,8 +292,16 @@ public extension MetagentCore {
             }
         }
 
-        if unreadableCount > 0 {
-            warnings.append("\(unreadableCount) tracked file(s) could not be read as text")
+        if !unreadableFiles.isEmpty {
+            let maximumReportedUnreadableFiles = 20
+            let shown = unreadableFiles.prefix(maximumReportedUnreadableFiles)
+                .map { "\($0.path) (\($0.reason))" }
+                .joined(separator: ", ")
+            let omitted = unreadableFiles.count - min(unreadableFiles.count, maximumReportedUnreadableFiles)
+            let suffix = omitted > 0 ? "; plus \(omitted) more" : ""
+            warnings.append(
+                "\(unreadableFiles.count) tracked file(s) could not be read as text: \(shown)\(suffix)"
+            )
         }
 
         let totalLines = categories.values.reduce(0) { $0 + $1.lines }
@@ -310,7 +340,8 @@ public extension MetagentCore {
                 largestCodeFileLines: codeFileLines.max() ?? 0
             ),
             longFileThreshold: options.longFileThreshold,
-            warnings: warnings
+            warnings: warnings,
+            unreadableFiles: Array(unreadableFiles.prefix(20))
         )
     }
 
@@ -398,21 +429,33 @@ private func trackedFilePaths(root: URL, timeout: TimeInterval) throws -> [Strin
 }
 
 /// Counts newlines, plus a final line when the file does not end in one.
-/// Returns `nil` for binary content and for files the process cannot read.
-private func lineCount(at url: URL, maximumBytes: Int) -> Int? {
-    guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return nil }
-    guard size > 0 else { return 0 }
-    guard size <= maximumBytes else { return nil }
-    guard let data = try? Data(contentsOf: url) else { return nil }
-    return data.withUnsafeBytes { buffer -> Int? in
-        guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else { return nil }
+private enum LineCountResult {
+    case count(Int)
+    case unreadable(String)
+}
+
+private func lineCount(at url: URL, maximumBytes: Int) -> LineCountResult {
+    guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+        return .unreadable("metadata unavailable")
+    }
+    guard size > 0 else { return .count(0) }
+    guard size <= maximumBytes else {
+        return .unreadable("exceeds \(maximumBytes)-byte read limit")
+    }
+    guard let data = try? Data(contentsOf: url) else {
+        return .unreadable("read failed")
+    }
+    return data.withUnsafeBytes { buffer -> LineCountResult in
+        guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
+            return .unreadable("empty buffer")
+        }
         var newlines = 0
         for index in 0..<buffer.count {
             let byte = base[index]
-            if byte == 0 { return nil }
+            if byte == 0 { return .unreadable("binary content") }
             if byte == 0x0A { newlines += 1 }
         }
-        return base[buffer.count - 1] == 0x0A ? newlines : newlines + 1
+        return .count(base[buffer.count - 1] == 0x0A ? newlines : newlines + 1)
     }
 }
 

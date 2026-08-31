@@ -262,6 +262,11 @@ public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, 
 
 public struct DoctorReport: Codable, Equatable, Sendable {
     public var issues: [DoctorIssue]
+    /// Logical skill bundles, deduplicated by canonical path.
+    public var canonicalSkillCount: Int
+    /// Every discovered copy, including projections.
+    public var representationCount: Int
+    public var projectionCount: Int
 
     public var warningCount: Int {
         issues.filter { $0.severity == .warning }.count
@@ -271,8 +276,16 @@ public struct DoctorReport: Codable, Equatable, Sendable {
         issues.filter { $0.severity == .failure }.count
     }
 
-    public init(issues: [DoctorIssue]) {
+    public init(
+        issues: [DoctorIssue],
+        canonicalSkillCount: Int = 0,
+        representationCount: Int = 0,
+        projectionCount: Int = 0
+    ) {
         self.issues = issues
+        self.canonicalSkillCount = canonicalSkillCount
+        self.representationCount = representationCount
+        self.projectionCount = projectionCount
     }
 }
 

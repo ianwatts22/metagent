@@ -16,6 +16,8 @@ AGENTS.md for the release procedure.
 - MCP attention rows have clearer labels and an Authenticate action that opens
   the supported terminal authentication flow. MCP icons are consistent, and
   Command-comma opens Settings.
+- MCP clients now get canonical skill counts, typed and paginated project roots,
+  structured errors, preview-first restores, and actionable unreadable-file details.
 
 - Model readiness is visible in the Skills table: OpenAI and Anthropic badges
   flag skills last changed or reviewed before each provider's newest tracked

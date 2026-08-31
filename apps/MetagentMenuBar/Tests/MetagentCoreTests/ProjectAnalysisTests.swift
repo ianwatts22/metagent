@@ -113,18 +113,48 @@ final class ProjectAnalysisTests: XCTestCase {
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
 
-        XCTAssertEqual(summary.schemaVersion, 2)
+        XCTAssertEqual(summary.schemaVersion, 3)
         XCTAssertEqual(summary.scope, "project_only")
         XCTAssertEqual(summary.counts.instructionFiles, 1)
         XCTAssertEqual(summary.counts.projectSkills, 1)
         XCTAssertEqual(summary.counts.projectMCPServers, 1)
         XCTAssertLessThanOrEqual(summary.findings.count, 5)
-        XCTAssertEqual(json["schema_version"] as? Int, 2)
+        XCTAssertEqual(json["schema_version"] as? Int, 3)
         XCTAssertNil(json["skills"])
         XCTAssertNil(json["plugin_skills"])
         XCTAssertNil(json["doctor"])
         XCTAssertNil(json["mcp"])
         XCTAssertNil(json["usage"])
+    }
+
+    func testSummaryCountsOneCanonicalSkillAcrossAgentAndClaudeRepresentations() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-counts")
+        let skill = root.appendingPathComponent(".agents/skills/demo")
+        try writeSkillFixture(at: skill, name: "demo")
+        let claude = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: claude.appendingPathComponent("demo").path,
+            withDestinationPath: "../../.agents/skills/demo"
+        )
+
+        let summary = try MetagentCore.analyzeProjectSummary(root: root.path)
+        let doctor = try MetagentCore.doctor(options: SkillScanOptions(
+            roots: [root.path],
+            maxDepth: 0,
+            respectConfiguredIgnores: false
+        ))
+        let listed = try MetagentCore.querySkills(options: SkillQueryOptions(
+            scope: .project(root: root.path)
+        ))
+
+        XCTAssertEqual(summary.counts.projectSkills, 1)
+        XCTAssertEqual(summary.counts.projectSkillRepresentations, 2)
+        XCTAssertEqual(summary.counts.projectSkillProjections, 1)
+        XCTAssertEqual(listed.totalCount, 1)
+        XCTAssertEqual(doctor.canonicalSkillCount, 1)
+        XCTAssertEqual(doctor.representationCount, 2)
+        XCTAssertEqual(doctor.projectionCount, 1)
     }
 
     func testProjectDetailPagesAreBoundedAndCursorIsSectionSpecific() throws {

@@ -197,7 +197,7 @@ verify_helper_smoke() {
 "$swift_helper" config show --json >/dev/null
 "$swift_helper" analyze --root "$repo_root" --json \
   | jq -e '
-      .schema_version == 2 and
+      .schema_version == 3 and
       .scope == "project_only" and
       .counts.project_skills > 0 and
       .detail_tool == "get_project_analysis_details"

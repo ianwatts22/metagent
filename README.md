@@ -129,15 +129,16 @@ Existing agent sessions may need to be restarted before the newly registered
 server appears. Configuration and a direct handshake do not prove that a client
 has loaded, connected to, or invoked it.
 
-The server exposes eight read-only tools: compact project analysis through
+The server exposes nine read-only tools: compact project analysis through
 `analyze_project`, bounded and paginated drilldown through
 `get_project_analysis_details`, the compact paginated inventory in
-`list_skills`, the global root overview in `list_projects`, overlap groups in
+`list_skills`, the typed and paginated root overview in `list_projects`, overlap groups in
 `find_duplicate_skills`, one skill's detail in `get_skill`, git-tracked codebase
-size in `measure_codebase_size`, and `doctor_project`. It also exposes
-`remove_skills`, which is destructive: it defaults to `apply: false` and returns
-only a dry-run plan, and agents must get explicit user confirmation for the
-specific removal before applying. For example, ask an agent:
+size in `measure_codebase_size`, archived inventory in `list_archived_skills`,
+and `doctor_project`. It also exposes `remove_skills`, `archive_skills`, and
+`restore_skill`. All three default to preview-only behavior where applicable;
+agents must get explicit user confirmation for the specific preview before
+applying a filesystem change. For example, ask an agent:
 
 > Use Metagent to analyze this project’s instructions, skills, MCP setup,
 > provenance, usage evidence, and Doctor findings.
