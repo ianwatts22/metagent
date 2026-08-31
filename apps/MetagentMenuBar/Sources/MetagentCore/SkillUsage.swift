@@ -1745,10 +1745,14 @@ private final class SkillUsageStore {
             ? try loadMetadata(db, table: previousSkillUsageMetadataTable)
             : metadata
 
+        // The window/grouping steps only need summary fields. Keep source
+        // provenance out of their transient rows rather than copying and
+        // sorting it for every historical event.
         let sql = """
         WITH normalized AS (
           SELECT
-            *,
+            skill_id, skill_name, canonical_path, scope, occurred_at,
+            session_id, turn_id, evidence,
             rowid AS event_rowid,
             CASE
               WHEN skill_id LIKE 'plugin:%' THEN 'id:' || skill_id
