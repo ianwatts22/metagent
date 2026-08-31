@@ -19,6 +19,7 @@ final class UpdaterModel: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     private var controller: SPUStandardUpdaterController!
     private var observation: AnyCancellable?
+    private var presentationDismissalRequests = UpdatePresentationDismissalRequests()
 
     override init() {
         let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
@@ -56,16 +57,33 @@ final class UpdaterModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// Close app-owned sheets before its installer asks the app to terminate so
     /// no presentation remains stranded in front of the update UI.
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
-        requestPresentationDismissal()
+        presentationDismissalRequests.willInstallUpdate()
+        publishPresentationDismissalRequest()
     }
 
     /// A final backstop for resumed updates that reach the relaunch boundary.
     func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        requestPresentationDismissal()
+        presentationDismissalRequests.willRelaunch()
+        publishPresentationDismissalRequest()
     }
 
-    private func requestPresentationDismissal() {
-        presentationDismissalRequest &+= 1
+    private func publishPresentationDismissalRequest() {
+        presentationDismissalRequest = presentationDismissalRequests.value
+    }
+}
+
+/// A tiny seam around Sparkle's delegate callbacks. Keeping the counter separate
+/// lets regression tests cover both lifecycle boundaries without constructing
+/// Sparkle's framework-owned updater and appcast objects.
+struct UpdatePresentationDismissalRequests {
+    private(set) var value: UInt = 0
+
+    mutating func willInstallUpdate() {
+        value &+= 1
+    }
+
+    mutating func willRelaunch() {
+        value &+= 1
     }
 }
 
