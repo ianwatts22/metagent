@@ -57,6 +57,9 @@ class RunWithInactivityTimeoutTests(unittest.TestCase):
         self.assertEqual(completed.stderr, "progress\n")
 
     def test_stderr_activity_resets_timeout(self) -> None:
+        # Exercise heartbeat renewal, not the shared runner's ability to
+        # schedule a child within 150 ms. Keep total runtime above the timeout
+        # so this still fails if activity stops extending the deadline.
         completed, stdout, elapsed = self.run_helper(
             [
                 sys.executable,
@@ -64,17 +67,17 @@ class RunWithInactivityTimeoutTests(unittest.TestCase):
                 "-c",
                 (
                     "import sys,time; "
-                    "[(print(f'tick-{i}', file=sys.stderr), time.sleep(.08)) "
-                    "for i in range(5)]; print('done')"
+                    "[(print(f'tick-{i}', file=sys.stderr), time.sleep(.05)) "
+                    "for i in range(40)]; print('done')"
                 ),
             ],
-            timeout=0.15,
+            timeout=1,
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertGreater(elapsed, 0.3)
+        self.assertGreater(elapsed, 1.5)
         self.assertEqual(stdout, "done\n")
-        self.assertIn("tick-4", completed.stderr)
+        self.assertIn("tick-39", completed.stderr)
 
     def test_inactivity_terminates_the_process_group_with_timeout_status(self) -> None:
         completed, stdout, elapsed = self.run_helper(
