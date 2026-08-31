@@ -92,6 +92,32 @@ final class ProjectQueryTests: XCTestCase {
         XCTAssertEqual(Set(roots).count, 3)
     }
 
+    func testProjectionOnlySkillCountsAsOneLogicalSkill() throws {
+        let home = URL(fileURLWithPath: "/fixtures/home")
+        var projection = SkillInventoryItem.fixture(
+            name: "shared",
+            path: "/fixtures/app/.claude/skills/shared",
+            location: "claude",
+            representation: "projection"
+        )
+        projection.canonicalPath = "/fixtures/home/.agents/skills/shared"
+        let report = SkillScanReport(projects: [
+            project(root: "/fixtures/app", skills: [projection])
+        ])
+
+        let page = try MetagentCore.queryProjects(
+            options: ProjectQueryOptions(),
+            report: report,
+            homeDirectory: home
+        )
+
+        XCTAssertEqual(page.skillCount, 1)
+        XCTAssertEqual(page.representationCount, 1)
+        XCTAssertEqual(page.projects.first?.skillCount, 1)
+        XCTAssertEqual(page.projects.first?.projectionCount, 1)
+        XCTAssertEqual(page.projects.first?.locations, ["claude": 1])
+    }
+
     func testCursorRejectsKindChangesAndMalformedInput() throws {
         let home = URL(fileURLWithPath: "/fixtures/home")
         let report = SkillScanReport(projects: [

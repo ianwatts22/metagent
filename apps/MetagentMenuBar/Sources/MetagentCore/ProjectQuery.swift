@@ -37,7 +37,8 @@ public struct ProjectQueryItem: Codable, Equatable, Sendable {
     /// Every discovered representation, retained so callers can still audit projections.
     public let representationCount: Int
     public let projectionCount: Int
-    /// Canonical skill count by source location. Projection locations are omitted.
+    /// Logical skill count by preferred source location; a projection is used only
+    /// when it is the sole representation of that skill in this root.
     public let locations: [String: Int]
 
     public init(
@@ -157,14 +158,19 @@ public extension MetagentCore {
 
 func canonicalInventorySkills(in project: SkillProject) -> [SkillInventoryItem] {
     var byPath: [String: SkillInventoryItem] = [:]
-    for skill in project.skills where skill.representation != "projection" {
+    for skill in project.skills {
         let path = canonicalExistingPath(
             skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
         )
-        if let existing = byPath[path], existing.representation == "canonical" {
-            continue
+        if let existing = byPath[path] {
+            if existing.representation == "projection",
+               skill.representation != "projection"
+            {
+                byPath[path] = skill
+            }
+        } else {
+            byPath[path] = skill
         }
-        byPath[path] = skill
     }
     return byPath.values.sorted()
 }
