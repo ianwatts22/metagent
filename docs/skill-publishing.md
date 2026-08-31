@@ -36,8 +36,8 @@ so stripping user configuration cannot silently change Git's interpretation.
 A credential-free GitHub `origin` and a supported current `SKILL.md` name
 provide repository/skills.sh links and a copyable, single-skill install command.
 Renaming the destination folder does not change the manifest's install name.
-The command installs from the repository's default branch; review the local
-diff and push there before sharing it. A link is a destination, not a verified
+The command installs from the repository's default branch; use the explicit
+Publish review before sharing it. A link is a destination, not a verified
 live listing, and private repositories cannot be installed by unauthenticated
 users. Metagent explicitly marks per-skill install counts unavailable until
 official API-backed reporting exists; it never substitutes a guessed number.

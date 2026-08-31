@@ -52,6 +52,27 @@ final class SkillPublicationGitTests: XCTestCase {
         XCTAssertEqual(fixture.publish(preview, message: "Update manifest-name").outcome, .published)
     }
 
+    func testPublishPreviewPreservesPathsThatGitWouldNormallyQuote() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let paths = [
+            "skills/folder-name/café.txt",
+            "skills/folder-name/back\\slash.txt",
+            "skills/folder-name/tab\tname.txt",
+            "skills/folder-name/line\nbreak.txt",
+        ]
+        for path in paths {
+            try fixture.write("public", at: path)
+        }
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertTrue(Set(paths).isSubset(of: Set(preview.changes.map(\.path))))
+    }
+
     func testPublishBlocksUnrelatedDirtyAndUnpublishedHistory() throws {
         let fixture = try GitPublicationFixture()
         defer { fixture.remove() }
@@ -91,6 +112,8 @@ final class SkillPublicationGitTests: XCTestCase {
         try fixture.commit()
         try fixture.configureBareRemote()
         try fixture.writeSkill("Pending publication")
+        let newlinePath = "skills/folder-name/retry\nfile.txt"
+        try fixture.write("newline path", at: newlinePath)
         let preview = fixture.preparePublish()
         try fixture.rejectPushes()
 
@@ -104,11 +127,33 @@ final class SkillPublicationGitTests: XCTestCase {
         XCTAssertTrue(retry.isReady, retry.blocker ?? "")
         XCTAssertEqual(retry.action, .retryPush)
         XCTAssertEqual(retry.commitToPush, first.commit)
+        XCTAssertTrue(retry.changes.contains(where: { $0.path == newlinePath }))
         try fixture.allowPushes()
         let second = fixture.publish(retry, message: "Ignored for exact retry")
         XCTAssertEqual(second.outcome, .published, second.message)
         XCTAssertEqual(second.commit, first.commit)
         XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), first.commit)
+    }
+
+    func testPublishPreviewRejectsContentFiltersBeforeGitStatusCanExecuteThem() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let marker = fixture.root.appendingPathComponent("publish-filter-executed")
+        let helper = fixture.root.appendingPathComponent("publish-filter-helper.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        try fixture.git(["config", "filter.unsafe.clean", helper.path])
+        try fixture.git(["config", "filter.unsafe.required", "true"])
+        try fixture.write("skills/** filter=unsafe\n", at: ".gitattributes")
+        try fixture.writeSkill("Changed after filter configuration")
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("content filters") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
     func testCanonicalGitHubLinksAndInstallCommand() {
