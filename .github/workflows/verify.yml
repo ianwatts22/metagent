@@ -27,8 +27,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install asset tooling
-        run: brew install librsvg
+      - name: Install verification tooling
+        run: brew install librsvg ripgrep
 
       - name: Run complete verification
         env:

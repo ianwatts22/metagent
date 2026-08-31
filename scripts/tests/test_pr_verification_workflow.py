@@ -14,7 +14,7 @@ class PRVerificationWorkflowTests(unittest.TestCase):
         self.assertIn("run: ./scripts/verify.sh\n", workflow)
         self.assertIn("runs-on: macos-26", workflow)
         self.assertIn("DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer", workflow)
-        self.assertIn("run: brew install librsvg", workflow)
+        self.assertIn("run: brew install librsvg ripgrep\n", workflow)
         self.assertIn("timeout-minutes: 45", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
 
