@@ -29,6 +29,8 @@ schemas are presented separately from configuration. MCP initialization's option
 
 - Fifteen-second monotonic deadline; 2 MiB combined stdout/stderr budget.
 - Twenty pages, 500 tools, unique tool names, cursor-cycle rejection.
+- Schemas stay compact to avoid indentation expansion. A schema over 256 KiB
+  fails inspection rather than showing an incomplete tool contract.
 - Correlated JSON-RPC responses and supported negotiated protocol versions.
 - Nonblocking input and output. Cancellation checks during writes, reads, and
   pagination. Cleanup terminates the owned process group, including wrappers'
@@ -40,6 +42,7 @@ schemas are presented separately from configuration. MCP initialization's option
 processes, never the developer's real MCPs or credentials. It covers normal and
 paginated responses, malformed/uncorrelated messages, protocol mismatch, repeated
 cursors/names, disabled/configuration failures, secret-safe errors, output limits,
+nested-schema expansion and oversized schemas,
 timeouts, cancellation, and descendant cleanup. Live GUI acceptance remains a
 separate requirement; headless fixtures do not prove visual layout or accessibility.
 

@@ -205,13 +205,14 @@ public final class MCPInspectionSession: @unchecked Sendable {
                 guard let listed = response["tools"] as? [[String: Any]] else { throw MCPInspectionError.invalidResponse }
                 guard tools.count + listed.count <= maximumTools else { throw MCPInspectionError.paginationLimit }
                 for tool in listed {
+                    try checkCancellation()
                     guard let name = tool["name"] as? String, !name.isEmpty, names.insert(name).inserted,
                           let schema = tool["inputSchema"] as? [String: Any] else { throw MCPInspectionError.invalidResponse }
                     let outputSchema: [String: Any]? = try Self.metadata(tool["outputSchema"])
-                    let output = try outputSchema.map(Self.prettyJSON)
+                    let output = try outputSchema.map(Self.schemaJSON)
                     let description: String? = try Self.metadata(tool["description"])
                     tools.append(MCPInspectedTool(name: name, description: description,
-                                                  inputSchema: try Self.prettyJSON(schema), outputSchema: output))
+                                                  inputSchema: try Self.schemaJSON(schema), outputSchema: output))
                 }
                 guard let next = response["nextCursor"] else { break }
                 guard let next = next as? String, !next.isEmpty, cursors.insert(next).inserted,
@@ -232,8 +233,12 @@ public final class MCPInspectionSession: @unchecked Sendable {
         return typed
     }
 
-    private static func prettyJSON(_ value: [String: Any]) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+    private static func schemaJSON(_ value: [String: Any]) throws -> String {
+        // Pretty-print indentation can amplify a small nested schema into hundreds
+        // of MiB. Keep compact JSON and reject oversized schemas, never truncate one
+        // while presenting it as a complete tool contract.
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
+        guard data.count <= 256 * 1_024 else { throw MCPInspectionError.outputLimit }
         return String(decoding: data, as: UTF8.self)
     }
 }
@@ -338,6 +343,7 @@ private final class MCPInspectionProcess {
         while true {
             try check()
             while let newline = pending.firstIndex(of: 0x0A) {
+                try check()
                 let line = Data(pending[..<newline])
                 pending.removeSubrange(...newline)
                 guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],

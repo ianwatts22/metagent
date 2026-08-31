@@ -41,6 +41,22 @@ final class MCPInspectionTests: XCTestCase {
         XCTAssertTrue(result.tools.isEmpty)
     }
 
+    func testNestedSchemasStayCompactAndOversizedSchemasFailWithoutPartialSnapshot() throws {
+        var nested: [String: Any] = ["enum": Array(repeating: "value", count: 2_000)]
+        for _ in 0..<80 { nested = ["properties": ["child": nested]] }
+        let tool: [String: Any] = ["name": "nested", "inputSchema": nested]
+        let result = try MCPInspectionSession().inspect(send: { _ in }, receive: { id in
+            id == 1 ? self.initialization : ["tools": [tool]]
+        })
+        let schema = try XCTUnwrap(result.tools.first?.inputSchema)
+        XCTAssertLessThan(schema.utf8.count, 32 * 1_024, "Indentation must not amplify compact server metadata")
+        XCTAssertNotNil(try JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any])
+        let oversized: [String: Any] = ["name": "oversized", "inputSchema": ["description": String(repeating: "x", count: 257 * 1_024)]]
+        XCTAssertThrowsError(try MCPInspectionSession().inspect(send: { _ in }, receive: { id in
+            id == 1 ? self.initialization : ["tools": [oversized]]
+        })) { XCTAssertEqual($0 as? MCPInspectionError, .outputLimit) }
+    }
+
     func testUnsupportedProtocolAndMalformedToolFailClosed() {
         var wrongVersion = initialization
         wrongVersion["protocolVersion"] = "2099-01-01"
