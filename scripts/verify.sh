@@ -212,7 +212,9 @@ python3 "$repo_root/scripts/verify-mcp-stdio.py" "$swift_helper" "$repo_root"
 
 verify_manager_fixtures() (
 fixture_root="$(mktemp -d /private/tmp/metagent-verify.XXXXXX)"
-normalized_fixture_root="${fixture_root/#\/private\/tmp/\/tmp}"
+# Strip the known /private prefix without replacement-string escaping, which
+# differs between macOS's Bash 3.2 and newer Bash versions.
+normalized_fixture_root="${fixture_root#/private}"
 cleanup_fixture() {
   if command -v trash >/dev/null 2>&1; then
     trash "$fixture_root" >/dev/null 2>&1 || true
@@ -905,7 +907,13 @@ run_stage() {
 
   set +e
   (
-    set -e
+    set -eE
+    # Inherit into fixture functions and subshells so a failed test/grep does
+    # not produce an empty stage log. Report source/function rather than command
+    # text, which can include a whole subshell body and embedded fixture data.
+    # Bash 3.2 reports unreliable LINENO values in subshell-bodied functions.
+    # Name the failing function without claiming an exact source line.
+    trap 'printf "Verification failed in %s (%s)\n" "${BASH_SOURCE[0]:-bash}" "${FUNCNAME[0]:-stage}" >&2' ERR
     "$@"
   ) >"$log_file" 2>&1
   local status=$?
