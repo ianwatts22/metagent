@@ -33,6 +33,80 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertFalse(servers[2].supportsAuthentication)
     }
 
+    func testCodexTransportURLReturnsOnlyTheConfiguredEndpoint() throws {
+        let data = Data("""
+        {
+          "name": "beeper",
+          "enabled": true,
+          "transport": {
+            "type": "streamable_http",
+            "url": "http://127.0.0.1:23373/v0/mcp",
+            "http_headers": {"Authorization": "secret"}
+          }
+        }
+        """.utf8)
+
+        XCTAssertEqual(
+            try MetagentCore.parseCodexMCPTransportURL(data)?.absoluteString,
+            "http://127.0.0.1:23373/v0/mcp"
+        )
+    }
+
+    func testInternalAuthenticationCapturesAndRedactsFailures() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-auth")
+        let executable = root.appendingPathComponent("codex-fixture")
+        try """
+        #!/bin/sh
+        echo 'OAuth failed at https://example.test/authorize?state=secret-state&code=secret-code' >&2
+        exit 7
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let server = MCPServerHealth(
+            client: .codex,
+            name: "fixture",
+            state: .needsSignIn,
+            detail: "Sign-in required"
+        )
+
+        let result = try MetagentCore.authenticateMCPServer(
+            server,
+            codexExecutableOverride: executable,
+            timeout: 2
+        )
+
+        XCTAssertFalse(result.succeeded)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertTrue(result.message.contains("https://example.test/authorize?[redacted]"))
+        XCTAssertFalse(result.message.contains("secret-state"))
+        XCTAssertFalse(result.message.contains("secret-code"))
+    }
+
+    func testInternalAuthenticationReportsSuccessWithoutRetainingOAuthOutput() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-auth")
+        let executable = root.appendingPathComponent("codex-fixture")
+        try """
+        #!/bin/sh
+        echo 'https://example.test/authorize?state=one-time'
+        exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let server = MCPServerHealth(
+            client: .codex,
+            name: "fixture",
+            state: .needsSignIn,
+            detail: "Sign-in required"
+        )
+
+        let result = try MetagentCore.authenticateMCPServer(
+            server,
+            codexExecutableOverride: executable,
+            timeout: 2
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.message, "")
+    }
+
     func testClaudeInventoryCombinesDirectAndEnabledPluginConfiguration() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
         let activePlugin = root.appendingPathComponent(".claude/plugins/cache/vendor/demo/1.10.0")

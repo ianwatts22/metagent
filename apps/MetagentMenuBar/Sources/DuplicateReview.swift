@@ -175,7 +175,7 @@ struct DuplicateReviewDetail: View {
     }
 
     private var recommendationTint: Color {
-        group.kind == .pluginReplacement ? .orange : .secondary
+        group.kind == .pluginReplacement ? .orange : .green
     }
 
     var body: some View {
@@ -192,42 +192,13 @@ struct DuplicateReviewDetail: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Label("\(group.similarityText) similar", systemImage: "equal.circle.fill")
+                    Label("\(group.similarityText) word overlap", systemImage: "equal.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(Color.accentColor.opacity(0.10), in: Capsule())
-                }
-
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: group.kind == .pluginReplacement
-                        ? "lightbulb.max.fill"
-                        : "lightbulb")
-                        .foregroundStyle(recommendationTint)
-                        .font(.callout)
-                        .frame(width: 26, height: 26)
-                        .background(recommendationTint.opacity(0.12), in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.recommendationTitle)
-                            .font(.callout.weight(.semibold))
-                        Text(group.recommendationDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    if !group.suggestedRemovalRows.isEmpty {
-                        Button("Use recommendation", action: onUseRecommendation)
-                            .buttonStyle(.glass)
-                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
-                    }
-                }
-                .padding(10)
-                .background(recommendationTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(recommendationTint.opacity(0.18), lineWidth: 1)
+                        .help(group.similarityHelp)
                 }
 
                 LazyVGrid(
@@ -252,6 +223,38 @@ struct DuplicateReviewDetail: View {
                             onInfo: { onInfo(row) }
                         )
                     }
+                }
+
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(recommendationTint)
+                        .font(.callout)
+                        .frame(width: 26, height: 26)
+                        .background(recommendationTint.opacity(0.12), in: Circle())
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 0) {
+                            Text("Recommendation: ").bold()
+                            Text(group.recommendationTitle)
+                        }
+                        .font(.callout)
+                        Text(group.recommendationDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    if !group.suggestedRemovalRows.isEmpty {
+                        Button("Use recommendation", action: onUseRecommendation)
+                            .buttonStyle(.glass)
+                            .buttonBorderShape(.capsule)
+                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
+                    }
+                }
+                .padding(10)
+                .background(recommendationTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(recommendationTint.opacity(0.18), lineWidth: 1)
                 }
             }
             .padding(14)
@@ -301,14 +304,6 @@ struct DuplicateCandidateCard: View {
         }
         return request.method == .codexPlugin ? "Remove plugin" : "Remove"
     }
-    private var removalControlWidth: CGFloat {
-        switch removalLabel {
-        case "Remove project copy": 225
-        case "Remove plugin": 190
-        default: 155
-        }
-    }
-
     private var isProjectSkill: Bool { row.scope == "project" }
     private var locationLabel: String {
         isProjectSkill ? row.projectName : "Global"
@@ -329,6 +324,29 @@ struct DuplicateCandidateCard: View {
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
                 Spacer(minLength: 8)
+                Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isProjectSkill ? Color.accentColor : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        (isProjectSkill ? Color.accentColor : Color.secondary).opacity(0.10),
+                        in: Capsule()
+                    )
+                    .help(locationHelp)
+            }
+
+            HStack(spacing: 7) {
+                Button("View", action: onView)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .help("Get Info")
+                Spacer(minLength: 8)
                 if row.overlap?.suggestedRemoval == true {
                     Text("Suggested removal")
                         .font(.caption2.weight(.semibold))
@@ -338,17 +356,6 @@ struct DuplicateCandidateCard: View {
                         .background(.orange.opacity(0.12), in: Capsule())
                 }
             }
-
-            Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isProjectSkill ? Color.accentColor : .secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    (isProjectSkill ? Color.accentColor : Color.secondary).opacity(0.10),
-                    in: Capsule()
-                )
-                .help(locationHelp)
 
             if row.descriptionText != "—" {
                 Text(row.descriptionText)
@@ -373,38 +380,18 @@ struct DuplicateCandidateCard: View {
                 .truncationMode(.middle)
                 .help(displayUserPath(row.canonicalPath ?? row.skillPath))
 
-            Divider()
-
-            HStack {
-                Button("View", action: onView)
-                    .buttonStyle(.glass)
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .help("Get Info")
-                Spacer()
-                if canRemove {
-                    Picker("Decision", selection: $isMarkedForRemoval) {
-                        Text("Keep").tag(false)
-                        Text(removalLabel).tag(true)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .glassEffect(.regular.interactive(), in: Capsule())
-                    .tint(isMarkedForRemoval ? .red : .accentColor)
-                    .frame(width: removalControlWidth)
-                    .accessibilityLabel("Duplicate decision")
-                    .help(removalLabel == "Remove plugin"
-                        ? "Removing this copy uninstalls its entire plugin."
-                        : "The final removal still requires approval.")
-                } else {
-                    Label("Keep", systemImage: "lock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Metagent does not have a safe removal action for this managed copy.")
-                }
+            if canRemove {
+                DuplicateDecisionControl(
+                    removalLabel: removalLabel,
+                    isMarkedForRemoval: $isMarkedForRemoval
+                )
+            } else {
+                Label("Keep", systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .background(.quaternary.opacity(0.45), in: Capsule())
+                    .help("Metagent does not have a safe removal action for this managed copy.")
             }
         }
         .padding(12)
@@ -428,6 +415,62 @@ struct DuplicateCandidateCard: View {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct DuplicateDecisionControl: View {
+    let removalLabel: String
+    @Binding var isMarkedForRemoval: Bool
+
+    var body: some View {
+        HStack(spacing: 3) {
+            decisionButton("Keep", isSelected: !isMarkedForRemoval) {
+                isMarkedForRemoval = false
+            }
+            decisionButton(removalLabel, isSelected: isMarkedForRemoval, isDestructive: true) {
+                isMarkedForRemoval = true
+            }
+        }
+        .padding(3)
+        .frame(maxWidth: .infinity, minHeight: 36)
+        .background(.quaternary.opacity(0.55), in: Capsule())
+        .overlay { Capsule().stroke(.quaternary, lineWidth: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Duplicate decision")
+        .help(removalLabel == "Remove plugin"
+            ? "Removing this copy uninstalls its entire plugin."
+            : "The final removal still requires approval.")
+    }
+
+    private func decisionButton(
+        _ title: String,
+        isSelected: Bool,
+        isDestructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected && isDestructive ? Color.white : Color.primary)
+        .background(
+            isSelected
+                ? AnyShapeStyle(isDestructive ? Color.red : Color.accentColor.opacity(0.20))
+                : AnyShapeStyle(Color.clear),
+            in: Capsule()
+        )
+        .overlay {
+            if isSelected {
+                Capsule().stroke(
+                    isDestructive ? Color.red.opacity(0.75) : Color.accentColor.opacity(0.45),
+                    lineWidth: 1
+                )
+            }
         }
     }
 }

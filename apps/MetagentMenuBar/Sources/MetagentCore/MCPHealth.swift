@@ -179,6 +179,18 @@ public struct MCPInventoryEntry: Equatable, Identifiable, Sendable {
     }
 }
 
+public struct MCPAuthenticationResult: Equatable, Sendable {
+    public let succeeded: Bool
+    public let timedOut: Bool
+    public let message: String
+
+    public init(succeeded: Bool, timedOut: Bool, message: String) {
+        self.succeeded = succeeded
+        self.timedOut = timedOut
+        self.message = message
+    }
+}
+
 private struct CodexMCPEntry: Decodable {
     let name: String
     let enabled: Bool
@@ -204,6 +216,75 @@ public extension MetagentCore {
         guard server.supportsAuthentication else { return nil }
         let executable = try codexExecutableOverride ?? codexExecutable()
         return [executable.path, "mcp", "login", server.name]
+    }
+
+    /// Returns the configured HTTP endpoint without exposing headers or other
+    /// transport configuration. This lets the app recognize loopback MCPs and
+    /// give a useful local-app recovery path before starting OAuth.
+    static func mcpTransportURL(
+        for server: MCPServerHealth,
+        codexExecutableOverride: URL? = nil
+    ) throws -> URL? {
+        guard server.client == .codex else { return nil }
+        let executable = try codexExecutableOverride ?? codexExecutable()
+        let result = try runSubprocess(
+            executable: executable,
+            arguments: ["mcp", "get", server.name, "--json"],
+            timeout: 15
+        )
+        guard !result.timedOut, result.status == 0 else { return nil }
+        return try parseCodexMCPTransportURL(result.standardOutput)
+    }
+
+    /// Runs the client-owned login command without opening a Terminal window.
+    /// The caller gets only a redacted failure summary; successful OAuth output
+    /// may contain one-time authorization URLs and is intentionally discarded.
+    static func authenticateMCPServer(
+        _ server: MCPServerHealth,
+        codexExecutableOverride: URL? = nil,
+        timeout: TimeInterval = 300
+    ) throws -> MCPAuthenticationResult {
+        guard let command = try mcpAuthenticationCommand(
+            for: server,
+            codexExecutableOverride: codexExecutableOverride
+        ), let executable = command.first
+        else {
+            return MCPAuthenticationResult(
+                succeeded: false,
+                timedOut: false,
+                message: "This MCP does not support authentication from Metagent."
+            )
+        }
+        let result = try runSubprocess(
+            executable: URL(fileURLWithPath: executable),
+            arguments: Array(command.dropFirst()),
+            timeout: timeout
+        )
+        if !result.timedOut, result.status == 0 {
+            return MCPAuthenticationResult(succeeded: true, timedOut: false, message: "")
+        }
+        let output = redactMCPAuthenticationOutput(combinedSubprocessOutput(result))
+        let message: String
+        if result.timedOut {
+            message = "Authentication timed out before the MCP client completed sign-in."
+        } else if output.isEmpty {
+            message = "The MCP client exited with status \(result.status)."
+        } else {
+            message = output
+        }
+        return MCPAuthenticationResult(
+            succeeded: false,
+            timedOut: result.timedOut,
+            message: message
+        )
+    }
+
+    internal static func parseCodexMCPTransportURL(_ data: Data) throws -> URL? {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let transport = root["transport"] as? [String: Any],
+              let rawURL = transport["url"] as? String
+        else { return nil }
+        return URL(string: rawURL)
     }
 
     /// Builds a passive MCP inventory. This never starts an MCP server, performs OAuth discovery,
@@ -441,6 +522,14 @@ public extension MetagentCore {
         }
         return servers
     }
+}
+
+private func redactMCPAuthenticationOutput(_ output: String) -> String {
+    output.replacingOccurrences(
+        of: #"((?:https?)://[^\s?]+)\?[^\s]+"#,
+        with: "$1?[redacted]",
+        options: .regularExpression
+    )
 }
 
 private func loadJSONObject(at url: URL) throws -> [String: Any] {

@@ -27,6 +27,42 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(group.members.filter(\.suggestedRemoval).map(\.canonicalPath), [standalone.path])
     }
 
+    func testDuplicateSkillsInsideOneCodexPluginSystemAreIgnored() throws {
+        let root = try fixtureRoot("codex-plugin-cache")
+        let body = "Use the demo workflow and verify the result."
+        let first = try writeSkill(root: root, relativePath: "plugin-a/demo", body: body)
+        let second = try writeSkill(root: root, relativePath: "plugin-b/demo", body: body)
+
+        let groups = MetagentCore.detectSkillOverlaps([
+            makeSkill(path: first.path, scope: "plugin", manager: "codex-plugin"),
+            makeSkill(path: second.path, scope: "plugin", manager: "codex-plugin"),
+        ])
+
+        XCTAssertTrue(groups.isEmpty)
+    }
+
+    func testDuplicateSkillsInsideOneClaudePluginSystemAreIgnored() throws {
+        let root = try fixtureRoot("claude-plugin-cache")
+        let body = "Use the demo workflow and verify the result."
+        let first = try writeSkill(
+            root: root,
+            relativePath: ".claude/plugins/cache/vendor/first/1.0.0/skills/demo",
+            body: body
+        )
+        let second = try writeSkill(
+            root: root,
+            relativePath: ".claude/plugins/cache/vendor/second/1.0.0/skills/demo",
+            body: body
+        )
+
+        let groups = MetagentCore.detectSkillOverlaps([
+            makeSkill(path: first.path, scope: "global", manager: "claude"),
+            makeSkill(path: second.path, scope: "global", manager: "claude"),
+        ])
+
+        XCTAssertTrue(groups.isEmpty)
+    }
+
     func testGlobalProjectCopyIsInformationalEvenWhenContentsMatch() throws {
         let root = try fixtureRoot("scopes")
         let body = "Use this workflow to inspect a project and verify the result."

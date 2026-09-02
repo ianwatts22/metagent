@@ -75,6 +75,17 @@ private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> Ski
     }
     guard let first = skills.first else { return nil }
 
+    // Two versions of the same skill can coexist inside one plugin system's
+    // managed cache. The plugin manager owns that lifecycle, so asking a user
+    // to choose and remove one here is both noisy and unsafe. Mixed groups that
+    // include a standalone or a different system remain actionable.
+    let managedPluginSystems = skills.compactMap { managedPluginSystem(for: $0.item) }
+    if managedPluginSystems.count == skills.count,
+       Set(managedPluginSystems).count == 1
+    {
+        return nil
+    }
+
     // These documents are local to this invocation. A later refresh still
     // rereads them, including same-path edits and formerly missing files.
     let documents = skills.map { comparableSkillDocument(at: $0.path) }
@@ -160,6 +171,19 @@ private func documentSimilarity(_ left: ComparableSkillDocument?, _ right: Compa
 
 private func normalizedSkillName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+private func managedPluginSystem(for skill: SkillInventoryItem) -> String? {
+    if skill.manager == "codex-plugin" || skill.originKind == "codex-plugin" {
+        return "codex"
+    }
+    if skill.manager == "claude-plugin"
+        || skill.originKind == "claude-plugin"
+        || skill.path.contains("/.claude/plugins/")
+    {
+        return "claude"
+    }
+    return nil
 }
 
 private func preferredOverlapItem(_ left: SkillInventoryItem, _ right: SkillInventoryItem) -> SkillInventoryItem {

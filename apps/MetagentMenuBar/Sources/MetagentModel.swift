@@ -85,6 +85,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isUpdatingPlugins = false
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
+    @Published private(set) var authenticatingMCPServerID: String?
     /// Measured codebase size per standardized project root. Only git
     /// repositories appear; everything else has no tracked codebase to size.
     @Published private(set) var codebaseSizes: [String: CodebaseSizeReport] = [:]
@@ -906,16 +907,7 @@ final class MetagentModel: ObservableObject {
 
     func openMCPServer(_ server: MCPServerHealth) {
         if server.supportsAuthentication {
-            do {
-                if let command = try MetagentCore.mcpAuthenticationCommand(for: server) {
-                    openMCPAuthentication(command: command)
-                }
-            } catch {
-                recordTerminalLaunchFailure(
-                    title: "Could not start MCP authentication",
-                    message: error.localizedDescription
-                )
-            }
+            authenticateMCPServer(server)
             return
         }
 
@@ -931,46 +923,97 @@ final class MetagentModel: ObservableObject {
         openMCPClient(server.client)
     }
 
-    private func openMCPAuthentication(command: [String]) {
-        let script = """
-        on run argv
-            set shellCommand to ""
-            repeat with argumentValue in argv
-                if shellCommand is not "" then set shellCommand to shellCommand & " "
-                set shellCommand to shellCommand & quoted form of argumentValue
-            end repeat
-            tell application "Terminal"
-                activate
-                do script "exec " & shellCommand
-            end tell
-        end run
-        """
-        let process = Process()
-        let standardError = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script, "--"] + command
-        process.standardError = standardError
-        process.terminationHandler = { [weak self] process in
-            guard process.terminationStatus != 0 else { return }
-            let data = standardError.fileHandleForReading.readDataToEndOfFile()
-            let message = String(decoding: data, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            Task { @MainActor [weak self] in
-                self?.recordTerminalLaunchFailure(
-                    title: "Could not start MCP authentication",
-                    message: message,
-                    status: process.terminationStatus
-                )
+    private func authenticateMCPServer(_ server: MCPServerHealth) {
+        guard authenticatingMCPServerID == nil else { return }
+        authenticatingMCPServerID = server.id
+
+        Task {
+            let endpoint = await Task.detached(priority: .utility) {
+                try? MetagentCore.mcpTransportURL(for: server)
+            }.value
+
+            if let endpoint, isLoopbackMCPURL(endpoint) {
+                let localApplication = localMCPApplication(for: server, endpoint: endpoint)
+                if let localApplication {
+                    guard openLocalMCPApplication(localApplication) else {
+                        recordOperationFailure(
+                            title: "MCP authentication failed",
+                            message: "Metagent could not open \(localApplication.displayName). Open it manually, then try Authenticate again."
+                        )
+                        authenticatingMCPServerID = nil
+                        return
+                    }
+                }
+
+                let reachable = await Self.waitForLocalMCPEndpoint(endpoint)
+                guard reachable else {
+                    let provider = localApplication?.displayName ?? "the app that provides this MCP"
+                    recordOperationFailure(
+                        title: "MCP authentication failed",
+                        message: "Metagent could not reach \(provider) at \(endpoint.host ?? "the local endpoint"): \(endpoint.port ?? 0). Open the provider app and wait for it to finish starting, then try Authenticate again."
+                    )
+                    authenticatingMCPServerID = nil
+                    return
+                }
+            }
+
+            let attempt = await Task.detached(priority: .userInitiated) {
+                do {
+                    return MCPAuthenticationAttempt.completed(
+                        try MetagentCore.authenticateMCPServer(server)
+                    )
+                } catch {
+                    return MCPAuthenticationAttempt.failed(error.localizedDescription)
+                }
+            }.value
+
+            switch attempt {
+            case let .completed(result) where result.succeeded:
+                if lastOutputTitle == "MCP authentication failed" {
+                    clearLastOutput()
+                }
+                authenticatingMCPServerID = nil
+                // Codex writes credentials before the command exits. Re-scan
+                // immediately so Needs attention clears without a page reload.
+                refreshMCPHealth()
+            case let .completed(result):
+                let message = endpoint.map { url in
+                    isLoopbackMCPURL(url)
+                        ? "\(result.message)\n\nThis MCP uses a local endpoint. Make sure its provider app is open, then try again."
+                        : result.message
+                } ?? result.message
+                recordOperationFailure(title: "MCP authentication failed", message: message)
+                authenticatingMCPServerID = nil
+            case let .failed(message):
+                recordOperationFailure(title: "MCP authentication failed", message: message)
+                authenticatingMCPServerID = nil
             }
         }
-        do {
-            try process.run()
-        } catch {
-            recordTerminalLaunchFailure(
-                title: "Could not start MCP authentication",
-                message: error.localizedDescription
-            )
+    }
+
+    private func openLocalMCPApplication(_ application: LocalMCPApplication) -> Bool {
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: application.bundleIdentifier
+        ) else { return false }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
+        return true
+    }
+
+    nonisolated private static func waitForLocalMCPEndpoint(_ endpoint: URL) async -> Bool {
+        for _ in 0..<12 {
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "HEAD"
+            request.timeoutInterval = 0.75
+            if let (_, response) = try? await URLSession.shared.data(for: request),
+               response is HTTPURLResponse
+            {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(500))
         }
+        return false
     }
 
     private func openMCPClient(_ client: MCPClient) {
@@ -1009,7 +1052,7 @@ final class MetagentModel: ObservableObject {
             let message = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             Task { @MainActor [weak self] in
-                self?.recordTerminalLaunchFailure(
+                self?.recordOperationFailure(
                     title: "Could not open Claude",
                     message: message,
                     status: process.terminationStatus
@@ -1019,14 +1062,14 @@ final class MetagentModel: ObservableObject {
         do {
             try process.run()
         } catch {
-            recordTerminalLaunchFailure(
+            recordOperationFailure(
                 title: "Could not open Claude",
                 message: error.localizedDescription
             )
         }
     }
 
-    private func recordTerminalLaunchFailure(
+    private func recordOperationFailure(
         title: String,
         message: String,
         status: Int32? = nil
@@ -2010,6 +2053,34 @@ final class MetagentModel: ObservableObject {
 
     private func homeURL() -> URL {
         fileManager.homeDirectoryForCurrentUser
+    }
+}
+
+private enum MCPAuthenticationAttempt: Sendable {
+    case completed(MCPAuthenticationResult)
+    case failed(String)
+}
+
+struct LocalMCPApplication: Equatable, Sendable {
+    let displayName: String
+    let bundleIdentifier: String
+}
+
+func isLoopbackMCPURL(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func localMCPApplication(for server: MCPServerHealth, endpoint: URL?) -> LocalMCPApplication? {
+    guard endpoint.map(isLoopbackMCPURL) == true else { return nil }
+    switch server.name.lowercased() {
+    case "beeper":
+        return LocalMCPApplication(
+            displayName: "Beeper",
+            bundleIdentifier: "com.automattic.beeper.desktop"
+        )
+    default:
+        return nil
     }
 }
 

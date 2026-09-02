@@ -115,6 +115,13 @@ struct HistorySection: View {
                 Text("History")
                     .font((isCompact ? Font.title3 : .title).weight(.semibold))
 
+                Text("PREVIEW")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+
                 if !isStale, !coverageChips.isEmpty {
                     HStack(spacing: 5) {
                         ForEach(coverageChips, id: \.self) { chip in
@@ -125,6 +132,16 @@ struct HistorySection: View {
                                 .padding(.vertical, 4)
                                 .background(.quaternary.opacity(0.6), in: Capsule())
                         }
+                    }
+                    .help(coverageHelp)
+                }
+
+                if !isStale, trends.coverage.inferredDayCount > 0 {
+                    HStack(spacing: 7) {
+                        HistoryLineSample(isEstimated: true)
+                        Text("Dashed lines are estimates from older local evidence, not measurements Metagent observed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .help(coverageHelp)
                 }
@@ -147,7 +164,7 @@ struct HistorySection: View {
     }
 
     /// Coverage is stated up front because every chart below inherits it: how
-    /// many days were actually observed, and how many were reconstructed.
+    /// many days were actually observed, and how many were estimated.
     private var coverageChips: [String] {
         var chips: [String] = []
         let coverage = trends.coverage
@@ -155,7 +172,7 @@ struct HistorySection: View {
             chips.append("\(coverage.observedDayCount) recorded")
         }
         if coverage.inferredDayCount > 0 {
-            chips.append("\(coverage.inferredDayCount) reconstructed")
+            chips.append("\(coverage.inferredDayCount) estimated")
         }
         if coverage.eventCount > 0 {
             chips.append("\(coverage.eventCount) changes")
@@ -171,7 +188,7 @@ struct HistorySection: View {
         }
         if coverage.inferredDayCount > 0 {
             parts.append(
-                "Reconstructed days are inferred from git history, folder creation dates, the removal archive, and session history, and are drawn dashed."
+                "Estimated days are inferred from git history, folder creation dates, the removal archive, and session history, and are drawn dashed."
             )
         }
         parts.append("Days with no sample are left as gaps rather than joined through.")
@@ -192,7 +209,7 @@ struct HistorySection: View {
     private var emptyState: some View {
         EmptyStateView(
             title: "No history yet",
-            message: "History records one sample per day. Come back tomorrow, or run `metagent history backfill` to reconstruct what came before.",
+            message: "History records one sample per day. Come back tomorrow, or run `metagent history backfill` to estimate earlier days from local evidence.",
             symbol: "chart.xyaxis.line"
         )
         .frame(maxWidth: .infinity, minHeight: 200)
@@ -227,7 +244,7 @@ struct HistorySection: View {
             HistoryChartModel(
                 id: "portfolio",
                 title: "Skills installed",
-                help: "How many skills existed in this scope on each recorded day. Reconstructed days count every skill whose lifetime covers that day, from git history where available and folder creation dates otherwise.",
+                help: "How many skills existed in this scope on each recorded day. Estimated days count every skill whose lifetime covers that day, from git history where available and folder creation dates otherwise.",
                 metrics: [.portfolioSkills],
                 labels: [.portfolioSkills: "Installed"],
                 tints: [.portfolioSkills: .accentColor],
@@ -236,7 +253,7 @@ struct HistorySection: View {
             HistoryChartModel(
                 id: "adoption",
                 title: "Skills not being read",
-                help: "Skills with no observed read in the last 30 days, and skills never read at all. Both are counts rather than rates so they share an axis with the installed line above. Reconstructed days rate every skill alive that day, while recorded days exclude dormant directories, so the two are not directly comparable across the seam.",
+                help: "Skills with no observed read in the last 30 days, and skills never read at all. Both are counts rather than rates so they share an axis with the installed line above. Estimated days rate every skill alive that day, while recorded days exclude dormant directories, so the two are not directly comparable across the seam.",
                 metrics: [.adoptionUnused30d, .adoptionNeverObserved],
                 labels: [.adoptionUnused30d: "Unused 30d", .adoptionNeverObserved: "Never read"],
                 tints: [.adoptionUnused30d: .orange, .adoptionNeverObserved: .red],
@@ -245,7 +262,7 @@ struct HistorySection: View {
             HistoryChartModel(
                 id: "tokens",
                 title: "Instruction and catalog size",
-                help: "Estimated tokens across installed SKILL.md bodies, and across skill names and descriptions. These are recorded only, never reconstructed: git covers some skills and not others, and a partial total would draw a decline that never happened.",
+                help: "Estimated tokens across installed SKILL.md bodies, and across skill names and descriptions. These are recorded only, never backfilled: git covers some skills and not others, and a partial total would draw a decline that never happened.",
                 metrics: [.tokensSkillBody, .tokensCatalog],
                 labels: [.tokensSkillBody: "SKILL.md", .tokensCatalog: "Catalog"],
                 tints: [.tokensSkillBody: .purple, .tokensCatalog: .teal],
@@ -400,7 +417,7 @@ struct HistoryEventDayRow: View {
                     Spacer(minLength: 8)
 
                     if group.isEntirelyInferred {
-                        Text("reconstructed")
+                        Text("estimated")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -436,6 +453,23 @@ struct HistoryEventDayRow: View {
                 .padding(.bottom, 10)
             }
         }
+    }
+}
+
+private struct HistoryLineSample: View {
+    let isEstimated: Bool
+
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 3))
+            path.addLine(to: CGPoint(x: 30, y: 3))
+        }
+        .stroke(
+            Color.secondary,
+            style: StrokeStyle(lineWidth: 1.5, dash: isEstimated ? [4, 3] : [])
+        )
+        .frame(width: 30, height: 6)
+        .accessibilityHidden(true)
     }
 }
 

@@ -13,7 +13,9 @@ struct MetagentPanel: View {
     @Binding var selectedSection: PanelSection
     @Binding var selectedProjectRoot: String?
     @State private var showsFailureDetails = false
+    @State private var showsActivityDetails = false
     @StateObject private var skillTableRows = SkillTableRowStore()
+    @AppStorage(AppFeatureFlags.previewFeaturesKey) private var previewFeaturesEnabled = false
 
     private var directoryOptions: [DirectoryFilterOption] {
         directoryFilterOptions(
@@ -46,8 +48,14 @@ struct MetagentPanel: View {
         }
         .onChange(of: updater.presentationDismissalRequest) {
             showsFailureDetails = false
+            showsActivityDetails = false
         }
-        .sheet(isPresented: $showsFailureDetails) {
+        .onChange(of: previewFeaturesEnabled) { _, isEnabled in
+            if !isEnabled, selectedSection == .history {
+                selectedSection = .overview
+            }
+        }
+        .popover(isPresented: $showsFailureDetails, arrowEdge: .top) {
             FailureDetailsView(model: model)
         }
     }
@@ -85,7 +93,20 @@ struct MetagentPanel: View {
     @ViewBuilder
     private var activityControl: some View {
         if let activity = model.activity, activity.needsAttention {
-            ActivityBadge(activity: activity)
+            Button {
+                showsActivityDetails = true
+            } label: {
+                ActivityBadge(activity: activity)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Usage history needs attention")
+            .accessibilityHint("Show why usage metrics are provisional")
+            .popover(isPresented: $showsActivityDetails, arrowEdge: .top) {
+                ActivityDetailsPopover(activity: activity) {
+                    showsActivityDetails = false
+                    model.refreshUsage()
+                }
+            }
         }
     }
 
@@ -216,7 +237,7 @@ struct MetagentPanel: View {
     /// read as unrelated buttons rather than as a tab group.
     private var navigation: some View {
         HStack(spacing: 3) {
-            ForEach(PanelSection.allCases) { section in
+            ForEach(PanelSection.visibleCases(previewFeaturesEnabled: previewFeaturesEnabled)) { section in
                 SectionNavigationButton(
                     section: section,
                     isSelected: selectedSection == section
@@ -437,6 +458,41 @@ struct ActivityBadge: View {
     }
 }
 
+private struct ActivityDetailsPopover: View {
+    let activity: AppActivity
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Usage history needs attention", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+            Text(activity.label)
+                .font(.callout.weight(.semibold))
+
+            Text("Metagent only uses local, retained agent-session evidence for usage metrics. The numbers stay provisional while that history is incomplete.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Indexing runs in small background slices so it does not monopolize CPU or energy.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Continue indexing", action: onContinue)
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
+    }
+}
+
 /// The row count as a quiet chip beside the controls, instead of a page title
 /// restating the tab the user just clicked.
 struct CountChip: View {
@@ -586,6 +642,10 @@ enum PanelSection: String, CaseIterable, Identifiable {
     case projects
 
     var id: String { rawValue }
+
+    static func visibleCases(previewFeaturesEnabled: Bool) -> [PanelSection] {
+        allCases.filter { previewFeaturesEnabled || $0 != .history }
+    }
 
     var title: String {
         switch self {

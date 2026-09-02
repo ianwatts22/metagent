@@ -551,7 +551,7 @@ struct OverviewSection: View {
                     symbol: "wrench.and.screwdriver.fill",
                     title: "Skill cleanup",
                     detail: healthMessage,
-                    actionTitle: "Review…"
+                    actionTitle: "Review"
                 ) {
                     showsDoctorFindings = true
                 }
@@ -566,7 +566,7 @@ struct OverviewSection: View {
                     symbol: "square.on.square",
                     title: "\(skillHealth.duplicateGroupCount) potential duplicate \(skillHealth.duplicateGroupCount == 1 ? "skill" : "skills")",
                     detail: nil,
-                    actionTitle: "Review…",
+                    actionTitle: "Review",
                     action: openDuplicateReview
                 )
             }
@@ -575,7 +575,10 @@ struct OverviewSection: View {
                 Divider()
                     .padding(.leading, 56)
 
-                MCPHealthRow(row: row) {
+                MCPHealthRow(
+                    row: row,
+                    isAuthenticating: model.authenticatingMCPServerID == row.server.id
+                ) {
                     model.openMCPServer(row.server)
                 }
             }
@@ -665,7 +668,10 @@ struct OverviewSection: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(visibleMCPRows) { row in
-                            MCPHealthRow(row: row) {
+                            MCPHealthRow(
+                                row: row,
+                                isAuthenticating: model.authenticatingMCPServerID == row.server.id
+                            ) {
                                 model.openMCPServer(row.server)
                             }
 
@@ -829,6 +835,7 @@ struct OverviewAttentionRow: View {
 
             Button(actionTitle, action: action)
                 .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -866,6 +873,7 @@ struct MCPHealthDisplayRow: Identifiable {
 
 struct MCPHealthRow: View {
     let row: MCPHealthDisplayRow
+    let isAuthenticating: Bool
     let openClient: () -> Void
 
     private var server: MCPServerHealth { row.server }
@@ -890,8 +898,18 @@ struct MCPHealthRow: View {
             Spacer(minLength: 12)
 
             if server.state.needsAttention {
-                Button(attentionActionLabel, action: openClient)
+                Button(action: openClient) {
+                    HStack(spacing: 6) {
+                        if isAuthenticating {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isAuthenticating ? "Authenticating" : attentionActionLabel)
+                    }
+                }
                     .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .disabled(isAuthenticating)
             } else {
                 Text(server.state.displayLabel)
                     .font(.caption.weight(.medium))
@@ -907,17 +925,17 @@ struct MCPHealthRow: View {
            server.state == .pendingApproval,
            server.projectPaths.count == 1
         {
-            return "Resolve…"
+            return "Resolve"
         }
         if server.supportsAuthentication {
-            return "Authenticate…"
+            return "Authenticate"
         }
         return switch server.client {
         case .codex:
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: MCPClient.codex.bundleIdentifier) == nil
-                ? "Show Codex config…"
-                : "Open Codex…"
-        case .claude: "Show Claude config…"
+                ? "Show Codex config"
+                : "Open Codex"
+        case .claude: "Show Claude config"
         }
     }
 }
@@ -1018,7 +1036,7 @@ struct SkillHealthCard: View {
             sentence += ", compared against \(baselineDay)"
         }
         sentence += trend.includesInferred
-            ? ". Dashed stretches are reconstructed rather than recorded."
+            ? ". Dashed stretches are estimates from older local evidence rather than measurements Metagent observed."
             : "."
         return "\(card.help) \(sentence)"
     }

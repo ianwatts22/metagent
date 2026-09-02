@@ -900,6 +900,9 @@ struct DuplicateReviewGroup: Identifiable {
     var similarityText: String {
         similarity.formatted(.percent.precision(.fractionLength(0)))
     }
+    var similarityHelp: String {
+        "Word-set overlap between the closest pair of SKILL.md files. Metagent normalizes provider-specific skill paths and whitespace, lowercases the text, then divides shared unique words by all unique words across the pair. It is a vocabulary comparison, not an AI quality judgment."
+    }
     var recommendationTitle: String {
         switch kind {
         case .pluginReplacement:
