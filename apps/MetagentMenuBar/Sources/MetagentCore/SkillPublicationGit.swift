@@ -221,6 +221,15 @@ public extension MetagentCore {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         func hasActiveContentFilters() throws -> Bool {
+            let configured = try git([
+                "config", "--null", "--name-only", "--get-regexp", "^filter\\.",
+            ])
+            guard configured.status == 0 || configured.status == 1 else {
+                throw PublicationGitError.unavailable
+            }
+            let ambiguousDrivers = try publicationAmbiguousConfiguredFilterDrivers(
+                configured.standardOutput
+            )
             let paths = try git([
                 "ls-files", "--cached", "--others", "--exclude-standard", "-z",
                 "--", ":(literal)\(relativePath)",
@@ -232,7 +241,10 @@ public extension MetagentCore {
                 standardInput: paths.standardOutput
             )
             guard attributes.status == 0 else { throw PublicationGitError.unavailable }
-            return try publicationHasActiveFilterAttributes(attributes.standardOutput)
+            return try publicationHasActiveFilterAttributes(
+                attributes.standardOutput,
+                ambiguousConfiguredDrivers: ambiguousDrivers
+            )
         }
 
         var links: SkillPublicationLinks?
@@ -650,7 +662,28 @@ private struct PublicationGitRemote {
     let repositoryURL: URL?
 }
 
-private func publicationHasActiveFilterAttributes(_ data: Data) throws -> Bool {
+private func publicationAmbiguousConfiguredFilterDrivers(_ data: Data) throws -> Set<String> {
+    let suffixes = [".clean", ".smudge", ".process", ".required"]
+    var drivers: Set<String> = []
+    for field in data.split(separator: 0) {
+        let key = String(decoding: field, as: UTF8.self)
+        guard key.hasPrefix("filter.") else { throw PublicationGitError.unavailable }
+        guard let suffix = suffixes.first(where: key.hasSuffix) else { continue }
+        let start = key.index(key.startIndex, offsetBy: "filter.".count)
+        let end = key.index(key.endIndex, offsetBy: -suffix.count)
+        guard start < end else { throw PublicationGitError.unavailable }
+        let driver = String(key[start..<end]).lowercased()
+        if driver == "unset" || driver == "unspecified" {
+            drivers.insert(driver)
+        }
+    }
+    return drivers
+}
+
+private func publicationHasActiveFilterAttributes(
+    _ data: Data,
+    ambiguousConfiguredDrivers: Set<String>
+) throws -> Bool {
     guard data.last == 0 else { throw PublicationGitError.unavailable }
     var fields = data.split(separator: 0, omittingEmptySubsequences: false)
     guard fields.removeLast().isEmpty, fields.count.isMultiple(of: 3) else {
@@ -661,7 +694,9 @@ private func publicationHasActiveFilterAttributes(_ data: Data) throws -> Bool {
             throw PublicationGitError.unavailable
         }
         let value = String(decoding: fields[index + 2], as: UTF8.self)
-        if value != "unspecified", value != "unset" {
+        if value == "unspecified" || value == "unset" {
+            if ambiguousConfiguredDrivers.contains(value) { return true }
+        } else {
             return true
         }
     }
@@ -834,6 +869,15 @@ private struct PublicationGitRepository {
     }
 
     func hasActiveContentFiltersForPublish(in destinationPath: String) throws -> Bool {
+        let configured = try git([
+            "config", "--null", "--name-only", "--get-regexp", "^filter\\.",
+        ])
+        guard !configured.timedOut, configured.status == 0 || configured.status == 1 else {
+            throw PublicationGitError.unavailable
+        }
+        let ambiguousDrivers = try publicationAmbiguousConfiguredFilterDrivers(
+            configured.standardOutput
+        )
         let tracked = try git(["ls-files", "--cached", "-z"])
         guard !tracked.timedOut, tracked.status == 0 else { throw PublicationGitError.unavailable }
         let selectedUntracked = try git([
@@ -853,7 +897,10 @@ private struct PublicationGitRepository {
         guard !attributes.timedOut, attributes.status == 0 else {
             throw PublicationGitError.unavailable
         }
-        return try publicationHasActiveFilterAttributes(attributes.standardOutput)
+        return try publicationHasActiveFilterAttributes(
+            attributes.standardOutput,
+            ambiguousConfiguredDrivers: ambiguousDrivers
+        )
     }
 
     func plannedTree(baseCommit: String, destinationPath: String) throws -> String {
