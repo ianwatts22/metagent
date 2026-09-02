@@ -3,6 +3,12 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.6.1 — 2026-09-02
+
+- Fixes a launch crash after updating to v0.6.0 by safely loading and packaging
+  the MCP icon. If an optional icon resource is ever unavailable, Metagent now
+  falls back to a system icon instead of terminating the app.
+
 ## v0.6.0 — 2026-09-02
 
 - Faster launch and navigation reuse cached inventory, usage, and Skills rows
