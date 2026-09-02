@@ -3,7 +3,7 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
-## v0.6.0 — 2026-08-31
+## v0.6.0 — 2026-09-02
 
 - Faster launch and navigation reuse cached inventory, usage, and Skills rows
   instead of rebuilding them on every visit. Duplicate comparisons reuse
