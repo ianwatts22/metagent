@@ -263,14 +263,14 @@ public extension MetagentCore {
         if !result.timedOut, result.status == 0 {
             return MCPAuthenticationResult(succeeded: true, timedOut: false, message: "")
         }
-        let output = redactMCPAuthenticationOutput(combinedSubprocessOutput(result))
         let message: String
         if result.timedOut {
             message = "Authentication timed out before the MCP client completed sign-in."
-        } else if output.isEmpty {
-            message = "The MCP client exited with status \(result.status)."
         } else {
-            message = output
+            // OAuth clients may print bearer tokens, device codes, fragments,
+            // or provider-specific secrets in places a regex cannot safely
+            // identify. Never surface their arbitrary output in the app.
+            message = "The MCP client could not complete sign-in (exit status \(result.status))."
         }
         return MCPAuthenticationResult(
             succeeded: false,
@@ -522,14 +522,6 @@ public extension MetagentCore {
         }
         return servers
     }
-}
-
-private func redactMCPAuthenticationOutput(_ output: String) -> String {
-    output.replacingOccurrences(
-        of: #"((?:https?)://[^\s?]+)\?[^\s]+"#,
-        with: "$1?[redacted]",
-        options: .regularExpression
-    )
 }
 
 private func loadJSONObject(at url: URL) throws -> [String: Any] {

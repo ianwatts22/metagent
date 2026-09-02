@@ -86,6 +86,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var authenticatingMCPServerID: String?
+    private var mcpHealthRefreshQueued = false
     /// Measured codebase size per standardized project root. Only git
     /// repositories appear; everything else has no tracked codebase to size.
     @Published private(set) var codebaseSizes: [String: CodebaseSizeReport] = [:]
@@ -804,7 +805,10 @@ final class MetagentModel: ObservableObject {
     }
 
     func refreshMCPHealth() {
-        guard !isMCPRefreshing else { return }
+        guard !isMCPRefreshing else {
+            mcpHealthRefreshQueued = true
+            return
+        }
         isMCPRefreshing = true
         Task {
             let snapshot = await Task.detached(priority: .utility) {
@@ -812,6 +816,10 @@ final class MetagentModel: ObservableObject {
             }.value
             mcpHealth = snapshot
             isMCPRefreshing = false
+            if mcpHealthRefreshQueued {
+                mcpHealthRefreshQueued = false
+                refreshMCPHealth()
+            }
         }
     }
 

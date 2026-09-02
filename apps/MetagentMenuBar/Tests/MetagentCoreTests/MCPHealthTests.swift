@@ -52,7 +52,7 @@ final class MCPHealthTests: XCTestCase {
         )
     }
 
-    func testInternalAuthenticationCapturesAndRedactsFailures() throws {
+    func testInternalAuthenticationDoesNotRetainFailureOutput() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-mcp-auth")
         let executable = root.appendingPathComponent("codex-fixture")
         try """
@@ -76,7 +76,8 @@ final class MCPHealthTests: XCTestCase {
 
         XCTAssertFalse(result.succeeded)
         XCTAssertFalse(result.timedOut)
-        XCTAssertTrue(result.message.contains("https://example.test/authorize?[redacted]"))
+        XCTAssertEqual(result.message, "The MCP client could not complete sign-in (exit status 7).")
+        XCTAssertFalse(result.message.contains("example.test"))
         XCTAssertFalse(result.message.contains("secret-state"))
         XCTAssertFalse(result.message.contains("secret-code"))
     }
