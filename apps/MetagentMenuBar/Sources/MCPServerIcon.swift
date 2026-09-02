@@ -23,7 +23,7 @@ struct MCPServerIcon: View {
     }
 
     private static let image: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "mcp-server", withExtension: "svg"),
+        guard let url = resourceURL(),
               let image = NSImage(contentsOf: url)
         else {
             return nil
@@ -31,4 +31,27 @@ struct MCPServerIcon: View {
         image.isTemplate = true
         return image
     }()
+
+    /// Release builds are assembled as app bundles rather than launched from
+    /// SwiftPM's build directory. Look in the app's packaged resources first,
+    /// then in the adjacent SwiftPM resource bundle used by local builds and
+    /// tests. Avoid `Bundle.module` here: its generated accessor traps when a
+    /// hand-assembled app is missing that bundle, preventing the SF Symbol
+    /// fallback above from ever rendering.
+    private static func resourceURL() -> URL? {
+        if let packaged = Bundle.main.url(forResource: "mcp-server", withExtension: "svg") {
+            return packaged
+        }
+
+        let resourceBundleName = "MetagentMenuBar_MetagentMenuBar.bundle"
+        var bundleURLs = [Bundle.main.bundleURL.appendingPathComponent(resourceBundleName)]
+        if let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() {
+            bundleURLs.append(executableDirectory.appendingPathComponent(resourceBundleName))
+        }
+
+        return bundleURLs.lazy
+            .compactMap(Bundle.init(url:))
+            .compactMap { $0.url(forResource: "mcp-server", withExtension: "svg") }
+            .first
+    }
 }
