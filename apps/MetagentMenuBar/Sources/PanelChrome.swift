@@ -30,7 +30,10 @@ struct MetagentPanel: View {
             PanelBackdrop()
 
             VStack(alignment: .leading, spacing: showsOpenWindowButton ? 12 : 14) {
-                topBar
+                VStack(spacing: 10) {
+                    topBar
+                    Divider()
+                }
                 panelContent
 
                 if showsOpenWindowButton {
@@ -80,6 +83,7 @@ struct MetagentPanel: View {
                 brandMark
                 directoryScopeControl
                 navigation
+                Spacer(minLength: 0)
                 activityControl
                 statusFailureControl
                 refreshControl
@@ -122,12 +126,7 @@ struct MetagentPanel: View {
             Button {
                 model.refreshAll()
             } label: {
-                GlassMenuLabel(
-                    title: nil,
-                    systemImage: "arrow.clockwise",
-                    width: 36,
-                    showsChevron: false
-                )
+                ToolbarIconLabel(systemImage: "arrow.clockwise")
             }
             .buttonStyle(.plain)
             .disabled(model.isRefreshing)
@@ -156,12 +155,10 @@ struct MetagentPanel: View {
             } label: {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .frame(width: 20)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Circle())
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.regular)
-            .frame(width: 36, height: 36)
+            .buttonStyle(.plain)
             .help("\(model.failureOutputTitle ?? "The latest operation failed"). Show details.")
             .accessibilityLabel("\(model.failureOutputTitle ?? "The latest operation failed"). Show details.")
         }
@@ -173,9 +170,9 @@ struct MetagentPanel: View {
                 selectedProjectRoot = nil
             } label: {
                 if selectedProjectRoot == nil {
-                    Label("All directories", systemImage: "checkmark")
+                    Label("All projects", systemImage: "checkmark")
                 } else {
-                    Text("All directories")
+                    Text("All projects")
                 }
             }
             Divider()
@@ -199,24 +196,19 @@ struct MetagentPanel: View {
                 systemImage: selectedProjectRoot == nil
                     ? "line.3.horizontal.decrease"
                     : "line.3.horizontal.decrease.circle.fill",
-                width: showsOpenWindowButton ? 205 : 240
+                width: showsOpenWindowButton ? 180 : 195
             )
         }
         .buttonStyle(.plain)
-        .help(selectedProjectRoot.map(displayUserPath) ?? "Show all directories")
-        .accessibilityLabel("Directory")
+        .help(selectedProjectRoot.map(displayUserPath) ?? "Show all projects")
+        .accessibilityLabel("Project")
     }
 
     private var settingsControl: some View {
         Button {
             openSettings()
         } label: {
-            GlassMenuLabel(
-                title: nil,
-                systemImage: "gearshape",
-                width: 36,
-                showsChevron: false
-            )
+            ToolbarIconLabel(systemImage: "gearshape")
         }
         .buttonStyle(.plain)
         .help("Settings and diagnostics")
@@ -227,7 +219,7 @@ struct MetagentPanel: View {
         guard let selectedProjectRoot,
               let directory = directoryOptions.first(where: { $0.root == selectedProjectRoot })
         else {
-            return "All directories"
+            return "All projects"
         }
         return directoryFilterLabel(directory, options: directoryOptions)
     }
@@ -447,10 +439,7 @@ struct ActivityBadge: View {
             }
         }
         .frame(width: 36, height: 36)
-        .glassEffect(
-            .regular.tint(activity.needsAttention ? Color.orange.opacity(0.22) : nil),
-            in: Circle()
-        )
+        .contentShape(Circle())
         .help(activity.help)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(activity.label)
@@ -464,32 +453,51 @@ private struct ActivityDetailsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Usage history needs attention", systemImage: "exclamationmark.triangle.fill")
+            Label("Usage indexing needs attention", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
 
             Text(activity.label)
                 .font(.callout.weight(.semibold))
 
-            Text("Metagent only uses local, retained agent-session evidence for usage metrics. The numbers stay provisional while that history is incomplete.")
+            Text(explanation)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Indexing runs in small background slices so it does not monopolize CPU or energy.")
+            Text("A retry runs one small slice. Once it advances, Metagent resumes the remaining slices automatically in the background without monopolizing CPU or energy.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()
-                Button("Continue indexing", action: onContinue)
+                Button("Retry indexing", action: onContinue)
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.capsule)
             }
         }
         .padding(16)
         .frame(width: 360)
+    }
+
+    private var explanation: String {
+        if activity.label == "No retained sessions indexed" {
+            return "Metagent has not found any retained local agent sessions yet, so usage metrics do not have evidence to summarize."
+        }
+        return "Automatic background indexing stopped because the latest slice could not make progress. Usage metrics remain provisional until a retry succeeds."
+    }
+}
+
+private struct ToolbarIconLabel: View {
+    let systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .foregroundStyle(.secondary)
+            .font(.callout.weight(.medium))
+            .frame(width: 36, height: 36)
+            .contentShape(Circle())
     }
 }
 
@@ -637,8 +645,8 @@ enum PanelSection: String, CaseIterable, Identifiable {
     case overview
     case history
     case skills
-    case mcps
     case plugins
+    case mcps
     case projects
 
     var id: String { rawValue }

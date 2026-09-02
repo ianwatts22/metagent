@@ -135,10 +135,16 @@ private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> Ski
                 scope: skill.scope,
                 manager: skill.manager,
                 authority: skill.authority,
-                suggestedRemoval: kind == .pluginReplacement
-                    && skill.manager != "codex-plugin"
-                    && skill.scope == "global"
-                    && memberPluginSimilarities[index] >= 0.55
+                suggestedRemoval: (
+                    kind == .pluginReplacement
+                        && skill.manager != "codex-plugin"
+                        && skill.scope == "global"
+                        && memberPluginSimilarities[index] >= 0.55
+                ) || (
+                    kind == .globalProject
+                        && allDocumentsMatch
+                        && skill.scope == "project"
+                )
             )
         }
     )

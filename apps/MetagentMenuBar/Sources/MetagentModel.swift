@@ -472,7 +472,10 @@ final class MetagentModel: ObservableObject {
         if isMCPRefreshing {
             return .working(progress: nil, label: "Checking MCP servers…")
         }
-        return usageSnapshot.isBackfillComplete ? nil : .attention(usageStatusText)
+        // Incomplete history is normal while the low-energy maintenance task
+        // waits between bounded slices. Only surface orange attention above
+        // when that automatic process has actually stalled.
+        return nil
     }
 
     var isRefreshing: Bool {

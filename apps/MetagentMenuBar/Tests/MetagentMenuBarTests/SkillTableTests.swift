@@ -49,6 +49,61 @@ import Testing
     #expect(filter(view: .summary, completedRemovalIDs: [removalID]).apply(to: [duplicate]).isEmpty)
 }
 
+@Test func duplicateRecommendationPreselectsOnlySafeSuggestedRemovals() throws {
+    let keptOverlap = SkillOverlapMembership(
+        groupID: "duplicate:recommendation",
+        kind: .globalProject,
+        similarity: 1,
+        suggestedRemoval: false
+    )
+    let removedOverlap = SkillOverlapMembership(
+        groupID: "duplicate:recommendation",
+        kind: .globalProject,
+        similarity: 1,
+        suggestedRemoval: true
+    )
+    let kept = skillTableRow(
+        name: "shared-skill",
+        root: NSHomeDirectory(),
+        scope: "global",
+        overlap: keptOverlap
+    )
+    let removed = skillTableRow(
+        name: "shared-skill",
+        root: "/tmp/project-a",
+        scope: "project",
+        overlap: removedOverlap
+    )
+    let group = DuplicateReviewGroup(
+        id: "duplicate:recommendation",
+        kind: .globalProject,
+        similarity: 1,
+        rows: [kept, removed]
+    )
+
+    #expect(recommendedRemovalIDs(for: group) == [removed.id])
+    #expect(skillRemovalMessage(for: [try #require(removed.inventory)]).isEmpty)
+
+    let nearRemoved = skillTableRow(
+        name: "shared-skill",
+        root: "/tmp/project-b",
+        scope: "project",
+        overlap: SkillOverlapMembership(
+            groupID: "duplicate:near-match",
+            kind: .globalProject,
+            similarity: 0.98,
+            suggestedRemoval: false
+        )
+    )
+    let nearMatch = DuplicateReviewGroup(
+        id: "duplicate:near-match",
+        kind: .globalProject,
+        similarity: 0.98,
+        rows: [kept, nearRemoved]
+    )
+    #expect(recommendedRemovalIDs(for: nearMatch).isEmpty)
+}
+
 @Test func skillTablePresentationPreservesFlatGroupingSortingAndSelectionSemantics() throws {
     let projectBeta = skillTableRow(name: "beta", root: "/tmp/project-b", scope: "project")
     let globalAlpha = skillTableRow(name: "alpha", root: NSHomeDirectory(), scope: "global")

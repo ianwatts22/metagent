@@ -107,10 +107,6 @@ struct DuplicateReviewExperience: View {
                         isRunning: isRunning,
                         onView: onView,
                         onInfo: onInfo,
-                        onUseRecommendation: {
-                            removalIDs.subtract(selectedGroup.rows.map(\.id))
-                            removalIDs.formUnion(selectedGroup.suggestedRemovalRows.map(\.id))
-                        },
                         onReviewRemoval: {
                             onReviewRemoval(selectedGroup.rows.filter { removalIDs.contains($0.id) })
                         },
@@ -131,14 +127,20 @@ struct DuplicateReviewExperience: View {
                     .stroke(.quaternary, lineWidth: 1)
             }
             .onAppear {
-                if selectedGroupID == nil {
-                    selectedGroupID = groups.first?.id
+                if let group = selectedGroup {
+                    selectedGroupID = group.id
+                    useRecommendation(for: group)
                 }
             }
             .onChange(of: groups.map(\.id)) { _, ids in
                 guard !ids.contains(selectedGroupID ?? "") else { return }
-                selectedGroupID = ids.first
-                removalIDs.removeAll()
+                guard let group = groups.first else {
+                    selectedGroupID = nil
+                    removalIDs.removeAll()
+                    return
+                }
+                selectedGroupID = group.id
+                useRecommendation(for: group)
             }
         }
     }
@@ -146,7 +148,12 @@ struct DuplicateReviewExperience: View {
     private func select(_ group: DuplicateReviewGroup) {
         guard selectedGroupID != group.id else { return }
         selectedGroupID = group.id
+        useRecommendation(for: group)
+    }
+
+    private func useRecommendation(for group: DuplicateReviewGroup) {
         removalIDs.removeAll()
+        removalIDs.formUnion(recommendedRemovalIDs(for: group))
     }
 }
 
@@ -156,7 +163,6 @@ struct DuplicateReviewDetail: View {
     let isRunning: Bool
     let onView: (SkillTableRow) -> Void
     let onInfo: (SkillTableRow) -> Void
-    let onUseRecommendation: () -> Void
     let onReviewRemoval: () -> Void
     let onKeepAll: () -> Void
 
@@ -181,17 +187,12 @@ struct DuplicateReviewDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.skillName)
-                            .font(.title3.weight(.semibold))
-                        Text(group.rows.count == 1
-                            ? "1 installed copy"
-                            : "\(group.rows.count) installed copies")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
+                HStack(alignment: .center, spacing: 8) {
+                    Text(group.skillName)
+                        .font(.title3.weight(.semibold))
+                    Text(group.rows.count == 1 ? "1 copy" : "\(group.rows.count) copies")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                     Label("\(group.similarityText) word overlap", systemImage: "equal.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
@@ -199,6 +200,7 @@ struct DuplicateReviewDetail: View {
                         .padding(.vertical, 5)
                         .background(Color.accentColor.opacity(0.10), in: Capsule())
                         .help(group.similarityHelp)
+                    Spacer()
                 }
 
                 LazyVGrid(
@@ -225,30 +227,23 @@ struct DuplicateReviewDetail: View {
                     }
                 }
 
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundStyle(recommendationTint)
-                        .font(.callout)
-                        .frame(width: 26, height: 26)
+                        .font(.body.weight(.semibold))
+                        .frame(width: 30, height: 30)
                         .background(recommendationTint.opacity(0.12), in: Circle())
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 0) {
-                            Text("Recommendation: ").bold()
-                            Text(group.recommendationTitle)
-                        }
-                        .font(.callout)
-                        Text(group.recommendationDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 0) {
+                        Text("Recommendation: ").bold()
+                        Text(group.recommendationTitle)
                     }
+                    .font(.title3.weight(.semibold))
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                        .help(group.recommendationDetail)
+                        .accessibilityLabel("Recommendation details")
+                        .accessibilityHint(group.recommendationDetail)
                     Spacer(minLength: 8)
-                    if !group.suggestedRemovalRows.isEmpty {
-                        Button("Use recommendation", action: onUseRecommendation)
-                            .buttonStyle(.glass)
-                            .buttonBorderShape(.capsule)
-                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
-                    }
                 }
                 .padding(10)
                 .background(recommendationTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -262,24 +257,25 @@ struct DuplicateReviewDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 10) {
-                Button("Keep all", action: onKeepAll)
+                Spacer()
+                Button(action: onKeepAll) {
+                    Text("Keep all")
+                        .frame(minWidth: 130, minHeight: 26)
+                }
                     .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                     .disabled(isRunning)
                     .help("Keep every copy in this group and mark it reviewed for this session.")
-                Spacer()
-                if selectedRemovalCount > 0 {
+                Button(role: .destructive, action: onReviewRemoval) {
                     Text(selectedRemovalCount == 1
-                        ? "1 copy marked for removal"
-                        : "\(selectedRemovalCount) copies marked for removal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        ? "Remove 1 copy"
+                        : "Remove \(selectedRemovalCount) copies")
+                        .frame(minWidth: 150, minHeight: 26)
                 }
-                Button(
-                    selectedRemovalCount > 1 ? "Review \(selectedRemovalCount) removals…" : "Review removal…",
-                    role: .destructive,
-                    action: onReviewRemoval
-                )
                 .buttonStyle(.glassProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
                 .disabled(selectedRemovalCount == 0 || isRunning)
             }
             .padding(.horizontal, 14)
@@ -323,6 +319,17 @@ struct DuplicateCandidateCard: View {
                 Text(row.sourceText)
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
+                Button("View", action: onView)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.small)
+                .help("Get Info")
                 Spacer(minLength: 8)
                 Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
                     .font(.caption.weight(.semibold))
@@ -336,27 +343,6 @@ struct DuplicateCandidateCard: View {
                     .help(locationHelp)
             }
 
-            HStack(spacing: 7) {
-                Button("View", action: onView)
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .help("Get Info")
-                Spacer(minLength: 8)
-                if row.overlap?.suggestedRemoval == true {
-                    Text("Suggested removal")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(.orange.opacity(0.12), in: Capsule())
-                }
-            }
-
             if row.descriptionText != "—" {
                 Text(row.descriptionText)
                     .font(.callout)
@@ -366,10 +352,10 @@ struct DuplicateCandidateCard: View {
 
             HStack(spacing: 12) {
                 candidateStat("Last 30 days", row.invocations30d.formatted())
-                Divider().frame(height: 24)
+                Divider().frame(height: 30)
                 candidateStat("All time", row.totalInvocations.formatted())
-                Divider().frame(height: 24)
-                candidateStat("Updated", row.updatedText)
+                Divider().frame(height: 30)
+                candidateStat("Last updated", row.updatedDateText)
                 Spacer(minLength: 0)
             }
 
@@ -386,12 +372,12 @@ struct DuplicateCandidateCard: View {
                     isMarkedForRemoval: $isMarkedForRemoval
                 )
             } else {
-                Label("Keep", systemImage: "lock")
+                Label(unavailableRemovalLabel, systemImage: "lock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 34)
                     .background(.quaternary.opacity(0.45), in: Capsule())
-                    .help("Metagent does not have a safe removal action for this managed copy.")
+                    .help(unavailableRemovalHelp)
             }
         }
         .padding(12)
@@ -409,7 +395,7 @@ struct DuplicateCandidateCard: View {
     private func candidateStat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value)
-                .font(.caption.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .monospacedDigit()
                 .lineLimit(1)
             Text(label)
@@ -417,6 +403,21 @@ struct DuplicateCandidateCard: View {
                 .foregroundStyle(.secondary)
         }
     }
+
+    private var unavailableRemovalLabel: String {
+        row.sourceCategory == .externalCLI ? "Managed by external CLI" : "Keep"
+    }
+
+    private var unavailableRemovalHelp: String {
+        if row.sourceCategory == .externalCLI {
+            return "This bundle is owned by \(row.sourceText). Metagent will not delete it behind that tool’s back; remove it with the owning CLI."
+        }
+        return "Metagent does not have a safe removal action for this managed copy."
+    }
+}
+
+func recommendedRemovalIDs(for group: DuplicateReviewGroup) -> Set<SkillTableRow.ID> {
+    Set(group.recommendedRemovalRows.map(\.id))
 }
 
 private struct DuplicateDecisionControl: View {

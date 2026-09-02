@@ -63,7 +63,7 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertTrue(groups.isEmpty)
     }
 
-    func testGlobalProjectCopyIsInformationalEvenWhenContentsMatch() throws {
+    func testGlobalProjectCopySuggestsRemovingOnlyTheExactProjectCopy() throws {
         let root = try fixtureRoot("scopes")
         let body = "Use this workflow to inspect a project and verify the result."
         let global = try writeSkill(root: root, relativePath: "global/demo", body: body)
@@ -75,7 +75,19 @@ final class SkillOverlapTests: XCTestCase {
         ]).first)
 
         XCTAssertEqual(group.kind, .globalProject)
-        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+        XCTAssertEqual(group.members.filter(\.suggestedRemoval).map(\.canonicalPath), [project.path])
+
+        try "Use this workflow to inspect a project and verify a different result."
+            .write(
+                to: project.appendingPathComponent("SKILL.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+        let changed = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: global.path, scope: "global", manager: "local"),
+            makeSkill(path: project.path, scope: "project", manager: "local"),
+        ]).first)
+        XCTAssertFalse(changed.members.contains(where: \.suggestedRemoval))
     }
 
     func testSimilarStandaloneCopiesDoNotMakeDissimilarPluginAReplacement() throws {

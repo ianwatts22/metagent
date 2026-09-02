@@ -4,9 +4,11 @@ import Testing
 @testable import MetagentMenuBar
 
 @Test func historyNavigationRequiresPreviewFeatures() {
-    #expect(!PanelSection.visibleCases(previewFeaturesEnabled: false).contains(.history))
+    let standardSections = PanelSection.visibleCases(previewFeaturesEnabled: false)
+    #expect(!standardSections.contains(.history))
     #expect(PanelSection.visibleCases(previewFeaturesEnabled: true).contains(.history))
-    #expect(PanelSection.visibleCases(previewFeaturesEnabled: false).contains(.overview))
+    #expect(standardSections.contains(.overview))
+    #expect(standardSections.firstIndex(of: .plugins)! < standardSections.firstIndex(of: .mcps)!)
 }
 
 @Test func loopbackMCPURLsAreRecognizedWithoutTreatingRemoteURLsAsLocal() throws {

@@ -534,12 +534,16 @@ struct InventorySection: View {
             switch confirmation {
             case let .removal(rows):
                 let requests = rows.compactMap(\.removalRequest)
-                let names = rows.prefix(6).map(\.skillName).joined(separator: ", ")
-                let suffix = rows.count > 6 ? ", …" : ""
+                let selectedPaths = rows.prefix(6).map { row in
+                    "\(row.skillName)\n\(displayUserPath(row.canonicalPath))"
+                }.joined(separator: "\n\n")
+                let suffix = rows.count > 6 ? "\n\n…and \(rows.count - 6) more" : ""
+                let removalWarning = skillRemovalMessage(for: rows)
+                let warningSuffix = removalWarning.isEmpty ? "" : "\n\n\(removalWarning)"
                 return Alert(
-                    title: Text(requests.count == 1 ? "Remove selected skill?" : "Remove \(requests.count) selected items?"),
-                    message: Text("\(names)\(suffix)\n\n\(skillRemovalMessage(for: rows))"),
-                    primaryButton: .destructive(Text(requests.count == 1 ? "Approve Removal" : "Approve \(requests.count) Removals")) {
+                    title: Text(requests.count == 1 ? "Remove 1 copy?" : "Remove \(requests.count) copies?"),
+                    message: Text("\(selectedPaths)\(suffix)\(warningSuffix)"),
+                    primaryButton: .destructive(Text(requests.count == 1 ? "Remove 1 Copy" : "Remove \(requests.count) Copies")) {
                         if model.uninstallSkills(requests) {
                             duplicateRemovalIDs.removeAll()
                             selection.removeAll()
