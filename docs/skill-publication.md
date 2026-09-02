@@ -30,10 +30,11 @@ Git checkout for publication through [skills.sh](https://skills.sh).
    branch, and file changes, then explicitly choose **Commit & Publish**.
 
 Metagent blocks explicit publishing when the checkout contains unrelated work,
-unpublished or diverged history, configured content filters, or a preview that
-changed after approval. It never stashes, pulls, rebases, resets, or
-force-pushes. A rejected push leaves its exact local commit available for a
-safe retry.
+unpublished or diverged history, content-filter attributes applied to files it
+must inspect or publish, or a preview that changed after approval. Installed
+but unused filter drivers such as Git LFS are allowed. Metagent never stashes,
+pulls, rebases, resets, or force-pushes. A rejected push leaves its exact local
+commit available for a safe retry.
 
 The machine-local publication map is stored at
 `~/Library/Application Support/Metagent/skill-publications-v1.json`. Paths and

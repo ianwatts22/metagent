@@ -29,9 +29,11 @@ snapshot invalidates an old result; changes made directly in Git require
 another check. Git index writes, fsmonitor hooks, and network protocols are
 disabled. Only existing Git configuration-location environment variables are
 forwarded; injected config/routing/token variables are not. Effective local,
-global, and system content filters cause a fail-closed result before status
-checks, without executing those helpers. Attribute configuration is retained
-so stripping user configuration cannot silently change Git's interpretation.
+global, and system content-filter attributes applied to files Metagent must
+inspect or publish cause a fail-closed result before status checks, without
+executing those helpers. Installed but unused drivers such as Git LFS do not
+block publishing. Attribute configuration is retained so stripping user
+configuration cannot silently change Git's interpretation.
 
 A credential-free GitHub `origin` and a supported current `SKILL.md` name
 provide repository/skills.sh links and a copyable, single-skill install command.
