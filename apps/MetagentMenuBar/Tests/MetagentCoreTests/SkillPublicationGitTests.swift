@@ -156,6 +156,114 @@ final class SkillPublicationGitTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    func testInactiveConfiguredContentFilterDoesNotBlockPublishing() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let marker = fixture.bareRemote.appendingPathComponent("inactive-filter-executed")
+        let helper = fixture.bareRemote.appendingPathComponent("inactive-filter-helper.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        try fixture.git(["config", "filter.lfs.process", helper.path])
+        try fixture.git(["config", "filter.lfs.clean", helper.path])
+        try fixture.git(["config", "filter.lfs.required", "true"])
+        try fixture.writeSkill("Changed without any filter attribute")
+
+        let status = fixture.inspect()
+        let preview = fixture.preparePublish()
+
+        XCTAssertEqual(status.state, .localChanges, status.detail)
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(fixture.publish(preview, message: "Update manifest-name").outcome, .published)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testPublishPreviewRejectsActiveFilterOutsideSelectedSkill() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.write("Repository\n", at: "README.md")
+        try fixture.write("README.md filter=unsafe\n", at: ".gitattributes")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let marker = fixture.bareRemote.appendingPathComponent("outside-filter-executed")
+        let helper = fixture.bareRemote.appendingPathComponent("outside-filter-helper.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        try fixture.git(["config", "filter.unsafe.clean", helper.path])
+        try fixture.git(["config", "filter.unsafe.required", "true"])
+        try fixture.writeSkill("Changed selected skill")
+
+        XCTAssertEqual(fixture.inspect().state, .localChanges)
+        let preview = fixture.preparePublish()
+
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("content filter") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testExplicitUnsetFilterAttributeDoesNotBlockPublishing() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.write("skills/** -filter\n", at: ".gitattributes")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let marker = fixture.bareRemote.appendingPathComponent("unset-filter-executed")
+        let helper = fixture.bareRemote.appendingPathComponent("unset-filter-helper.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        try fixture.git(["config", "filter.unsafe.clean", helper.path])
+        try fixture.git(["config", "filter.unsafe.required", "true"])
+        try fixture.writeSkill("Changed with explicit filter override")
+
+        XCTAssertEqual(fixture.inspect().state, .localChanges)
+        let preview = fixture.preparePublish()
+
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testBareFilterAttributeFailsClosedWithoutConfiguredDriver() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.write("skills/** filter\n", at: ".gitattributes")
+        try fixture.writeSkill("Changed with bare filter attribute")
+
+        let status = fixture.inspect()
+        let preview = fixture.preparePublish()
+
+        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("content filter") == true)
+    }
+
+    func testSentinelNamedFilterDriversFailClosedWithoutExecutingHelpers() throws {
+        for driver in ["unset", "unspecified"] {
+            let fixture = try GitPublicationFixture()
+            defer { fixture.remove() }
+            try fixture.commit()
+            try fixture.configureBareRemote()
+            let marker = fixture.bareRemote.appendingPathComponent("\(driver)-filter-executed")
+            let helper = fixture.bareRemote.appendingPathComponent("\(driver)-filter-helper.sh")
+            try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: helper, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+            try fixture.git(["config", "filter.\(driver).clean", helper.path])
+            try fixture.git(["config", "filter.\(driver).required", "true"])
+            try fixture.write("skills/** filter=\(driver)\n", at: ".gitattributes")
+            try fixture.writeSkill("Changed with \(driver)-named filter")
+
+            let status = fixture.inspect()
+            let preview = fixture.preparePublish()
+
+            XCTAssertEqual(status.state, .unavailable)
+            XCTAssertFalse(preview.isReady)
+            XCTAssertTrue(preview.blocker?.contains("content filters") == true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
     func testCanonicalGitHubLinksAndInstallCommand() {
         for remote in ["https://github.com/acme/skills.git", "git@github.com:acme/skills.git", "ssh://git@github.com/acme/skills"] {
             let links = SkillPublicationLinks(remoteURL: remote, skillName: "my-skill")

@@ -195,7 +195,7 @@ public extension MetagentCore {
         let configurationLocations = [
             "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
         ].compactMap { name in configurationEnvironment[name].map { "\(name)=\($0)" } }
-        func git(_ arguments: [String]) throws -> SubprocessResult {
+        func git(_ arguments: [String], standardInput: Data? = nil) throws -> SubprocessResult {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0 else { throw PublicationGitError.unavailable }
             // Ignore inherited Git routing and suppress fsmonitor hooks,
@@ -208,6 +208,7 @@ public extension MetagentCore {
                     "/usr/bin/git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                     "-c", "core.hooksPath=/dev/null", "-C", repository.path,
                 ] + arguments,
+                standardInput: standardInput,
                 timeout: remaining
             )
             guard !result.timedOut else { throw PublicationGitError.unavailable }
@@ -218,6 +219,32 @@ public extension MetagentCore {
             guard result.status == 0 else { return nil }
             return String(decoding: result.standardOutput, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func hasActiveContentFilters() throws -> Bool {
+            let configured = try git([
+                "config", "--null", "--name-only", "--get-regexp", "^filter\\.",
+            ])
+            guard configured.status == 0 || configured.status == 1 else {
+                throw PublicationGitError.unavailable
+            }
+            let ambiguousDrivers = try publicationAmbiguousConfiguredFilterDrivers(
+                configured.standardOutput
+            )
+            let paths = try git([
+                "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+                "--", ":(literal)\(relativePath)",
+            ])
+            guard paths.status == 0 else { throw PublicationGitError.unavailable }
+            guard !paths.standardOutput.isEmpty else { return false }
+            let attributes = try git(
+                ["check-attr", "-z", "--stdin", "filter"],
+                standardInput: paths.standardOutput
+            )
+            guard attributes.status == 0 else { throw PublicationGitError.unavailable }
+            return try publicationHasActiveFilterAttributes(
+                attributes.standardOutput,
+                ambiguousConfiguredDrivers: ambiguousDrivers
+            )
         }
 
         var links: SkillPublicationLinks?
@@ -254,12 +281,8 @@ public extension MetagentCore {
                 ? .publish : .update
             // Even `git status` can execute configured clean/process filters.
             // Fail closed rather than execute them or change their semantics.
-            let filterConfig = try git(["config", "--null", "--name-only", "--get-regexp", "^filter\\."])
-            guard filterConfig.status == 0 || filterConfig.status == 1 else {
-                throw PublicationGitError.unavailable
-            }
-            guard filterConfig.standardOutput.isEmpty else {
-                return status(.unavailable, "This repository configures Git content filters. Metagent does not run those helpers; inspect its status in Git yourself.")
+            guard try !hasActiveContentFilters() else {
+                return status(.unavailable, "Git content filters apply to this skill. Metagent does not run those helpers; inspect its status in Git yourself.")
             }
             let pathspec = ":(literal)\(relativePath)"
             let pending = try git([
@@ -432,8 +455,8 @@ public extension MetagentCore {
                 return blocked("The remote branch does not exist yet. Push the repository's existing history yourself, then try again.")
             }
 
-            guard try !repository.hasContentFilters() else {
-                return blocked("This repository configures Git content filters. Publish it manually so Metagent never executes those helpers.")
+            guard try !repository.hasActiveContentFiltersForPublish(in: destinationPath) else {
+                return blocked("Git content filters apply to files Metagent must publish or inspect. Publish manually so Metagent never executes those helpers.")
             }
             let dirtyPaths = try repository.dirtyPaths()
             guard dirtyPaths.allSatisfy({ repository.contains($0, in: destinationPath) }) else {
@@ -639,6 +662,47 @@ private struct PublicationGitRemote {
     let repositoryURL: URL?
 }
 
+private func publicationAmbiguousConfiguredFilterDrivers(_ data: Data) throws -> Set<String> {
+    let suffixes = [".clean", ".smudge", ".process", ".required"]
+    var drivers: Set<String> = []
+    for field in data.split(separator: 0) {
+        let key = String(decoding: field, as: UTF8.self)
+        guard key.hasPrefix("filter.") else { throw PublicationGitError.unavailable }
+        guard let suffix = suffixes.first(where: key.hasSuffix) else { continue }
+        let start = key.index(key.startIndex, offsetBy: "filter.".count)
+        let end = key.index(key.endIndex, offsetBy: -suffix.count)
+        guard start < end else { throw PublicationGitError.unavailable }
+        let driver = String(key[start..<end]).lowercased()
+        if driver == "unset" || driver == "unspecified" {
+            drivers.insert(driver)
+        }
+    }
+    return drivers
+}
+
+private func publicationHasActiveFilterAttributes(
+    _ data: Data,
+    ambiguousConfiguredDrivers: Set<String>
+) throws -> Bool {
+    guard data.last == 0 else { throw PublicationGitError.unavailable }
+    var fields = data.split(separator: 0, omittingEmptySubsequences: false)
+    guard fields.removeLast().isEmpty, fields.count.isMultiple(of: 3) else {
+        throw PublicationGitError.unavailable
+    }
+    for index in stride(from: 0, to: fields.count, by: 3) {
+        guard String(decoding: fields[index + 1], as: UTF8.self) == "filter" else {
+            throw PublicationGitError.unavailable
+        }
+        let value = String(decoding: fields[index + 2], as: UTF8.self)
+        if value == "unspecified" || value == "unset" {
+            if ambiguousConfiguredDrivers.contains(value) { return true }
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
 private struct PublicationGitRepository {
     let root: URL
     let relativePath: String
@@ -804,10 +868,39 @@ private struct PublicationGitRepository {
         return false
     }
 
-    func hasContentFilters() throws -> Bool {
-        let result = try git(["config", "--null", "--name-only", "--get-regexp", "^filter\\."])
-        guard result.status == 0 || result.status == 1 else { throw PublicationGitError.unavailable }
-        return !result.standardOutput.isEmpty
+    func hasActiveContentFiltersForPublish(in destinationPath: String) throws -> Bool {
+        let configured = try git([
+            "config", "--null", "--name-only", "--get-regexp", "^filter\\.",
+        ])
+        guard !configured.timedOut, configured.status == 0 || configured.status == 1 else {
+            throw PublicationGitError.unavailable
+        }
+        let ambiguousDrivers = try publicationAmbiguousConfiguredFilterDrivers(
+            configured.standardOutput
+        )
+        let tracked = try git(["ls-files", "--cached", "-z"])
+        guard !tracked.timedOut, tracked.status == 0 else { throw PublicationGitError.unavailable }
+        let selectedUntracked = try git([
+            "ls-files", "--others", "--exclude-standard", "-z",
+            "--", ":(literal)\(destinationPath)",
+        ])
+        guard !selectedUntracked.timedOut, selectedUntracked.status == 0 else {
+            throw PublicationGitError.unavailable
+        }
+        var paths = tracked.standardOutput
+        paths.append(selectedUntracked.standardOutput)
+        guard !paths.isEmpty else { return false }
+        let attributes = try git(
+            ["check-attr", "-z", "--stdin", "filter"],
+            standardInput: paths
+        )
+        guard !attributes.timedOut, attributes.status == 0 else {
+            throw PublicationGitError.unavailable
+        }
+        return try publicationHasActiveFilterAttributes(
+            attributes.standardOutput,
+            ambiguousConfiguredDrivers: ambiguousDrivers
+        )
     }
 
     func plannedTree(baseCommit: String, destinationPath: String) throws -> String {
