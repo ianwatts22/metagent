@@ -214,6 +214,8 @@ else
   cp "$app_source/Sources/Resources/Assets.car" "$resources/Assets.car"
 fi
 cp "$app_source/Sources/Resources/MenuBarIconTemplate.pdf" "$resources/MenuBarIconTemplate.pdf"
+cp "$app_source/Sources/Resources/Hugeicons/mcp-server.svg" "$resources/mcp-server.svg"
+cp "$app_source/Sources/Resources/Hugeicons-LICENSE" "$resources/Hugeicons-LICENSE.txt"
 cp "$app_source/Sources/Resources/Lucide/LICENSE" "$resources/Lucide-LICENSE.txt"
 cp "$app_source/Sources/Resources/Lucide/sprite.svg" "$resources/Lucide-sprite.svg"
 cp "$app_source/Sources/Resources/Lucide/tags.json" "$resources/Lucide-tags.json"
