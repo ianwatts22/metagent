@@ -140,6 +140,12 @@ struct DuplicateReviewExperience: View {
                     return
                 }
                 selectedGroupID = group.id
+            }
+            .onChange(of: selectedGroupID) { _, groupID in
+                guard
+                    let groupID,
+                    let group = groups.first(where: { $0.id == groupID })
+                else { return }
                 useRecommendation(for: group)
             }
         }
@@ -148,7 +154,6 @@ struct DuplicateReviewExperience: View {
     private func select(_ group: DuplicateReviewGroup) {
         guard selectedGroupID != group.id else { return }
         selectedGroupID = group.id
-        useRecommendation(for: group)
     }
 
     private func useRecommendation(for group: DuplicateReviewGroup) {
