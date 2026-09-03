@@ -256,38 +256,35 @@ struct DuplicateReviewDetail: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(recommendationTint.opacity(0.18), lineWidth: 1)
                 }
-            }
-            .padding(14)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 10) {
-                Spacer()
-                Button(action: onKeepAll) {
-                    Text("Keep all")
-                        .frame(minWidth: 130, minHeight: 26)
-                }
+
+                HStack(spacing: 12) {
+                    Button(action: onKeepAll) {
+                        Text("Keep all")
+                            .frame(minWidth: 150, minHeight: 26)
+                    }
                     .buttonStyle(.glass)
                     .buttonBorderShape(.capsule)
                     .controlSize(.large)
                     .disabled(isRunning)
                     .help("Keep every copy in this group and mark it reviewed for this session.")
-                Button(role: .destructive, action: onReviewRemoval) {
-                    Text(selectedRemovalCount == 1
-                        ? "Remove 1 copy"
-                        : "Remove \(selectedRemovalCount) copies")
-                        .frame(minWidth: 150, minHeight: 26)
+
+                    Button(role: .destructive, action: onReviewRemoval) {
+                        Text(selectedRemovalCount == 1
+                            ? "Remove 1 copy"
+                            : "Remove \(selectedRemovalCount) copies")
+                            .frame(minWidth: 170, minHeight: 26)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .disabled(selectedRemovalCount == 0 || isRunning)
                 }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .disabled(selectedRemovalCount == 0 || isRunning)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.bar)
-            .overlay(alignment: .top) { Divider() }
+            .padding(14)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
