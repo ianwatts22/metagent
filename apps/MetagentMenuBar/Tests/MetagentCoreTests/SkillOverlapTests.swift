@@ -55,12 +55,40 @@ final class SkillOverlapTests: XCTestCase {
             body: body
         )
 
-        let groups = MetagentCore.detectSkillOverlaps([
-            makeSkill(path: first.path, scope: "global", manager: "claude"),
-            makeSkill(path: second.path, scope: "global", manager: "claude"),
-        ])
+        var firstPlugin = makeSkill(path: first.path, scope: "global", manager: "claude")
+        firstPlugin.authority = "demo@vendor"
+        var secondPlugin = makeSkill(path: second.path, scope: "global", manager: "claude")
+        secondPlugin.authority = "demo@vendor"
+
+        let groups = MetagentCore.detectSkillOverlaps([firstPlugin, secondPlugin])
 
         XCTAssertTrue(groups.isEmpty)
+    }
+
+    func testSameNamedSkillsFromDistinctPluginAuthoritiesRemainVisible() throws {
+        let root = try fixtureRoot("distinct-plugin-authorities")
+        let first = try writeSkill(
+            root: root,
+            relativePath: "plugin-a/demo",
+            body: "Use the first plugin workflow and verify the result."
+        )
+        let second = try writeSkill(
+            root: root,
+            relativePath: "plugin-b/demo",
+            body: "Use a different plugin workflow and inspect its output."
+        )
+        var firstPlugin = makeSkill(path: first.path, scope: "plugin", manager: "codex-plugin")
+        firstPlugin.authority = "first@vendor"
+        var secondPlugin = makeSkill(path: second.path, scope: "plugin", manager: "codex-plugin")
+        secondPlugin.authority = "second@vendor"
+
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            firstPlugin,
+            secondPlugin,
+        ]).first)
+
+        XCTAssertEqual(group.kind, .sameName)
+        XCTAssertEqual(Set(group.members.map(\.authority)), ["first@vendor", "second@vendor"])
     }
 
     func testGlobalProjectCopySuggestsRemovingOnlyTheExactProjectCopy() throws {

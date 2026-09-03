@@ -190,9 +190,13 @@ are ignored so Metagent never offers an action for a missing worktree. Metagent
 does not approve the server, edit the manifest, or authenticate on the user's
 behalf. Pending servers are grouped into one actionable row per project,
 including when the same server name is awaiting approval in several projects.
-Codex servers that need OAuth expose an `Authenticate…` action. It opens Terminal
-and runs `codex mcp login <server>` so Codex owns the complete sign-in flow;
-Metagent never reads or stores the credential.
+Codex servers that need OAuth expose an `Authenticate` action. Metagent runs
+`codex mcp login <server>` in the background so Codex still owns the complete
+sign-in flow; Metagent never reads or stores the credential. For loopback MCPs,
+Metagent opens a known provider app first and waits briefly for its endpoint. If
+Codex cannot launch the browser itself, Metagent opens the one-time authorization
+URL without retaining or displaying the command output. The MCP inventory
+refreshes when sign-in completes.
 
 For iterative SwiftUI work, run:
 

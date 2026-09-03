@@ -577,7 +577,8 @@ struct OverviewSection: View {
 
                 MCPHealthRow(
                     row: row,
-                    isAuthenticating: model.authenticatingMCPServerID == row.server.id
+                    isAuthenticating: model.authenticatingMCPServerID == row.server.id,
+                    authenticationInProgress: model.authenticatingMCPServerID != nil
                 ) {
                     model.openMCPServer(row.server)
                 }
@@ -670,7 +671,8 @@ struct OverviewSection: View {
                         ForEach(visibleMCPRows) { row in
                             MCPHealthRow(
                                 row: row,
-                                isAuthenticating: model.authenticatingMCPServerID == row.server.id
+                                isAuthenticating: model.authenticatingMCPServerID == row.server.id,
+                                authenticationInProgress: model.authenticatingMCPServerID != nil
                             ) {
                                 model.openMCPServer(row.server)
                             }
@@ -874,6 +876,7 @@ struct MCPHealthDisplayRow: Identifiable {
 struct MCPHealthRow: View {
     let row: MCPHealthDisplayRow
     let isAuthenticating: Bool
+    let authenticationInProgress: Bool
     let openClient: () -> Void
 
     private var server: MCPServerHealth { row.server }
@@ -909,7 +912,10 @@ struct MCPHealthRow: View {
                 }
                     .buttonStyle(.glass)
                     .buttonBorderShape(.capsule)
-                    .disabled(isAuthenticating)
+                    .disabled(mcpAuthenticationActionIsDisabled(
+                        for: server,
+                        authenticationInProgress: authenticationInProgress
+                    ))
             } else {
                 Text(server.state.displayLabel)
                     .font(.caption.weight(.medium))
@@ -938,6 +944,13 @@ struct MCPHealthRow: View {
         case .claude: "Show Claude config"
         }
     }
+}
+
+func mcpAuthenticationActionIsDisabled(
+    for server: MCPServerHealth,
+    authenticationInProgress: Bool
+) -> Bool {
+    server.supportsAuthentication && authenticationInProgress
 }
 
 /// How strongly a metric should be judged. `neutral` means the number is

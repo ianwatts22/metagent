@@ -69,6 +69,7 @@ func runSubprocess(
     arguments: [String],
     currentDirectory: URL? = nil,
     standardInput: Data? = nil,
+    outputObserver: ((Data, Data) -> Void)? = nil,
     timeout: TimeInterval
 ) throws -> SubprocessResult {
     let captureDirectory = fileManager.temporaryDirectory
@@ -151,10 +152,18 @@ func runSubprocess(
     try errorHandle.close()
 
     let deadline = Date().addingTimeInterval(timeout)
+    var nextOutputObservation = Date()
     var waitStatus: Int32 = 0
     var exited = waitpid(processID, &waitStatus, WNOHANG) == processID
     while !exited && Date() < deadline {
         Thread.sleep(forTimeInterval: 0.05)
+        if let outputObserver, Date() >= nextOutputObservation {
+            outputObserver(
+                (try? Data(contentsOf: outputURL)) ?? Data(),
+                (try? Data(contentsOf: errorURL)) ?? Data()
+            )
+            nextOutputObservation = Date().addingTimeInterval(0.25)
+        }
         exited = waitpid(processID, &waitStatus, WNOHANG) == processID
     }
     let timedOut = !exited
@@ -183,10 +192,13 @@ func runSubprocess(
             ])
         }
     }
+    let standardOutput = try Data(contentsOf: outputURL)
+    let standardError = try Data(contentsOf: errorURL)
+    outputObserver?(standardOutput, standardError)
     return SubprocessResult(
         status: subprocessExitStatus(waitStatus),
-        standardOutput: try Data(contentsOf: outputURL),
-        standardError: try Data(contentsOf: errorURL),
+        standardOutput: standardOutput,
+        standardError: standardError,
         timedOut: timedOut
     )
 }

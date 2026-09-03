@@ -971,7 +971,14 @@ final class MetagentModel: ObservableObject {
             let attempt = await Task.detached(priority: .userInitiated) {
                 do {
                     return MCPAuthenticationAttempt.completed(
-                        try MetagentCore.authenticateMCPServer(server)
+                        try MetagentCore.authenticateMCPServer(
+                            server,
+                            onManualAuthorizationURL: { url in
+                                DispatchQueue.main.async {
+                                    _ = NSWorkspace.shared.open(url)
+                                }
+                            }
+                        )
                     )
                 } catch {
                     return MCPAuthenticationAttempt.failed(error.localizedDescription)

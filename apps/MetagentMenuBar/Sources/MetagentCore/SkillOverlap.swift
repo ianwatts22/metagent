@@ -75,13 +75,13 @@ private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> Ski
     }
     guard let first = skills.first else { return nil }
 
-    // Two versions of the same skill can coexist inside one plugin system's
-    // managed cache. The plugin manager owns that lifecycle, so asking a user
-    // to choose and remove one here is both noisy and unsafe. Mixed groups that
-    // include a standalone or a different system remain actionable.
-    let managedPluginSystems = skills.compactMap { managedPluginSystem(for: $0.item) }
-    if managedPluginSystems.count == skills.count,
-       Set(managedPluginSystems).count == 1
+    // Two versions of the same skill can coexist inside one plugin's managed
+    // cache. The plugin manager owns that lifecycle, so asking a user to choose
+    // and remove one here is both noisy and unsafe. Distinct plugin authorities,
+    // standalone copies, and cross-system groups remain actionable.
+    let managedPluginIdentities = skills.compactMap { managedPluginIdentity(for: $0.item) }
+    if managedPluginIdentities.count == skills.count,
+       Set(managedPluginIdentities).count == 1
     {
         return nil
     }
@@ -179,17 +179,23 @@ private func normalizedSkillName(_ name: String) -> String {
     name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
-private func managedPluginSystem(for skill: SkillInventoryItem) -> String? {
+private func managedPluginIdentity(for skill: SkillInventoryItem) -> String? {
+    let system: String
     if skill.manager == "codex-plugin" || skill.originKind == "codex-plugin" {
-        return "codex"
-    }
-    if skill.manager == "claude-plugin"
+        system = "codex"
+    } else if skill.manager == "claude-plugin"
         || skill.originKind == "claude-plugin"
         || skill.path.contains("/.claude/plugins/")
     {
-        return "claude"
+        system = "claude"
+    } else {
+        return nil
     }
-    return nil
+    let authority = skill.authority
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    guard !authority.isEmpty, authority != "unknown" else { return nil }
+    return "\(system):\(authority)"
 }
 
 private func preferredOverlapItem(_ left: SkillInventoryItem, _ right: SkillInventoryItem) -> SkillInventoryItem {

@@ -49,3 +49,31 @@ import Testing
         endpoint: URL(string: "https://mcp.example.com/mcp")!
     ) == nil)
 }
+
+@Test func authenticationActionsDisableWhileAnotherMCPIsAuthenticating() {
+    let needsSignIn = MCPServerHealth(
+        client: .codex,
+        name: "second-server",
+        state: .needsSignIn,
+        detail: "Sign-in required"
+    )
+    let pendingApproval = MCPServerHealth(
+        client: .claude,
+        name: "project-server",
+        state: .pendingApproval,
+        detail: "Approval required"
+    )
+
+    #expect(mcpAuthenticationActionIsDisabled(
+        for: needsSignIn,
+        authenticationInProgress: true
+    ))
+    #expect(!mcpAuthenticationActionIsDisabled(
+        for: needsSignIn,
+        authenticationInProgress: false
+    ))
+    #expect(!mcpAuthenticationActionIsDisabled(
+        for: pendingApproval,
+        authenticationInProgress: true
+    ))
+}

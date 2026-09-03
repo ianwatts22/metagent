@@ -242,6 +242,7 @@ public extension MetagentCore {
     static func authenticateMCPServer(
         _ server: MCPServerHealth,
         codexExecutableOverride: URL? = nil,
+        onManualAuthorizationURL: ((URL) -> Void)? = nil,
         timeout: TimeInterval = 300
     ) throws -> MCPAuthenticationResult {
         guard let command = try mcpAuthenticationCommand(
@@ -255,9 +256,23 @@ public extension MetagentCore {
                 message: "This MCP does not support authentication from Metagent."
             )
         }
+        var openedManualAuthorizationURL: URL?
+        let outputObserver: ((Data, Data) -> Void)? = onManualAuthorizationURL.map { callback in
+            { standardOutput, standardError in
+                guard openedManualAuthorizationURL == nil,
+                      let url = manualMCPAuthorizationURL(
+                        standardOutput: standardOutput,
+                        standardError: standardError
+                      )
+                else { return }
+                openedManualAuthorizationURL = url
+                callback(url)
+            }
+        }
         let result = try runSubprocess(
             executable: URL(fileURLWithPath: executable),
             arguments: Array(command.dropFirst()),
+            outputObserver: outputObserver,
             timeout: timeout
         )
         if !result.timedOut, result.status == 0 {
@@ -285,6 +300,25 @@ public extension MetagentCore {
               let rawURL = transport["url"] as? String
         else { return nil }
         return URL(string: rawURL)
+    }
+
+    internal static func manualMCPAuthorizationURL(
+        standardOutput: Data,
+        standardError: Data
+    ) -> URL? {
+        let output = String(decoding: standardOutput, as: UTF8.self)
+        let error = String(decoding: standardError, as: UTF8.self)
+        let combined = "\(output)\n\(error)"
+        guard combined.localizedCaseInsensitiveContains("browser launch failed") else {
+            return nil
+        }
+        return combined.split(whereSeparator: \Character.isNewline)
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap(URL.init(string:))
+            .first { url in
+                (url.scheme == "https" || url.scheme == "http") && url.host != nil
+            }
     }
 
     /// Builds a passive MCP inventory. This never starts an MCP server, performs OAuth discovery,

@@ -57,6 +57,8 @@ final class MCPHealthTests: XCTestCase {
         let executable = root.appendingPathComponent("codex-fixture")
         try """
         #!/bin/sh
+        echo 'https://example.test/authorize?state=secret-state&code=secret-code'
+        echo 'Browser launch failed; please copy the URL above manually.' >&2
         echo 'OAuth failed at https://example.test/authorize?state=secret-state&code=secret-code' >&2
         exit 7
         """.write(to: executable, atomically: true, encoding: .utf8)
@@ -68,18 +70,31 @@ final class MCPHealthTests: XCTestCase {
             detail: "Sign-in required"
         )
 
+        var openedURL: URL?
         let result = try MetagentCore.authenticateMCPServer(
             server,
             codexExecutableOverride: executable,
+            onManualAuthorizationURL: { openedURL = $0 },
             timeout: 2
         )
 
+        XCTAssertEqual(
+            openedURL?.absoluteString,
+            "https://example.test/authorize?state=secret-state&code=secret-code"
+        )
         XCTAssertFalse(result.succeeded)
         XCTAssertFalse(result.timedOut)
         XCTAssertEqual(result.message, "The MCP client could not complete sign-in (exit status 7).")
         XCTAssertFalse(result.message.contains("example.test"))
         XCTAssertFalse(result.message.contains("secret-state"))
         XCTAssertFalse(result.message.contains("secret-code"))
+    }
+
+    func testManualAuthenticationURLRequiresTheBrowserFailureSignal() {
+        XCTAssertNil(MetagentCore.manualMCPAuthorizationURL(
+            standardOutput: Data("https://example.test/authorize?state=one-time".utf8),
+            standardError: Data()
+        ))
     }
 
     func testInternalAuthenticationReportsSuccessWithoutRetainingOAuthOutput() throws {
