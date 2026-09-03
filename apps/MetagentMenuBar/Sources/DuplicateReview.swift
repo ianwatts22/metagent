@@ -11,6 +11,7 @@ struct DuplicateReviewExperience: View {
     let hasDetectedGroups: Bool
     @Binding var selectedGroupID: String?
     @Binding var removalIDs: Set<SkillTableRow.ID>
+    @State private var isRestoreExpanded = false
     let isRunning: Bool
     let onView: (SkillTableRow) -> Void
     let onInfo: (SkillTableRow) -> Void
@@ -170,53 +171,81 @@ struct DuplicateReviewExperience: View {
                             .padding(.vertical, 6)
                     }
 
-                    HStack(spacing: 6) {
-                        Text("Restore")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text("\(archivedSkills.count)")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                        Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isRestoreExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(isRestoreExpanded ? 90 : 0))
+                                .frame(width: 12)
+                            Text("Restore")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("\(archivedSkills.count)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Restore \(archivedSkills.count) archived skills")
+                    .accessibilityValue(isRestoreExpanded ? "Expanded" : "Collapsed")
+                    .accessibilityHint("Shows or hides archived skills")
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+
+                    if isRestoreExpanded {
+                        ForEach(archivedSkills) { entry in
+                            Button {
+                                onRestore(entry)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "archivebox")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(entry.skillName)
+                                            .font(.callout.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text("Restore archived skill")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isRunning)
+                            .help("Restore to \(displayUserPath(entry.skillPath))")
+                        }
+
                         Button(action: onShowArchive) {
-                            Image(systemName: "folder")
+                            HStack(spacing: 10) {
+                                Image(systemName: "folder")
+                                    .frame(width: 18)
+                                Text("Show in Finder")
+                                    .font(.caption)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .help("Show Archived Skills in Finder")
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 2)
-
-                    ForEach(archivedSkills) { entry in
-                        Button {
-                            onRestore(entry)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "archivebox")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 18)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(entry.skillName)
-                                        .font(.callout.weight(.semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Text("Restore archived skill")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isRunning)
-                        .help("Restore to \(displayUserPath(entry.skillPath))")
                     }
                 }
             }
