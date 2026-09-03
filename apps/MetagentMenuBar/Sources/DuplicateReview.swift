@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct DuplicateReviewExperience: View {
     let groups: [DuplicateReviewGroup]
+    let archivedSkills: [ArchivedSkill]
     let hasVisibleGroups: Bool
     let hasDetectedGroups: Bool
     @Binding var selectedGroupID: String?
@@ -16,87 +17,19 @@ struct DuplicateReviewExperience: View {
     let onReviewRemoval: ([SkillTableRow]) -> Void
     let onKeepAll: (DuplicateReviewGroup) -> Void
     let onReviewAgain: () -> Void
+    let onRestore: (ArchivedSkill) -> Void
+    let onShowArchive: () -> Void
 
     private var selectedGroup: DuplicateReviewGroup? {
         groups.first { $0.id == selectedGroupID } ?? groups.first
     }
 
     var body: some View {
-        if groups.isEmpty {
-            if hasVisibleGroups {
-                ContentUnavailableView {
-                    Label("Duplicate review complete", systemImage: "checkmark.circle")
-                } description: {
-                    Text("You kept the remaining groups for this session.")
-                } actions: {
-                    Button("Review again", action: onReviewAgain)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView {
-                    Label(
-                        hasDetectedGroups ? "No complete groups match" : "No duplicate skills found",
-                        systemImage: hasDetectedGroups ? "line.3.horizontal.decrease.circle" : "checkmark.circle"
-                    )
-                } description: {
-                    Text(hasDetectedGroups
-                        ? "A directory, source, scope, usage, or search filter is hiding part of each group. Adjust the filters to compare every copy safely."
-                        : "Metagent found no same-name or overlapping canonical skill bundles.")
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        if groups.isEmpty, archivedSkills.isEmpty {
+            emptyReviewState
         } else {
             HStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 5) {
-                        Text(groups.count == 1 ? "1 group to review" : "\(groups.count) groups to review")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 4)
-                            .padding(.bottom, 2)
-                        ForEach(groups) { group in
-                            Button {
-                                select(group)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: group.symbol)
-                                        .foregroundStyle(
-                                            group.id == selectedGroup?.id ? Color.accentColor : .secondary
-                                        )
-                                        .frame(width: 18)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(group.skillName)
-                                            .font(.callout.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text("\(group.rows.count) copies · \(group.similarityText)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if group.id == selectedGroup?.id {
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 9)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(group.id == selectedGroup?.id
-                                            ? Color.accentColor.opacity(0.12)
-                                            : Color.clear)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(8)
-                }
-                .frame(width: 220)
+                reviewSidebar
 
                 Divider()
 
@@ -115,6 +48,8 @@ struct DuplicateReviewExperience: View {
                         }
                     )
                     .id(selectedGroup.id)
+                } else {
+                    emptyReviewState
                 }
             }
             .background {
@@ -149,6 +84,145 @@ struct DuplicateReviewExperience: View {
                 useRecommendation(for: group)
             }
         }
+    }
+
+    @ViewBuilder
+    private var emptyReviewState: some View {
+        if hasVisibleGroups {
+            ContentUnavailableView {
+                Label("Duplicate review complete", systemImage: "checkmark.circle")
+            } description: {
+                Text("You kept the remaining groups for this session.")
+            } actions: {
+                Button("Review again", action: onReviewAgain)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView {
+                Label(
+                    hasDetectedGroups ? "No complete duplicate groups" : "No duplicate skills found",
+                    systemImage: "checkmark.circle"
+                )
+            } description: {
+                Text(hasDetectedGroups
+                    ? "The current project selection does not contain every copy needed for a safe comparison."
+                    : "Metagent found no same-name or overlapping canonical skill bundles.")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var reviewSidebar: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 5) {
+                if !groups.isEmpty {
+                    Text(groups.count == 1 ? "1 group to review" : "\(groups.count) groups to review")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+
+                    ForEach(groups) { group in
+                        Button {
+                            select(group)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: group.symbol)
+                                    .foregroundStyle(
+                                        group.id == selectedGroup?.id ? Color.accentColor : .secondary
+                                    )
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(group.skillName)
+                                        .font(.callout.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text("\(group.rows.count) copies · \(group.similarityText)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if group.id == selectedGroup?.id {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background {
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(group.id == selectedGroup?.id
+                                        ? Color.accentColor.opacity(0.12)
+                                        : Color.clear)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if !archivedSkills.isEmpty {
+                    if !groups.isEmpty {
+                        Divider()
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+
+                    HStack(spacing: 6) {
+                        Text("Restore")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("\(archivedSkills.count)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                        Button(action: onShowArchive) {
+                            Image(systemName: "folder")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Show Archived Skills in Finder")
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+
+                    ForEach(archivedSkills) { entry in
+                        Button {
+                            onRestore(entry)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "archivebox")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(entry.skillName)
+                                        .font(.callout.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text("Restore archived skill")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isRunning)
+                        .help("Restore to \(displayUserPath(entry.skillPath))")
+                    }
+                }
+            }
+            .padding(8)
+        }
+        .frame(width: 220)
     }
 
     private func select(_ group: DuplicateReviewGroup) {
@@ -694,6 +768,7 @@ private enum DuplicateReviewPreviewData {
     @Previewable @State var removalIDs = Set<SkillTableRow.ID>()
     DuplicateReviewExperience(
         groups: DuplicateReviewPreviewData.groups,
+        archivedSkills: [],
         hasVisibleGroups: true,
         hasDetectedGroups: true,
         selectedGroupID: $selectedGroupID,
@@ -703,7 +778,9 @@ private enum DuplicateReviewPreviewData {
         onInfo: { _ in },
         onReviewRemoval: { _ in },
         onKeepAll: { _ in },
-        onReviewAgain: {}
+        onReviewAgain: {},
+        onRestore: { _ in },
+        onShowArchive: {}
     )
     .padding(20)
 }

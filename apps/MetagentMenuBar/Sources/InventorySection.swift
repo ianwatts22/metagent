@@ -22,7 +22,6 @@ struct InventorySection: View {
     @State private var selectedDuplicateGroupID: String?
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
     @State private var reviewedDuplicateGroupIDs = Set<String>()
-    @State private var hiddenSourceRawBeforeDuplicateReview: String?
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
     @AppStorage("metagent.skills.grouping.v1") private var groupingRaw = SkillGrouping.none.rawValue
     @AppStorage("metagent.skills.hidden-sources.v2")
@@ -96,15 +95,16 @@ struct InventorySection: View {
             cachedRows.first { $0.projectRoot == selectedRoot }?.projectRootKey
         }
         let globalRootKey = cachedRows.first { $0.projectRoot == NSHomeDirectory() }?.projectRootKey
+        let isDuplicateReview = selectedView == .duplicates
         return SkillTableFilter(
             selectedView: selectedView,
             selectedProjectRoot: selectedProjectRoot,
             selectedProjectRootKey: selectedProjectRootKey,
             globalRootKey: globalRootKey,
-            hiddenSources: hiddenSources,
-            scope: scopeFilter,
-            usage: usageFilter,
-            query: query,
+            hiddenSources: isDuplicateReview ? [] : hiddenSources,
+            scope: isDuplicateReview ? .all : scopeFilter,
+            usage: isDuplicateReview ? .all : usageFilter,
+            query: isDuplicateReview ? "" : query,
             pendingRemovalIDs: model.pendingSkillRemovalIDs,
             completedRemovalIDs: model.completedSkillRemovalIDs
         )
@@ -217,18 +217,6 @@ struct InventorySection: View {
         }
     }
 
-    private func beginDuplicateReview() {
-        guard hiddenSourceRawBeforeDuplicateReview == nil else { return }
-        hiddenSourceRawBeforeDuplicateReview = hiddenSourceRaw
-        hiddenSourceRaw = ""
-    }
-
-    private func endDuplicateReview() {
-        guard let previousValue = hiddenSourceRawBeforeDuplicateReview else { return }
-        hiddenSourceRaw = previousValue
-        hiddenSourceRawBeforeDuplicateReview = nil
-    }
-
     private func countText(
         _ presentation: SkillTablePresentation,
         selectedRows: [SkillTableRow]
@@ -262,7 +250,7 @@ struct InventorySection: View {
     private func toolbarControls(countText: String) -> some View {
         SkillViewSelector(selection: selectedViewBinding)
         CountChip(text: countText)
-        if selectedView != .published {
+        if selectedView != .published, selectedView != .duplicates {
             filterControls
         }
     }
@@ -399,7 +387,7 @@ struct InventorySection: View {
                         CountChip(text: countText)
                         Spacer(minLength: 0)
                     }
-                    if selectedView != .published {
+                    if selectedView != .published, selectedView != .duplicates {
                         HStack(spacing: 8) {
                             filterControls
                             Spacer(minLength: 0)
@@ -420,22 +408,10 @@ struct InventorySection: View {
                     onChooseSkill: { publicationTarget = $0 }
                 )
                 .accessibilityIdentifier(readyIdentifier)
-            } else if presentation.rows.isEmpty {
-                EmptyStateView(
-                    title: selectedView == .duplicates
-                        ? (hasActiveFilter ? "No matching duplicates" : "No duplicate installations")
-                        : (hasActiveFilter ? "No matching skills" : "No skills found"),
-                    message: hasActiveFilter
-                        ? "Clear the search or choose All Projects."
-                        : (selectedView == .duplicates
-                            ? "Metagent found no same-name or overlapping canonical skill bundles."
-                            : "Refresh after configuring roots or adding skills."),
-                    symbol: selectedView == .duplicates ? "checkmark.circle" : "tablecells"
-                )
-                .accessibilityIdentifier(readyIdentifier)
             } else if selectedView == .duplicates {
                 DuplicateReviewExperience(
                     groups: duplicateReviewGroups,
+                    archivedSkills: model.archivedSkills,
                     hasVisibleGroups: !completeVisibleDuplicateGroups.isEmpty,
                     hasDetectedGroups: hasDetectedOverlapGroups,
                     selectedGroupID: $selectedDuplicateGroupID,
@@ -460,7 +436,22 @@ struct InventorySection: View {
                         reviewedDuplicateGroupIDs.removeAll()
                         selectedDuplicateGroupID = nil
                         duplicateRemovalIDs.removeAll()
+                    },
+                    onRestore: { entry in
+                        model.restoreArchivedSkill(named: entry.skillName)
+                    },
+                    onShowArchive: {
+                        NSWorkspace.shared.open(MetagentCore.archivedSkillsRoot())
                     }
+                )
+                .accessibilityIdentifier(readyIdentifier)
+            } else if presentation.rows.isEmpty {
+                EmptyStateView(
+                    title: hasActiveFilter ? "No matching skills" : "No skills found",
+                    message: hasActiveFilter
+                        ? "Clear the search or choose All Projects."
+                        : "Refresh after configuring roots or adding skills.",
+                    symbol: "tablecells"
                 )
                 .accessibilityIdentifier(readyIdentifier)
             } else {
@@ -479,13 +470,7 @@ struct InventorySection: View {
         }
         .onAppear {
             migrateSourceVisibilityIfNeeded()
-            if selectedView == .duplicates {
-                beginDuplicateReview()
-            }
             sortOrder = defaultSortOrder(for: selectedView)
-        }
-        .onDisappear {
-            endDuplicateReview()
         }
         .task(id: model.skillTableRowRevision) {
             let revision = model.skillTableRowRevision
@@ -518,14 +503,8 @@ struct InventorySection: View {
             guard hasHydrated else { return }
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
-        .onChange(of: selectedViewRaw) { oldRawValue, rawValue in
-            let oldView = SkillTableView(rawValue: oldRawValue) ?? .summary
+        .onChange(of: selectedViewRaw) { _, rawValue in
             let view = SkillTableView(rawValue: rawValue) ?? .summary
-            if oldView != .duplicates, view == .duplicates {
-                beginDuplicateReview()
-            } else if oldView == .duplicates, view != .duplicates {
-                endDuplicateReview()
-            }
             selection.formIntersection(Set(rows.map(\.id)))
             duplicateRemovalIDs.removeAll()
             sortOrder = defaultSortOrder(for: view)
