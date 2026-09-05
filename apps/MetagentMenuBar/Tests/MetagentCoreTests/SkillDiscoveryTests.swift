@@ -31,6 +31,16 @@ final class SkillDiscoveryTests: XCTestCase {
             roots: [root.path], maxDepth: 1, respectConfiguredIgnores: false))
         XCTAssertEqual(report.projects.map(\.root), [manifest.path])
         XCTAssertTrue(report.projects.flatMap(\.skills).isEmpty)
+        XCTAssertFalse(MetagentCore.doctor(reports: [report]).issues.contains {
+            $0.summary == "No valid .agents skills"
+        })
+        try FileManager.default.createDirectory(at: manifest.appendingPathComponent(".agents/skills"),
+                                                withIntermediateDirectories: true)
+        let emptySkills = try MetagentCore.scanSkills(options: SkillScanOptions(
+            roots: [root.path], maxDepth: 1, respectConfiguredIgnores: false))
+        XCTAssertTrue(MetagentCore.doctor(reports: [emptySkills]).issues.contains {
+            $0.summary == "No valid .agents skills" && $0.projectRoot == manifest.path
+        })
     }
 
     func testGlobalOnlyHomeScanDoesNotRediscoverNestedProjects() throws {

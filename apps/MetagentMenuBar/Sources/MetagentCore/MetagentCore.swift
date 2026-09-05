@@ -300,7 +300,8 @@ public enum MetagentCore {
                 ))
             }
 
-            if project.validSkills.isEmpty {
+            if project.validSkills.isEmpty && (hasProjectInventorySurface(project)
+                || hasKnownSkillContainer(URL(fileURLWithPath: project.root))) {
                 issues.append(.init(
                     severity: .warning,
                     message: "\(project.root) has no valid .agents skills",
@@ -309,7 +310,7 @@ public enum MetagentCore {
                     category: .skills,
                     guidance: "Remove stale agent configuration or add a valid SKILL.md bundle."
                 ))
-            } else {
+            } else if !project.validSkills.isEmpty {
                 issues.append(.init(
                     severity: .ok,
                     message: "\(project.root) has \(project.validSkills.count) valid skills",
