@@ -4,6 +4,24 @@ import MetagentCore
 import Testing
 @testable import MetagentMenuBar
 
+@Test func projectRowsCannotIntroduceRootsOutsideTheSharedInventory() {
+    let root = "/private/tmp/mcp-only-project"
+    let excluded = "/private/tmp/custom-worktree"
+    let project = ProjectStatus.previewFixture(project: SkillProject(
+        root: root, skillsDir: root + "/.agents/skills", validSkills: [], skills: []))
+    let health = MCPHealthSnapshot(servers: [MCPServerHealth(
+        client: .claude, name: "demo", state: .pendingApproval, detail: "",
+        projectStates: [MCPProjectState(path: root, state: .pendingApproval),
+                        MCPProjectState(path: excluded, state: .pendingApproval)])])
+    let issues = [DoctorIssue(severity: .warning, message: "Old finding", projectRoot: excluded)]
+    let rows = ProjectDirectoryRow.rows(projects: [project], mcpHealth: health,
+        doctorIssues: issues, codebaseSizes: [:], selectedProjectRoot: nil)
+    #expect(rows.map(\.root) == [root])
+    #expect(rows.first?.skillCount == 0)
+    #expect(rows.first?.mcpCount == 1)
+    #expect(directoryFilterOptions(projects: [project]).map(\.root) == [root])
+}
+
 @Test func indexedProjectRowsPreserveDirectoryCountsAndAttention() throws {
     let root = "/private/tmp/metagent-project-row-\(UUID().uuidString)"
     let skillPath = root + "/.agents/skills/shared"

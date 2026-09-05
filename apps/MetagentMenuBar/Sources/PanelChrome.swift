@@ -19,9 +19,7 @@ struct MetagentPanel: View {
 
     private var directoryOptions: [DirectoryFilterOption] {
         directoryFilterOptions(
-            projects: model.projects,
-            mcpHealth: model.mcpHealth,
-            doctorIssues: model.doctorIssues
+            projects: model.projects
         )
     }
 

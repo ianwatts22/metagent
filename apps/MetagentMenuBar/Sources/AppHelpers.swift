@@ -268,23 +268,13 @@ struct DirectoryFilterOption: Identifiable {
 }
 
 func directoryFilterOptions(
-    projects: [ProjectStatus],
-    mcpHealth: MCPHealthSnapshot,
-    doctorIssues: [DoctorIssue]
+    projects: [ProjectStatus]
 ) -> [DirectoryFilterOption] {
     var namesByRoot: [String: String] = [:]
     for project in projects {
         let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
         guard !isPluginProject else { continue }
         namesByRoot[standardizedDirectoryPath(project.root)] = project.name
-    }
-    let additionalRoots = mcpHealth.servers.flatMap { $0.projectStates.map(\.path) }
-        + doctorIssues.compactMap(\.projectRoot)
-    for root in additionalRoots {
-        let canonicalRoot = standardizedDirectoryPath(root)
-        if namesByRoot[canonicalRoot] == nil {
-            namesByRoot[canonicalRoot] = URL(fileURLWithPath: canonicalRoot).lastPathComponent
-        }
     }
     return namesByRoot.map { DirectoryFilterOption(root: $0.key, name: $0.value) }
         .sorted { left, right in

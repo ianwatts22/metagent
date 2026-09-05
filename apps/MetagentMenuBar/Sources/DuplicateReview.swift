@@ -13,6 +13,7 @@ struct DuplicateReviewExperience: View {
     @Binding var removalIDs: Set<SkillTableRow.ID>
     @State private var isRestoreExpanded = false
     let isRunning: Bool
+    var isRestoreBlocked: Bool = false
     let onView: (SkillTableRow) -> Void
     let onInfo: (SkillTableRow) -> Void
     let onReviewRemoval: ([SkillTableRow]) -> Void
@@ -83,6 +84,9 @@ struct DuplicateReviewExperience: View {
                     let group = groups.first(where: { $0.id == groupID })
                 else { return }
                 useRecommendation(for: group)
+            }
+            .onChange(of: selectedGroup?.recommendationRevision) { _, _ in
+                if let group = selectedGroup { useRecommendation(for: group) }
             }
         }
     }
@@ -227,7 +231,7 @@ struct DuplicateReviewExperience: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .disabled(isRunning)
+                            .disabled(isRunning || isRestoreBlocked)
                             .help("Restore to \(displayUserPath(entry.skillPath))")
                         }
 

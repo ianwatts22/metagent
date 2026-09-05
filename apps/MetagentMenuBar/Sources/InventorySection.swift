@@ -417,6 +417,7 @@ struct InventorySection: View {
                     selectedGroupID: $selectedDuplicateGroupID,
                     removalIDs: $duplicateRemovalIDs,
                     isRunning: model.isRunning && !model.isRemovingSkills,
+                    isRestoreBlocked: model.isRunning || model.isRemovingSkills,
                     onView: { row in viewedSkill = row.inventory },
                     onInfo: { row in inspectedSkill = row.inventory },
                     onReviewRemoval: { candidateRows in

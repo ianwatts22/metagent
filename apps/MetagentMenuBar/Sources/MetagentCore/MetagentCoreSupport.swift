@@ -24,8 +24,7 @@ nonisolated(unsafe) let iso8601FractionalFormatter: ISO8601DateFormatter = {
     return formatter
 }()
 
-func defaultRootPaths() -> [String] {
-    let home = homeURL()
+func defaultRootPaths(home: URL = homeURL()) -> [String] {
     return [
         home.appendingPathComponent("code_projects").path,
         home.appendingPathComponent("Library").appendingPathComponent("CloudStorage").path,
@@ -33,12 +32,12 @@ func defaultRootPaths() -> [String] {
     ]
 }
 
-func expandPath(_ path: String) -> URL {
+func expandPath(_ path: String, home: URL = homeURL()) -> URL {
     if path == "~" {
-        return homeURL()
+        return home
     }
     if path.hasPrefix("~/") {
-        return homeURL().appendingPathComponent(String(path.dropFirst(2)))
+        return home.appendingPathComponent(String(path.dropFirst(2)))
     }
     return URL(fileURLWithPath: path)
 }
@@ -64,12 +63,60 @@ struct SubprocessResult {
     var timedOut: Bool
 }
 
+/// Owns only the login process group created for this authentication attempt.
+public final class MCPAuthenticationCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processID: pid_t?
+    private var cancelled = false
+
+    public init() {}
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    public func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        // Shutdown cannot wait for a grace period: terminate the whole owned
+        // group now so an OAuth listener cannot survive the app that opened it.
+        if let processID { kill(-processID, SIGKILL) }
+    }
+
+    fileprivate func register(_ processID: pid_t) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.processID = processID
+        if cancelled { kill(-processID, SIGKILL) }
+    }
+
+    fileprivate func unregister() {
+        lock.lock()
+        defer { lock.unlock() }
+        processID = nil
+    }
+
+    fileprivate func waitForExit(_ pid: pid_t, status: inout Int32, options: Int32) -> pid_t {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = waitpid(pid, &status, options)
+        // Clear ownership atomically with reaping; a later cancellation must
+        // never signal a process group whose identifier has been reused.
+        if result == pid { processID = nil }
+        return result
+    }
+}
+
 func runSubprocess(
     executable: URL,
     arguments: [String],
     currentDirectory: URL? = nil,
     standardInput: Data? = nil,
     outputObserver: ((Data, Data) -> Void)? = nil,
+    cancellation: MCPAuthenticationCancellation? = nil,
     timeout: TimeInterval
 ) throws -> SubprocessResult {
     let captureDirectory = fileManager.temporaryDirectory
@@ -147,6 +194,8 @@ func runSubprocess(
         }
     }
     try requirePosixSuccess(spawnResult, action: "start \(executable.path)")
+    cancellation?.register(processID)
+    defer { cancellation?.unregister() }
     try inputHandle.close()
     try outputHandle.close()
     try errorHandle.close()
@@ -154,7 +203,13 @@ func runSubprocess(
     let deadline = Date().addingTimeInterval(timeout)
     var nextOutputObservation = Date()
     var waitStatus: Int32 = 0
-    var exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+    func waitForExit(_ options: Int32) -> pid_t {
+        if let cancellation {
+            return cancellation.waitForExit(processID, status: &waitStatus, options: options)
+        }
+        return waitpid(processID, &waitStatus, options)
+    }
+    var exited = waitForExit(WNOHANG) == processID
     while !exited && Date() < deadline {
         Thread.sleep(forTimeInterval: 0.05)
         if let outputObserver, Date() >= nextOutputObservation {
@@ -164,7 +219,7 @@ func runSubprocess(
             )
             nextOutputObservation = Date().addingTimeInterval(0.25)
         }
-        exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+        exited = waitForExit(WNOHANG) == processID
     }
     let timedOut = !exited
     if timedOut {
@@ -174,7 +229,7 @@ func runSubprocess(
         while processGroupAlive && Date() < terminationDeadline {
             Thread.sleep(forTimeInterval: 0.05)
             if !exited {
-                exited = waitpid(processID, &waitStatus, WNOHANG) == processID
+                exited = waitForExit(WNOHANG) == processID
             }
             processGroupAlive = isProcessGroupAlive(processID)
         }
@@ -183,7 +238,7 @@ func runSubprocess(
         }
     }
     while !exited {
-        let result = waitpid(processID, &waitStatus, 0)
+        let result = waitForExit(0)
         if result == processID {
             exited = true
         } else if result == -1, errno != EINTR {

@@ -3,6 +3,36 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillDiscoveryTests: XCTestCase {
+    func testSharedInventoryIncludesMCPOnlyAndConfiguredProjectsWithinTraversalScope() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-shared-projects")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manifest = root.appendingPathComponent("manifest-only")
+        let configured = root.appendingPathComponent("configured-only")
+        let ignored = root.appendingPathComponent("ignored")
+        let tooDeep = root.appendingPathComponent("nested/deep")
+        let plugin = root.appendingPathComponent("plugin-package")
+        for folder in [manifest, configured, ignored, tooDeep] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        try "{\"mcpServers\":{\"demo\":{}}}".write(
+            to: manifest.appendingPathComponent(".mcp.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: plugin.appendingPathComponent(".claude-plugin"),
+                                                withIntermediateDirectories: true)
+        try "{}".write(to: plugin.appendingPathComponent(".claude-plugin/plugin.json"),
+                       atomically: true, encoding: .utf8)
+        try "{}".write(to: plugin.appendingPathComponent(".mcp.json"), atomically: true, encoding: .utf8)
+        var roots = Set<String>()
+        discoverProjectRoots(root: root, maxDepth: 1, ignoreProjects: [ignored.path],
+                             traversalPruneRoots: [],
+                             configuredProjectPaths: [configured.path, ignored.path, tooDeep.path, "/outside"],
+                             projectRoots: &roots)
+        XCTAssertEqual(roots, [manifest.path, configured.path])
+        let report = try MetagentCore.scanSkills(options: SkillScanOptions(
+            roots: [root.path], maxDepth: 1, respectConfiguredIgnores: false))
+        XCTAssertEqual(report.projects.map(\.root), [manifest.path])
+        XCTAssertTrue(report.projects.flatMap(\.skills).isEmpty)
+    }
+
     func testGlobalOnlyHomeScanDoesNotRediscoverNestedProjects() throws {
         let home = try makeTemporaryRoot(prefix: "metagent-discovery-home-scope")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -143,6 +173,16 @@ final class SkillDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(report.projects.map(\.root), [primary.path])
         XCTAssertEqual(report.projects.flatMap(\.validSkills), ["primary-skill"])
+        var configuredRoots = Set<String>()
+        discoverProjectRoots(root: worktree, maxDepth: 2, ignoreProjects: [],
+                             traversalPruneRoots: [], projectRoots: &configuredRoots)
+        XCTAssertTrue(configuredRoots.isEmpty, "Configured worktree roots must be excluded")
+        XCTAssertTrue(isInsideGitLinkedWorktree(worktree.appendingPathComponent(".agents/skills")))
+        var nestedRoots = Set<String>()
+        discoverProjectRoots(root: worktree.appendingPathComponent(".agents/skills"),
+                             maxDepth: 2, ignoreProjects: [], traversalPruneRoots: [],
+                             projectRoots: &nestedRoots)
+        XCTAssertTrue(nestedRoots.isEmpty)
     }
 
     func testSubmoduleGitFileDoesNotLookLikeLinkedWorktree() throws {

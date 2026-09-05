@@ -243,6 +243,7 @@ public extension MetagentCore {
         _ server: MCPServerHealth,
         codexExecutableOverride: URL? = nil,
         onManualAuthorizationURL: ((URL) -> Void)? = nil,
+        cancellation: MCPAuthenticationCancellation? = nil,
         timeout: TimeInterval = 300
     ) throws -> MCPAuthenticationResult {
         guard let command = try mcpAuthenticationCommand(
@@ -273,8 +274,12 @@ public extension MetagentCore {
             executable: URL(fileURLWithPath: executable),
             arguments: Array(command.dropFirst()),
             outputObserver: outputObserver,
+            cancellation: cancellation,
             timeout: timeout
         )
+        if cancellation?.isCancelled == true {
+            return MCPAuthenticationResult(succeeded: false, timedOut: false, message: "Authentication cancelled.")
+        }
         if !result.timedOut, result.status == 0 {
             return MCPAuthenticationResult(succeeded: true, timedOut: false, message: "")
         }
@@ -328,10 +333,26 @@ public extension MetagentCore {
         homeDirectory: URL? = nil,
         codexExecutableOverride: URL? = nil,
         additionalProjectPaths: [String] = [],
+        projectInventoryPaths: [String]? = nil,
         observedAt: Date = Date()
     ) -> MCPHealthSnapshot {
-        let home = homeDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+        let home = homeDirectory ?? homeURL()
+        // The app supplies its already-scanned inventory. Headless callers use
+        // the same discovery rules, never Claude's historical project list.
         var servers: [MCPServerHealth] = []
+        var inventoryPaths = projectInventoryPaths ?? []
+        if projectInventoryPaths == nil {
+            do {
+                let config = try loadUserConfig(home: home)
+                inventoryPaths = try scanSkills(options: SkillScanOptions(), config: config, home: home).projects.map(\.root)
+                inventoryPaths += try scanHomeSkills(home: home, maxDepth: 2,
+                    pruningConfiguredRoots: true, config: config).projects.map(\.root)
+            } catch {
+                servers.append(MCPServerHealth(client: .claude, name: "Project inventory",
+                    state: .unavailable, detail: "Project inventory could not be read. Check scan settings and folder access."))
+            }
+        }
+        let eligiblePaths = Set((inventoryPaths + additionalProjectPaths).map(canonicalMCPProjectPath))
 
         do {
             let executable = try codexExecutableOverride ?? codexExecutable()
@@ -355,7 +376,8 @@ public extension MetagentCore {
 
         servers += scanClaudeMCPConfiguration(
             homeDirectory: home,
-            additionalProjectPaths: additionalProjectPaths
+            additionalProjectPaths: Array(eligiblePaths),
+            eligibleProjectPaths: eligiblePaths
         )
         return MCPHealthSnapshot(servers: servers.sorted(by: mcpHealthSort), observedAt: observedAt)
     }
@@ -389,7 +411,8 @@ public extension MetagentCore {
 
     internal static func scanClaudeMCPConfiguration(
         homeDirectory: URL,
-        additionalProjectPaths: [String] = []
+        additionalProjectPaths: [String] = [],
+        eligibleProjectPaths: Set<String>? = nil
     ) -> [MCPServerHealth] {
         let claudeRoot = homeDirectory.appendingPathComponent(".claude")
         let configURLs = [
@@ -420,6 +443,8 @@ public extension MetagentCore {
                 }
                 if let projects = object["projects"] as? [String: Any] {
                     for (projectPath, projectValue) in projects {
+                        if let eligibleProjectPaths,
+                           !eligibleProjectPaths.contains(canonicalMCPProjectPath(projectPath)) { continue }
                         guard let project = projectValue as? [String: Any] else { continue }
                         let projectURL = URL(fileURLWithPath: projectPath).resolvingSymlinksInPath()
                         do {
@@ -458,6 +483,7 @@ public extension MetagentCore {
         let knownProjectPaths = Set(projectScopes.map(\.projectPath))
         for projectPath in additionalProjectPaths {
             let canonicalPath = canonicalMCPProjectPath(projectPath)
+            if let eligibleProjectPaths, !eligibleProjectPaths.contains(canonicalPath) { continue }
             guard !knownProjectPaths.contains(canonicalPath) else { continue }
             projectScopes.append(claudeProjectMCPScope(
                 projectPath: projectPath,

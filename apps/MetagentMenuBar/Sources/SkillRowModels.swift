@@ -512,6 +512,7 @@ struct SkillOverlapMembership: Sendable {
     let kind: SkillOverlapKind
     let similarity: Double
     let suggestedRemoval: Bool
+    var contentFingerprint: String? = nil
 
     var title: String {
         switch kind {
@@ -539,7 +540,7 @@ struct SkillOverlapMembership: Sendable {
                 ? "This global standalone bundle closely overlaps an installed plugin skill (\(percent)% content similarity). Removing the standalone copy is recommended; the plugin remains available."
                 : "An installed plugin and standalone bundle closely overlap (\(percent)% content similarity). Compare the copies before removing anything."
         case .exactDuplicate:
-            return "These are byte-equivalent after normalizing provider paths. Keep the copy whose scope and lifecycle owner you actually need."
+            return "These bundles have identical file contents and executable permissions. Keep the copy whose scope and lifecycle owner you actually need."
         case .globalProject:
             return "The same skill name exists globally and in a project. This may be intentional so collaborators receive the project copy."
         case .sameName:
@@ -807,7 +808,8 @@ struct SkillTableRow: Identifiable, Sendable {
                             groupID: group.id,
                             kind: group.kind,
                             similarity: group.similarity,
-                            suggestedRemoval: member.suggestedRemoval
+                            suggestedRemoval: member.suggestedRemoval,
+                            contentFingerprint: member.contentFingerprint
                         )
                     )
                 }
@@ -893,6 +895,12 @@ struct DuplicateReviewGroup: Identifiable {
     let kind: SkillOverlapKind
     let similarity: Double
     let rows: [SkillTableRow]
+
+    var recommendationRevision: [String] {
+        [id, recommendationTitle] + rows.flatMap {
+            [$0.id, $0.overlap?.contentFingerprint ?? "unknown", String($0.overlap?.suggestedRemoval ?? false), String($0.inventory?.removalRequest != nil)]
+        }
+    }
 
     var skillName: String { rows.first?.skillName ?? "Unnamed skill" }
     var suggestedRemovalRows: [SkillTableRow] {

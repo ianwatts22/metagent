@@ -91,9 +91,13 @@ public enum MetagentCore {
     }
 
     public static func loadUserConfig() throws -> MetagentConfig {
-        let path = userConfigPath()
+        try loadUserConfig(home: homeURL())
+    }
+
+    static func loadUserConfig(home: URL) throws -> MetagentConfig {
+        let path = home.appendingPathComponent(".config/metagent/config.toml")
         guard fileManager.fileExists(atPath: path.path) else {
-            return MetagentConfig(roots: defaultRootPaths())
+            return MetagentConfig(roots: defaultRootPaths(home: home))
         }
 
         let text: String
@@ -110,7 +114,7 @@ public enum MetagentCore {
         let ignoreProjects = try parseStringArray(key: "ignore_projects", text: configText) ?? []
         let maxDepth = try parseInteger(key: "max_depth", text: configText) ?? 6
         return MetagentConfig(
-            roots: roots.isEmpty ? defaultRootPaths() : roots,
+            roots: roots.isEmpty ? defaultRootPaths(home: home) : roots,
             maxDepth: maxDepth,
             ignoreProjects: ignoreProjects
         )
@@ -121,30 +125,36 @@ public enum MetagentCore {
         return try scanSkills(options: options, config: config)
     }
 
-    static func scanSkills(options: SkillScanOptions, config: MetagentConfig) throws -> SkillScanReport {
+    static func scanSkills(options: SkillScanOptions, config: MetagentConfig, home: URL = homeURL()) throws -> SkillScanReport {
         let rootPaths = options.roots.isEmpty ? config.roots : options.roots
         let maxDepth = options.maxDepth ?? config.maxDepth
         let configuredIgnores = options.respectConfiguredIgnores ? config.ignoreProjects : []
         let ignoreProjects = Set((configuredIgnores + options.ignoreProjects).map {
-            canonicalProjectPath(expandPath($0))
+            canonicalProjectPath(expandPath($0, home: home))
         })
         var projectRoots = Set<String>()
+        let configuredProjects = configuredClaudeProjectPaths(home: home)
 
         for rootPath in rootPaths {
-            let root = expandPath(rootPath)
+            let root = expandPath(rootPath, home: home)
             discoverProjectRoots(
                 root: root,
                 maxDepth: maxDepth,
                 ignoreProjects: ignoreProjects,
                 traversalPruneRoots: [],
+                configuredProjectPaths: configuredProjects,
+                allowExplicitWorktree: !options.roots.isEmpty,
                 projectRoots: &projectRoots
             )
         }
 
         let projects = try projectRoots
             .sorted()
+            .filter { !options.roots.isEmpty || !isInsideGitLinkedWorktree(URL(fileURLWithPath: $0)) }
             .map { try readProjectSkills(root: URL(fileURLWithPath: $0)) }
-            .filter(hasProjectInventorySurface)
+            .filter { hasProjectInventorySurface($0)
+                || hasProjectMCPConfiguration(URL(fileURLWithPath: $0.root))
+                || configuredProjects.contains($0.root) }
 
         return SkillScanReport(projects: projects)
     }
@@ -169,11 +179,12 @@ public enum MetagentCore {
         config: MetagentConfig
     ) throws -> SkillScanReport {
         let normalizedHome = canonicalProjectPath(home)
-        let ignoreProjects = Set(config.ignoreProjects.map { canonicalProjectPath(expandPath($0)) })
+        let ignoreProjects = Set(config.ignoreProjects.map { canonicalProjectPath(expandPath($0, home: home)) })
         let traversalPruneRoots = pruningConfiguredRoots
-            ? Set(config.roots.map { canonicalProjectPath(expandPath($0)) })
+            ? Set(config.roots.map { canonicalProjectPath(expandPath($0, home: home)) })
             : []
         var projectRoots = Set<String>()
+        let configuredProjects = configuredClaudeProjectPaths(home: home)
 
         if !ignoreProjects.contains(normalizedHome) {
             for container in [".agents/skills", ".codex/skills", ".claude/skills"] {
@@ -188,14 +199,18 @@ public enum MetagentCore {
             maxDepth: maxDepth,
             ignoreProjects: ignoreProjects,
             traversalPruneRoots: traversalPruneRoots,
+            configuredProjectPaths: configuredProjects,
             projectRoots: &projectRoots
         )
 
         let projects = try projectRoots
             .sorted()
+            .filter { !isInsideGitLinkedWorktree(URL(fileURLWithPath: $0)) }
             .map { try readProjectSkills(root: URL(fileURLWithPath: $0)) }
             .filter { !ignoreProjects.contains(canonicalProjectPath(URL(fileURLWithPath: $0.root))) }
-            .filter(hasProjectInventorySurface)
+            .filter { hasProjectInventorySurface($0)
+                || hasProjectMCPConfiguration(URL(fileURLWithPath: $0.root))
+                || configuredProjects.contains($0.root) }
 
         return SkillScanReport(projects: projects)
     }

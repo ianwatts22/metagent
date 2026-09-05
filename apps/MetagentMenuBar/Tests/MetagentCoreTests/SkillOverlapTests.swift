@@ -3,7 +3,7 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillOverlapTests: XCTestCase {
-    func testPluginReplacementSuggestsRemovingSimilarGlobalStandalone() throws {
+    func testPluginReplacementDoesNotSuggestRemovingMerelySimilarGlobalStandalone() throws {
         let root = try fixtureRoot("plugin")
         let standalone = try writeSkill(
             root: root,
@@ -24,7 +24,60 @@ final class SkillOverlapTests: XCTestCase {
         let group = try XCTUnwrap(groups.first)
         XCTAssertEqual(group.kind, .pluginReplacement)
         XCTAssertGreaterThan(group.similarity, 0.55)
-        XCTAssertEqual(group.members.filter(\.suggestedRemoval).map(\.canonicalPath), [standalone.path])
+        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+    }
+
+    func testAutomaticRemovalRequiresIdenticalWholeBundles() throws {
+        let root = try fixtureRoot("bundle-equality")
+        let global = try writeSkill(root: root, relativePath: "global", body: "Run the script.")
+        let project = try writeSkill(root: root, relativePath: "project", body: "Run the script.")
+        let skills = [
+            makeSkill(path: global.path, scope: "global", manager: "local"),
+            makeSkill(path: project.path, scope: "project", manager: "local"),
+        ]
+        let original = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        XCTAssertTrue(original.members.contains(where: \.suggestedRemoval))
+        try "print('custom')".write(to: project.appendingPathComponent("script.py"), atomically: true, encoding: .utf8)
+        let customized = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        XCTAssertFalse(customized.members.contains(where: \.suggestedRemoval))
+        XCTAssertNotEqual(original.members.last?.contentFingerprint, customized.members.last?.contentFingerprint)
+        try "print('custom')".write(to: global.appendingPathComponent("script.py"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: project.appendingPathComponent("script.py").path)
+        XCTAssertFalse(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
+    }
+
+    func testSemanticWhitespaceCannotTriggerAutomaticRemoval() throws {
+        let root = try fixtureRoot("semantic-whitespace")
+        let global = try writeSkill(root: root, relativePath: "global", body: "```python\nif ready:\n    launch()\n    stop()\n```")
+        let project = try writeSkill(root: root, relativePath: "project", body: "```python\nif ready:\n    launch()\nstop()\n```")
+        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+            makeSkill(path: global.path, scope: "global", manager: "local"),
+            makeSkill(path: project.path, scope: "project", manager: "local"),
+        ]).first)
+        XCTAssertEqual(group.similarity, 1)
+        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+    }
+
+    func testOversizedOrLinkedBundlesDoNotSuggestRemoval() throws {
+        let root = try fixtureRoot("bounded-bundles")
+        let global = try writeSkill(root: root, relativePath: "global", body: "Shared instructions.")
+        let project = try writeSkill(root: root, relativePath: "project", body: "Shared instructions.")
+        let skills = [
+            makeSkill(path: global.path, scope: "global", manager: "local"),
+            makeSkill(path: project.path, scope: "project", manager: "local"),
+        ]
+        for directory in [global, project] {
+            try Data(repeating: 0, count: 16 * 1024 * 1024 + 1).write(to: directory.appendingPathComponent("asset.bin"))
+        }
+        let oversized = MetagentCore.detectSkillOverlaps(skills)[0]
+        XCTAssertFalse(oversized.members.contains(where: \.suggestedRemoval))
+        XCTAssertTrue(oversized.members.allSatisfy { $0.contentFingerprint == nil })
+        for directory in [global, project] {
+            try FileManager.default.removeItem(at: directory.appendingPathComponent("asset.bin"))
+            try FileManager.default.createSymbolicLink(atPath: directory.appendingPathComponent("linked.md").path, withDestinationPath: "SKILL.md")
+        }
+        XCTAssertFalse(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
     }
 
     func testDuplicateSkillsInsideOneCodexPluginSystemAreIgnored() throws {
@@ -217,7 +270,7 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(group.members.filter(\.suggestedRemoval).map(\.canonicalPath), [other.path])
     }
 
-    func testProviderPathNormalizationPreservesExactDuplicates() throws {
+    func testProviderPathNormalizationOnlyAffectsVocabularySimilarity() throws {
         let root = try fixtureRoot("provider-normalization")
         let first = try writeSkill(root: root, relativePath: "one", body: "Read .agents/skills/demo/SKILL.md.\nThen verify.")
         let second = try writeSkill(root: root, relativePath: "two", body: "Read .claude/skills/demo/SKILL.md.  Then verify.")
@@ -226,7 +279,7 @@ final class SkillOverlapTests: XCTestCase {
             makeSkill(path: second.path, scope: "global", manager: "local"),
         ]).first)
 
-        XCTAssertEqual(group.kind, .exactDuplicate)
+        XCTAssertEqual(group.kind, .sameName)
         XCTAssertEqual(group.similarity, 1)
     }
 

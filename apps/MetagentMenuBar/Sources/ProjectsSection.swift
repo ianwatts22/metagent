@@ -115,9 +115,7 @@ struct ProjectDirectoryRow: Identifiable {
         selectedProjectRoot: String?
     ) -> [ProjectDirectoryRow] {
         let directories = directoryFilterOptions(
-            projects: projects,
-            mcpHealth: mcpHealth,
-            doctorIssues: doctorIssues
+            projects: projects
         )
         .filter { directory in
             guard let selectedProjectRoot else { return true }

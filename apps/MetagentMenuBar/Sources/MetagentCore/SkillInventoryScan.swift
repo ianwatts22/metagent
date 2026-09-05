@@ -122,10 +122,13 @@ func discoverProjectRoots(
     maxDepth: Int,
     ignoreProjects: Set<String>,
     traversalPruneRoots: Set<String>,
+    configuredProjectPaths: Set<String> = [],
+    allowExplicitWorktree: Bool = false,
     projectRoots: inout Set<String>
 ) {
     let standardized = root.resolvingSymlinksInPath().standardizedFileURL
     guard fileManager.fileExists(atPath: standardized.path) else { return }
+    if !allowExplicitWorktree, isInsideGitLinkedWorktree(standardized) { return }
 
     var queue: [(URL, Int)] = [(standardized, 0)]
     var visited = Set<String>()
@@ -156,7 +159,8 @@ func discoverProjectRoots(
             continue
         }
 
-        if hasKnownSkillContainer(current) {
+        if hasKnownSkillContainer(current) || hasProjectMCPConfiguration(current)
+            || configuredProjectPaths.contains(path) {
             if !ignoreProjects.contains(path) {
                 projectRoots.insert(path)
             }
@@ -188,6 +192,39 @@ func discoverProjectRoots(
             queue.append((entry, depth + 1))
         }
     }
+}
+
+// Git metadata works across arbitrary worktree names and locations. Walk the
+// ancestors as configured roots can point inside a linked checkout.
+func isInsideGitLinkedWorktree(_ root: URL) -> Bool {
+    var current = root.resolvingSymlinksInPath().standardizedFileURL
+    while current.path != "/" {
+        if isGitLinkedWorktree(current) { return true }
+        current.deleteLastPathComponent()
+    }
+    return false
+}
+
+func configuredClaudeProjectPaths(home: URL) -> Set<String> {
+    let urls = [home.appendingPathComponent(".claude.json"),
+                home.appendingPathComponent(".claude/settings.json")]
+    return Set(urls.flatMap { url -> [String] in
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projects = object["projects"] as? [String: Any]
+        else { return [] }
+        return projects.keys.map { canonicalProjectPath(URL(fileURLWithPath: $0)) }
+    })
+}
+
+func hasProjectMCPConfiguration(_ root: URL) -> Bool {
+    // Plugin distributions also carry .mcp.json, but their installation and
+    // project association belong to the plugin inventory.
+    if [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"].contains(where: {
+        isRegularOrSymlinkedFile(root.appendingPathComponent($0))
+    }) { return false }
+    return [".mcp.json", ".claude/settings.json", ".claude/settings.local.json", ".codex/config.toml"]
+        .contains { isRegularOrSymlinkedFile(root.appendingPathComponent($0)) }
 }
 
 func isGitLinkedWorktree(_ root: URL) -> Bool {

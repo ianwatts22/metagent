@@ -86,6 +86,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var authenticatingMCPServerID: String?
+    private var mcpAuthenticationAlert: NSAlert?
     private var mcpHealthRefreshQueued = false
     /// Measured codebase size per standardized project root. Only git
     /// repositories appear; everything else has no tracked codebase to size.
@@ -722,7 +723,6 @@ final class MetagentModel: ObservableObject {
         let generation = statusRefreshGeneration
         isRunning = true
         refreshArchivedSkills()
-        refreshMCPHealth()
         refreshPluginInventory()
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
@@ -801,9 +801,7 @@ final class MetagentModel: ObservableObject {
 
     private var codebaseSizeRoots: [String] {
         directoryFilterOptions(
-            projects: projects,
-            mcpHealth: mcpHealth,
-            doctorIssues: doctorIssues
+            projects: projects
         ).map(\.root).sorted()
     }
 
@@ -813,11 +811,16 @@ final class MetagentModel: ObservableObject {
             return
         }
         isMCPRefreshing = true
+        let inventoryPaths = directoryFilterOptions(projects: projects).map(\.root)
         Task {
             let snapshot = await Task.detached(priority: .utility) {
-                MetagentCore.scanMCPHealth()
+                MetagentCore.scanMCPHealth(projectInventoryPaths: inventoryPaths)
             }.value
-            mcpHealth = snapshot
+            if inventoryPaths == directoryFilterOptions(projects: projects).map(\.root) {
+                mcpHealth = snapshot
+            } else {
+                mcpHealthRefreshQueued = true
+            }
             isMCPRefreshing = false
             if mcpHealthRefreshQueued {
                 mcpHealthRefreshQueued = false
@@ -939,11 +942,27 @@ final class MetagentModel: ObservableObject {
         authenticatingMCPServerID = server.id
 
         Task {
+            let cancellation = MCPAuthenticationCancellation()
+            let terminationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+            ) { _ in cancellation.cancel() }
+            let updateObserver = NotificationCenter.default.addObserver(
+                forName: .metagentDismissPresentations, object: nil, queue: .main
+            ) { [weak self] _ in
+                cancellation.cancel()
+                MainActor.assumeIsolated { self?.dismissMCPAuthenticationAlert() }
+            }
+            defer {
+                NotificationCenter.default.removeObserver(terminationObserver)
+                NotificationCenter.default.removeObserver(updateObserver)
+                dismissMCPAuthenticationAlert()
+            }
             let endpoint = await Task.detached(priority: .utility) {
                 try? MetagentCore.mcpTransportURL(for: server)
             }.value
 
-            if let endpoint, isLoopbackMCPURL(endpoint) {
+            if let endpoint, isLoopbackMCPURL(endpoint),
+               !(await Self.waitForLocalMCPEndpoint(endpoint, attempts: 1)) {
                 let localApplication = localMCPApplication(for: server, endpoint: endpoint)
                 if let localApplication {
                     guard openLocalMCPApplication(localApplication) else {
@@ -975,9 +994,13 @@ final class MetagentModel: ObservableObject {
                             server,
                             onManualAuthorizationURL: { url in
                                 DispatchQueue.main.async {
-                                    _ = NSWorkspace.shared.open(url)
+                                    guard !cancellation.isCancelled else { return }
+                                    if !NSWorkspace.shared.open(url) {
+                                        self.presentMCPAuthenticationLink(url, cancellation: cancellation)
+                                    }
                                 }
-                            }
+                            },
+                            cancellation: cancellation
                         )
                     )
                 } catch {
@@ -1009,6 +1032,43 @@ final class MetagentModel: ObservableObject {
         }
     }
 
+    private func presentMCPAuthenticationLink(_ url: URL, cancellation: MCPAuthenticationCancellation) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else {
+            cancellation.cancel()
+            recordOperationFailure(
+                title: "MCP authentication failed",
+                message: "Metagent could not open your browser. Open the Metagent window and try Authenticate again."
+            )
+            return
+        }
+        dismissMCPAuthenticationAlert()
+        let alert = NSAlert()
+        alert.messageText = "Open the sign-in link manually"
+        alert.informativeText = "Metagent could not open your browser. Copy the sign-in link and paste it into a browser to finish authentication."
+        alert.addButton(withTitle: "Copy sign-in link")
+        alert.addButton(withTitle: "Cancel")
+        mcpAuthenticationAlert = alert
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard !cancellation.isCancelled else { return }
+            if response == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            } else {
+                cancellation.cancel()
+            }
+            self?.mcpAuthenticationAlert = nil
+        }
+    }
+
+    private func dismissMCPAuthenticationAlert() {
+        guard let alert = mcpAuthenticationAlert else { return }
+        mcpAuthenticationAlert = nil
+        if let parent = alert.window.sheetParent {
+            parent.endSheet(alert.window, returnCode: .cancel)
+        }
+        alert.window.orderOut(nil)
+    }
+
     private func openLocalMCPApplication(_ application: LocalMCPApplication) -> Bool {
         guard let applicationURL = NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: application.bundleIdentifier
@@ -1019,8 +1079,8 @@ final class MetagentModel: ObservableObject {
         return true
     }
 
-    nonisolated private static func waitForLocalMCPEndpoint(_ endpoint: URL) async -> Bool {
-        for _ in 0..<12 {
+    nonisolated private static func waitForLocalMCPEndpoint(_ endpoint: URL, attempts: Int = 12) async -> Bool {
+        for attempt in 0..<attempts {
             var request = URLRequest(url: endpoint)
             request.httpMethod = "HEAD"
             request.timeoutInterval = 0.75
@@ -1029,7 +1089,7 @@ final class MetagentModel: ObservableObject {
             {
                 return true
             }
-            try? await Task.sleep(for: .milliseconds(500))
+            if attempt + 1 < attempts { try? await Task.sleep(for: .milliseconds(500)) }
         }
         return false
     }
@@ -1749,6 +1809,8 @@ final class MetagentModel: ObservableObject {
             locationSummaryText = "Skill locations unavailable"
             rootsText = "Roots unavailable"
         }
+
+        refreshMCPHealth()
 
         if let doctorReport = doctor.value {
             var issues = doctorReport.issues
