@@ -125,6 +125,9 @@ struct MetagentPanel: View {
     }
 
     private func openDuplicateReview() {
+        // A scoped warning can include copies outside the selected project.
+        // Show the complete group when opening its review.
+        selectedProjectRoot = nil
         UserDefaults.standard.set(SkillTableView.duplicates.rawValue, forKey: "metagent.skills.view.v2")
         selectedSection = .skills
         if showsOpenWindowButton { openMainWindow() }
@@ -300,14 +303,7 @@ struct MetagentPanel: View {
                 isCompact: showsOpenWindowButton,
                 selectedProjectRoot: selectedProjectRoot
             ) {
-                UserDefaults.standard.set(
-                    SkillTableView.duplicates.rawValue,
-                    forKey: "metagent.skills.view.v2"
-                )
-                selectedSection = .skills
-                if showsOpenWindowButton {
-                    openMainWindow()
-                }
+                openDuplicateReview()
             }
             .accessibilityIdentifier("metagent.overview.content.ready")
         case .history:

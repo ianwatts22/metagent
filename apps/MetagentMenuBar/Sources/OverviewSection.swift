@@ -358,7 +358,8 @@ struct OverviewSection: View {
                     $0 < 8 ? .good : ($0 < 26 ? .caution : ($0 < 52 ? .warning : .alert))
                 } ?? .neutral
             )),
-            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality. \(distribution.unknownCount) skills have no reliable update date and are excluded from these percentiles.",
+            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality."
+                + (distribution.unknownCount > 0 ? " \(distribution.unknownCount) skills have no reliable update date and are excluded from these percentiles." : ""),
             trend: historyTrends[.ageMedianWeeks]
         )
     }
