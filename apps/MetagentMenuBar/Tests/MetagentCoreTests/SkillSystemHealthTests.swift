@@ -4,6 +4,28 @@ import Testing
 
 @Suite("Skill system health")
 struct SkillSystemHealthTests {
+    @Test("unknown update dates do not enter age percentiles or change skill counts")
+    func unknownDatesExcludedFromAges() {
+        let root = "/tmp/age-fixture"
+        let timestamps: [String?] = [nil, "", "invalid", "1970-01-01T00:00:00Z",
+            "1970-01-01T00:00:01Z", "1900-01-01T00:00:00Z", "2026-07-10T12:00:00Z"]
+        let skills = timestamps.enumerated().map { index, timestamp in
+            skill(name: "skill-\(index)", root: root, scope: "project", updatedAt: timestamp)
+        }
+        let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!
+        let health = MetagentCore.skillSystemHealth(projects: [project(root: root, skills: skills)],
+            usage: snapshot(summaries: []), now: now)
+        #expect(health.skillCount == 7)
+        #expect(health.assessedSkillCount == 7)
+        #expect(health.ageDistribution == SkillAgeDistribution(medianWeeks: 2, p75Weeks: 2, unknownCount: 6))
+        let unknown = MetagentCore.skillSystemHealth(projects: [project(root: root, skills: Array(skills.dropLast()))],
+            usage: snapshot(summaries: []), now: now)
+        #expect(unknown.ageDistribution == SkillAgeDistribution(medianWeeks: nil, p75Weeks: nil, unknownCount: 6))
+        #expect(MetagentCore.skillUpdateDate("2001-01-01T00:00:00Z") != nil)
+        #expect(MetagentCore.validSkillUpdateDate(.distantPast) == nil)
+        #expect(MetagentCore.validSkillUpdateDate(.distantFuture) == nil)
+    }
+
     @Test("summarizes usage, tokens, age, and duplicate groups")
     func summarizesPortfolio() {
         let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!

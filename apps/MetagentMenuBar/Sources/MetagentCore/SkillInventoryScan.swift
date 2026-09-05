@@ -639,8 +639,8 @@ func makeSkillItem(
         sourceURL: resolvedEvidence?.sourceURL ?? origin?.sourceUrl ?? inherited?.sourceURL,
         ref: resolvedEvidence?.ref ?? origin?.ref ?? inherited?.ref,
         installedAt: origin?.installedAt ?? inherited?.installedAt,
-        updatedAt: origin?.updatedAt
-            ?? inherited?.updatedAt
+        updatedAt: (MetagentCore.skillUpdateDate(origin?.updatedAt) != nil ? origin?.updatedAt : nil)
+            ?? (MetagentCore.skillUpdateDate(inherited?.updatedAt) != nil ? inherited?.updatedAt : nil)
             ?? stats.latestModifiedAt.map { iso8601Formatter.string(from: $0) },
         symlinkedContainer: symlinkedContainer,
         folderKind: folderKind(
@@ -755,6 +755,7 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             continue
         }
         if let modifiedAt = try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+           MetagentCore.validSkillUpdateDate(modifiedAt) != nil,
            stats.latestModifiedAt == nil || modifiedAt > stats.latestModifiedAt!
         {
             stats.latestModifiedAt = modifiedAt

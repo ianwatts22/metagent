@@ -19,13 +19,11 @@ struct OverviewSkillHealthRefreshTrigger: Hashable {
 
 struct OverviewSection: View {
     @ObservedObject var model: MetagentModel
+    @ObservedObject private var attentionStore = AttentionCenterStore.shared
     let isCompact: Bool
     let selectedProjectRoot: String?
     let openDuplicateReview: () -> Void
-    @State private var showsDoctorFindings = false
-    @State private var showsRepair = false
     @State private var showsMCPDetails = false
-    @State private var repairProjectRoot: String?
     @State private var skillHealth = SkillSystemHealth.empty
     @State private var isSkillHealthLoading = true
     @State private var loadedSkillHealthRefreshID: OverviewSkillHealthRefreshTrigger?
@@ -49,16 +47,6 @@ struct OverviewSection: View {
             guard !Task.isCancelled, trigger.shouldRefresh else { return }
             await refreshSkillHealth(trigger: trigger)
         }
-        .sheet(isPresented: $showsDoctorFindings) {
-            DoctorFindingsView(model: model, findings: doctorFindings) { projectRoot in
-                repairProjectRoot = projectRoot
-                model.previewRepair(projectRoot: projectRoot)
-                showsRepair = true
-            }
-        }
-        .sheet(isPresented: $showsRepair) {
-            RepairSection(model: model, projectRoot: repairProjectRoot)
-        }
         .alert(
             "Could not open Claude",
             isPresented: Binding(
@@ -80,8 +68,10 @@ struct OverviewSection: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
-            if overviewAttentionCount > 0 {
-                needsAttentionSummary
+            if !attentionItems.isEmpty || !attentionStore.ignored.isEmpty {
+                AttentionCenterList(model: model, store: attentionStore, items: attentionItems,
+                                    openDuplicateReview: openDuplicateReview)
+                    .cardBackground()
             }
             skillHealthSummary
             if !isGlobalScopeSelection {
@@ -368,7 +358,7 @@ struct OverviewSection: View {
                     $0 < 8 ? .good : ($0 < 26 ? .caution : ($0 < 52 ? .warning : .alert))
                 } ?? .neutral
             )),
-            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality.",
+            help: "Weeks since the recorded upstream update or latest local content change. The headline is the median; P75 shows the older upper quartile. Calendar age alone is not evidence of poor quality. \(distribution.unknownCount) skills have no reliable update date and are excluded from these percentiles.",
             trend: historyTrends[.ageMedianWeeks]
         )
     }
@@ -526,75 +516,9 @@ struct OverviewSection: View {
             : .project(root: selectedProjectRoot)
     }
 
-    private var needsAttentionSummary: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 11) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .frame(width: 28)
-
-                Text("Needs attention")
-                    .font(.headline)
-
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 15)
-            .background(Color.orange.opacity(0.07))
-
-            if doctorActionCount > 0 {
-                Divider()
-                    .padding(.leading, 56)
-
-                OverviewAttentionRow(
-                    symbol: "wrench.and.screwdriver.fill",
-                    title: "Skill cleanup",
-                    detail: healthMessage,
-                    actionTitle: "Review"
-                ) {
-                    showsDoctorFindings = true
-                }
-                .disabled(model.isRunning)
-            }
-
-            if !isSkillHealthStale, skillHealth.duplicateGroupCount > 0 {
-                Divider()
-                    .padding(.leading, 56)
-
-                OverviewAttentionRow(
-                    symbol: "square.on.square",
-                    title: "\(skillHealth.duplicateGroupCount) potential duplicate \(skillHealth.duplicateGroupCount == 1 ? "skill" : "skills")",
-                    detail: nil,
-                    actionTitle: "Review",
-                    action: openDuplicateReview
-                )
-            }
-
-            ForEach(attentionMCPRows) { row in
-                Divider()
-                    .padding(.leading, 56)
-
-                MCPHealthRow(
-                    row: row,
-                    isAuthenticating: model.authenticatingMCPServerID == row.server.id,
-                    authenticationInProgress: model.authenticatingMCPServerID != nil
-                ) {
-                    model.openMCPServer(row.server)
-                }
-            }
-        }
-        .cardBackground()
-    }
-
-    private var overviewAttentionCount: Int {
-        doctorActionCount
-            + (isSkillHealthStale ? 0 : skillHealth.duplicateGroupCount)
-            + attentionMCPRows.count
-    }
-
-    private var attentionMCPRows: [MCPHealthDisplayRow] {
-        groupedMCPRows(scopedMCPHealth.attention)
+    private var attentionItems: [AttentionItem] {
+        attentionStore.items(doctor: model.doctorFindings, mcp: model.attentionMCPHealth,
+                             projects: model.projects.map(\.coreProject), scope: selectedProjectRoot)
     }
 
     private var mcpConnections: some View {
@@ -781,66 +705,8 @@ struct OverviewSection: View {
             .joined(separator: " ")
     }
 
-    private var healthMessage: String {
-        if doctorActionCount == 1,
-           let issue = doctorFindings.first
-        {
-            return issue.summary ?? issue.message
-        }
-        return "Grouped by project and resolution."
-    }
-
     private var scopedMCPHealth: MCPHealthSnapshot {
         projectFilteredMCPHealth(model.mcpHealth, selectedProjectRoot: selectedProjectRoot)
-    }
-
-    private var doctorFindings: [DoctorIssue] {
-        guard let selectedProjectRoot else { return model.doctorFindings }
-        return model.doctorFindings.filter {
-            $0.projectRoot.map(standardizedDirectoryPath) == selectedProjectRoot
-        }
-    }
-
-    private var doctorActionCount: Int {
-        groupedDoctorActionCount(doctorFindings)
-    }
-
-}
-
-struct OverviewAttentionRow: View {
-    let symbol: String
-    let title: String
-    let detail: String?
-    let actionTitle: String
-    let action: () -> Void
-
-    var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                if let detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            Button(actionTitle, action: action)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 }
 

@@ -300,17 +300,9 @@ public enum MetagentCore {
                 ))
             }
 
-            if project.validSkills.isEmpty && (hasProjectInventorySurface(project)
-                || hasKnownSkillContainer(URL(fileURLWithPath: project.root))) {
-                issues.append(.init(
-                    severity: .warning,
-                    message: "\(project.root) has no valid .agents skills",
-                    summary: "No valid .agents skills",
-                    projectRoot: project.root,
-                    category: .skills,
-                    guidance: "Remove stale agent configuration or add a valid SKILL.md bundle."
-                ))
-            } else if !project.validSkills.isEmpty {
+            // An empty collection is valid, not a broken installation. Invalid
+            // bundles and broken projections receive specific findings below.
+            if !project.validSkills.isEmpty {
                 issues.append(.init(
                     severity: .ok,
                     message: "\(project.root) has \(project.validSkills.count) valid skills",
