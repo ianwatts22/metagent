@@ -3,6 +3,20 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.7.0 — 2026-09-05
+
+- One shared project inventory now powers Skills, MCP health, and the project
+  selector. Custom Git worktrees stay excluded, while MCP-only projects within
+  your scan roots remain visible.
+- Cleaner duplicate review with larger usage and update details, clearer
+  recommendations, nearby removal actions, and a collapsible Restore section.
+- MCP authentication runs inside Metagent, helps start supported local servers,
+  and refreshes connection status when sign-in completes.
+- History is now optional behind Preview features in Settings. Usage indexing
+  status and reconstructed history have clearer explanations.
+- Refined navigation and Settings, including a narrower Projects selector,
+  simpler toolbar buttons, and more prominent actionable issues.
+
 ## v0.6.1 — 2026-09-02
 
 - Fixes a launch crash after updating to v0.6.0 by safely loading and packaging

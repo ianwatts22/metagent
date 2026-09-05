@@ -179,6 +179,18 @@ public struct MCPInventoryEntry: Equatable, Identifiable, Sendable {
     }
 }
 
+public struct MCPAuthenticationResult: Equatable, Sendable {
+    public let succeeded: Bool
+    public let timedOut: Bool
+    public let message: String
+
+    public init(succeeded: Bool, timedOut: Bool, message: String) {
+        self.succeeded = succeeded
+        self.timedOut = timedOut
+        self.message = message
+    }
+}
+
 private struct CodexMCPEntry: Decodable {
     let name: String
     let enabled: Bool
@@ -206,6 +218,114 @@ public extension MetagentCore {
         return [executable.path, "mcp", "login", server.name]
     }
 
+    /// Returns the configured HTTP endpoint without exposing headers or other
+    /// transport configuration. This lets the app recognize loopback MCPs and
+    /// give a useful local-app recovery path before starting OAuth.
+    static func mcpTransportURL(
+        for server: MCPServerHealth,
+        codexExecutableOverride: URL? = nil
+    ) throws -> URL? {
+        guard server.client == .codex else { return nil }
+        let executable = try codexExecutableOverride ?? codexExecutable()
+        let result = try runSubprocess(
+            executable: executable,
+            arguments: ["mcp", "get", server.name, "--json"],
+            timeout: 15
+        )
+        guard !result.timedOut, result.status == 0 else { return nil }
+        return try parseCodexMCPTransportURL(result.standardOutput)
+    }
+
+    /// Runs the client-owned login command without opening a Terminal window.
+    /// The caller gets only a redacted failure summary; successful OAuth output
+    /// may contain one-time authorization URLs and is intentionally discarded.
+    static func authenticateMCPServer(
+        _ server: MCPServerHealth,
+        codexExecutableOverride: URL? = nil,
+        onManualAuthorizationURL: ((URL) -> Void)? = nil,
+        cancellation: MCPAuthenticationCancellation? = nil,
+        timeout: TimeInterval = 300
+    ) throws -> MCPAuthenticationResult {
+        guard let command = try mcpAuthenticationCommand(
+            for: server,
+            codexExecutableOverride: codexExecutableOverride
+        ), let executable = command.first
+        else {
+            return MCPAuthenticationResult(
+                succeeded: false,
+                timedOut: false,
+                message: "This MCP does not support authentication from Metagent."
+            )
+        }
+        var openedManualAuthorizationURL: URL?
+        let outputObserver: ((Data, Data) -> Void)? = onManualAuthorizationURL.map { callback in
+            { standardOutput, standardError in
+                guard openedManualAuthorizationURL == nil,
+                      let url = manualMCPAuthorizationURL(
+                        standardOutput: standardOutput,
+                        standardError: standardError
+                      )
+                else { return }
+                openedManualAuthorizationURL = url
+                callback(url)
+            }
+        }
+        let result = try runSubprocess(
+            executable: URL(fileURLWithPath: executable),
+            arguments: Array(command.dropFirst()),
+            outputObserver: outputObserver,
+            cancellation: cancellation,
+            timeout: timeout
+        )
+        if cancellation?.isCancelled == true {
+            return MCPAuthenticationResult(succeeded: false, timedOut: false, message: "Authentication cancelled.")
+        }
+        if !result.timedOut, result.status == 0 {
+            return MCPAuthenticationResult(succeeded: true, timedOut: false, message: "")
+        }
+        let message: String
+        if result.timedOut {
+            message = "Authentication timed out before the MCP client completed sign-in."
+        } else {
+            // OAuth clients may print bearer tokens, device codes, fragments,
+            // or provider-specific secrets in places a regex cannot safely
+            // identify. Never surface their arbitrary output in the app.
+            message = "The MCP client could not complete sign-in (exit status \(result.status))."
+        }
+        return MCPAuthenticationResult(
+            succeeded: false,
+            timedOut: result.timedOut,
+            message: message
+        )
+    }
+
+    internal static func parseCodexMCPTransportURL(_ data: Data) throws -> URL? {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let transport = root["transport"] as? [String: Any],
+              let rawURL = transport["url"] as? String
+        else { return nil }
+        return URL(string: rawURL)
+    }
+
+    internal static func manualMCPAuthorizationURL(
+        standardOutput: Data,
+        standardError: Data
+    ) -> URL? {
+        let output = String(decoding: standardOutput, as: UTF8.self)
+        let error = String(decoding: standardError, as: UTF8.self)
+        let combined = "\(output)\n\(error)"
+        guard combined.localizedCaseInsensitiveContains("browser launch failed") else {
+            return nil
+        }
+        return combined.split(whereSeparator: \Character.isNewline)
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap(URL.init(string:))
+            .first { url in
+                (url.scheme == "https" || url.scheme == "http") && url.host != nil
+            }
+    }
+
     /// Builds a passive MCP inventory. This never starts an MCP server, performs OAuth discovery,
     /// or invokes a tool. Codex's supported JSON inventory and Claude's local configuration are
     /// treated as configuration evidence, not proof that a connection currently works.
@@ -213,10 +333,26 @@ public extension MetagentCore {
         homeDirectory: URL? = nil,
         codexExecutableOverride: URL? = nil,
         additionalProjectPaths: [String] = [],
+        projectInventoryPaths: [String]? = nil,
         observedAt: Date = Date()
     ) -> MCPHealthSnapshot {
-        let home = homeDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+        let home = homeDirectory ?? homeURL()
+        // The app supplies its already-scanned inventory. Headless callers use
+        // the same discovery rules, never Claude's historical project list.
         var servers: [MCPServerHealth] = []
+        var inventoryPaths = projectInventoryPaths ?? []
+        if projectInventoryPaths == nil {
+            do {
+                let config = try loadUserConfig(home: home)
+                inventoryPaths = try scanSkills(options: SkillScanOptions(), config: config, home: home).projects.map(\.root)
+                inventoryPaths += try scanHomeSkills(home: home, maxDepth: 2,
+                    pruningConfiguredRoots: true, config: config).projects.map(\.root)
+            } catch {
+                servers.append(MCPServerHealth(client: .claude, name: "Project inventory",
+                    state: .unavailable, detail: "Project inventory could not be read. Check scan settings and folder access."))
+            }
+        }
+        let eligiblePaths = Set((inventoryPaths + additionalProjectPaths).map(canonicalMCPProjectPath))
 
         do {
             let executable = try codexExecutableOverride ?? codexExecutable()
@@ -240,7 +376,8 @@ public extension MetagentCore {
 
         servers += scanClaudeMCPConfiguration(
             homeDirectory: home,
-            additionalProjectPaths: additionalProjectPaths
+            additionalProjectPaths: Array(eligiblePaths),
+            eligibleProjectPaths: eligiblePaths
         )
         return MCPHealthSnapshot(servers: servers.sorted(by: mcpHealthSort), observedAt: observedAt)
     }
@@ -274,7 +411,8 @@ public extension MetagentCore {
 
     internal static func scanClaudeMCPConfiguration(
         homeDirectory: URL,
-        additionalProjectPaths: [String] = []
+        additionalProjectPaths: [String] = [],
+        eligibleProjectPaths: Set<String>? = nil
     ) -> [MCPServerHealth] {
         let claudeRoot = homeDirectory.appendingPathComponent(".claude")
         let configURLs = [
@@ -305,6 +443,8 @@ public extension MetagentCore {
                 }
                 if let projects = object["projects"] as? [String: Any] {
                     for (projectPath, projectValue) in projects {
+                        if let eligibleProjectPaths,
+                           !eligibleProjectPaths.contains(canonicalMCPProjectPath(projectPath)) { continue }
                         guard let project = projectValue as? [String: Any] else { continue }
                         let projectURL = URL(fileURLWithPath: projectPath).resolvingSymlinksInPath()
                         do {
@@ -343,6 +483,7 @@ public extension MetagentCore {
         let knownProjectPaths = Set(projectScopes.map(\.projectPath))
         for projectPath in additionalProjectPaths {
             let canonicalPath = canonicalMCPProjectPath(projectPath)
+            if let eligibleProjectPaths, !eligibleProjectPaths.contains(canonicalPath) { continue }
             guard !knownProjectPaths.contains(canonicalPath) else { continue }
             projectScopes.append(claudeProjectMCPScope(
                 projectPath: projectPath,

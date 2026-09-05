@@ -7,6 +7,19 @@ The macOS app is the primary `metagent` product surface. It imports the shared S
 
 Current surface:
 
+- Project discovery is shared by the project selector, Skills, Projects, Doctor,
+  and MCP health. Configured roots, scan depth, ignored projects, and linked Git
+  worktree exclusions apply before any project enters the inventory. Projects
+  with local MCP/client configuration can appear even when they have no skills.
+  Claude's saved project paths are discovery candidates within that scope, not
+  an independent source of selector entries. Worktrees are identified by Git
+  metadata, including custom locations, symlinks, and roots inside a worktree.
+  Explicit headless `--root` analysis remains available for inspecting a
+  worktree intentionally; routine portfolio scans exclude it.
+- `History` is a Preview feature, hidden by default. Enable **Preview features**
+  in Settings to show it. Dashed history lines are estimates reconstructed from
+  retained evidence, rather than measurements captured on those days.
+
 - four destinations: `Overview`, `Skills`, `MCPs`, and `Projects`, held in one enclosing glass track so they read as a tab group rather than as four standalone buttons the same height as the neighbouring controls. The selected tab is a solid accent fill instead of nested glass. All destinations are scoped by one top-level directory menu; the default is all directories. The backgroundless combomark, enlarged directory scope, glass navigation capsules, and settings/diagnostics menu form one compact top control line without a shared enclosing card. Portfolio counts live in the Overview content instead of the application identity area.
 - a scope-aware skill-system health summary presented as one uniform grid of Liquid Glass metric cards. Every card leads with its number and explains it underneath, so a card reads "63% — unused skills, last 30 days" rather than the reverse. The headline value carries an optional muted qualifier beside it: the raw counts behind a rate, the unit behind a token total, or the P75 behind a median. The cards are Unused skills (last 30 days), Never used, reads per rated skill, SKILL.md body tokens, estimated name-and-description catalog tokens, and age. The catalog number is explicitly an estimate rather than a claim that every client injects every description on every turn. Global scope includes globally available, system, and plugin skills; project scope excludes them. Duplicate groups appear only when there is something to review and link directly to the guided decision queue.
 - a compact Agent runs summary below skill health, scoped to the selected project and the last 30 days. All directories shows all direct runs, a project shows runs started inside that directory, and the Global skills pseudo-root hides the summary because it is not a working directory. It shows the median typical run, arithmetic average, P90, and direct-run count from Codex `task_complete` events. A run is one completed, user-requested Codex task turn; automation, worker subagents, and guardian review runs are retained for future breakdowns but excluded from these default figures. It measures active task time rather than thread lifetime, so idle gaps and later thread resumes do not inflate it. Values stay marked provisional until the resumable session index is current.
@@ -190,9 +203,13 @@ are ignored so Metagent never offers an action for a missing worktree. Metagent
 does not approve the server, edit the manifest, or authenticate on the user's
 behalf. Pending servers are grouped into one actionable row per project,
 including when the same server name is awaiting approval in several projects.
-Codex servers that need OAuth expose an `Authenticate…` action. It opens Terminal
-and runs `codex mcp login <server>` so Codex owns the complete sign-in flow;
-Metagent never reads or stores the credential.
+Codex servers that need OAuth expose an `Authenticate` action. Metagent runs
+`codex mcp login <server>` in the background so Codex still owns the complete
+sign-in flow; Metagent never reads or stores the credential. For loopback MCPs,
+Metagent opens a known provider app first and waits briefly for its endpoint. If
+Codex cannot launch the browser itself, Metagent opens the one-time authorization
+URL without retaining or displaying the command output. The MCP inventory
+refreshes when sign-in completes.
 
 For iterative SwiftUI work, run:
 

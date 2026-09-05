@@ -489,7 +489,10 @@ final class SkillQueryTests: XCTestCase {
         XCTAssertEqual(Set(group.members.map(\.name)), ["demo"])
         XCTAssertEqual(Set(group.members.map(\.mutability)), ["editable"])
         XCTAssertTrue(group.members.allSatisfy { $0.projectRoot != nil })
-        XCTAssertFalse(group.members.contains { $0.suggestedRemoval })
+        XCTAssertEqual(
+            group.members.filter(\.suggestedRemoval).map(\.path),
+            [project.path]
+        )
     }
 
     // MARK: - Detail

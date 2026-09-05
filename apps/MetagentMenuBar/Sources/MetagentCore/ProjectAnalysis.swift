@@ -409,6 +409,7 @@ public extension MetagentCore {
             homeDirectory: homeDirectory,
             codexExecutableOverride: codexExecutableOverride,
             additionalProjectPaths: [rootURL.path],
+            projectInventoryPaths: [rootURL.path],
             observedAt: generatedAt
         )
         let applicableMCP = MCPHealthSnapshot(

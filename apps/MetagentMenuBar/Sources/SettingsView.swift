@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var maxDepth = 6
     @State private var trackedProviders: Set<String> = []
     @State private var analyticsEnabled = ProductAnalytics.defaultEnabled
+    @State private var previewFeaturesEnabled = false
     @State private var loadError: String?
     @State private var saveError: String?
 
@@ -150,6 +151,29 @@ struct SettingsView: View {
 
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Text("Preview features")
+                            .font(.headline)
+                        Text("BETA")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    }
+                    Text("Shows features that are still being refined, including History. Preview features may change or disappear.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                Toggle("Preview features", isOn: $previewFeaturesEnabled)
+                    .labelsHidden()
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("Share anonymous usage data")
                         .font(.headline)
                     Text("Sends anonymous product analytics to PostHog to improve scanning, reliability, and skill publishing. Includes a persistent random install ID, app version, build, channel, action outcomes, and count ranges. Never sends skill names or content, file paths, account details, or screen recordings.")
@@ -235,6 +259,7 @@ struct SettingsView: View {
 
     private func load() {
         analyticsEnabled = ProductAnalytics.shared.isEnabled
+        previewFeaturesEnabled = AppFeatureFlags.previewFeaturesEnabled()
         do {
             let config = try MetagentCore.loadUserConfig()
             roots = config.roots.uniqued()
@@ -258,6 +283,10 @@ struct SettingsView: View {
                 MetagentCore.selectableModelProviders.map(\.key).filter(trackedProviders.contains)
             )
             ProductAnalytics.shared.setEnabled(analyticsEnabled)
+            UserDefaults.standard.set(
+                previewFeaturesEnabled,
+                forKey: AppFeatureFlags.previewFeaturesKey
+            )
             model.refreshStatus()
             dismiss()
         } catch {

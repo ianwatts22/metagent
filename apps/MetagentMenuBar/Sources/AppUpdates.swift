@@ -4,6 +4,10 @@ import MetagentCore
 import Sparkle
 import SwiftUI
 
+extension Notification.Name {
+    static let metagentDismissPresentations = Notification.Name("MetagentDismissPresentations")
+}
+
 /// Sparkle's updater, wrapped so SwiftUI can observe it.
 ///
 /// The feed URL and public key ship as placeholders until a release is actually
@@ -77,13 +81,20 @@ final class UpdaterModel: NSObject, ObservableObject, SPUUpdaterDelegate {
 /// Sparkle's framework-owned updater and appcast objects.
 struct UpdatePresentationDismissalRequests {
     private(set) var value: UInt = 0
+    private let notificationCenter: NotificationCenter
+
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+    }
 
     mutating func willInstallUpdate() {
         value &+= 1
+        notificationCenter.post(name: .metagentDismissPresentations, object: nil)
     }
 
     mutating func willRelaunch() {
         value &+= 1
+        notificationCenter.post(name: .metagentDismissPresentations, object: nil)
     }
 }
 

@@ -1,5 +1,19 @@
+import Foundation
 import Testing
 @testable import MetagentMenuBar
+
+@Test func bothUpdaterBoundariesDismissNativeAuthenticationPresentations() async {
+    let notificationCenter = NotificationCenter()
+    await confirmation(expectedCount: 2) { dismissed in
+        let observer = notificationCenter.addObserver(
+            forName: .metagentDismissPresentations, object: nil, queue: nil
+        ) { _ in dismissed() }
+        defer { notificationCenter.removeObserver(observer) }
+        var requests = UpdatePresentationDismissalRequests(notificationCenter: notificationCenter)
+        requests.willInstallUpdate()
+        requests.willRelaunch()
+    }
+}
 
 @Test func willInstallUpdateRequestsPresentationDismissal() {
     var requests = UpdatePresentationDismissalRequests()

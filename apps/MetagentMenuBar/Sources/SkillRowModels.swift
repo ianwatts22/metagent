@@ -512,6 +512,7 @@ struct SkillOverlapMembership: Sendable {
     let kind: SkillOverlapKind
     let similarity: Double
     let suggestedRemoval: Bool
+    var contentFingerprint: String? = nil
 
     var title: String {
         switch kind {
@@ -539,7 +540,7 @@ struct SkillOverlapMembership: Sendable {
                 ? "This global standalone bundle closely overlaps an installed plugin skill (\(percent)% content similarity). Removing the standalone copy is recommended; the plugin remains available."
                 : "An installed plugin and standalone bundle closely overlap (\(percent)% content similarity). Compare the copies before removing anything."
         case .exactDuplicate:
-            return "These are byte-equivalent after normalizing provider paths. Keep the copy whose scope and lifecycle owner you actually need."
+            return "These bundles have identical file contents and executable permissions. Keep the copy whose scope and lifecycle owner you actually need."
         case .globalProject:
             return "The same skill name exists globally and in a project. This may be intentional so collaborators receive the project copy."
         case .sameName:
@@ -668,6 +669,7 @@ struct SkillTableRow: Identifiable, Sendable {
     var updatedDate: Date? { inventory?.updatedDate }
     var updatedSortValue: Int { inventory?.weeksOld ?? Int.max }
     var updatedText: String { inventory?.updatedText ?? "—" }
+    var updatedDateText: String { inventory?.updatedDateText ?? "Unknown" }
     var updatedHelp: String { inventory?.updatedHelp ?? "No installed update metadata is available." }
     var modelReviewTargets: [ModelReviewTarget] { inventory?.modelReviewTargets ?? [] }
     var modelReviewGaps: [ModelReviewTarget] { modelReviewTargets.filter(\.needsReview) }
@@ -806,7 +808,8 @@ struct SkillTableRow: Identifiable, Sendable {
                             groupID: group.id,
                             kind: group.kind,
                             similarity: group.similarity,
-                            suggestedRemoval: member.suggestedRemoval
+                            suggestedRemoval: member.suggestedRemoval,
+                            contentFingerprint: member.contentFingerprint
                         )
                     )
                 }
@@ -893,12 +896,24 @@ struct DuplicateReviewGroup: Identifiable {
     let similarity: Double
     let rows: [SkillTableRow]
 
+    var recommendationRevision: [String] {
+        [id, recommendationTitle] + rows.flatMap {
+            [$0.id, $0.overlap?.contentFingerprint ?? "unknown", String($0.overlap?.suggestedRemoval ?? false), String($0.inventory?.removalRequest != nil)]
+        }
+    }
+
     var skillName: String { rows.first?.skillName ?? "Unnamed skill" }
     var suggestedRemovalRows: [SkillTableRow] {
         rows.filter { $0.overlap?.suggestedRemoval == true && $0.inventory?.removalRequest != nil }
     }
+    var recommendedRemovalRows: [SkillTableRow] {
+        suggestedRemovalRows
+    }
     var similarityText: String {
         similarity.formatted(.percent.precision(.fractionLength(0)))
+    }
+    var similarityHelp: String {
+        "Word-set overlap between the closest pair of SKILL.md files. Metagent normalizes provider-specific skill paths and whitespace, lowercases the text, then divides shared unique words by all unique words across the pair. It is a vocabulary comparison, not an AI quality judgment."
     }
     var recommendationTitle: String {
         switch kind {
@@ -909,7 +924,9 @@ struct DuplicateReviewGroup: Identifiable {
         case .exactDuplicate:
             "Choose one canonical copy"
         case .globalProject:
-            "Keep global; project copies are optional"
+            recommendedRemovalRows.isEmpty
+                ? "Keep global; project copies are optional"
+                : "Keep global; remove the identical project copy"
         case .sameName:
             "Compare before removing anything"
         }
@@ -923,7 +940,9 @@ struct DuplicateReviewGroup: Identifiable {
         case .exactDuplicate:
             "The contents match. Keep the copy whose location and lifecycle owner you want."
         case .globalProject:
-            "Review each project copy before removal because same-name skills can differ. Keep a project copy when the project must share it with collaborators. Nothing is selected or removed automatically."
+            recommendedRemovalRows.isEmpty
+                ? "Review each project copy before removal because same-name skills can differ. Keep a project copy when the project must share it with collaborators."
+                : "The project copy has identical instructions. Metagent preselects it for removal; keep it instead when the project must share the skill with collaborators. Nothing is removed until you approve it."
         case .sameName:
             "These bundles share a name but differ enough that one is not a safe replacement for the other."
         }
@@ -1188,6 +1207,9 @@ struct InventorySkillRow: Identifiable, Sendable {
     var updatedText: String {
         weeksOld?.formatted() ?? "—"
     }
+    var updatedDateText: String {
+        updatedDate?.formatted(date: .abbreviated, time: .omitted) ?? "Unknown"
+    }
     var updatedHelp: String {
         guard let updatedDate else { return "No update timestamp is available." }
         return "Recorded update or latest local content change: \(updatedDate.formatted(date: .abbreviated, time: .shortened)). Calendar age alone does not lower Quality."
@@ -1343,7 +1365,7 @@ func skillRemovalMessage(for rows: [InventorySkillRow]) -> String {
     let requests = rows.compactMap(\.removalRequest)
     let pluginCount = requests.filter { $0.method == .codexPlugin }.count
     let managedCount = rows.filter { ["skills-cli", "dotagents"].contains($0.skill.manager) }.count
-    var parts = ["This action is manager-aware and will verify every removal before refreshing inventory."]
+    var parts: [String] = []
     if pluginCount > 0 {
         parts.append("Removing a plugin skill uninstalls its entire Codex plugin, including its other skills; duplicate selections from one plugin are collapsed into one action.")
     }

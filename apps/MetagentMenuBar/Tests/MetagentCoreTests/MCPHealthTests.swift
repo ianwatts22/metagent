@@ -3,6 +3,43 @@ import XCTest
 @testable import MetagentCore
 
 final class MCPHealthTests: XCTestCase {
+    func testAuthenticationCancellationStopsAnActiveLoginPromptly() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-cancel")
+        let executable = root.appendingPathComponent("codex-fixture")
+        try """
+        #!/bin/sh
+        echo 'waiting for browser'
+        sleep 30
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let cancellation = MCPAuthenticationCancellation()
+        let started = Date()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { cancellation.cancel() }
+        let result = try MetagentCore.authenticateMCPServer(
+            MCPServerHealth(client: .codex, name: "fixture", state: .needsSignIn, detail: "Sign-in required"),
+            codexExecutableOverride: executable,
+            cancellation: cancellation,
+            timeout: 30
+        )
+        XCTAssertFalse(result.succeeded)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.message, "Authentication cancelled.")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+    }
+
+    func testCancellationBeforeLoginStartsIsHonored() throws {
+        let cancellation = MCPAuthenticationCancellation()
+        cancellation.cancel()
+        let result = try runSubprocess(
+            executable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["30"],
+            cancellation: cancellation,
+            timeout: 3
+        )
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertFalse(result.timedOut)
+    }
+
     func testCodexInventorySeparatesConfigurationSignInAndDisabledStates() throws {
         let data = Data("""
         [
@@ -31,6 +68,96 @@ final class MCPHealthTests: XCTestCase {
             ["/opt/example/codex", "mcp", "login", "login"]
         )
         XCTAssertFalse(servers[2].supportsAuthentication)
+    }
+
+    func testCodexTransportURLReturnsOnlyTheConfiguredEndpoint() throws {
+        let data = Data("""
+        {
+          "name": "beeper",
+          "enabled": true,
+          "transport": {
+            "type": "streamable_http",
+            "url": "http://127.0.0.1:23373/v0/mcp",
+            "http_headers": {"Authorization": "secret"}
+          }
+        }
+        """.utf8)
+
+        XCTAssertEqual(
+            try MetagentCore.parseCodexMCPTransportURL(data)?.absoluteString,
+            "http://127.0.0.1:23373/v0/mcp"
+        )
+    }
+
+    func testInternalAuthenticationDoesNotRetainFailureOutput() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-auth")
+        let executable = root.appendingPathComponent("codex-fixture")
+        try """
+        #!/bin/sh
+        echo 'https://example.test/authorize?state=secret-state&code=secret-code'
+        echo 'Browser launch failed; please copy the URL above manually.' >&2
+        echo 'OAuth failed at https://example.test/authorize?state=secret-state&code=secret-code' >&2
+        exit 7
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let server = MCPServerHealth(
+            client: .codex,
+            name: "fixture",
+            state: .needsSignIn,
+            detail: "Sign-in required"
+        )
+
+        var openedURL: URL?
+        let result = try MetagentCore.authenticateMCPServer(
+            server,
+            codexExecutableOverride: executable,
+            onManualAuthorizationURL: { openedURL = $0 },
+            timeout: 2
+        )
+
+        XCTAssertEqual(
+            openedURL?.absoluteString,
+            "https://example.test/authorize?state=secret-state&code=secret-code"
+        )
+        XCTAssertFalse(result.succeeded)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.message, "The MCP client could not complete sign-in (exit status 7).")
+        XCTAssertFalse(result.message.contains("example.test"))
+        XCTAssertFalse(result.message.contains("secret-state"))
+        XCTAssertFalse(result.message.contains("secret-code"))
+    }
+
+    func testManualAuthenticationURLRequiresTheBrowserFailureSignal() {
+        XCTAssertNil(MetagentCore.manualMCPAuthorizationURL(
+            standardOutput: Data("https://example.test/authorize?state=one-time".utf8),
+            standardError: Data()
+        ))
+    }
+
+    func testInternalAuthenticationReportsSuccessWithoutRetainingOAuthOutput() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-mcp-auth")
+        let executable = root.appendingPathComponent("codex-fixture")
+        try """
+        #!/bin/sh
+        echo 'https://example.test/authorize?state=one-time'
+        exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let server = MCPServerHealth(
+            client: .codex,
+            name: "fixture",
+            state: .needsSignIn,
+            detail: "Sign-in required"
+        )
+
+        let result = try MetagentCore.authenticateMCPServer(
+            server,
+            codexExecutableOverride: executable,
+            timeout: 2
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.message, "")
     }
 
     func testClaudeInventoryCombinesDirectAndEnabledPluginConfiguration() throws {
@@ -572,6 +699,53 @@ final class MCPHealthTests: XCTestCase {
         XCTAssertEqual(snapshot.count(for: .claude), 1)
         XCTAssertEqual(snapshot.attention.count, 3)
         XCTAssertEqual(snapshot.disabledCount(for: .codex), 1)
+    }
+
+    func testClaudeHealthUsesOnlySharedInventoryAndPreservesGlobalServers() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-mcp-shared-inventory")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let included = home.appendingPathComponent("included")
+        let excluded = home.appendingPathComponent("custom-worktree")
+        let manifestOnly = home.appendingPathComponent("manifest-only")
+        for folder in [included, excluded, manifestOnly] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        try Data("""
+        {"mcpServers":{"global":{}},"projects":{
+          "\(included.path)":{"mcpServers":{"included":{}}},
+          "\(excluded.path)":{"mcpServers":{"excluded":{}}}
+        }}
+        """.utf8).write(to: home.appendingPathComponent(".claude.json"))
+        try Data("""
+        {"mcpServers":{"manifest":{}}}
+        """.utf8).write(to: manifestOnly.appendingPathComponent(".mcp.json"))
+        let servers = MetagentCore.scanClaudeMCPConfiguration(
+            homeDirectory: home,
+            additionalProjectPaths: [included.path, excluded.path, manifestOnly.path],
+            eligibleProjectPaths: [included.path, manifestOnly.path])
+        XCTAssertEqual(Set(servers.map(\.name)), ["global", "included", "manifest"])
+        XCTAssertFalse(servers.flatMap(\.projectStates).contains { $0.path == excluded.path })
+    }
+
+    func testHeadlessInventoryUsesCustomHomeAndReportsDiscoveryFailure() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-custom-home")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let config = home.appendingPathComponent(".config/metagent/config.toml")
+        let project = home.appendingPathComponent("workspace/demo")
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try "roots = [\"~/workspace\"]\nmax_depth = 1\n".write(to: config, atomically: true, encoding: .utf8)
+        try "{\"mcpServers\":{\"custom\":{}}}".write(
+            to: project.appendingPathComponent(".mcp.json"), atomically: true, encoding: .utf8)
+        let snapshot = MetagentCore.scanMCPHealth(homeDirectory: home,
+            codexExecutableOverride: URL(fileURLWithPath: "/usr/bin/false"))
+        XCTAssertEqual(Set(snapshot.servers.flatMap(\.projectStates).map(\.path)),
+                       [canonicalProjectPath(project)])
+        XCTAssertFalse(snapshot.servers.contains { $0.name == "Project inventory" })
+        try "max_depth = invalid\n".write(to: config, atomically: true, encoding: .utf8)
+        let failed = MetagentCore.scanMCPHealth(homeDirectory: home,
+            codexExecutableOverride: URL(fileURLWithPath: "/usr/bin/false"))
+        XCTAssertEqual(failed.servers.first { $0.name == "Project inventory" }?.state, .unavailable)
     }
 
     func testSnapshotInventoryMergesClientsAndScopesByServerName() throws {

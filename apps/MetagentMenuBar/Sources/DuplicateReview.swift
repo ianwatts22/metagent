@@ -6,97 +6,32 @@ import UniformTypeIdentifiers
 
 struct DuplicateReviewExperience: View {
     let groups: [DuplicateReviewGroup]
+    let archivedSkills: [ArchivedSkill]
     let hasVisibleGroups: Bool
     let hasDetectedGroups: Bool
     @Binding var selectedGroupID: String?
     @Binding var removalIDs: Set<SkillTableRow.ID>
+    @State private var isRestoreExpanded = false
     let isRunning: Bool
+    var isRestoreBlocked: Bool = false
     let onView: (SkillTableRow) -> Void
     let onInfo: (SkillTableRow) -> Void
     let onReviewRemoval: ([SkillTableRow]) -> Void
     let onKeepAll: (DuplicateReviewGroup) -> Void
     let onReviewAgain: () -> Void
+    let onRestore: (ArchivedSkill) -> Void
+    let onShowArchive: () -> Void
 
     private var selectedGroup: DuplicateReviewGroup? {
         groups.first { $0.id == selectedGroupID } ?? groups.first
     }
 
     var body: some View {
-        if groups.isEmpty {
-            if hasVisibleGroups {
-                ContentUnavailableView {
-                    Label("Duplicate review complete", systemImage: "checkmark.circle")
-                } description: {
-                    Text("You kept the remaining groups for this session.")
-                } actions: {
-                    Button("Review again", action: onReviewAgain)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView {
-                    Label(
-                        hasDetectedGroups ? "No complete groups match" : "No duplicate skills found",
-                        systemImage: hasDetectedGroups ? "line.3.horizontal.decrease.circle" : "checkmark.circle"
-                    )
-                } description: {
-                    Text(hasDetectedGroups
-                        ? "A directory, source, scope, usage, or search filter is hiding part of each group. Adjust the filters to compare every copy safely."
-                        : "Metagent found no same-name or overlapping canonical skill bundles.")
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        if groups.isEmpty, archivedSkills.isEmpty {
+            emptyReviewState
         } else {
             HStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 5) {
-                        Text(groups.count == 1 ? "1 group to review" : "\(groups.count) groups to review")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 4)
-                            .padding(.bottom, 2)
-                        ForEach(groups) { group in
-                            Button {
-                                select(group)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: group.symbol)
-                                        .foregroundStyle(
-                                            group.id == selectedGroup?.id ? Color.accentColor : .secondary
-                                        )
-                                        .frame(width: 18)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(group.skillName)
-                                            .font(.callout.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text("\(group.rows.count) copies · \(group.similarityText)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if group.id == selectedGroup?.id {
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 9)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(group.id == selectedGroup?.id
-                                            ? Color.accentColor.opacity(0.12)
-                                            : Color.clear)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(8)
-                }
-                .frame(width: 220)
+                reviewSidebar
 
                 Divider()
 
@@ -107,10 +42,6 @@ struct DuplicateReviewExperience: View {
                         isRunning: isRunning,
                         onView: onView,
                         onInfo: onInfo,
-                        onUseRecommendation: {
-                            removalIDs.subtract(selectedGroup.rows.map(\.id))
-                            removalIDs.formUnion(selectedGroup.suggestedRemovalRows.map(\.id))
-                        },
                         onReviewRemoval: {
                             onReviewRemoval(selectedGroup.rows.filter { removalIDs.contains($0.id) })
                         },
@@ -119,6 +50,8 @@ struct DuplicateReviewExperience: View {
                         }
                     )
                     .id(selectedGroup.id)
+                } else {
+                    emptyReviewState
                 }
             }
             .background {
@@ -131,22 +64,208 @@ struct DuplicateReviewExperience: View {
                     .stroke(.quaternary, lineWidth: 1)
             }
             .onAppear {
-                if selectedGroupID == nil {
-                    selectedGroupID = groups.first?.id
+                if let group = selectedGroup {
+                    selectedGroupID = group.id
+                    useRecommendation(for: group)
                 }
             }
             .onChange(of: groups.map(\.id)) { _, ids in
                 guard !ids.contains(selectedGroupID ?? "") else { return }
-                selectedGroupID = ids.first
-                removalIDs.removeAll()
+                guard let group = groups.first else {
+                    selectedGroupID = nil
+                    removalIDs.removeAll()
+                    return
+                }
+                selectedGroupID = group.id
+            }
+            .onChange(of: selectedGroupID) { _, groupID in
+                guard
+                    let groupID,
+                    let group = groups.first(where: { $0.id == groupID })
+                else { return }
+                useRecommendation(for: group)
+            }
+            .onChange(of: selectedGroup?.recommendationRevision) { _, _ in
+                if let group = selectedGroup { useRecommendation(for: group) }
             }
         }
+    }
+
+    @ViewBuilder
+    private var emptyReviewState: some View {
+        if hasVisibleGroups {
+            ContentUnavailableView {
+                Label("Duplicate review complete", systemImage: "checkmark.circle")
+            } description: {
+                Text("You kept the remaining groups for this session.")
+            } actions: {
+                Button("Review again", action: onReviewAgain)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView {
+                Label(
+                    hasDetectedGroups ? "No complete duplicate groups" : "No duplicate skills found",
+                    systemImage: "checkmark.circle"
+                )
+            } description: {
+                Text(hasDetectedGroups
+                    ? "The current project selection does not contain every copy needed for a safe comparison."
+                    : "Metagent found no same-name or overlapping canonical skill bundles.")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var reviewSidebar: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 5) {
+                if !groups.isEmpty {
+                    Text(groups.count == 1 ? "1 group to review" : "\(groups.count) groups to review")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+
+                    ForEach(groups) { group in
+                        Button {
+                            select(group)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: group.symbol)
+                                    .foregroundStyle(
+                                        group.id == selectedGroup?.id ? Color.accentColor : .secondary
+                                    )
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(group.skillName)
+                                        .font(.callout.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text("\(group.rows.count) copies · \(group.similarityText)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if group.id == selectedGroup?.id {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background {
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(group.id == selectedGroup?.id
+                                        ? Color.accentColor.opacity(0.12)
+                                        : Color.clear)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if !archivedSkills.isEmpty {
+                    if !groups.isEmpty {
+                        Divider()
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isRestoreExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(isRestoreExpanded ? 90 : 0))
+                                .frame(width: 12)
+                            Text("Restore")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("\(archivedSkills.count)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Restore \(archivedSkills.count) archived skills")
+                    .accessibilityValue(isRestoreExpanded ? "Expanded" : "Collapsed")
+                    .accessibilityHint("Shows or hides archived skills")
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+
+                    if isRestoreExpanded {
+                        ForEach(archivedSkills) { entry in
+                            Button {
+                                onRestore(entry)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "archivebox")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(entry.skillName)
+                                            .font(.callout.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text("Restore archived skill")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isRunning || isRestoreBlocked)
+                            .help("Restore to \(displayUserPath(entry.skillPath))")
+                        }
+
+                        Button(action: onShowArchive) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "folder")
+                                    .frame(width: 18)
+                                Text("Show in Finder")
+                                    .font(.caption)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Show Archived Skills in Finder")
+                    }
+                }
+            }
+            .padding(8)
+        }
+        .frame(width: 220)
     }
 
     private func select(_ group: DuplicateReviewGroup) {
         guard selectedGroupID != group.id else { return }
         selectedGroupID = group.id
+    }
+
+    private func useRecommendation(for group: DuplicateReviewGroup) {
         removalIDs.removeAll()
+        removalIDs.formUnion(recommendedRemovalIDs(for: group))
     }
 }
 
@@ -156,7 +275,6 @@ struct DuplicateReviewDetail: View {
     let isRunning: Bool
     let onView: (SkillTableRow) -> Void
     let onInfo: (SkillTableRow) -> Void
-    let onUseRecommendation: () -> Void
     let onReviewRemoval: () -> Void
     let onKeepAll: () -> Void
 
@@ -175,59 +293,26 @@ struct DuplicateReviewDetail: View {
     }
 
     private var recommendationTint: Color {
-        group.kind == .pluginReplacement ? .orange : .secondary
+        group.kind == .pluginReplacement ? .orange : .green
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.skillName)
-                            .font(.title3.weight(.semibold))
-                        Text(group.rows.count == 1
-                            ? "1 installed copy"
-                            : "\(group.rows.count) installed copies")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Label("\(group.similarityText) similar", systemImage: "equal.circle.fill")
+                HStack(alignment: .center, spacing: 8) {
+                    Text(group.skillName)
+                        .font(.title3.weight(.semibold))
+                    Text(group.rows.count == 1 ? "1 copy" : "\(group.rows.count) copies")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Label("\(group.similarityText) word overlap", systemImage: "equal.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(Color.accentColor.opacity(0.10), in: Capsule())
-                }
-
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: group.kind == .pluginReplacement
-                        ? "lightbulb.max.fill"
-                        : "lightbulb")
-                        .foregroundStyle(recommendationTint)
-                        .font(.callout)
-                        .frame(width: 26, height: 26)
-                        .background(recommendationTint.opacity(0.12), in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.recommendationTitle)
-                            .font(.callout.weight(.semibold))
-                        Text(group.recommendationDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 8)
-                    if !group.suggestedRemovalRows.isEmpty {
-                        Button("Use recommendation", action: onUseRecommendation)
-                            .buttonStyle(.glass)
-                            .help("Select Metagent’s recommended copies for removal. Nothing is removed until you approve the final review.")
-                    }
-                }
-                .padding(10)
-                .background(recommendationTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(recommendationTint.opacity(0.18), lineWidth: 1)
+                        .help(group.similarityHelp)
+                    Spacer()
                 }
 
                 LazyVGrid(
@@ -253,37 +338,60 @@ struct DuplicateReviewDetail: View {
                         )
                     }
                 }
+
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(recommendationTint)
+                        .font(.body.weight(.semibold))
+                        .frame(width: 30, height: 30)
+                        .background(recommendationTint.opacity(0.12), in: Circle())
+                    HStack(spacing: 0) {
+                        Text("Recommendation: ").bold()
+                        Text(group.recommendationTitle)
+                    }
+                    .font(.title3.weight(.semibold))
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                        .help(group.recommendationDetail)
+                        .accessibilityLabel("Recommendation details")
+                        .accessibilityHint(group.recommendationDetail)
+                    Spacer(minLength: 8)
+                }
+                .padding(10)
+                .background(recommendationTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(recommendationTint.opacity(0.18), lineWidth: 1)
+                }
+
+                HStack(spacing: 12) {
+                    Button(action: onKeepAll) {
+                        Text("Keep all")
+                            .frame(minWidth: 150, minHeight: 26)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .disabled(isRunning)
+                    .help("Keep every copy in this group and mark it reviewed for this session.")
+
+                    Button(role: .destructive, action: onReviewRemoval) {
+                        Text(selectedRemovalCount == 1
+                            ? "Remove 1 copy"
+                            : "Remove \(selectedRemovalCount) copies")
+                            .frame(minWidth: 170, minHeight: 26)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .disabled(selectedRemovalCount == 0 || isRunning)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
             }
             .padding(14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 10) {
-                Button("Keep all", action: onKeepAll)
-                    .buttonStyle(.glass)
-                    .disabled(isRunning)
-                    .help("Keep every copy in this group and mark it reviewed for this session.")
-                Spacer()
-                if selectedRemovalCount > 0 {
-                    Text(selectedRemovalCount == 1
-                        ? "1 copy marked for removal"
-                        : "\(selectedRemovalCount) copies marked for removal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button(
-                    selectedRemovalCount > 1 ? "Review \(selectedRemovalCount) removals…" : "Review removal…",
-                    role: .destructive,
-                    action: onReviewRemoval
-                )
-                .buttonStyle(.glassProminent)
-                .disabled(selectedRemovalCount == 0 || isRunning)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.bar)
-            .overlay(alignment: .top) { Divider() }
-        }
     }
 }
 
@@ -301,14 +409,6 @@ struct DuplicateCandidateCard: View {
         }
         return request.method == .codexPlugin ? "Remove plugin" : "Remove"
     }
-    private var removalControlWidth: CGFloat {
-        switch removalLabel {
-        case "Remove project copy": 225
-        case "Remove plugin": 190
-        default: 155
-        }
-    }
-
     private var isProjectSkill: Bool { row.scope == "project" }
     private var locationLabel: String {
         isProjectSkill ? row.projectName : "Global"
@@ -328,27 +428,29 @@ struct DuplicateCandidateCard: View {
                 Text(row.sourceText)
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
-                Spacer(minLength: 8)
-                if row.overlap?.suggestedRemoval == true {
-                    Text("Suggested removal")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(.orange.opacity(0.12), in: Capsule())
+                Button("View", action: onView)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                Button(action: onInfo) {
+                    Image(systemName: "info.circle")
                 }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.small)
+                .help("Get Info")
+                Spacer(minLength: 8)
+                Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isProjectSkill ? Color.accentColor : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        (isProjectSkill ? Color.accentColor : Color.secondary).opacity(0.10),
+                        in: Capsule()
+                    )
+                    .help(locationHelp)
             }
-
-            Label(locationLabel, systemImage: isProjectSkill ? "folder.fill" : "globe")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isProjectSkill ? Color.accentColor : .secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    (isProjectSkill ? Color.accentColor : Color.secondary).opacity(0.10),
-                    in: Capsule()
-                )
-                .help(locationHelp)
 
             if row.descriptionText != "—" {
                 Text(row.descriptionText)
@@ -359,10 +461,10 @@ struct DuplicateCandidateCard: View {
 
             HStack(spacing: 12) {
                 candidateStat("Last 30 days", row.invocations30d.formatted())
-                Divider().frame(height: 24)
+                Divider().frame(height: 30)
                 candidateStat("All time", row.totalInvocations.formatted())
-                Divider().frame(height: 24)
-                candidateStat("Updated", row.updatedText)
+                Divider().frame(height: 30)
+                candidateStat("Last updated", row.updatedDateText)
                 Spacer(minLength: 0)
             }
 
@@ -373,38 +475,18 @@ struct DuplicateCandidateCard: View {
                 .truncationMode(.middle)
                 .help(displayUserPath(row.canonicalPath ?? row.skillPath))
 
-            Divider()
-
-            HStack {
-                Button("View", action: onView)
-                    .buttonStyle(.glass)
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .help("Get Info")
-                Spacer()
-                if canRemove {
-                    Picker("Decision", selection: $isMarkedForRemoval) {
-                        Text("Keep").tag(false)
-                        Text(removalLabel).tag(true)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .glassEffect(.regular.interactive(), in: Capsule())
-                    .tint(isMarkedForRemoval ? .red : .accentColor)
-                    .frame(width: removalControlWidth)
-                    .accessibilityLabel("Duplicate decision")
-                    .help(removalLabel == "Remove plugin"
-                        ? "Removing this copy uninstalls its entire plugin."
-                        : "The final removal still requires approval.")
-                } else {
-                    Label("Keep", systemImage: "lock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Metagent does not have a safe removal action for this managed copy.")
-                }
+            if canRemove {
+                DuplicateDecisionControl(
+                    removalLabel: removalLabel,
+                    isMarkedForRemoval: $isMarkedForRemoval
+                )
+            } else {
+                Label(unavailableRemovalLabel, systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .background(.quaternary.opacity(0.45), in: Capsule())
+                    .help(unavailableRemovalHelp)
             }
         }
         .padding(12)
@@ -422,12 +504,83 @@ struct DuplicateCandidateCard: View {
     private func candidateStat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value)
-                .font(.caption.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .monospacedDigit()
                 .lineLimit(1)
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var unavailableRemovalLabel: String {
+        row.sourceCategory == .externalCLI ? "Managed by external CLI" : "Keep"
+    }
+
+    private var unavailableRemovalHelp: String {
+        if row.sourceCategory == .externalCLI {
+            return "This bundle is owned by \(row.sourceText). Metagent will not delete it behind that tool’s back; remove it with the owning CLI."
+        }
+        return "Metagent does not have a safe removal action for this managed copy."
+    }
+}
+
+func recommendedRemovalIDs(for group: DuplicateReviewGroup) -> Set<SkillTableRow.ID> {
+    Set(group.recommendedRemovalRows.map(\.id))
+}
+
+private struct DuplicateDecisionControl: View {
+    let removalLabel: String
+    @Binding var isMarkedForRemoval: Bool
+
+    var body: some View {
+        HStack(spacing: 3) {
+            decisionButton("Keep", isSelected: !isMarkedForRemoval) {
+                isMarkedForRemoval = false
+            }
+            decisionButton(removalLabel, isSelected: isMarkedForRemoval, isDestructive: true) {
+                isMarkedForRemoval = true
+            }
+        }
+        .padding(3)
+        .frame(maxWidth: .infinity, minHeight: 36)
+        .background(.quaternary.opacity(0.55), in: Capsule())
+        .overlay { Capsule().stroke(.quaternary, lineWidth: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Duplicate decision")
+        .help(removalLabel == "Remove plugin"
+            ? "Removing this copy uninstalls its entire plugin."
+            : "The final removal still requires approval.")
+    }
+
+    private func decisionButton(
+        _ title: String,
+        isSelected: Bool,
+        isDestructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected && isDestructive ? Color.white : Color.primary)
+        .background(
+            isSelected
+                ? AnyShapeStyle(isDestructive ? Color.red : Color.accentColor.opacity(0.20))
+                : AnyShapeStyle(Color.clear),
+            in: Capsule()
+        )
+        .overlay {
+            if isSelected {
+                Capsule().stroke(
+                    isDestructive ? Color.red.opacity(0.75) : Color.accentColor.opacity(0.45),
+                    lineWidth: 1
+                )
+            }
         }
     }
 }
@@ -648,6 +801,7 @@ private enum DuplicateReviewPreviewData {
     @Previewable @State var removalIDs = Set<SkillTableRow.ID>()
     DuplicateReviewExperience(
         groups: DuplicateReviewPreviewData.groups,
+        archivedSkills: [],
         hasVisibleGroups: true,
         hasDetectedGroups: true,
         selectedGroupID: $selectedGroupID,
@@ -657,7 +811,9 @@ private enum DuplicateReviewPreviewData {
         onInfo: { _ in },
         onReviewRemoval: { _ in },
         onKeepAll: { _ in },
-        onReviewAgain: {}
+        onReviewAgain: {},
+        onRestore: { _ in },
+        onShowArchive: {}
     )
     .padding(20)
 }
