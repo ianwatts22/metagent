@@ -115,12 +115,11 @@ struct MetagentPanel: View {
         .help("Needs attention and ignored items")
         .accessibilityLabel("Notifications")
         .popover(isPresented: $showsAttention, arrowEdge: .top) {
-            ScrollView {
-                AttentionCenterList(model: model, store: attentionStore, items: attentionItems) {
-                    showsAttention = false
-                    openDuplicateReview()
-                }
-            }.frame(width: 560).frame(maxHeight: 560)
+            AttentionCenterList(model: model, store: attentionStore, items: attentionItems) {
+                showsAttention = false
+                openDuplicateReview()
+            }
+            .frame(width: 560)
         }
     }
 

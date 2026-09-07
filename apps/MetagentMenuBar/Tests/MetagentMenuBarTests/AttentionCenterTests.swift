@@ -3,6 +3,19 @@ import MetagentCore
 import Testing
 @testable import MetagentMenuBar
 
+@Test func duplicateAttentionIsOneStableSummary() throws {
+    let first = AttentionItem(id: "duplicate:a", fingerprint: "a1", title: "A", detail: "", action: .duplicate("a"))
+    let second = AttentionItem(id: "duplicate:b", fingerprint: "b1", title: "B", detail: "", action: .duplicate("b"))
+    let summary = try #require(AttentionItem.consolidatingDuplicates([first, second]).first)
+    #expect(AttentionItem.consolidatingDuplicates([first, second]).count == 1)
+    #expect(summary.title == "2 potential duplicate skills")
+    #expect(summary.fingerprint == AttentionItem.consolidatingDuplicates([second, first]).first?.fingerprint)
+    #expect(summary.fingerprint != AttentionItem.consolidatingDuplicates([first]).first?.fingerprint)
+    if case let .duplicate(groupID) = summary.action { #expect(groupID.isEmpty) }
+    else { Issue.record("Summary must open the duplicate overview") }
+    #expect(AttentionItem.consolidatingDuplicates([]).isEmpty)
+}
+
 @MainActor
 @Test func attentionIgnorePersistsAndChangedConditionResurfaces() throws {
     let suite = "AttentionCenterTests.\(UUID().uuidString)"

@@ -20,6 +20,25 @@ struct AttentionItem: Identifiable {
         let data = (try? JSONEncoder().encode(fields)) ?? Data()
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+
+    static func consolidatingDuplicates(_ items: [AttentionItem]) -> [AttentionItem] {
+        let duplicates = items.filter { if case .duplicate = $0.action { return true }; return false }
+        guard !duplicates.isEmpty else { return items }
+        let summary = AttentionItem(
+            id: "duplicates:summary",
+            fingerprint: fingerprint(duplicates.sorted { $0.id < $1.id }.flatMap { [$0.id, $0.fingerprint] }),
+            title: "\(duplicates.count) potential duplicate skills",
+            detail: "Review which copies to keep",
+            action: .duplicate("")
+        )
+        var inserted = false
+        return items.compactMap { item in
+            guard case .duplicate = item.action else { return item }
+            guard !inserted else { return nil }
+            inserted = true
+            return summary
+        }
+    }
 }
 
 /// One locally persisted dismissal registry shared by the window and menu bar.
@@ -118,7 +137,8 @@ final class AttentionCenterStore: ObservableObject {
                 action: .mcp(server)
             ))
         }
-        return result
+        // Preserve existing individual dismissals while presenting one category row.
+        return AttentionItem.consolidatingDuplicates(result.filter { !isIgnored($0) || !($0.id.hasPrefix("duplicate:")) })
     }
 }
 
@@ -132,6 +152,7 @@ struct AttentionCenterList: View {
     @State private var repairRoot: String?
     @State private var showsRepair = false
     @State private var detailIssue: DoctorIssue?
+    @State private var listHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -142,33 +163,39 @@ struct AttentionCenterList: View {
             }
             .padding(16)
             .background(Color.orange.opacity(0.07))
-            let active = items.filter { !store.isIgnored($0) }
-            if active.isEmpty {
-                Text("You're all caught up")
-                    .foregroundStyle(.secondary)
-                    .padding(16)
-            }
-            ForEach(active) { item in
-                Divider()
-                itemRow(item)
-            }
-            if !store.ignored.isEmpty {
-                Divider()
-                DisclosureGroup("Ignored", isExpanded: $showsIgnored) {
-                    ForEach(items.filter(store.isIgnored)) { item in
-                        HStack {
-                            Text(item.title).font(.callout)
-                            Spacer()
-                            Button("Restore") { store.restore(item) }
-                                .buttonStyle(.glass).buttonBorderShape(.capsule)
-                        }.padding(.vertical, 6)
+            ScrollView {
+                VStack(spacing: 0) {
+                    let active = items.filter { !store.isIgnored($0) }
+                    if active.isEmpty {
+                        Text("You're all caught up")
+                            .foregroundStyle(.secondary)
+                            .padding(16)
                     }
-                    Button("Restore all ignored items") { store.restoreAll() }
-                        .padding(.top, 6)
-                        .help("Also clears dismissals for conditions that are not currently present")
+                    ForEach(active) { item in
+                        Divider()
+                        itemRow(item)
+                    }
+                    if !store.ignored.isEmpty {
+                        Divider()
+                        DisclosureGroup("Ignored", isExpanded: $showsIgnored) {
+                            ForEach(items.filter(store.isIgnored)) { item in
+                                HStack {
+                                    Text(item.title).font(.callout)
+                                    Spacer()
+                                    Button("Restore") { store.restore(item) }
+                                        .buttonStyle(.glass).buttonBorderShape(.capsule)
+                                }.padding(.vertical, 6)
+                            }
+                            Button("Restore all ignored items") { store.restoreAll() }
+                                .padding(.top, 6)
+                                .help("Also clears dismissals for conditions that are not currently present")
+                        }
+                        .padding(16)
+                    }
                 }
-                .padding(16)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
+            .frame(height: min(listHeight, 320))
         }
         .sheet(isPresented: $showsRepair) {
             RepairSection(model: model, projectRoot: repairRoot)
@@ -194,10 +221,12 @@ struct AttentionCenterList: View {
             } else {
                 Image(systemName: itemSymbol(item)).foregroundStyle(.orange)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title).font(.callout.weight(.medium))
-                Text(itemDetail(item)).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            Text(item.title).font(.callout.weight(.medium))
+            if case let .mcp(server) = item.action, let error = model.mcpAttentionErrors[server.id] {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .help(error)
+                    .accessibilityLabel("Action failed: \(error)")
             }
             Spacer(minLength: 8)
             Button(actionTitle(item)) { perform(item) }
@@ -221,11 +250,6 @@ struct AttentionCenterList: View {
     private func isChecking(_ item: AttentionItem) -> Bool {
         guard case let .mcp(server) = item.action else { return false }
         return model.pendingMCPAttentionIDs.contains(server.id)
-    }
-
-    private func itemDetail(_ item: AttentionItem) -> String {
-        guard case let .mcp(server) = item.action else { return item.detail }
-        return model.mcpAttentionErrors[server.id] ?? (isChecking(item) ? "Checking that the connection is ready…" : item.detail)
     }
 
     private func actionTitle(_ item: AttentionItem) -> String {
