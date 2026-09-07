@@ -3,6 +3,42 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillDiscoveryTests: XCTestCase {
+    func testEmptyCollectionWithClaudeProjectionIsHealthyButMalformedBundleStillWarns() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-empty-collection")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let skills = root.appendingPathComponent(".agents/skills")
+        let claude = root.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: skills, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: claude.appendingPathComponent("skills").path,
+                                                   withDestinationPath: "../.agents/skills")
+        let empty = MetagentCore.doctor(projects: [try readProjectSkills(root: root)])
+        XCTAssertFalse(empty.issues.contains { $0.severity != .ok })
+        let malformed = skills.appendingPathComponent("INVALID NAME")
+        try FileManager.default.createDirectory(at: malformed, withIntermediateDirectories: true)
+        try "---\nname: invalid\ndescription: Test\n---\n".write(
+            to: malformed.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        let invalid = MetagentCore.doctor(projects: [try readProjectSkills(root: root)])
+        XCTAssertTrue(invalid.issues.contains { $0.summary == "Invalid skill directory" })
+    }
+
+    func testArchiveSentinelModificationTimeIsUnknownUntilRealContentUpdate() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-sentinel-date")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = root.appendingPathComponent(".agents/skills/example")
+        try writeSkillFixture(at: bundle, name: "example")
+        let document = bundle.appendingPathComponent("SKILL.md")
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)],
+                                             ofItemAtPath: document.path)
+        let options = SkillScanOptions(roots: [root.path], maxDepth: 1, respectConfiguredIgnores: false)
+        let unknown = try MetagentCore.scanSkills(options: options)
+        XCTAssertNil(try XCTUnwrap(unknown.projects.flatMap(\.skills).first).updatedAt)
+        let realDate = Date(timeIntervalSince1970: 1_600_000_000)
+        try FileManager.default.setAttributes([.modificationDate: realDate], ofItemAtPath: document.path)
+        let updated = try MetagentCore.scanSkills(options: options)
+        XCTAssertEqual(MetagentCore.skillUpdateDate(try XCTUnwrap(updated.projects.flatMap(\.skills).first).updatedAt), realDate)
+    }
+
     func testSharedInventoryIncludesMCPOnlyAndConfiguredProjectsWithinTraversalScope() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-shared-projects")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -38,7 +74,7 @@ final class SkillDiscoveryTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         let emptySkills = try MetagentCore.scanSkills(options: SkillScanOptions(
             roots: [root.path], maxDepth: 1, respectConfiguredIgnores: false))
-        XCTAssertTrue(MetagentCore.doctor(reports: [emptySkills]).issues.contains {
+        XCTAssertFalse(MetagentCore.doctor(reports: [emptySkills]).issues.contains {
             $0.summary == "No valid .agents skills" && $0.projectRoot == manifest.path
         })
     }

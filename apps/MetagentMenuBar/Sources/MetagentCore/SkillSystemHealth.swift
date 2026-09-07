@@ -168,8 +168,7 @@ public extension MetagentCore {
         }
         let invocationCounts = matchedUsage.map { $0?.totalInvocations ?? 0 }
         let knownAges = scopedSkills.compactMap { skill -> Int? in
-            guard let updatedAt = skill.updatedAt,
-                  let updatedDate = parseSkillUsageTimestamp(updatedAt)
+            guard let updatedDate = skillUpdateDate(skill.updatedAt)
             else { return nil }
             let days = Calendar.current.dateComponents([.day], from: updatedDate, to: now).day ?? 0
             return max(0, days) / 7

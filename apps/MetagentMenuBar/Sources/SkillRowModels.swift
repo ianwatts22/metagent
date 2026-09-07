@@ -1075,7 +1075,7 @@ struct InventorySkillRow: Identifiable, Sendable {
                     ?? pluginUsageMatchKey(skill).flatMap { pluginUsageByKey[$0] }
                     ?? (skill.canonicalPath.isEmpty ? usageByIdentity["\(skill.name):\(skill.scope)"] : nil)
                 let modelReviewTargets = MetagentCore.modelReviewTargets(
-                    skillUpdatedAt: skill.updatedAt.flatMap(parseISO8601Date),
+                    skillUpdatedAt: MetagentCore.skillUpdateDate(skill.updatedAt),
                     affirmedAt: releaseAffirmations[canonicalPath],
                     releases: modelReleases.releases,
                     trackedProviders: trackedModelProviders
@@ -1200,7 +1200,7 @@ struct InventorySkillRow: Identifiable, Sendable {
         skill.ref.map { "Recorded version or Git ref: \($0)" }
             ?? "No version or Git ref is recorded for this source."
     }
-    var updatedDate: Date? { skill.updatedAt.flatMap(parseISO8601Date) }
+    var updatedDate: Date? { MetagentCore.skillUpdateDate(skill.updatedAt) }
     var weeksOld: Int? {
         updatedDate.map { max(0, Calendar.current.dateComponents([.day], from: $0, to: Date()).day ?? 0) / 7 }
     }

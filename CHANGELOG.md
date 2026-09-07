@@ -3,6 +3,17 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.8.0 — 2026-09-06
+
+- A shared notification bell and compact homepage action list let you review,
+  ignore, and restore issues without losing sight of your skills metrics.
+- Duplicate skills appear as one summary action, and notification rows no
+  longer repeat unnecessary headings or subtitles.
+- Completed actions refresh their findings automatically, with connection
+  verification and clear failure feedback instead of stale notifications.
+- Unknown skill dates no longer distort age statistics or history trends.
+- Empty skills collections no longer produce misleading repair warnings.
+
 ## v0.7.0 — 2026-09-05
 
 - One shared project inventory now powers Skills, MCP health, and the project

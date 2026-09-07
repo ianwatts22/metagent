@@ -26,7 +26,7 @@ Current surface:
 - status is carried by the number itself rather than by added dots, icons, meters, or card fills, so six cards never become a color field. Values tint green under 20%, yellow under 40%, orange under 60%, and red at or above 60% of the rated portfolio. `SKILL.md instructions` stays entirely neutral because inventory size has no target.
 - the reads distribution is three sub-tiles inside one card, one per percentile, rather than a single crowded string. Every figure on the card, headline or percentile, uses the same shape: the number, then its qualifier in muted text beside it. Only the median tile takes a status color, because only it supports a health claim: a P50 of zero means most of the portfolio has never been read.
 - the portfolio view stops rating project skills in directories with no recorded agent session in the last 30 days, so dormant work does not inflate every unused rate. Dormancy is read from Claude Code session-history metadata only: a project root is folded to its session-directory name, and the newest `.jsonl` modification time in that directory is the project's last activity. Only directory and file metadata are read, never transcript contents. Codex rollouts are not consulted, so a directory worked in exclusively through Codex reads as dormant. Selecting a directory explicitly rates all of its skills, and when no session corpus is indexed at all nothing is treated as dormant. Token, age, and duplicate totals always describe everything installed in scope rather than only the rated subset.
-- actionable health summary with Doctor findings grouped into project-level cleanups
+- shared Needs attention list and toolbar notification bell, with per-condition Ignore/Restore and explicit repair previews
 - contextual repair preview shown only when a fix is available
 - one native inset `Skills` table with persisted `Summary`, `Review`, `Inventory`, and `Usage` presets, plus a guided `Duplicates` decision queue. The view switcher uses the same glass track and accent capsule as the main navigation rather than a segmented picker wrapped in glass, which rendered a squared selection and resized as labels changed.
 - destination pages carry no title of their own, because the active tab already names them. Row counts appear as one quiet chip beside the controls. Search and the usage-lifecycle filter stay in the open; location, grouping, and source visibility live behind one `Filters` menu that reports how many of them are off their defaults.
@@ -62,7 +62,7 @@ Refresh behavior:
 - Skill provenance is resolved from skills-CLI locks first, then genuine dotagents source declarations, specifically recognized third-party CLI bundle signatures, and agent-specific/plugin installation locations. Everything else is `Local or unknown`: editable, but without a claimed upstream. The signature registry is deliberately narrow: a generic version field or a containing Git repository never establishes external ownership. A dotagents source that points back to its own `.agents/skills/<name>` install directory is orphan-adoption bookkeeping and does not establish lifecycle ownership.
 - Plugin usage matches a marketplace-aware plugin-and-skill identity across versioned cache folders. The known `openai-curated` to `openai-curated-remote` rename remains one history, while genuinely different marketplaces remain separate.
 - Doctor does not treat Skills CLI lock hashes as local-integrity fingerprints. Those hashes describe source folders used for update checks, while installation can intentionally omit source-only files, so comparing them to the installed copy creates false warnings.
-- The Doctor card opens the current grouped cleanups. Repairable findings show an exact preview before applying a narrowly scoped action. Obsolete Codex projection cleanup removes only stale symlinks under `.codex/skills`; canonical skill folders are never removed.
+- Repairable Doctor findings show an exact preview before applying a narrowly scoped action. Obsolete Codex projection cleanup removes only stale symlinks under `.codex/skills`; canonical skill folders are never removed. Intentionally empty collections are not warnings.
 - The UI keeps the most recent scan in memory until the next refresh.
 - User-facing paths abbreviate the current home directory as `~`; canonical paths remain absolute internally and on copied values.
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
@@ -174,16 +174,23 @@ Two-channel deployment model:
 
 The Overview includes a compact MCP Connections summary. Its default check is passive: Codex is read through `codex mcp list --json`, while Claude is inventoried from user and project configuration plus enabled plugin manifests. The collapsed row keeps its left-hand text to a health statement and moves the configured total to the right, beside the per-client counts it decomposes into. It only expands automatically for sign-in, unreadable configuration, or pending project approval. Intentional disabled state stays neutral. The icon-only refresh action exposes its meaning through a tooltip and accessibility label; the checked-at timestamp is intentionally omitted as low-signal chrome.
 
-The Overview is exception-only for skill cleanup. A compact cleanup row appears
-only when Doctor has an actionable finding, and it sits inside the Skills card
-below the metric grid — cleanup is a fact about the skill corpus, not a section
-of its own after MCP Connections. A healthy “no cleanup needed” card and
-generic operation output are intentionally omitted. Cleanup failures stay
-inside the review sheet that owns the operation.
+The Overview and toolbar notification bell share the same Needs attention
+items and project scope. Findings name the specific problem; repairable skill
+projections open a preview before any filesystem change. Ignore hides an item
+locally, and the collapsed Ignored section restores it. A changed finding can
+return, rather than being suppressed forever by its title alone. An empty
+`.agents/skills` collection is valid and does not need a repair. Metagent does
+not migrate independent Claude skills or overwrite conflicting symlinks just
+to silence a notification.
 
 MCP health and Doctor do not poll on a timer. Both run when the app model starts,
 when the overall refresh action is used, and after a successful repair or
-removal. The MCP card and MCP tab also provide an MCP-only refresh action.
+removal. Successful in-app authentication enters a Checking state and triggers
+fresh MCP evidence, with a bounded retry grace period. Pre-action scan results
+cannot overwrite that state. Failed verification restores an actionable error.
+Returning from an external approval flow rechecks MCP state without claiming
+that opening the other app completed approval. Skill removal also refreshes
+Doctor from the same inventory result; no additional manual refresh is needed.
 
 The MCPs tab groups the same server name across Codex and Claude into one row and
 shows its clients, passive configuration state, and global/project location. The

@@ -4,6 +4,17 @@ import MetagentCore
 import Testing
 @testable import MetagentMenuBar
 
+@Test func skillTableSentinelUpdateDatesDisplayUnknown() throws {
+    for timestamp in [nil, "1970-01-01T00:00:01Z", "1900-01-01T00:00:00Z"] as [String?] {
+        let row = skillTableRow(name: "missing-date", root: "/tmp/date-ui", scope: "project", updatedAt: timestamp)
+        let inventory = try #require(row.inventory)
+        #expect(inventory.updatedDate == nil)
+        #expect(inventory.weeksOld == nil)
+        #expect(inventory.updatedText == "—")
+        #expect(inventory.updatedDateText == "Unknown")
+    }
+}
+
 @Test func skillTableFilterPreservesViewScopeUsageSourceAndSearchSemantics() {
     let global = skillTableRow(name: "global-helper", root: NSHomeDirectory(), scope: "global")
     let project = skillTableRow(name: "project-helper", root: "/tmp/project-a", scope: "project")
@@ -320,7 +331,8 @@ private func skillTableRow(
     name: String,
     root: String,
     scope: String,
-    overlap: SkillOverlapMembership? = nil
+    overlap: SkillOverlapMembership? = nil,
+    updatedAt: String? = nil
 ) -> SkillTableRow {
     let path = root + "/.agents/skills/" + name
     let skill = SkillInventoryItem(
@@ -341,7 +353,7 @@ private func skillTableRow(
         sourceURL: nil,
         ref: nil,
         installedAt: nil,
-        updatedAt: nil,
+        updatedAt: updatedAt,
         symlinkedContainer: false,
         folderKind: scope == "global" ? "home" : "project",
         characterCount: 100,

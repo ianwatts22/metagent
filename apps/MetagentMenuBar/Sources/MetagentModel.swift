@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import MetagentCore
 import SwiftUI
@@ -86,6 +87,19 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var authenticatingMCPServerID: String?
+    @Published private(set) var pendingMCPAttentionIDs = Set<String>()
+    @Published private(set) var mcpAttentionErrors: [String: String] = [:]
+    @Published private(set) var mcpAttentionServers: [String: MCPServerHealth] = [:]
+    /// Preserve the identity of a connection being verified even if a failed
+    /// CLI inventory omits it. Never feed this presentation snapshot back into
+    /// verification, which must consume only freshly observed evidence.
+    var attentionMCPHealth: MCPHealthSnapshot {
+        mcpAttentionSnapshot(mcpHealth, retainedServers: mcpAttentionServers)
+    }
+    private var mcpVerification = MCPAttentionVerification()
+    private var externalMCPActionIDs = Set<String>()
+    private var mcpVerificationRetry: Task<Void, Never>?
+    private var applicationActivationObserver: AnyCancellable?
     private var mcpAuthenticationAlert: NSAlert?
     private var mcpHealthRefreshQueued = false
     /// Measured codebase size per standardized project root. Only git
@@ -99,6 +113,9 @@ final class MetagentModel: ObservableObject {
     /// Inputs consumed by `SkillTableRowStore` only. Keeping this narrower
     /// prevents parser bookkeeping from cancelling a cold row build.
     @Published private(set) var skillTableRowRevision = 0
+    /// Advances for newly observed inventory, not usage-only metric updates.
+    /// Even unchanged SKILL.md metadata can hide changes to bundle support files.
+    @Published private(set) var inventoryRevision = 0
     @Published private(set) var pendingSkillRemovalIDs = Set<String>()
     @Published private(set) var isRemovingSkills = false
     @Published private(set) var modelReleases = ModelReleaseSnapshot.empty
@@ -141,6 +158,10 @@ final class MetagentModel: ObservableObject {
 
     init(launchCacheLoader: MetagentLaunchCacheLoader = .live) {
         self.launchCacheLoader = launchCacheLoader
+        applicationActivationObserver = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.reconcileExternalMCPActions() }
+            }
         if let snapshot = launchCacheLoader.loadInventory() {
             projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
             updateInventorySummary()
@@ -811,13 +832,16 @@ final class MetagentModel: ObservableObject {
             return
         }
         isMCPRefreshing = true
+        let generation = mcpVerification.generation
         let inventoryPaths = directoryFilterOptions(projects: projects).map(\.root)
         Task {
             let snapshot = await Task.detached(priority: .utility) {
                 MetagentCore.scanMCPHealth(projectInventoryPaths: inventoryPaths)
             }.value
-            if inventoryPaths == directoryFilterOptions(projects: projects).map(\.root) {
+            if generation == mcpVerification.generation,
+               inventoryPaths == directoryFilterOptions(projects: projects).map(\.root) {
                 mcpHealth = snapshot
+                reconcileMCPAttention(snapshot, generation: generation)
             } else {
                 mcpHealthRefreshQueued = true
             }
@@ -827,6 +851,49 @@ final class MetagentModel: ObservableObject {
                 refreshMCPHealth()
             }
         }
+    }
+
+    private func verifyMCPAction(_ server: MCPServerHealth) {
+        mcpAttentionErrors[server.id] = nil
+        mcpAttentionServers[server.id] = server
+        mcpVerification.begin(serverID: server.id)
+        pendingMCPAttentionIDs = mcpVerification.pendingIDs
+        refreshMCPHealth()
+    }
+
+    private func reconcileMCPAttention(_ snapshot: MCPHealthSnapshot, generation: Int) {
+        let failures = mcpVerification.consume(snapshot, generation: generation)
+        pendingMCPAttentionIDs = mcpVerification.pendingIDs
+        for server in snapshot.servers where !server.state.needsAttention {
+            mcpAttentionErrors[server.id] = nil
+            mcpAttentionServers[server.id] = nil
+        }
+        for id in failures {
+            let name = snapshot.servers.first { $0.id == id }?.name ?? mcpAttentionServers[id]?.name ?? id
+            let message = "Sign-in finished, but \(name) still needs attention. Check its connection and try again."
+            mcpAttentionErrors[id] = message
+            recordOperationFailure(title: "MCP connection could not be verified", message: message)
+        }
+        guard !pendingMCPAttentionIDs.isEmpty else {
+            mcpVerificationRetry?.cancel()
+            mcpVerificationRetry = nil
+            return
+        }
+        mcpVerificationRetry?.cancel()
+        mcpVerificationRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, !pendingMCPAttentionIDs.isEmpty else { return }
+            refreshMCPHealth()
+        }
+    }
+
+    /// Returning from an external approval UI is not proof of success. Only
+    /// refresh MCP evidence; do not hide it or rescan the whole skills inventory.
+    private func reconcileExternalMCPActions() {
+        guard !externalMCPActionIDs.isEmpty else { return }
+        externalMCPActionIDs.removeAll()
+        mcpVerification.invalidate()
+        refreshMCPHealth()
     }
 
     func refreshPluginInventory() {
@@ -930,15 +997,18 @@ final class MetagentModel: ObservableObject {
            server.projectPaths.count == 1,
            let projectPath = server.projectPaths.first
         {
+            externalMCPActionIDs.insert(server.id)
             openClaudeCode(at: projectPath)
             return
         }
 
+        externalMCPActionIDs.insert(server.id)
         openMCPClient(server.client)
     }
 
     private func authenticateMCPServer(_ server: MCPServerHealth) {
         guard authenticatingMCPServerID == nil else { return }
+        mcpAttentionErrors[server.id] = nil
         authenticatingMCPServerID = server.id
 
         Task {
@@ -1016,7 +1086,7 @@ final class MetagentModel: ObservableObject {
                 authenticatingMCPServerID = nil
                 // Codex writes credentials before the command exits. Re-scan
                 // immediately so Needs attention clears without a page reload.
-                refreshMCPHealth()
+                verifyMCPAction(server)
             case let .completed(result):
                 let message = endpoint.map { url in
                     isLoopbackMCPURL(url)
@@ -1661,6 +1731,9 @@ final class MetagentModel: ObservableObject {
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
             let (scan, homeScan, pluginScan) = await Self.scanInventory()
+            let doctor = await Task.detached(priority: .utility) {
+                Self.doctorResult(scan: scan, homeScan: homeScan)
+            }.value
 
             let refreshedProjects = [
                 scan.value?.projects,
@@ -1674,7 +1747,22 @@ final class MetagentModel: ObservableObject {
             let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
             if didRefreshInventory {
                 projects = Self.mergeProjects(refreshedProjects)
+                inventoryRevision += 1
                 updateInventorySummary()
+                // Removal already collected fresh inventory. Reconcile its
+                // derived attention state too, without another inventory scan.
+                if let report = doctor.value {
+                    applyDoctorReport(report)
+                } else {
+                    recordFailureOutput(
+                        title: "Skills removed; attention refresh failed",
+                        sources: [("Skills Doctor", doctor.error)]
+                    )
+                    statusText = "Removed skills; attention could not be verified"
+                    systemImage = "exclamationmark.triangle"
+                }
+                mcpVerification.invalidate()
+                refreshMCPHealth()
                 MetagentCore.saveInventorySnapshot(SkillScanReport(projects: projects.map(\.coreProject), warnings: []))
                 completedSkillRemovalIDs.subtract(reconcilingIDs)
                 pendingSkillRemovalIDs.subtract(reconcilingIDs)
@@ -1781,6 +1869,7 @@ final class MetagentModel: ObservableObject {
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
             projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
+            inventoryRevision += 1
             // Only release the optimistic hide when no removal is in flight.
             // Removal queues drain independently, and a refresh whose scan read
             // the disk before a queue's deletions would otherwise unhide those
@@ -1803,6 +1892,7 @@ final class MetagentModel: ObservableObject {
             )
         } else {
             projects = []
+            inventoryRevision += 1
             bumpSkillPresentationRevision()
             repoCount = 0
             skillCount = 0

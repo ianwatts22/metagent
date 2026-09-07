@@ -14,6 +14,8 @@ struct MetagentPanel: View {
     @Binding var selectedProjectRoot: String?
     @State private var showsFailureDetails = false
     @State private var showsActivityDetails = false
+    @State private var showsAttention = false
+    @ObservedObject private var attentionStore = AttentionCenterStore.shared
     @StateObject private var skillTableRows = SkillTableRowStore()
     @AppStorage(AppFeatureFlags.previewFeaturesKey) private var previewFeaturesEnabled = false
 
@@ -50,6 +52,11 @@ struct MetagentPanel: View {
         .onChange(of: updater.presentationDismissalRequest) {
             showsFailureDetails = false
             showsActivityDetails = false
+            showsAttention = false
+        }
+        .task(id: "\(model.hasHydratedLaunchCaches):\(model.inventoryRevision)") {
+            guard model.hasHydratedLaunchCaches else { return }
+            await attentionStore.refreshOverlaps(projects: model.projects.map(\.coreProject), revision: model.inventoryRevision)
         }
         .onChange(of: previewFeaturesEnabled) { _, isEnabled in
             if !isEnabled, selectedSection == .history {
@@ -71,6 +78,7 @@ struct MetagentPanel: View {
                     Spacer(minLength: 0)
                     activityControl
                     statusFailureControl
+                    attentionControl
                     refreshControl
                     settingsControl
                 }
@@ -84,10 +92,44 @@ struct MetagentPanel: View {
                 Spacer(minLength: 0)
                 activityControl
                 statusFailureControl
+                attentionControl
                 refreshControl
                 settingsControl
             }
         }
+    }
+
+    private var attentionItems: [AttentionItem] {
+        attentionStore.items(doctor: model.doctorFindings, mcp: model.attentionMCPHealth,
+                             projects: model.projects.map(\.coreProject), scope: selectedProjectRoot)
+    }
+
+    private var attentionControl: some View {
+        Button { showsAttention.toggle() } label: {
+            Image(systemName: attentionItems.contains { !attentionStore.isIgnored($0) } ? "bell.badge" : "bell")
+                .foregroundStyle(.secondary)
+                .frame(width: 36, height: 36)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Needs attention and ignored items")
+        .accessibilityLabel("Notifications")
+        .popover(isPresented: $showsAttention, arrowEdge: .top) {
+            AttentionCenterList(model: model, store: attentionStore, items: attentionItems) {
+                showsAttention = false
+                openDuplicateReview()
+            }
+            .frame(width: 560)
+        }
+    }
+
+    private func openDuplicateReview() {
+        // A scoped warning can include copies outside the selected project.
+        // Show the complete group when opening its review.
+        selectedProjectRoot = nil
+        UserDefaults.standard.set(SkillTableView.duplicates.rawValue, forKey: "metagent.skills.view.v2")
+        selectedSection = .skills
+        if showsOpenWindowButton { openMainWindow() }
     }
 
     /// Attention states only; work in progress reports through the refresh
@@ -260,14 +302,7 @@ struct MetagentPanel: View {
                 isCompact: showsOpenWindowButton,
                 selectedProjectRoot: selectedProjectRoot
             ) {
-                UserDefaults.standard.set(
-                    SkillTableView.duplicates.rawValue,
-                    forKey: "metagent.skills.view.v2"
-                )
-                selectedSection = .skills
-                if showsOpenWindowButton {
-                    openMainWindow()
-                }
+                openDuplicateReview()
             }
             .accessibilityIdentifier("metagent.overview.content.ready")
         case .history:

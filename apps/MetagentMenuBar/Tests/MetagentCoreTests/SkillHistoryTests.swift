@@ -1,9 +1,44 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import MetagentCore
 
 @Suite("Skill history")
 struct SkillHistoryTests {
+    @Test("validated age trends exclude legacy aggregates without resetting unrelated history")
+    func validatedAgeMetricVersion() throws {
+        let databasePath = try temporaryDatabase()
+        let root = "/Users/tester"
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [skill(name: "alpha", root: root)])],
+            usage: usage([]), trigger: .launch, now: date("2026-07-20T09:00:00Z"),
+            calendar: calendar, databasePath: databasePath)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(databasePath, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        // Model the existing pre-fix database, preserving all non-age metrics.
+        #expect(sqlite3_exec(db, """
+            UPDATE history_metrics SET metric = replace(metric, '.v2', '')
+            WHERE metric LIKE 'age.%';
+            """, nil, nil, nil) == SQLITE_OK)
+        let empty = try MetagentCore.skillHistoryTrends(now: date("2026-07-21T09:00:00Z"),
+            calendar: calendar, databasePath: databasePath)
+        #expect(empty[.ageMedianWeeks] == .empty(.ageMedianWeeks))
+        #expect(empty[.ageP75Weeks] == .empty(.ageP75Weeks))
+        #expect(empty[.ageUnknown] == .empty(.ageUnknown))
+        #expect(empty[.portfolioSkills].latest == 1)
+        _ = try MetagentCore.captureSkillHistory(
+            projects: [project(root: root, skills: [skill(name: "alpha", root: root)])],
+            usage: usage([]), trigger: .refresh, now: date("2026-07-21T09:00:00Z"),
+            calendar: calendar, databasePath: databasePath)
+        let current = try MetagentCore.skillHistoryTrends(now: date("2026-07-21T12:00:00Z"),
+            calendar: calendar, databasePath: databasePath)
+        #expect(current[.ageMedianWeeks].points.count == 1)
+        #expect(current[.ageMedianWeeks].change == nil)
+        #expect(!current[.ageMedianWeeks].isPlottable)
+        #expect(current[.portfolioSkills].points.count == 2)
+    }
+
     // A fixed UTC calendar keeps day bucketing independent of where the tests run.
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)

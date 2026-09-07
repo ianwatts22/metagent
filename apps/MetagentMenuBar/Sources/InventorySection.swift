@@ -20,6 +20,7 @@ struct InventorySection: View {
     @State private var iconTarget: InventorySkillRow?
     @State private var publicationTarget: InventorySkillRow?
     @State private var selectedDuplicateGroupID: String?
+    @AppStorage("metagent.skills.requested-duplicate-group.v1") private var requestedDuplicateGroupID = ""
     @State private var duplicateRemovalIDs = Set<SkillTableRow.ID>()
     @State private var reviewedDuplicateGroupIDs = Set<String>()
     @AppStorage("metagent.skills.view.v2") private var selectedViewRaw = SkillTableView.summary.rawValue
@@ -472,7 +473,9 @@ struct InventorySection: View {
         .onAppear {
             migrateSourceVisibilityIfNeeded()
             sortOrder = defaultSortOrder(for: selectedView)
+            consumeDuplicateRequest()
         }
+        .onChange(of: requestedDuplicateGroupID) { consumeDuplicateRequest() }
         .task(id: model.skillTableRowRevision) {
             let revision = model.skillTableRowRevision
             let loaded = await rowStore.load(
@@ -492,6 +495,7 @@ struct InventorySection: View {
                   rowStore.isReady(for: model.skillTableRowRevision)
             else { return }
             selection.formIntersection(Set(cachedRows.map(\.id)))
+            consumeDuplicateRequest()
             model.evaluateMissingSkills(paths: visibleInventoryRows.map(\.canonicalPath))
         }
         .onChange(of: model.isSkillEvaluating) { _, isEvaluating in
@@ -509,6 +513,7 @@ struct InventorySection: View {
             selection.formIntersection(Set(rows.map(\.id)))
             duplicateRemovalIDs.removeAll()
             sortOrder = defaultSortOrder(for: view)
+            consumeDuplicateRequest()
         }
         .alert(item: $pendingConfirmation) { confirmation in
             switch confirmation {
@@ -577,6 +582,16 @@ struct InventorySection: View {
         .sheet(item: $publicationTarget) { row in
             SkillPublicationSetupSheet(model: model, row: row)
         }
+    }
+
+    private func consumeDuplicateRequest() {
+        guard !requestedDuplicateGroupID.isEmpty,
+              completeVisibleDuplicateGroups.contains(where: { $0.id == requestedDuplicateGroupID })
+        else { return }
+        reviewedDuplicateGroupIDs.remove(requestedDuplicateGroupID)
+        selectedDuplicateGroupID = requestedDuplicateGroupID
+        duplicateRemovalIDs.removeAll()
+        requestedDuplicateGroupID = ""
     }
 
     @ViewBuilder

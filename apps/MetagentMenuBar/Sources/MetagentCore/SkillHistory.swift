@@ -103,9 +103,11 @@ public enum SkillHistoryMetric: String, Sendable, Equatable, CaseIterable {
     case readsP95 = "reads.p95"
     case tokensSkillBody = "tokens.skill_body"
     case tokensCatalog = "tokens.catalog"
-    case ageMedianWeeks = "age.median_weeks"
-    case ageP75Weeks = "age.p75_weeks"
-    case ageUnknown = "age.unknown"
+    // v1 included archive epoch mtimes. Preserve those stored rows, but do not
+    // mix their unreliable aggregates into trends using validated timestamps.
+    case ageMedianWeeks = "age.median_weeks.v2"
+    case ageP75Weeks = "age.p75_weeks.v2"
+    case ageUnknown = "age.unknown.v2"
     case duplicateGroups = "duplicates.groups"
     case mcpConfigured = "mcp.configured"
     case mcpAttention = "mcp.attention"
