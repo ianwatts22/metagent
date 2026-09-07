@@ -156,13 +156,6 @@ struct AttentionCenterList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Label("Needs attention", systemImage: "bell")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(16)
-            .background(Color.orange.opacity(0.07))
             ScrollView {
                 VStack(spacing: 0) {
                     let active = items.filter { !store.isIgnored($0) }
