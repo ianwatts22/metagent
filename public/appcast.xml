@@ -3,13 +3,13 @@
     <channel>
         <title>Metagent</title>
         <item>
-            <title>0.8.0</title>
-            <pubDate>Mon, 07 Sep 2026 06:29:22 +0000</pubDate>
-            <sparkle:version>8000</sparkle:version>
-            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <title>0.8.1</title>
+            <pubDate>Mon, 07 Sep 2026 19:19:11 +0000</pubDate>
+            <sparkle:version>8001</sparkle:version>
+            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/ianwatts22/metagent/releases/download/v0.8.0/Metagent.zip" length="10228046" type="application/octet-stream" sparkle:edSignature="FjPYlj+upQErJS/65/jQnoRmdVirudGvyqu0IXsq9EoXdyHGptBUNjF9bOzhNiNHBgGEbMi0hbyjgAT7aWO/Cg=="/>
+            <enclosure url="https://github.com/ianwatts22/metagent/releases/download/v0.8.1/Metagent.zip" length="10227709" type="application/octet-stream" sparkle:edSignature="Kgob3KDWgwhNCjw1Aspj+hsEhHKJ6+TrzzjPGRy5l4gw1vNSZZjLihe4PHM5NpgmD7VC3SDWLhpfeeTeoi9rAw=="/>
         </item>
     </channel>
 </rss>
