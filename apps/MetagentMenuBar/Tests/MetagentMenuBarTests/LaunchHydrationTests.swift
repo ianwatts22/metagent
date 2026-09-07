@@ -1,6 +1,15 @@
 import Foundation
 import MetagentCore
 import Testing
+
+@Test func overviewRetainsMatchingSnapshotDuringRefresh() {
+    let previous = OverviewSkillHealthRefreshTrigger(hasHydratedLaunchCaches: true, skillTableRevision: 1, selectedProjectRoot: "/a", trendRange: "30d")
+    let refreshing = OverviewSkillHealthRefreshTrigger(hasHydratedLaunchCaches: true, skillTableRevision: 2, selectedProjectRoot: "/a", trendRange: "30d")
+    #expect(refreshing.canDisplay(previous: previous))
+    #expect(!refreshing.canDisplay(previous: nil))
+    #expect(!OverviewSkillHealthRefreshTrigger(hasHydratedLaunchCaches: true, skillTableRevision: 2, selectedProjectRoot: "/b", trendRange: "30d").canDisplay(previous: previous))
+    #expect(!OverviewSkillHealthRefreshTrigger(hasHydratedLaunchCaches: true, skillTableRevision: 2, selectedProjectRoot: "/a", trendRange: "7d").canDisplay(previous: previous))
+}
 @testable import MetagentMenuBar
 
 private final class LaunchLoadRecorder: @unchecked Sendable {
