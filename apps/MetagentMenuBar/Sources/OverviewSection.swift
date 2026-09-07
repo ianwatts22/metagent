@@ -15,6 +15,11 @@ struct OverviewSkillHealthRefreshTrigger: Hashable {
     let trendRange: String
 
     var shouldRefresh: Bool { hasHydratedLaunchCaches }
+
+    func canDisplay(previous: Self?) -> Bool {
+        guard let previous else { return false }
+        return selectedProjectRoot == previous.selectedProjectRoot && trendRange == previous.trendRange
+    }
 }
 
 struct OverviewSection: View {
@@ -25,7 +30,6 @@ struct OverviewSection: View {
     let openDuplicateReview: () -> Void
     @State private var showsMCPDetails = false
     @State private var skillHealth = SkillSystemHealth.empty
-    @State private var isSkillHealthLoading = true
     @State private var loadedSkillHealthRefreshID: OverviewSkillHealthRefreshTrigger?
     @State private var historyTrends = SkillHistoryTrends.empty
     @State private var agentRunStats = AgentRunDurationStats.empty
@@ -108,7 +112,7 @@ struct OverviewSection: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+                .frame(maxWidth: .infinity, minHeight: isCompact ? 360 : 280, alignment: .center)
             } else if skillHealth.skillCount > 0 {
                 GlassEffectContainer(spacing: isCompact ? 6 : 8) {
                     LazyVGrid(
@@ -172,7 +176,9 @@ struct OverviewSection: View {
     }
 
     private var isSkillHealthStale: Bool {
-        isSkillHealthLoading || loadedSkillHealthRefreshID != skillHealthRefreshTrigger
+        // Inventory and usage revisions refresh in place, not through an empty
+        // loading layout. Never reuse another project's or trend range's data.
+        !skillHealthRefreshTrigger.canDisplay(previous: loadedSkillHealthRefreshID)
     }
 
     private var skillHealthScope: SkillSystemHealthScope {
@@ -391,7 +397,6 @@ struct OverviewSection: View {
     @MainActor
     private func refreshSkillHealth(trigger refreshID: OverviewSkillHealthRefreshTrigger) async {
         guard !Task.isCancelled, refreshID.shouldRefresh else { return }
-        isSkillHealthLoading = true
         let projects = model.projects.map(\.coreProject)
         let usage = model.usageSnapshot
         let scope = skillHealthScope
@@ -426,7 +431,6 @@ struct OverviewSection: View {
         historyTrends = trends
         agentRunStats = runStats
         loadedSkillHealthRefreshID = refreshID
-        isSkillHealthLoading = false
     }
 
     private var agentRunActivity: some View {

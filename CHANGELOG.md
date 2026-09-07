@@ -3,6 +3,12 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.8.1 — 2026-09-07
+
+- Refreshes keep existing metrics and duplicate results visible while new data
+  loads, reducing flicker and layout movement.
+- Skills table columns use compact minimum widths in flat and grouped views.
+
 ## v0.8.0 — 2026-09-06
 
 - A shared notification bell and compact homepage action list let you review,

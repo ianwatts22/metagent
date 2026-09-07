@@ -612,7 +612,7 @@ struct InventorySection: View {
                         TableColumn(column.title, sortUsing: column.comparator) { row in
                             SkillTableColumnCell(column: column, row: row)
                         }
-                        .width(min: column.minWidth, ideal: column.idealWidth)
+                        .width(min: column.minWidth, ideal: column.minWidth)
                         .customizationID(column.id)
                         .defaultVisibility(column.defaultVisibility(selectedView))
                     }
@@ -631,7 +631,7 @@ struct InventorySection: View {
                         TableColumn(column.title, sortUsing: column.comparator) { row in
                             SkillTableColumnCell(column: column, row: row)
                         }
-                        .width(min: column.minWidth, ideal: column.idealWidth)
+                        .width(min: column.minWidth, ideal: column.minWidth)
                         .customizationID(column.id)
                         .defaultVisibility(column.defaultVisibility(selectedView))
                     }

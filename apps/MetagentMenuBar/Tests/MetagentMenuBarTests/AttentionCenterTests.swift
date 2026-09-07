@@ -99,6 +99,35 @@ private actor AttentionBuildCounter {
     func record() -> [SkillOverlapGroup] { calls += 1; return [] }
 }
 
+private actor SuspendedAttentionBuild {
+    var calls = 0
+    var waiting = false
+    var continuation: CheckedContinuation<[SkillOverlapGroup], Never>?
+    func build(first: [SkillOverlapGroup]) async -> [SkillOverlapGroup] {
+        calls += 1
+        if calls == 1 { return first }
+        return await withCheckedContinuation {
+            continuation = $0
+            waiting = true
+        }
+    }
+    func finish() { continuation?.resume(returning: []); continuation = nil }
+}
+
+@MainActor
+@Test func attentionRetainsResultsUntilReplacementCompletes() async throws {
+    let group = try JSONDecoder().decode(SkillOverlapGroup.self, from: Data(#"{"id":"test","skillName":"test","kind":"exact_duplicate","similarity":1,"members":[]}"#.utf8))
+    let gate = SuspendedAttentionBuild()
+    let store = AttentionCenterStore(buildOverlaps: { _ in await gate.build(first: [group]) })
+    await store.refreshOverlaps(projects: [], revision: 1)
+    let refresh = Task { await store.refreshOverlaps(projects: [], revision: 2) }
+    while !(await gate.waiting) { await Task.yield() }
+    #expect(store.overlaps == [group])
+    await gate.finish()
+    await refresh.value
+    #expect(store.overlaps.isEmpty)
+}
+
 @MainActor
 @Test func attentionOverlapBuildsCoalesceAndRescanOnInventoryRevision() async throws {
     let suite = "AttentionCenterTests.\(UUID().uuidString)"

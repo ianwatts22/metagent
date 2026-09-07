@@ -86,7 +86,8 @@ final class AttentionCenterStore: ObservableObject {
         let signature = "\(revision):\(SHA256.hash(data: data).description)"
         guard signature != inventorySignature else { return }
         inventorySignature = signature
-        overlaps = []
+        // Keep the last complete result visible until its replacement is ready.
+        // Publishing an empty intermediate value collapses the action list.
         generation += 1
         let request = generation
         let skills = projects.flatMap(\.skills)
