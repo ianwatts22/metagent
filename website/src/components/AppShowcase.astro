@@ -14,7 +14,6 @@ const screenshots = [
         <button type="button" data-slide={index} aria-pressed={index === 0} aria-controls="app-screenshot">{shot.name}</button>
       ))}
     </div>
-    <button type="button" class="rotation-control" aria-label="Pause screenshot rotation">Pause</button>
   </div>
   <div class="showcase-frame" id="app-screenshot">
     {screenshots.map((shot, index) => (
@@ -30,43 +29,13 @@ const screenshots = [
     const controls = showcase.querySelector<HTMLElement>(".showcase-controls")!;
     const buttons = [...showcase.querySelectorAll<HTMLButtonElement>("[data-slide]")];
     const images = [...showcase.querySelectorAll<HTMLImageElement>("img")];
-    const rotation = showcase.querySelector<HTMLButtonElement>(".rotation-control")!;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let selected = 0;
-    let paused = reducedMotion.matches;
-    let timer: ReturnType<typeof setInterval> | undefined;
 
     function show(index: number) {
-      selected = index;
       images.forEach((image, i) => { image.hidden = i !== index; });
       buttons.forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
     }
-    function updateRotation() {
-      clearInterval(timer);
-      rotation.textContent = paused ? "Play" : "Pause";
-      rotation.setAttribute("aria-label", `${paused ? "Start" : "Pause"} screenshot rotation`);
-      if (!paused && !document.hidden && !showcase!.matches(":hover, :focus-within")) {
-        timer = setInterval(() => show((selected + 1) % images.length), 8000);
-      }
-    }
-    buttons.forEach((button, index) => button.addEventListener("click", () => {
-      paused = true;
-      show(index);
-      updateRotation();
-    }));
-    rotation.addEventListener("click", () => { paused = !paused; updateRotation(); });
-    showcase.addEventListener("mouseenter", updateRotation);
-    showcase.addEventListener("mouseleave", updateRotation);
-    showcase.addEventListener("focusin", (event) => {
-      // Focusing Pause must not flip it to Play before its click is handled.
-      if (event.target !== rotation) paused = true;
-      updateRotation();
-    });
-    showcase.addEventListener("focusout", () => setTimeout(updateRotation, 0));
-    document.addEventListener("visibilitychange", updateRotation);
-    reducedMotion.addEventListener("change", () => { paused = reducedMotion.matches; updateRotation(); });
+    buttons.forEach((button, index) => button.addEventListener("click", () => show(index)));
     controls.hidden = false;
-    updateRotation();
   }
 </script>
 
@@ -74,11 +43,11 @@ const screenshots = [
   .app-showcase { width: min(100%, 1060px); margin-top: 2.5rem; }
   .showcase-controls { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-bottom: .8rem; }
   .showcase-controls[hidden] { display: none; }
-  [role="group"] { display: flex; gap: .3rem; }
-  button { font: inherit; font-size: .8rem; color: var(--steel); background: transparent; border: 1px solid transparent; border-radius: 999px; padding: .5rem 1rem; cursor: pointer; }
-  button[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
+  [role="group"] { display: flex; gap: 1.5rem; }
+  button { font: inherit; font-size: .8rem; color: var(--steel); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: .5rem .1rem; cursor: pointer; }
+  button:hover { color: var(--ink); border-bottom-color: var(--steel); }
+  button[aria-pressed="true"] { color: var(--ink); border-bottom-color: currentColor; }
   button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-  .rotation-control { font-size: .7rem; }
   .showcase-frame { display: grid; aspect-ratio: 2542 / 1862; }
   img { grid-area: 1 / 1; width: 100%; height: 100%; object-fit: contain; }
   img[hidden] { display: none; }
