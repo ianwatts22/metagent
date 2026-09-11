@@ -10,6 +10,7 @@ struct MetagentMenuBarApp: App {
     @StateObject private var updater = UpdaterModel()
     @State private var selectedSection = PanelSection.overview
     @State private var selectedProjectRoot: String?
+    @State private var showsCatalogingPreview = false
 
     init() {
         ProductAnalytics.shared.capture(.appLaunched)
@@ -25,6 +26,9 @@ struct MetagentMenuBarApp: App {
             )
                 .frame(minWidth: 1040, idealWidth: 1180, minHeight: 680, idealHeight: 760)
                 .environmentObject(updater)
+                .sheet(isPresented: $showsCatalogingPreview) {
+                    CatalogingPreview()
+                }
                 // Opening the window is when staleness is actually seen, so it
                 // is the one moment worth a quiet catch-up scan.
                 .onAppear {
@@ -33,6 +37,9 @@ struct MetagentMenuBarApp: App {
         }
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CatalogingPreviewCommands(isPresented: $showsCatalogingPreview)
+        }
 
         Settings {
             SettingsView(model: model)
@@ -57,6 +64,22 @@ struct MetagentMenuBarApp: App {
                 .accessibilityLabel("Metagent")
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+struct CatalogingPreviewCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @Binding var isPresented: Bool
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            if Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true {
+                Button("Preview cataloging…") {
+                    openWindow(id: "main")
+                    isPresented = true
+                }
+            }
+        }
     }
 }
 

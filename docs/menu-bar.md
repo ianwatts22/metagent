@@ -1,5 +1,18 @@
 # Mac App
 
+## Preview first-run cataloging
+
+Install the current build with `scripts/install-app.sh --restart`, then in
+**Metagent Dev** choose **Metagent Dev → Preview cataloging…**. The preview switches
+between the first scan, background usage indexing, scan failure (with retry),
+and a completed empty result. It is presentation-only: no cache deletion, fake
+inventory writes, or scans. The preview command is absent from production builds.
+
+Without a cached inventory, the real app shows cataloging until the first scan
+returns, or a retry state if every inventory source fails. Cached results remain
+visible during refresh. Usage history indexes separately with a non-blocking
+banner while its metrics are provisional.
+
 The macOS app is the primary `metagent` product surface. It imports the shared Swift `MetagentCore` package directly and exposes both:
 
 - a standalone resizable app window

@@ -51,6 +51,7 @@ struct MetagentLaunchCacheLoader: Sendable {
 
 @MainActor
 final class MetagentModel: ObservableObject {
+    @Published private(set) var catalogState = InventoryCatalogState.cataloging
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Checking status..."
     @Published private(set) var lastRunText: String?
@@ -163,6 +164,7 @@ final class MetagentModel: ObservableObject {
                 Task { @MainActor [weak self] in self?.reconcileExternalMCPActions() }
             }
         if let snapshot = launchCacheLoader.loadInventory() {
+            catalogState = .ready
             projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
             updateInventorySummary()
             rootsText = "cached SQLite snapshot"
@@ -473,6 +475,9 @@ final class MetagentModel: ObservableObject {
     /// Attention states outrank work in progress, because a stalled index is
     /// still true while an unrelated scan runs.
     var activity: AppActivity? {
+        if catalogState == .cataloging {
+            return .working(progress: nil, label: "Cataloging your setup…")
+        }
         if isUsageIndexingStalled {
             return .attention(usageStatusText)
         }
@@ -741,6 +746,7 @@ final class MetagentModel: ObservableObject {
             return
         }
         statusRefreshGeneration += 1
+        catalogState.beginScan()
         let generation = statusRefreshGeneration
         isRunning = true
         refreshArchivedSkills()
@@ -1865,6 +1871,7 @@ final class MetagentModel: ObservableObject {
         let configuredProjects = scan.value?.projects.map(ProjectStatus.init(project:)) ?? []
         let homeProjects = homeScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
         let pluginProjects = pluginScan.value?.projects.map(ProjectStatus.init(project:)) ?? []
+        catalogState.completeScan(succeeded: scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess)
         isPluginInventoryAvailable = pluginScan.isSuccess
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
