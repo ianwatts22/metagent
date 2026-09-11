@@ -34,7 +34,19 @@ struct MetagentPanel: View {
                     topBar
                     Divider()
                 }
-                panelContent
+                if model.catalogState != .ready {
+                    CatalogingView(state: model.catalogState) {
+                        model.refreshStatus()
+                    }
+                } else {
+                    if model.isUsageRefreshing || (model.usageSnapshot.totalFiles > 0 && !model.usageSnapshot.isBackfillComplete) {
+                        CatalogingHistoryBanner(
+                            detail: model.usageStatusText,
+                            needsAttention: model.isUsageIndexingStalled
+                        )
+                    }
+                    panelContent
+                }
 
                 if showsOpenWindowButton {
                     compactFooter
