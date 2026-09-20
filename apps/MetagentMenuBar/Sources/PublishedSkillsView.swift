@@ -449,6 +449,8 @@ struct SkillPublicationSetupSheet: View {
     @State private var destinationName: String
     @State private var readiness: SkillPublishReadiness?
     @State private var isCheckingReadiness = false
+    @State private var isCreatingRepository = false
+    @State private var repositorySetup: SkillPublicationRepositorySetup?
 
     init(model: MetagentModel, row: InventorySkillRow) {
         self.model = model
@@ -494,6 +496,21 @@ struct SkillPublicationSetupSheet: View {
                         }
                     }
                 }
+                .disabled(isCreatingRepository)
+            }
+            HStack {
+                Button(isCreatingRepository ? "Preparing folder…" : "Create publishing folder") {
+                    createPublishingRepository()
+                }
+                .disabled(isCreatingRepository)
+                Text("~/public-agent-setup · initializes local Git only")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let repositorySetup {
+                Text(repositorySetup.message)
+                    .font(.caption)
+                    .foregroundStyle(repositorySetup.succeeded ? Color.secondary : Color.orange)
             }
             LabeledContent("Destination folder name") {
                 TextField("skill-name", text: $destinationName)
@@ -540,7 +557,7 @@ struct SkillPublicationSetupSheet: View {
                     if accepted { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(readiness?.status != .ready || model.isPublicationSyncing)
+                .disabled(readiness?.status != .ready || model.isPublicationSyncing || isCreatingRepository)
             }
         }
         .padding(22)
@@ -584,6 +601,20 @@ struct SkillPublicationSetupSheet: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         repositoryPath = url.standardizedFileURL.path
+        repositorySetup = nil
+    }
+
+    private func createPublishingRepository() {
+        isCreatingRepository = true
+        repositorySetup = nil
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                MetagentCore.prepareDefaultSkillPublicationRepository()
+            }.value
+            repositorySetup = result
+            if result.succeeded { repositoryPath = result.path }
+            isCreatingRepository = false
+        }
     }
 }
 
