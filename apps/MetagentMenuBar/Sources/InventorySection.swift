@@ -655,6 +655,25 @@ struct InventorySection: View {
             }
     }
 
+    private func copyPublicationLink(record: SkillPublicationRecord, catalog: SkillPublicationCatalog, command: Bool) {
+        Task {
+            // Resolve origin at the time of the user's request, so repository
+            // renames do not keep producing cached install URLs.
+            let status = await Task.detached(priority: .utility) {
+                MetagentCore.inspectSkillPublicationGit(record: record, catalog: catalog)
+            }.value
+            guard let links = status.links else {
+                let alert = NSAlert()
+                alert.messageText = "Install link unavailable"
+                alert.informativeText = "Use Manage Publishing → Check Git Status. A valid GitHub origin and mirrored SKILL.md are required."
+                alert.runModal()
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command ? links.installCommand : links.skillsURL.absoluteString, forType: .string)
+        }
+    }
+
     @ViewBuilder
     private func skillContextMenu(for contextSelection: Set<SkillTableRow.ID>) -> some View {
         let contextRows = rows(for: contextSelection)
@@ -672,10 +691,26 @@ struct InventorySection: View {
             Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
                 scoreAnalysisSkill = inventory
             }
-            Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
-                publicationTarget = inventory
+            if let record = activeSkillPublication(for: inventory.canonicalPath, in: model.publicationSnapshot) {
+                Button("Publishing configured", systemImage: "checkmark.circle") {}
+                    .disabled(true)
+                Button("Manage Publishing…", systemImage: "shippingbox.and.arrow.backward") {
+                    selectedViewRaw = SkillTableView.published.rawValue
+                }
+                if let catalog = model.publicationSnapshot.catalogs.first(where: { $0.id == record.catalogID }) {
+                    Button("Copy Install Command", systemImage: "doc.on.doc") {
+                        copyPublicationLink(record: record, catalog: catalog, command: true)
+                    }
+                    Button("Copy skills.sh Link", systemImage: "link") {
+                        copyPublicationLink(record: record, catalog: catalog, command: false)
+                    }
+                }
+            } else {
+                Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
+                    publicationTarget = inventory
+                }
+                .disabled(!model.isPrimaryPublishableSkill(inventory))
             }
-            .disabled(!model.isPrimaryPublishableSkill(inventory))
             Button(
                 inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
                 systemImage: "photo.badge.plus"

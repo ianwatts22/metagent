@@ -23,6 +23,14 @@ visibility, or runs an install automatically.
 
 Each card separates **mirror state** from an explicit **Check Git Status**:
 
+Once mirroring is configured, the skill's context menu disables duplicate setup
+and offers **Manage Publishing…**, **Copy Install Command**, and **Copy skills.sh
+Link**. Copy actions read the current Git origin, including repository renames.
+These are destination links, not proof of public visibility or indexing. The
+Published card also has **Copy Link**. A check that matches the known upstream
+disables Publish as **Up to date**; a new mirror snapshot or another Git status
+check refreshes that state.
+
 - **Local changes to commit** includes staged, unstaged, untracked, and ignored
   files in this skill only. Ignored files need review before publishing.
 - **Committed; no remote tracking branch** also covers a detached checkout.

@@ -167,10 +167,10 @@ private struct SkillPublicationGitDetails: View {
                 Label(status?.state.title ?? "Git status not checked", systemImage: "arrow.triangle.branch")
                     .font(.callout.weight(.medium))
                 Spacer()
-                Button(status?.suggestedPublishAction.map { "\($0.title)…" } ?? "Publish…") {
+                Button(status?.state == .matchesKnownUpstream ? "Up to date" : status?.suggestedPublishAction.map { "\($0.title)…" } ?? "Publish…") {
                     showsPublishSheet = true
                 }
-                .disabled(isChecking || model.isPublicationSyncing || model.isPublicationPublishing)
+                .disabled(isChecking || model.isPublicationSyncing || model.isPublicationPublishing || status?.state == .matchesKnownUpstream)
                 Button(isChecking ? "Checking…" : "Check Git Status") { checkGit() }
                     .disabled(isChecking)
             }
@@ -189,6 +189,11 @@ private struct SkillPublicationGitDetails: View {
                     HStack {
                         Link("GitHub Repository", destination: links.repositoryURL)
                         Link("View on skills.sh ↗", destination: links.skillsURL)
+                        Button("Copy Link", systemImage: "link") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(links.skillsURL.absoluteString, forType: .string)
+                        }
+                        .buttonStyle(.borderless)
                         Spacer()
                         Button("Copy Install Command", systemImage: "doc.on.doc") {
                             NSPasteboard.general.clearContents()
@@ -438,6 +443,12 @@ private extension SkillPublicationChangeKind {
         case .modified: .orange
         case .deleted: .red
         }
+    }
+}
+
+func activeSkillPublication(for canonicalPath: String, in snapshot: SkillPublicationSnapshot) -> SkillPublicationRecord? {
+    snapshot.records.first {
+        $0.automaticMirroringEnabled && $0.sourceCanonicalPath == canonicalPath
     }
 }
 
