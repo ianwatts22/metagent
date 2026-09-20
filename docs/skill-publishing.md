@@ -11,7 +11,9 @@ creates `~/public-agent-setup` and initializes a local Git repository on `main`,
 then selects it. An empty existing folder can be initialized, and a valid
 standalone repository at that path can be reused. Other nonempty folders,
 files, and symlinks are left untouched. Setup does not stage or commit files,
-create a GitHub repository, or push; connect a GitHub remote before publishing.
+create a GitHub repository, or push. Before using **Publish**, connect a GitHub
+remote and make the initial commit and push with upstream tracking. The existing
+Publish action requires an established remote branch; setup does not bypass it.
 Previous destinations can be reused. **Start
 Local Mirroring** checks the bundle and copies only that skill to
 `skills/<destination-name>`; source-file changes continue to mirror one way.

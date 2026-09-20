@@ -451,6 +451,7 @@ struct SkillPublicationSetupSheet: View {
     @State private var isCheckingReadiness = false
     @State private var isCreatingRepository = false
     @State private var repositorySetup: SkillPublicationRepositorySetup?
+    @State private var repositorySetupRevision = 0
 
     init(model: MetagentModel, row: InventorySkillRow) {
         self.model = model
@@ -461,7 +462,7 @@ struct SkillPublicationSetupSheet: View {
     }
 
     private var readinessInput: String {
-        "\(repositoryPath)\u{1f}\(destinationName)\u{1f}\(skillsRelativePath)"
+        "\(repositoryPath)\u{1f}\(destinationName)\u{1f}\(skillsRelativePath)\u{1f}\(repositorySetupRevision)"
     }
 
     private var skillsRelativePath: String {
@@ -612,7 +613,13 @@ struct SkillPublicationSetupSheet: View {
                 MetagentCore.prepareDefaultSkillPublicationRepository()
             }.value
             repositorySetup = result
-            if result.succeeded { repositoryPath = result.path }
+            if result.succeeded {
+                readiness = nil
+                repositoryPath = result.path
+                // An empty folder may already be selected. Its new Git state
+                // must invalidate readiness even when the path stays the same.
+                repositorySetupRevision += 1
+            }
             isCreatingRepository = false
         }
     }

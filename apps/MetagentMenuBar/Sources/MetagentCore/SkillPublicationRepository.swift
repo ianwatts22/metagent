@@ -57,7 +57,7 @@ public extension MetagentCore {
             guard !initialized.timedOut, initialized.status == 0 else {
                 return result(.failed, "Git initialization did not finish successfully. The folder was left in place; check Git installation and folder permissions before retrying.")
             }
-            return result(.created, "Local Git repository ready. No files were committed or published. Connect a GitHub remote before publishing.")
+            return result(.created, "Local Git repository ready. No files were committed or published. Connect a GitHub remote and push the initial branch before using Publish.")
         } catch {
             return result(.failed, "Could not prepare the publishing folder: \(error.localizedDescription)")
         }
