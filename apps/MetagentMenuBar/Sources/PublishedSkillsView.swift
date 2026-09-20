@@ -167,10 +167,10 @@ private struct SkillPublicationGitDetails: View {
                 Label(status?.state.title ?? "Git status not checked", systemImage: "arrow.triangle.branch")
                     .font(.callout.weight(.medium))
                 Spacer()
-                Button(status?.suggestedPublishAction.map { "\($0.title)…" } ?? "Publish…") {
+                Button(status?.state == .matchesKnownUpstream ? "Up to date" : status?.suggestedPublishAction.map { "\($0.title)…" } ?? "Publish…") {
                     showsPublishSheet = true
                 }
-                .disabled(isChecking || model.isPublicationSyncing || model.isPublicationPublishing)
+                .disabled(isChecking || model.isPublicationSyncing || model.isPublicationPublishing || status?.state == .matchesKnownUpstream)
                 Button(isChecking ? "Checking…" : "Check Git Status") { checkGit() }
                     .disabled(isChecking)
             }
@@ -189,6 +189,11 @@ private struct SkillPublicationGitDetails: View {
                     HStack {
                         Link("GitHub Repository", destination: links.repositoryURL)
                         Link("View on skills.sh ↗", destination: links.skillsURL)
+                        Button("Copy Link", systemImage: "link") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(links.skillsURL.absoluteString, forType: .string)
+                        }
+                        .buttonStyle(.borderless)
                         Spacer()
                         Button("Copy Install Command", systemImage: "doc.on.doc") {
                             NSPasteboard.general.clearContents()
@@ -441,6 +446,12 @@ private extension SkillPublicationChangeKind {
     }
 }
 
+func activeSkillPublication(for canonicalPath: String, in snapshot: SkillPublicationSnapshot) -> SkillPublicationRecord? {
+    snapshot.records.first {
+        $0.automaticMirroringEnabled && $0.sourceCanonicalPath == canonicalPath
+    }
+}
+
 struct SkillPublicationSetupSheet: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
@@ -449,6 +460,9 @@ struct SkillPublicationSetupSheet: View {
     @State private var destinationName: String
     @State private var readiness: SkillPublishReadiness?
     @State private var isCheckingReadiness = false
+    @State private var isCreatingRepository = false
+    @State private var repositorySetup: SkillPublicationRepositorySetup?
+    @State private var repositorySetupRevision = 0
 
     init(model: MetagentModel, row: InventorySkillRow) {
         self.model = model
@@ -459,7 +473,7 @@ struct SkillPublicationSetupSheet: View {
     }
 
     private var readinessInput: String {
-        "\(repositoryPath)\u{1f}\(destinationName)\u{1f}\(skillsRelativePath)"
+        "\(repositoryPath)\u{1f}\(destinationName)\u{1f}\(skillsRelativePath)\u{1f}\(repositorySetupRevision)"
     }
 
     private var skillsRelativePath: String {
@@ -494,6 +508,21 @@ struct SkillPublicationSetupSheet: View {
                         }
                     }
                 }
+                .disabled(isCreatingRepository)
+            }
+            HStack {
+                Button(isCreatingRepository ? "Preparing folder…" : "Create publishing folder") {
+                    createPublishingRepository()
+                }
+                .disabled(isCreatingRepository)
+                Text("~/public-agent-setup · initializes local Git only")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let repositorySetup {
+                Text(repositorySetup.message)
+                    .font(.caption)
+                    .foregroundStyle(repositorySetup.succeeded ? Color.secondary : Color.orange)
             }
             LabeledContent("Destination folder name") {
                 TextField("skill-name", text: $destinationName)
@@ -540,7 +569,7 @@ struct SkillPublicationSetupSheet: View {
                     if accepted { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(readiness?.status != .ready || model.isPublicationSyncing)
+                .disabled(readiness?.status != .ready || model.isPublicationSyncing || isCreatingRepository)
             }
         }
         .padding(22)
@@ -584,6 +613,26 @@ struct SkillPublicationSetupSheet: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         repositoryPath = url.standardizedFileURL.path
+        repositorySetup = nil
+    }
+
+    private func createPublishingRepository() {
+        isCreatingRepository = true
+        repositorySetup = nil
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                MetagentCore.prepareDefaultSkillPublicationRepository()
+            }.value
+            repositorySetup = result
+            if result.succeeded {
+                readiness = nil
+                repositoryPath = result.path
+                // An empty folder may already be selected. Its new Git state
+                // must invalidate readiness even when the path stays the same.
+                repositorySetupRevision += 1
+            }
+            isCreatingRepository = false
+        }
     }
 }
 

@@ -6,7 +6,15 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 ## Publishing selected skills from the app
 
 In **Skills → Published**, choose one canonical `~/.agents/skills` skill and a
-separate, existing Git checkout. Previous destinations can be reused. **Start
+separate Git checkout. If you do not have one, **Create publishing folder**
+creates `~/public-agent-setup` and initializes a local Git repository on `main`,
+then selects it. An empty existing folder can be initialized, and a valid
+standalone repository at that path can be reused. Other nonempty folders,
+files, and symlinks are left untouched. Setup does not stage or commit files,
+create a GitHub repository, or push. Before using **Publish**, connect a GitHub
+remote and make the initial commit and push with upstream tracking. The existing
+Publish action requires an established remote branch; setup does not bypass it.
+Previous destinations can be reused. **Start
 Local Mirroring** checks the bundle and copies only that skill to
 `skills/<destination-name>`; source-file changes continue to mirror one way.
 The broader private skills directory is never exported. Stopping mirroring
@@ -14,6 +22,14 @@ leaves the last copy in place. Nothing commits, pushes, changes repository
 visibility, or runs an install automatically.
 
 Each card separates **mirror state** from an explicit **Check Git Status**:
+
+Once mirroring is configured, the skill's context menu disables duplicate setup
+and offers **Manage Publishing…**, **Copy Install Command**, and **Copy skills.sh
+Link**. Copy actions read the current Git origin, including repository renames.
+These are destination links, not proof of public visibility or indexing. The
+Published card also has **Copy Link**. A check that matches the known upstream
+disables Publish as **Up to date**; a new mirror snapshot or another Git status
+check refreshes that state.
 
 - **Local changes to commit** includes staged, unstaged, untracked, and ignored
   files in this skill only. Ignored files need review before publishing.
