@@ -26,4 +26,10 @@ struct NotionOAuthProofTests {
             try NotionOAuthProof.validateCallback(denied, expectedState: "expected")
         }
     }
+
+    @Test func refreshRetainsOrRotatesCredential() {
+        #expect(NotionOAuthProof.retainedRefreshToken(nil, existing: "old") == "old")
+        #expect(NotionOAuthProof.retainedRefreshToken("", existing: "old") == "old")
+        #expect(NotionOAuthProof.retainedRefreshToken("new", existing: "old") == "new")
+    }
 }

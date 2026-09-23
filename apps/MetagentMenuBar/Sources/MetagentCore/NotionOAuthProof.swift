@@ -76,6 +76,11 @@ public enum NotionOAuthProof {
         Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
     }
 
+    static func retainedRefreshToken(_ replacement: String?, existing: String) -> String {
+        guard let replacement, !replacement.isEmpty else { return existing }
+        return replacement
+    }
+
     public static func validateCallback(_ callback: URL, expectedState: String) throws -> String {
         guard callback.scheme == redirect.scheme, callback.host == redirect.host,
               callback.port == redirect.port, callback.path == redirect.path,
@@ -203,9 +208,10 @@ public enum NotionOAuthProof {
         }
         let token = try JSONDecoder().decode(Token.self, from: data)
         guard token.token_type.lowercased() == "bearer", !token.access_token.isEmpty,
-              let refresh = token.refresh_token, !refresh.isEmpty, token.expires_in > 0 else {
+              token.expires_in > 0 else {
             throw ProofError.invalidResponse
         }
+        let refresh = retainedRefreshToken(token.refresh_token, existing: stored.refreshToken)
         let updated = Connection(clientID: stored.clientID, accessToken: token.access_token,
                                  refreshToken: refresh, expiresAt: Date().addingTimeInterval(token.expires_in),
                                  workspaceID: stored.workspaceID, userID: stored.userID)
