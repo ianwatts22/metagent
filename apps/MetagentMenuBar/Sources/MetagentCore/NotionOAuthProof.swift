@@ -88,6 +88,16 @@ public enum NotionOAuthProof {
         return token
     }
 
+    static func rotatedConnection(from data: Data, current: Connection, now: Date = Date()) throws -> Connection {
+        guard let token = try? JSONDecoder().decode(Token.self, from: data),
+              token.token_type.lowercased() == "bearer", !token.access_token.isEmpty,
+              token.expires_in > 0 else { throw ProofError.invalidResponse }
+        let refresh = try requiredRotatedRefreshToken(token.refresh_token)
+        return Connection(clientID: current.clientID, accessToken: token.access_token,
+                          refreshToken: refresh, expiresAt: now.addingTimeInterval(token.expires_in),
+                          workspaceID: current.workspaceID, userID: current.userID)
+    }
+
     public static func validateCallback(_ callback: URL, expectedState: String) throws -> String {
         guard callback.scheme == redirect.scheme, callback.host == redirect.host,
               callback.port == redirect.port, callback.path == redirect.path,
@@ -161,6 +171,8 @@ public enum NotionOAuthProof {
         guard !client.client_id.isEmpty else { throw ProofError.invalidResponse }
         let verifier = try randomURLSafe()
         let state = try randomURLSafe()
+        let lock = try RefreshLock.acquire()
+        defer { lock.release() }
         try keychain.save(Pending(clientID: client.client_id, verifier: verifier, state: state,
                                   expiresAt: Date().addingTimeInterval(600)), account: "pending")
         var components = URLComponents(url: authorize, resolvingAgainstBaseURL: false)!
@@ -178,6 +190,8 @@ public enum NotionOAuthProof {
 
     /// Callback is consumed from stdin by the CLI; it must never be passed as a command argument.
     public static func finish(callback: URL, session: URLSession = .shared) async throws -> Connection {
+        let lock = try RefreshLock.acquire()
+        defer { lock.release() }
         guard let pending: Pending = try keychain.load(account: "pending") else { throw ProofError.pendingExpired }
         guard pending.expiresAt > Date() else {
             try keychain.delete(account: "pending")
@@ -223,15 +237,14 @@ public enum NotionOAuthProof {
             try keychain.delete(account: "connection")
             throw ProofError.authenticationFailed
         }
-        let token = try JSONDecoder().decode(Token.self, from: data)
-        guard token.token_type.lowercased() == "bearer", !token.access_token.isEmpty,
-              token.expires_in > 0 else {
+        let updated: Connection
+        do {
+            updated = try rotatedConnection(from: data, current: current)
+        } catch {
+            // A 2xx response may have consumed the old refresh token. Never replay it.
+            try keychain.delete(account: "connection")
             throw ProofError.invalidResponse
         }
-        let refresh = try requiredRotatedRefreshToken(token.refresh_token)
-        let updated = Connection(clientID: current.clientID, accessToken: token.access_token,
-                                 refreshToken: refresh, expiresAt: Date().addingTimeInterval(token.expires_in),
-                                 workspaceID: current.workspaceID, userID: current.userID)
         try keychain.save(updated, account: "connection")
         return updated
     }
@@ -244,7 +257,7 @@ private extension Data {
     }
 }
 
-private struct RefreshLock {
+struct RefreshLock {
     private let descriptor: Int32
 
     static func acquire() throws -> RefreshLock {
