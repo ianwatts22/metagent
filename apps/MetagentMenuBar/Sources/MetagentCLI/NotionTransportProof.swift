@@ -50,7 +50,16 @@ enum NotionTransportProof {
         })
         let client = Client(name: "metagent-notion-proof", version: "1.0")
         try await client.connect(transport: transport)
-        defer { Task { await client.disconnect() } }
+        do {
+            try await printToolInventory(client: client)
+        } catch {
+            await client.disconnect()
+            throw error
+        }
+        await client.disconnect()
+    }
+
+    private static func printToolInventory(client: Client) async throws {
         var names = Set<String>()
         var cursor: String?
         var complete = false

@@ -27,9 +27,19 @@ struct NotionOAuthProofTests {
         }
     }
 
-    @Test func refreshRetainsOrRotatesCredential() {
-        #expect(NotionOAuthProof.retainedRefreshToken(nil, existing: "old") == "old")
-        #expect(NotionOAuthProof.retainedRefreshToken("", existing: "old") == "old")
-        #expect(NotionOAuthProof.retainedRefreshToken("new", existing: "old") == "new")
+    @Test func refreshRequiresRotatedCredential() throws {
+        #expect(try NotionOAuthProof.requiredRotatedRefreshToken("new") == "new")
+        #expect(throws: NotionOAuthProof.ProofError.self) {
+            try NotionOAuthProof.requiredRotatedRefreshToken(nil)
+        }
+        #expect(throws: NotionOAuthProof.ProofError.self) {
+            try NotionOAuthProof.requiredRotatedRefreshToken("")
+        }
+    }
+
+    @Test func onlyExplicitInvalidGrantIsTerminal() {
+        #expect(NotionOAuthProof.isInvalidGrant(Data(#"{"error":"invalid_grant"}"#.utf8)))
+        #expect(!NotionOAuthProof.isInvalidGrant(Data(#"{"error":"temporarily_unavailable"}"#.utf8)))
+        #expect(!NotionOAuthProof.isInvalidGrant(Data("not json".utf8)))
     }
 }

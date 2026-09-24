@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -47,7 +48,7 @@ public enum NotionOAuthProof {
 
     public enum ProofError: LocalizedError {
         case invalidMetadata, invalidResponse, pendingExpired, invalidCallback, noConnection
-        case authenticationFailed, randomFailure, keychainFailure(OSStatus), networkFailure(Int)
+        case authenticationFailed, randomFailure, keychainFailure(OSStatus), lockFailure(Int32), networkFailure(Int)
 
         public var errorDescription: String? {
             switch self {
@@ -59,6 +60,7 @@ public enum NotionOAuthProof {
             case .authenticationFailed: "Notion authentication failed. Start a new sign-in."
             case .randomFailure: "Secure random generation failed."
             case .keychainFailure(let code): "Keychain operation failed (OSStatus \(code))."
+            case .lockFailure(let code): "Notion refresh lock failed (errno \(code))."
             case .networkFailure(let status): "Notion OAuth request failed (HTTP \(status)); response body was withheld."
             }
         }
@@ -76,9 +78,14 @@ public enum NotionOAuthProof {
         Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
     }
 
-    static func retainedRefreshToken(_ replacement: String?, existing: String) -> String {
-        guard let replacement, !replacement.isEmpty else { return existing }
-        return replacement
+    static func isInvalidGrant(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["error"] as? String == "invalid_grant"
+    }
+
+    static func requiredRotatedRefreshToken(_ token: String?) throws -> String {
+        guard let token, !token.isEmpty else { throw ProofError.invalidResponse }
+        return token
     }
 
     public static func validateCallback(_ callback: URL, expectedState: String) throws -> String {
@@ -116,7 +123,8 @@ public enum NotionOAuthProof {
                 try validatedURL(metadata.registration_endpoint, path: "/register"))
     }
 
-    private static func request(_ url: URL, body: Data, contentType: String, session: URLSession) async throws -> Data {
+    private static func request(_ url: URL, body: Data, contentType: String, session: URLSession,
+                                detectsInvalidGrant: Bool = false) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -125,6 +133,7 @@ public enum NotionOAuthProof {
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw ProofError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
+            if detectsInvalidGrant && isInvalidGrant(data) { throw ProofError.authenticationFailed }
             throw ProofError.networkFailure(response.statusCode)
         }
         return data
@@ -196,14 +205,22 @@ public enum NotionOAuthProof {
     public static func connection(session: URLSession = .shared) async throws -> Connection {
         guard let stored: Connection = try keychain.load(account: "connection") else { throw ProofError.noConnection }
         guard stored.expiresAt <= Date().addingTimeInterval(60) else { return stored }
+        // Every Notion refresh rotates the credential. Serialize across CLI processes and
+        // re-read after taking the lock so a waiting process never replays a retired token.
+        let lock = try RefreshLock.acquire()
+        defer { lock.release() }
+        guard let current: Connection = try keychain.load(account: "connection") else { throw ProofError.noConnection }
+        guard current.expiresAt <= Date().addingTimeInterval(60) else { return current }
         let (_, _, tokenEndpoint, _) = try await metadata(session: session)
         let data: Data
         do {
             data = try await request(tokenEndpoint, body: form([
-                "grant_type": "refresh_token", "refresh_token": stored.refreshToken,
-                "client_id": stored.clientID
-            ]), contentType: "application/x-www-form-urlencoded", session: session)
-        } catch ProofError.networkFailure(let status) where status == 400 || status == 401 {
+                "grant_type": "refresh_token", "refresh_token": current.refreshToken,
+                "client_id": current.clientID
+            ]), contentType: "application/x-www-form-urlencoded", session: session,
+                               detectsInvalidGrant: true)
+        } catch ProofError.authenticationFailed {
+            try keychain.delete(account: "connection")
             throw ProofError.authenticationFailed
         }
         let token = try JSONDecoder().decode(Token.self, from: data)
@@ -211,10 +228,10 @@ public enum NotionOAuthProof {
               token.expires_in > 0 else {
             throw ProofError.invalidResponse
         }
-        let refresh = retainedRefreshToken(token.refresh_token, existing: stored.refreshToken)
-        let updated = Connection(clientID: stored.clientID, accessToken: token.access_token,
+        let refresh = try requiredRotatedRefreshToken(token.refresh_token)
+        let updated = Connection(clientID: current.clientID, accessToken: token.access_token,
                                  refreshToken: refresh, expiresAt: Date().addingTimeInterval(token.expires_in),
-                                 workspaceID: stored.workspaceID, userID: stored.userID)
+                                 workspaceID: current.workspaceID, userID: current.userID)
         try keychain.save(updated, account: "connection")
         return updated
     }
@@ -224,6 +241,38 @@ private extension Data {
     var base64URLEncoded: String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private struct RefreshLock {
+    private let descriptor: Int32
+
+    static func acquire() throws -> RefreshLock {
+        // Resolve macOS's per-user temp root independently of TMPDIR so CLI processes
+        // and the app always coordinate on the same lock. No credential is written here.
+        let length = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard length > 0 else { throw NotionOAuthProof.ProofError.lockFailure(errno) }
+        var bytes = [CChar](repeating: 0, count: length)
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &bytes, length) > 0 else {
+            throw NotionOAuthProof.ProofError.lockFailure(errno)
+        }
+        let directory = String(decoding: bytes.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let path = (directory as NSString).appendingPathComponent("metagent-notion-refresh.lock")
+        let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw NotionOAuthProof.ProofError.lockFailure(errno) }
+        var status = flock(descriptor, LOCK_EX)
+        while status != 0 && errno == EINTR { status = flock(descriptor, LOCK_EX) }
+        guard status == 0 else {
+            let code = errno
+            close(descriptor)
+            throw NotionOAuthProof.ProofError.lockFailure(code)
+        }
+        return RefreshLock(descriptor: descriptor)
+    }
+
+    func release() {
+        _ = flock(descriptor, LOCK_UN)
+        _ = close(descriptor)
     }
 }
 
