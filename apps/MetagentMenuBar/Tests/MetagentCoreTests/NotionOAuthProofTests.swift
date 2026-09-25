@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import MetagentCore
 
@@ -78,5 +79,116 @@ struct NotionOAuthProofTests {
         #expect(acquired.wait(timeout: .now() + 0.05) == .timedOut)
         first.release()
         #expect(acquired.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test func keychainQueriesNeverAllowAuthenticationUI() throws {
+        let absent = RecordingKeychainClient(updateStatus: errSecItemNotFound,
+                                             loadStatus: errSecItemNotFound,
+                                             deleteStatus: errSecItemNotFound)
+        let keychain = ProofKeychain(client: absent)
+        try keychain.save(SampleCredential(value: "secret"), account: "connection")
+        let loaded: SampleCredential? = try keychain.load(account: "connection")
+        #expect(loaded == nil)
+        try keychain.delete(account: "connection")
+
+        let calls = absent.recordedCalls()
+        #expect(calls.map(\.operation) == ["update", "add", "load", "delete"])
+        for call in calls {
+            #expect(call.query[kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUIFail as String)
+            #expect(call.query[kSecAttrService as String] as? String == "com.metagent.notion-transport-proof")
+        }
+        #expect(calls[1].query[kSecValueData as String] is Data)
+    }
+
+    @Test func keychainDenialNeverFallsBackToAddOrDelete() throws {
+        for denied in [errSecInteractionNotAllowed, errSecInteractionRequired,
+                       errSecAuthFailed, errSecUserCanceled] {
+            let reader = RecordingKeychainClient(loadStatus: denied)
+            let readKeychain = ProofKeychain(client: reader)
+            do {
+                let _: SampleCredential? = try readKeychain.load(account: "connection")
+                Issue.record("Expected Keychain access denial")
+            } catch {
+                #expect(accessRequiredStatus(error) == denied)
+            }
+            #expect(reader.recordedCalls().map(\.operation) == ["load"])
+
+            let writer = RecordingKeychainClient(updateStatus: denied)
+            let writeKeychain = ProofKeychain(client: writer)
+            do {
+                try writeKeychain.save(SampleCredential(value: "new"), account: "connection")
+                Issue.record("Expected Keychain update denial")
+            } catch {
+                #expect(accessRequiredStatus(error) == denied)
+            }
+            #expect(writer.recordedCalls().map(\.operation) == ["update"])
+
+            let deleter = RecordingKeychainClient(deleteStatus: denied)
+            let deleteKeychain = ProofKeychain(client: deleter)
+            do {
+                try deleteKeychain.delete(account: "connection")
+                Issue.record("Expected Keychain delete denial")
+            } catch {
+                #expect(accessRequiredStatus(error) == denied)
+            }
+            #expect(deleter.recordedCalls().map(\.operation) == ["delete"])
+        }
+    }
+
+    private func accessRequiredStatus(_ error: Error) -> OSStatus? {
+        guard case NotionOAuthProof.ProofError.keychainAccessRequired(let status) = error else { return nil }
+        return status
+    }
+}
+
+private struct SampleCredential: Codable {
+    let value: String
+}
+
+private final class RecordingKeychainClient: ProofKeychainClient, @unchecked Sendable {
+    struct Call {
+        let operation: String
+        let query: [String: Any]
+    }
+
+    private let updateStatus: OSStatus
+    private let addStatus: OSStatus
+    private let loadStatus: OSStatus
+    private let deleteStatus: OSStatus
+    private let lock = NSLock()
+    private var calls: [Call] = []
+
+    init(updateStatus: OSStatus = errSecSuccess, addStatus: OSStatus = errSecSuccess,
+         loadStatus: OSStatus = errSecSuccess, deleteStatus: OSStatus = errSecSuccess) {
+        self.updateStatus = updateStatus
+        self.addStatus = addStatus
+        self.loadStatus = loadStatus
+        self.deleteStatus = deleteStatus
+    }
+
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        record("update", query)
+        return updateStatus
+    }
+
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        record("add", attributes)
+        return addStatus
+    }
+
+    func load(_ query: [String: Any]) -> (OSStatus, Data?) {
+        record("load", query)
+        return (loadStatus, nil)
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        record("delete", query)
+        return deleteStatus
+    }
+
+    func recordedCalls() -> [Call] { lock.withLock { calls } }
+
+    private func record(_ operation: String, _ query: [String: Any]) {
+        lock.withLock { calls.append(Call(operation: operation, query: query)) }
     }
 }

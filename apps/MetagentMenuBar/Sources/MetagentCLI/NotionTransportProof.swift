@@ -6,6 +6,7 @@ import MetagentCore
 /// Explicit, read-only standalone proof. No arbitrary tool-call surface is exposed.
 enum NotionTransportProof {
     static func run(_ arguments: [String]) throws {
+        try NotionProofSigning.prepareForProof()
         guard arguments.count == 1 else { throw ProofCLIError.message("usage: metagent notion proof <start|finish|list>") }
         switch arguments[0] {
         case "start":

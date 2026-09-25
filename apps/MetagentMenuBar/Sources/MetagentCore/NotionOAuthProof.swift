@@ -9,7 +9,7 @@ public enum NotionOAuthProof {
     public static let endpoint = URL(string: "https://mcp.notion.com/mcp")!
     public static let redirect = URL(string: "http://127.0.0.1:8765/callback")!
     private static let metadataURL = URL(string: "https://mcp.notion.com/.well-known/oauth-authorization-server")!
-    private static let keychain = ProofKeychain()
+    private static let keychain = ProofKeychain(client: SystemProofKeychainClient())
 
     public struct Connection: Codable, Sendable {
         public let clientID: String
@@ -48,7 +48,8 @@ public enum NotionOAuthProof {
 
     public enum ProofError: LocalizedError {
         case invalidMetadata, invalidResponse, pendingExpired, invalidCallback, noConnection
-        case authenticationFailed, randomFailure, keychainFailure(OSStatus), lockFailure(Int32), networkFailure(Int)
+        case authenticationFailed, randomFailure, keychainAccessRequired(OSStatus)
+        case keychainFailure(OSStatus), lockFailure(Int32), networkFailure(Int)
 
         public var errorDescription: String? {
             switch self {
@@ -59,6 +60,8 @@ public enum NotionOAuthProof {
             case .noConnection: "No standalone Notion connection is stored. Run notion proof start first."
             case .authenticationFailed: "Notion authentication failed. Start a new sign-in."
             case .randomFailure: "Secure random generation failed."
+            case .keychainAccessRequired(let code):
+                "This metagent helper cannot access its saved Notion credential without a macOS Keychain prompt (OSStatus \(code)). Nothing was removed. Use a consistently signed helper for future sessions; review the existing item's access in Keychain Access before any one-time migration or reauthorization."
             case .keychainFailure(let code): "Keychain operation failed (OSStatus \(code))."
             case .lockFailure(let code): "Notion refresh lock failed (errno \(code))."
             case .networkFailure(let status): "Notion OAuth request failed (HTTP \(status)); response body was withheld."
@@ -289,43 +292,85 @@ struct RefreshLock {
     }
 }
 
-private struct ProofKeychain {
+protocol ProofKeychainClient: Sendable {
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus
+    func add(_ attributes: [String: Any]) -> OSStatus
+    func load(_ query: [String: Any]) -> (OSStatus, Data?)
+    func delete(_ query: [String: Any]) -> OSStatus
+}
+
+private struct SystemProofKeychainClient: ProofKeychainClient {
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    }
+
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        SecItemAdd(attributes as CFDictionary, nil)
+    }
+
+    func load(_ query: [String: Any]) -> (OSStatus, Data?) {
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return (status, result as? Data)
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+struct ProofKeychain<Client: ProofKeychainClient>: Sendable {
     private let service = "com.metagent.notion-transport-proof"
+    private let client: Client
+
+    init(client: Client) { self.client = client }
+
+    private func query(account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service, kSecAttrAccount as String: account,
+         // Request no UI for each operation. The CLI also disables Keychain UI
+         // process-wide before these legacy-keychain calls.
+         kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+    }
+
+    private func failure(_ status: OSStatus) -> NotionOAuthProof.ProofError {
+        switch status {
+        case errSecInteractionNotAllowed, errSecInteractionRequired, errSecAuthFailed, errSecUserCanceled:
+            return .keychainAccessRequired(status)
+        default:
+            return .keychainFailure(status)
+        }
+    }
 
     func save<T: Encodable>(_ value: T, account: String) throws {
         let data = try JSONEncoder().encode(value)
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service, kSecAttrAccount as String: account]
+        let query = query(account: account)
         let update: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        let status = client.update(query, attributes: update)
         if status == errSecSuccess { return }
-        guard status == errSecItemNotFound else { throw NotionOAuthProof.ProofError.keychainFailure(status) }
+        guard status == errSecItemNotFound else { throw failure(status) }
         var addition = query
         addition[kSecValueData as String] = data
         addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let inserted = SecItemAdd(addition as CFDictionary, nil)
-        guard inserted == errSecSuccess else { throw NotionOAuthProof.ProofError.keychainFailure(inserted) }
+        let inserted = client.add(addition)
+        guard inserted == errSecSuccess else { throw failure(inserted) }
     }
 
     func load<T: Decodable>(account: String) throws -> T? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service, kSecAttrAccount as String: account,
-                                    kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        var query = query(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let (status, data) = client.load(query)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw NotionOAuthProof.ProofError.keychainFailure(status)
-        }
+        guard status == errSecSuccess else { throw failure(status) }
+        guard let data else { throw NotionOAuthProof.ProofError.keychainFailure(status) }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     func delete(account: String) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service, kSecAttrAccount as String: account]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = client.delete(query(account: account))
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw NotionOAuthProof.ProofError.keychainFailure(status)
+            throw failure(status)
         }
     }
 }
