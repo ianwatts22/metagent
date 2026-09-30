@@ -3,6 +3,62 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillContainmentTests: XCTestCase {
+    func testManagedRemovalCompletesSharedCanonicalRetentionWithoutTouchingOtherProviders() throws {
+        let fixture = try makeTemporaryRoot(prefix: "metagent-managed-shared").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let keys = ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "METAGENT_NPX", "XDG_STATE_HOME"]
+        let previous = keys.map { ProcessInfo.processInfo.environment[$0] }
+        defer { for (key, value) in zip(keys, previous) { restoreEnvironment(key, value) } }
+        unsetenv("CODEX_HOME")
+        unsetenv("CLAUDE_CONFIG_DIR")
+        unsetenv("XDG_STATE_HOME")
+        // Model Skills CLI's successful scoped removal: Claude's projection is
+        // removed, but another detected app keeps the canonical bundle and lock.
+        let command = fixture.appendingPathComponent("npx-fixture")
+        try "#!/bin/sh\nrm -f \"$PWD/.claude/skills/demo\"\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+        setenv("METAGENT_NPX", command.path, 1)
+
+        for (index, useBatch) in [false, true].enumerated() {
+            for global in [false, true] {
+                let home = fixture.appendingPathComponent("home-\(index)-\(global)")
+                let project = global ? home : home.appendingPathComponent("project")
+                setenv("HOME", home.path, 1)
+                try FileManager.default.createDirectory(at: home.appendingPathComponent(".cursor"), withIntermediateDirectories: true)
+                let canonical = project.appendingPathComponent(".agents/skills/demo")
+                try writeSkillFixture(at: canonical, name: "demo")
+                let lock = global ? home.appendingPathComponent(".agents/.skill-lock.json")
+                    : project.appendingPathComponent("skills-lock.json")
+                try #"{"version":1,"futureRoot":true,"skills":{"demo":{"source":"example/skills","sourceType":"github"},"keep":{"source":"example/keep","future":true}}}"#
+                    .write(to: lock, atomically: true, encoding: .utf8)
+                let claude = project.appendingPathComponent(".claude/skills/demo")
+                try FileManager.default.createDirectory(at: claude.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.createSymbolicLink(at: claude, withDestinationURL: canonical)
+                let independent = project.appendingPathComponent(".cursor/skills/demo")
+                try writeSkillFixture(at: independent, name: "demo", body: "Independent sentinel.")
+
+                let report: SkillUninstallReport
+                if useBatch {
+                    let batch = MetagentCore.removeSkills(targets: [.canonical(projectRoot: project.path, skillName: "demo")], apply: true)
+                    XCTAssertTrue(batch.failures.isEmpty, batch.lines.joined(separator: "\n"))
+                    report = try XCTUnwrap(batch.reports.first)
+                } else {
+                    report = try MetagentCore.uninstallSkill(projectRoot: project.path, skillName: "demo", allowManagedRemoval: true)
+                }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: canonical.path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: claude.path))
+                XCTAssertTrue(FileManager.default.fileExists(atPath: independent.appendingPathComponent("SKILL.md").path))
+                let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: lock)) as? [String: Any])
+                XCTAssertEqual(document["futureRoot"] as? Bool, true)
+                let skills = try XCTUnwrap(document["skills"] as? [String: Any])
+                XCTAssertNil(skills["demo"])
+                XCTAssertEqual((skills["keep"] as? [String: Any])?["future"] as? Bool, true)
+                let recovery = URL(fileURLWithPath: try XCTUnwrap(report.backupPath))
+                XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("demo/SKILL.md").path))
+            }
+        }
+    }
+
     func testManagedRemovalRefusesLinkedProviderContainersBeforeDispatch() throws {
         let fixture = try makeTemporaryRoot(prefix: "metagent-managed-provider").resolvingSymlinksInPath()
         defer { try? FileManager.default.removeItem(at: fixture) }

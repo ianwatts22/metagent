@@ -69,6 +69,9 @@ the manager runs; the legacy `skills` alias to this root's `.agents/skills`
 remains supported. Nonstandard global `CODEX_HOME` or `CLAUDE_CONFIG_DIR`
 locations require manual review through their owning manager. Other providers
 are left untouched rather than delegated to an unrestricted cleanup.
+If Skills CLI retains the shared canonical bundle for another detected app,
+Metagent completes the selected bundle's removal into recovery and updates only
+its lock entry. It does not broaden the manager call to other providers.
 
 Codex system, Codex-installed, and plugin-cache skills remain read-only and cannot be removed through Metagent.
 

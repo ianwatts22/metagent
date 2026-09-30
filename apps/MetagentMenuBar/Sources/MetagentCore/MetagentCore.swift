@@ -611,6 +611,11 @@ public enum MetagentCore {
                 if !output.isEmpty {
                     lines.append(output)
                 }
+                if agentsSkill.manager == "skills-cli",
+                   try completeScopedSkillsCLIRemoval(root: root, skillName: skillName, recovery: recovery)
+                {
+                    lines.append("completed removal from the shared canonical collection")
+                }
             } catch {
                 throw NSError(domain: "MetagentSkillUninstall", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "\(agentsSkill.manager) removal failed: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
@@ -857,11 +862,17 @@ public enum MetagentCore {
         }
 
         let commandError: Error?
+        var completedSharedCollectionNames = Set<String>()
         do {
             for removal in removals {
                 try validateSkillMutationPath(removal.skillURL, in: root)
             }
             _ = try runSkillsCLIRemoval(root: root, skillNames: removals.map(\.skillName))
+            for removal in removals where try completeScopedSkillsCLIRemoval(
+                root: root, skillName: removal.skillName, recovery: removal.recovery
+            ) {
+                completedSharedCollectionNames.insert(removal.skillName)
+            }
             commandError = nil
         } catch {
             commandError = error
@@ -955,6 +966,9 @@ public enum MetagentCore {
                 retainedBackupCount: removal.retainedBackups.count
             )
             restoreRetainedSkillBackups(removal.retainedBackups, lines: &lines)
+            if completedSharedCollectionNames.contains(removal.skillName) {
+                lines.append("completed removal from the shared canonical collection")
+            }
             if reconciledProjectLockNames.contains(removal.skillName) {
                 lines.append("removed a stale project lock entry left by skills-cli")
             }

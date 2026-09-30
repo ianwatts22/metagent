@@ -516,6 +516,37 @@ func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
     return combined
 }
 
+/// Scoped Skills CLI cleanup can deliberately retain the shared canonical
+/// collection for another detected app. Complete only the explicitly selected
+/// bundle and lock entry ourselves; never expand the manager's provider scope.
+@discardableResult
+func completeScopedSkillsCLIRemoval(root: URL, skillName: String, recovery: URL) throws -> Bool {
+    let skill = root.appendingPathComponent(".agents/skills").appendingPathComponent(skillName)
+    guard fileManager.fileExists(atPath: skill.path) else { return false }
+    try validateSkillMutationPath(skill, in: root)
+    let locks = try readProjectSkillLocksValidated(root: root)
+    let retired = recovery.appendingPathComponent("shared-canonical").appendingPathComponent(skillName)
+    try fileManager.createDirectory(at: retired.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fileManager.moveItem(at: skill, to: retired)
+    do {
+        if locks[skillName] != nil {
+            _ = try removeProjectSkillLockEntries(root: root, skillNames: [skillName])
+        }
+    } catch {
+        let originalError = error
+        do {
+            try validateSkillMutationPath(skill, in: root)
+            try fileManager.moveItem(at: retired, to: skill)
+        } catch {
+            throw NSError(domain: "MetagentSkillUninstall", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "Shared collection removal failed and rollback was incomplete: \(originalError.localizedDescription)\nRollback error: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
+            ])
+        }
+        throw originalError
+    }
+    return true
+}
+
 func standaloneSkillRemovalTarget(
     projectRoot: String,
     skillPath: String,
