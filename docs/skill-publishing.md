@@ -66,8 +66,10 @@ even when its canonical source is missing or disabled.
 Git replacement objects are disabled throughout the publication operation.
 Retry inspects stored commit headers and permits exactly one parent matching the
 remote head; local replacement refs, grafts, or shallow metadata cannot disguise
-extra outgoing history. Legitimate shallow retries are still supported. These
-deterministic checks do not replace the user's action-time publish approval.
+extra outgoing history. Ordinary shallow checkouts still publish/retry; a
+shallow boundary at the pending commit must be deepened manually before retry.
+Declared non-UTF-8 author metadata is preserved. These deterministic checks do
+not replace the user's action-time publish approval.
 
 A credential-free GitHub `origin` and a supported current `SKILL.md` name
 provide repository/skills.sh links and a copyable, single-skill install command.

@@ -477,6 +477,11 @@ public extension MetagentCore {
                 else {
                     return blocked("The local and remote branch histories differ. Resolve or publish those commits yourself; Metagent will not rebase, force-push, or include unrelated commits.")
                 }
+                let visibleParents = try repository.output(["rev-list", "--parents", "--max-count=1", head, "--"])
+                    .split(separator: " ").dropFirst().map(String.init)
+                guard visibleParents == commit.parents else {
+                    return blocked("Local shallow or grafted history hides this retry's verified parent. Deepen or repair the checkout's history manually, then review a fresh publish preview.")
+                }
                 let plannedTree = commit.tree
                 try repository.validatePublishedTree(plannedTree, destinationPath: destinationPath)
                 let changes = try repository.changes(from: remoteHead, to: plannedTree, destinationPath: destinationPath)
@@ -1065,14 +1070,21 @@ private struct PublicationGitRepository {
         }
         let result = try git(["cat-file", "commit", object])
         guard !result.timedOut, result.status == 0,
-              let separator = result.standardOutput.range(of: Data([10, 10])),
-              let header = String(data: result.standardOutput[..<separator.lowerBound], encoding: .utf8)
+              let separator = result.standardOutput.range(of: Data([10, 10]))
         else { throw PublicationGitError.unavailable }
-        let trees = header.split(separator: "\n").filter { $0.hasPrefix("tree ") }
-        let parents = header.split(separator: "\n").filter { $0.hasPrefix("parent ") }
-            .map { String($0.dropFirst(7)) }
-        guard trees.count == 1, let tree = trees.first.map({ String($0.dropFirst(5)) }),
-              isPublicationGitObjectID(tree), parents.allSatisfy(isPublicationGitObjectID)
+        // Author and signature metadata may use a declared non-UTF-8 encoding.
+        // Only the stored ASCII object IDs define the outgoing tree/ancestry.
+        let header = result.standardOutput[..<separator.lowerBound].split(separator: 10)
+        let trees = header.filter { $0.starts(with: Data("tree ".utf8)) }
+        let parents = try header.filter { $0.starts(with: Data("parent ".utf8)) }.map { line in
+            guard let parent = String(data: line.dropFirst(7), encoding: .utf8),
+                  isPublicationGitObjectID(parent)
+            else { throw PublicationGitError.unavailable }
+            return parent
+        }
+        guard trees.count == 1, let line = trees.first,
+              let tree = String(data: line.dropFirst(5), encoding: .utf8),
+              isPublicationGitObjectID(tree)
         else { throw PublicationGitError.unavailable }
         return (tree, parents, String(decoding: result.standardOutput[separator.upperBound...], as: UTF8.self))
     }

@@ -137,11 +137,12 @@ final class SkillPublicationGitTests: XCTestCase {
             try fixture.git(["hash-object", "skills/folder-name/asset.bin"]))
     }
 
-    func testRetryAllowsLegitimateShallowCommitWithStoredRemoteParent() throws {
+    func testRetryBlocksHiddenShallowParentButPublishesWithOrdinaryShallowBase() throws {
         let fixture = try GitPublicationFixture()
         defer { fixture.remove() }
         try fixture.commit()
         try fixture.configureBareRemote()
+        let base = try fixture.git(["rev-parse", "HEAD"])
         try fixture.writeSkill("Safe pending publish")
         try fixture.rejectPushes()
         let pending = fixture.publish(fixture.preparePublish(), message: "Safe update")
@@ -150,8 +151,40 @@ final class SkillPublicationGitTests: XCTestCase {
 
         let retry = fixture.preparePublish()
 
-        XCTAssertTrue(retry.isReady, retry.blocker ?? "")
-        XCTAssertEqual(retry.commitToPush, pending.commit)
+        XCTAssertFalse(retry.isReady)
+        XCTAssertTrue(retry.blocker?.contains("shallow") == true)
+        try fixture.write("\(base)\n", at: ".git/shallow")
+        try fixture.allowPushes()
+        let ordinary = fixture.preparePublish()
+        XCTAssertTrue(ordinary.isReady, ordinary.blocker ?? "")
+        let result = fixture.publish(ordinary, message: "Retry safe update")
+        XCTAssertEqual(result.outcome, .published, result.message)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), pending.commit)
+    }
+
+    func testRetryAcceptsNonUTF8AuthorMetadataWithoutReinterpretingTreeOrParents() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let base = try fixture.git(["rev-parse", "HEAD"])
+        try fixture.writeSkill("Safe retained update")
+        try fixture.git(["add", "."])
+        let tree = try fixture.git(["write-tree"])
+        var bytes = Data("tree \(tree)\nparent \(base)\nauthor Caf".utf8)
+        bytes.append(0xe9)
+        bytes.append(Data(" <publication@example.invalid> 1800000000 +0000\ncommitter Test <publication@example.invalid> 1800000000 +0000\nencoding ISO-8859-1\n\nMetagent-Skill-Publication: \(fixture.record.id)\n".utf8))
+        let commitFile = fixture.bareRemote.appendingPathComponent("latin1-commit")
+        try bytes.write(to: commitFile)
+        let commit = try fixture.git(["hash-object", "-t", "commit", "-w", commitFile.path])
+        try fixture.git(["update-ref", "HEAD", commit, base])
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(preview.commitToPush, commit)
+        XCTAssertEqual(fixture.publish(preview, message: "Retry retained update").outcome, .published)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), commit)
     }
 
     func testRetryRejectsStoredSymlink() throws {
