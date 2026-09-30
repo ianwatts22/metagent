@@ -4,6 +4,26 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+func incompleteUsageProgressLabel(_ progress: Double) -> String {
+    // Only the explicit complete state can claim completion; byte progress
+    // can round to 100% while files or parser work remain.
+    let boundedProgress = min(0.999, max(0, progress))
+    return boundedProgress.formatted(.percent.precision(.fractionLength(1)))
+}
+
+func overviewUsageCoverageCaveat(_ coverage: SkillUsageCoverage) -> String {
+    switch coverage {
+    case .complete:
+        return "Retained session history is fully indexed."
+    case let .updating(progress):
+        return "A parser upgrade is rebuilding history and is \(incompleteUsageProgressLabel(progress)) complete, so this is provisional."
+    case let .partial(progress):
+        return "Initial history indexing is \(incompleteUsageProgressLabel(progress)) complete, so this is provisional."
+    case .unavailable:
+        return "No retained session corpus is indexed, so absence of observed reads is not evidence a skill was never used."
+    }
+}
+
 /// The complete identity of one Overview health calculation. Keeping launch
 /// hydration in the identity lets SwiftUI cancel the intentionally inert
 /// pre-hydration task and schedule exactly one real calculation when cached
@@ -371,16 +391,7 @@ struct OverviewSection: View {
     }
 
     private var coverageCaveat: String {
-        switch skillHealth.usageCoverage {
-        case .complete:
-            return "Retained session history is fully indexed."
-        case let .updating(progress):
-            return "A parser upgrade is rebuilding history and is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this is provisional."
-        case let .partial(progress):
-            return "Initial history indexing is \(progress.formatted(.percent.precision(.fractionLength(0)))) complete, so this is provisional."
-        case .unavailable:
-            return "No retained session corpus is indexed, so absence of observed reads is not evidence a skill was never used."
-        }
+        overviewUsageCoverageCaveat(skillHealth.usageCoverage)
     }
 
     private var skillAgeTitle: String {

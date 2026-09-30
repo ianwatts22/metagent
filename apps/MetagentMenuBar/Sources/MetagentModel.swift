@@ -2148,9 +2148,9 @@ final class MetagentModel: ObservableObject {
             ? Double(snapshot.processedBytes) / Double(snapshot.totalBytes)
             : 0
         if snapshot.isParserUpgradeBackfill {
-            return "Updating Usage parser · \(progress.formatted(.percent.precision(.fractionLength(1))))"
+            return "Updating Usage parser · \(incompleteUsageProgressLabel(progress))"
         }
-        return "Backfilling usage · \(progress.formatted(.percent.precision(.fractionLength(1))))"
+        return "Backfilling usage · \(incompleteUsageProgressLabel(progress))"
     }
 
     nonisolated private static func mergeProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {
