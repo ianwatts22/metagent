@@ -376,7 +376,7 @@ private func skillScriptReferences(
     return index
 }
 
-private func explicitSkillScriptPaths(in text: String) -> Set<String> {
+func explicitSkillScriptPaths(in text: String) -> Set<String> {
     // A final period is normally prose punctuation, not part of the filename.
     // Requiring an alphanumeric, underscore, or hyphen terminator still permits
     // dotted extensions and hidden files without inventing `script.py.`.
@@ -450,7 +450,7 @@ private func runtimeForExtension(_ fileExtension: String) -> String? {
     }
 }
 
-private func isSkillScriptReferenceSource(_ url: URL) -> Bool {
+func isSkillScriptReferenceSource(_ url: URL) -> Bool {
     isSkillTextFile(url) || runtimeForExtension(url.pathExtension) != nil
 }
 

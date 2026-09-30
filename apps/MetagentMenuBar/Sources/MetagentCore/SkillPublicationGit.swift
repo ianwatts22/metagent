@@ -466,19 +466,19 @@ public extension MetagentCore {
                 return blocked("This skill contains ignored files. Review the repository's ignore rules before publishing.")
             }
             if head != remoteHead {
-                let parent = try repository.output(["rev-parse", "--verify", "HEAD^"])
-                let message = try repository.output(["log", "-1", "--format=%B", "HEAD"])
+                let commit = try repository.storedCommit(head)
                 let committedPaths = try repository.changedPaths(from: remoteHead, to: head)
                 let retryMarker = "Metagent-Skill-Publication: \(record.id)"
-                guard parent == remoteHead,
-                      message.split(separator: "\n").contains(where: { $0 == Substring(retryMarker) }),
+                guard commit.parents == [remoteHead],
+                      commit.message.split(separator: "\n").contains(where: { $0 == Substring(retryMarker) }),
                       !committedPaths.isEmpty,
                       committedPaths.allSatisfy({ repository.contains($0, in: destinationPath) }),
                       dirtyPaths.isEmpty
                 else {
                     return blocked("The local and remote branch histories differ. Resolve or publish those commits yourself; Metagent will not rebase, force-push, or include unrelated commits.")
                 }
-                let plannedTree = try repository.requiredObject(["rev-parse", "--verify", "HEAD^{tree}"])
+                let plannedTree = commit.tree
+                try repository.validatePublishedTree(plannedTree, destinationPath: destinationPath)
                 let changes = try repository.changes(from: remoteHead, to: plannedTree, destinationPath: destinationPath)
                 return SkillPublicationPublishPreview(
                     action: .retryPush,
@@ -487,7 +487,7 @@ public extension MetagentCore {
                     pushDestination: remote.pushURL,
                     branch: branch,
                     destinationPath: destinationPath,
-                    baseCommit: parent,
+                    baseCommit: remoteHead,
                     remoteCommit: remoteHead,
                     plannedTree: plannedTree,
                     commitToPush: head,
@@ -517,6 +517,8 @@ public extension MetagentCore {
                 changes: changes,
                 blocker: nil
             )
+        } catch PublicationGitError.unsafeContent(let message) {
+            return blocked("The outgoing skill failed publish-readiness checks. \(message)")
         } catch {
             return blocked("Metagent could not safely inspect this repository. Check its Git configuration, network access, and branch tracking, then try again.")
         }
@@ -757,7 +759,7 @@ private struct PublicationGitRepository {
                 + [
                     "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0",
                     "GIT_ALLOW_PROTOCOL=\(protocols)",
-                    "/usr/bin/git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                    "/usr/bin/git", "--no-replace-objects", "--no-optional-locks", "-c", "core.fsmonitor=false",
                     "-c", "core.hooksPath=/dev/null", "-C", root.path,
                 ] + arguments,
             standardInput: standardInput,
@@ -959,20 +961,120 @@ private struct PublicationGitRepository {
     }
 
     func validatePublishedTree(_ tree: String, destinationPath: String) throws {
-        let result = try git(["ls-tree", "-r", "-z", tree, "--", ":(literal)\(destinationPath)"])
-        guard result.status == 0 else { throw PublicationGitError.unavailable }
-        let entries = result.standardOutput.split(separator: 0)
-        guard !entries.isEmpty else { throw PublicationGitError.unavailable }
-        for entry in entries {
-            let metadata = String(decoding: entry, as: UTF8.self)
-                .split(separator: "\t", maxSplits: 1).first?.split(separator: " ") ?? []
-            guard metadata.count == 3,
-                  ["100644", "100755"].contains(metadata[0]), metadata[1] == "blob"
-            else { throw PublicationGitError.unavailable }
-        }
-        guard try objectExists("\(tree):\(destinationPath)/SKILL.md") else {
+        let result = try git(["ls-tree", "-r", "-l", "-z", tree, "--", ":(literal)\(destinationPath)"])
+        guard !result.timedOut, result.status == 0, result.standardOutput.last == 0 else {
             throw PublicationGitError.unavailable
         }
+        let entries = result.standardOutput.split(separator: 0)
+        guard !entries.isEmpty else { throw PublicationGitError.unavailable }
+        var files: [(path: String, object: String, size: Int)] = []
+        var sizes: [String: Int] = [:]
+        var totalBytes = 0
+        for entry in entries {
+            guard let separator = entry.firstIndex(of: 9),
+                  let header = String(data: entry[..<separator], encoding: .utf8),
+                  let path = String(data: entry[entry.index(after: separator)...], encoding: .utf8),
+                  path.hasPrefix("\(destinationPath)/")
+            else { throw PublicationGitError.unavailable }
+            let metadata = header.split(separator: " ")
+            guard metadata.count == 4,
+                  ["100644", "100755"].contains(metadata[0]), metadata[1] == "blob",
+                  isPublicationGitObjectID(String(metadata[2])),
+                  let size = Int(metadata[3]), size >= 0
+            else { throw PublicationGitError.unavailable }
+            let relativePath = String(path.dropFirst(destinationPath.count + 1))
+            guard !publicationPathIsExcluded(relativePath) else {
+                throw PublicationGitError.unsafeContent("Remove excluded generated or repository-local content: \(relativePath).")
+            }
+            guard size <= publicationMaximumFileBytes,
+                  totalBytes <= publicationMaximumBundleBytes - size
+            else {
+                throw PublicationGitError.unsafeContent("Keep each bundled file within 10 MB and the skill within 50 MB.")
+            }
+            totalBytes += size
+            let object = String(metadata[2])
+            sizes[object] = size
+            files.append((relativePath, object, size))
+        }
+        guard files.contains(where: { $0.path == "SKILL.md" }) else {
+            throw PublicationGitError.unsafeContent("A regular SKILL.md file is required.")
+        }
+
+        // Screen immutable object IDs, not checkout files or a filesystem
+        // extraction that could normalize distinct Git filenames together.
+        let blobs = try storedBlobs(sizes: sizes)
+        let paths = Set(files.map(\.path))
+        for file in files {
+            guard let data = blobs[file.object] else { throw PublicationGitError.unavailable }
+            if file.path == "SKILL.md" {
+                guard let text = String(data: data, encoding: .utf8),
+                      hasPublishableSkillFrontmatter(text)
+                else {
+                    throw PublicationGitError.unsafeContent("SKILL.md must be UTF-8 with non-empty YAML name and description fields.")
+                }
+            }
+            var findings: [SkillPublishFinding] = []
+            inspectPublicationFileName(file.path, findings: &findings)
+            inspectPublicationContent(data, relativePath: file.path, findings: &findings)
+            if let finding = findings.first(where: { $0.severity == .blocking }) {
+                throw PublicationGitError.unsafeContent("\(file.path): \(finding.message) \(finding.remediation)")
+            }
+            let components = file.path.split(separator: "/")
+            if file.size <= 1_048_576,
+               !components.dropLast().contains(where: { shouldPrune(name: String($0)) }),
+               isSkillScriptReferenceSource(URL(fileURLWithPath: file.path)),
+               let text = String(data: data, encoding: .utf8),
+               let missing = explicitSkillScriptPaths(in: text).sorted().first(where: { !paths.contains($0) })
+            {
+                throw PublicationGitError.unsafeContent("A referenced bundled script is missing: \(missing).")
+            }
+        }
+    }
+
+    private func storedBlobs(sizes: [String: Int]) throws -> [String: Data] {
+        let objects = sizes.keys.sorted()
+        let input = objects.map { "\($0)\n" }.joined()
+        let result = try git(["cat-file", "--batch"], standardInput: Data(input.utf8))
+        guard !result.timedOut, result.status == 0 else { throw PublicationGitError.unavailable }
+        let output = result.standardOutput
+        var cursor = output.startIndex
+        var blobs: [String: Data] = [:]
+        for object in objects {
+            guard let newline = output[cursor...].firstIndex(of: 10),
+                  let header = String(data: output[cursor..<newline], encoding: .utf8)
+            else { throw PublicationGitError.unavailable }
+            let fields = header.split(separator: " ")
+            guard fields.count == 3, fields[0] == object, fields[1] == "blob",
+                  let size = Int(fields[2]), size == sizes[object]
+            else { throw PublicationGitError.unavailable }
+            let start = output.index(after: newline)
+            guard let end = output.index(start, offsetBy: size, limitedBy: output.endIndex),
+                  end < output.endIndex, output[end] == 10
+            else { throw PublicationGitError.unavailable }
+            blobs[object] = output.subdata(in: start..<end)
+            cursor = output.index(after: end)
+        }
+        guard cursor == output.endIndex else { throw PublicationGitError.unavailable }
+        return blobs
+    }
+
+    func storedCommit(_ object: String) throws -> (tree: String, parents: [String], message: String) {
+        let size = try output(["cat-file", "-s", object])
+        guard let byteCount = Int(size), byteCount >= 0, byteCount <= 1_048_576 else {
+            throw PublicationGitError.unavailable
+        }
+        let result = try git(["cat-file", "commit", object])
+        guard !result.timedOut, result.status == 0,
+              let separator = result.standardOutput.range(of: Data([10, 10])),
+              let header = String(data: result.standardOutput[..<separator.lowerBound], encoding: .utf8)
+        else { throw PublicationGitError.unavailable }
+        let trees = header.split(separator: "\n").filter { $0.hasPrefix("tree ") }
+        let parents = header.split(separator: "\n").filter { $0.hasPrefix("parent ") }
+            .map { String($0.dropFirst(7)) }
+        guard trees.count == 1, let tree = trees.first.map({ String($0.dropFirst(5)) }),
+              isPublicationGitObjectID(tree), parents.allSatisfy(isPublicationGitObjectID)
+        else { throw PublicationGitError.unavailable }
+        return (tree, parents, String(decoding: result.standardOutput[separator.upperBound...], as: UTF8.self))
     }
 
     func objectExists(_ revision: String) throws -> Bool {
@@ -1007,4 +1109,9 @@ private struct PublicationGitRepository {
 
 private enum PublicationGitError: Error {
     case unavailable
+    case unsafeContent(String)
+}
+
+private func isPublicationGitObjectID(_ value: String) -> Bool {
+    (value.count == 40 || value.count == 64) && value.allSatisfy(\.isHexDigit)
 }
