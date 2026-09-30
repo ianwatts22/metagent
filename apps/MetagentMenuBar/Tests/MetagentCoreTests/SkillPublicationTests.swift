@@ -3,6 +3,131 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillPublicationTests: XCTestCase {
+    func testSavedPublishingRootCannotReselectExternalCheckout() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        _ = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path, skillName: "safe-skill",
+            repositoryPath: fixture.repository.path, storePath: fixture.store
+        )
+        let external = fixture.root.appendingPathComponent("external-checkout")
+        try FileManager.default.createDirectory(at: external.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        let externalFile = external.appendingPathComponent("skills/safe-skill/SKILL.md")
+        try writeSkillFixture(at: externalFile.deletingLastPathComponent(), name: "safe-skill", body: "External sentinel.")
+        let original = try String(contentsOf: externalFile, encoding: .utf8)
+        try FileManager.default.moveItem(at: fixture.repository, to: fixture.root.appendingPathComponent("retained-checkout"))
+        try FileManager.default.createSymbolicLink(at: fixture.repository, withDestinationURL: external)
+        try "Changed source.\n".write(to: source.appendingPathComponent("references/note.md"), atomically: true, encoding: .utf8)
+
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
+
+        XCTAssertEqual(report.blockedRecordIDs.count, 1)
+        XCTAssertTrue(report.snapshot.records.first?.findings.contains { $0.id == "linked-repository" } == true)
+        XCTAssertEqual(try String(contentsOf: externalFile, encoding: .utf8), original)
+    }
+
+    func testInitialPublishingCheckoutAliasRemainsSupported() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        let alias = fixture.root.appendingPathComponent("checkout-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.repository)
+        let report = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path, skillName: "safe-skill",
+            repositoryPath: alias.path, storePath: fixture.store
+        )
+        XCTAssertTrue(report.blockedRecordIDs.isEmpty)
+        XCTAssertEqual(report.mirroredRecordIDs.count, 1)
+        XCTAssertEqual(report.snapshot.catalogs.first?.localRepositoryPath, fixture.repository.resolvingSymlinksInPath().path)
+    }
+
+    func testReadinessRejectsNestedLeafAndDanglingDestinationLinks() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        let external = fixture.root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        let nested = fixture.repository.appendingPathComponent("nested")
+        try FileManager.default.createSymbolicLink(at: nested, withDestinationURL: external)
+        let skills = fixture.repository.appendingPathComponent("skills")
+        try FileManager.default.createDirectory(at: skills, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: skills.appendingPathComponent("safe-skill"), withDestinationURL: external)
+        try FileManager.default.createSymbolicLink(at: fixture.repository.appendingPathComponent("dangling"), withDestinationURL: fixture.root.appendingPathComponent("absent"))
+        for relativePath in ["nested/skills", "skills", "dangling/skills"] {
+            let readiness = MetagentCore.assessSkillPublicationReadinessForTesting(
+                sourcePath: source.path, repositoryPath: fixture.repository.path,
+                skillsRelativePath: relativePath, destinationName: "safe-skill"
+            )
+            XCTAssertEqual(readiness.status, .blocked)
+            XCTAssertTrue(readiness.findings.contains { $0.id == "linked-destination" })
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    func testMatchedExternalMirrorCannotBypassReadiness() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        _ = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path, skillName: "safe-skill",
+            repositoryPath: fixture.repository.path, storePath: fixture.store
+        )
+        let skillsRoot = fixture.repository.appendingPathComponent("skills")
+        let external = fixture.root.appendingPathComponent("matching-external")
+        try FileManager.default.moveItem(at: skillsRoot, to: external)
+        try FileManager.default.createSymbolicLink(at: skillsRoot, withDestinationURL: external)
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
+        XCTAssertEqual(report.blockedRecordIDs.count, 1)
+        XCTAssertTrue(report.mirroredRecordIDs.isEmpty)
+    }
+
+    func testSymlinkedSkillsRootCannotReplaceExternalBundle() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        let external = fixture.root.appendingPathComponent("external")
+        let externalSkill = external.appendingPathComponent("safe-skill")
+        try writeSkillFixture(at: externalSkill, name: "safe-skill", body: "External content must stay intact.")
+        let externalFile = externalSkill.appendingPathComponent("SKILL.md")
+        let original = try String(contentsOf: externalFile, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.repository.appendingPathComponent("skills"), withDestinationURL: external
+        )
+
+        let report = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path, skillName: "safe-skill",
+            repositoryPath: fixture.repository.path, storePath: fixture.store
+        )
+
+        XCTAssertEqual(report.blockedRecordIDs.count, 1)
+        XCTAssertTrue(report.mirroredRecordIDs.isEmpty)
+        XCTAssertEqual(try String(contentsOf: externalFile, encoding: .utf8), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: external.path), ["safe-skill"])
+    }
+
+    func testReconciliationRefusesSkillsRootReplacedAfterEnable() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe-skill")
+        _ = try MetagentCore.enableSkillPublicationForTesting(
+            sourcePath: source.path, skillName: "safe-skill",
+            repositoryPath: fixture.repository.path, storePath: fixture.store
+        )
+        let skillsRoot = fixture.repository.appendingPathComponent("skills")
+        try FileManager.default.moveItem(at: skillsRoot, to: fixture.root.appendingPathComponent("retained-mirror"))
+        let external = fixture.root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: skillsRoot, withDestinationURL: external)
+        try "Changed source.\n".write(to: source.appendingPathComponent("references/note.md"), atomically: true, encoding: .utf8)
+
+        let report = try MetagentCore.reconcileSkillPublicationsForTesting(storePath: fixture.store)
+
+        XCTAssertEqual(report.blockedRecordIDs.count, 1)
+        XCTAssertTrue(report.mirroredRecordIDs.isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
     func testSelectedSkillMirrorsContinuouslyWithoutTouchingOtherRepositoryFiles() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }

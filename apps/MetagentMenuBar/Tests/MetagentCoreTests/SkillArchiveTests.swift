@@ -207,6 +207,28 @@ final class SkillArchiveTests: XCTestCase {
         XCTAssertEqual(MetagentCore.listArchivedSkills().map(\.skillName), ["demo"])
     }
 
+    func testRestoreRetainsProjectionWhenProviderAncestorBecomesLinked() throws {
+        let root = try canonicalFixture("linked-provider")
+        let target = try XCTUnwrap(MetagentCore.resolveSkillRemovalTarget(projectRoot: root.path, skillName: "demo"))
+        XCTAssertTrue(MetagentCore.archiveSkills(targets: [target], apply: true).outcomes.allSatisfy(\.succeeded))
+        let entry = try XCTUnwrap(MetagentCore.listArchivedSkills().first)
+        let projection = try XCTUnwrap(entry.projections.first)
+        let archivedProjection = URL(fileURLWithPath: try XCTUnwrap(entry.archivePath))
+            .appendingPathComponent(projection.archivedSubpath)
+        let provider = root.appendingPathComponent(".claude")
+        try FileManager.default.moveItem(at: provider, to: root.appendingPathComponent("retained-claude"))
+        let external = root.appendingPathComponent("external-provider")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: provider, withDestinationURL: external)
+
+        let report = try MetagentCore.restoreArchivedSkill(named: "demo")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".agents/skills/demo/SKILL.md").path))
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: archivedProjection.path))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+        XCTAssertTrue(report.lines.contains { $0.hasPrefix("kept ") })
+    }
+
     func testRestoreUnknownNameListsWhatIsArchived() throws {
         XCTAssertThrowsError(try MetagentCore.restoreArchivedSkill(named: "missing")) { error in
             XCTAssertTrue(error.localizedDescription.contains("the archive is empty"))

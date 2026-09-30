@@ -240,7 +240,8 @@ extension MetagentCore {
             guard let projectRoot = target.projectRoot, let skillName = target.skillName else {
                 throw archiveError(2, "incomplete canonical archive target: \(target.id)")
             }
-            let root = URL(fileURLWithPath: projectRoot).resolvingSymlinksInPath().standardizedFileURL
+            let root = URL(fileURLWithPath: projectRoot).standardizedFileURL
+            try validateSkillMutationPath(root.appendingPathComponent(".agents/skills/\(skillName)"), in: root)
             let project = try readProjectSkills(root: root)
             guard let agentsSkill = project.skills.first(where: {
                 $0.location == "agents" && $0.name == skillName && $0.representation == "canonical"
@@ -310,6 +311,7 @@ extension MetagentCore {
         target: SkillRemovalTarget,
         plan: SkillArchivePlan
     ) throws -> SkillArchiveOutcome {
+        try validateSkillMutationPath(plan.skillURL, in: plan.root)
         try fileManager.createDirectory(at: plan.entryDir, withIntermediateDirectories: true)
 
         // The manifest goes down first so a crash mid-move leaves an entry
@@ -341,6 +343,7 @@ extension MetagentCore {
         do {
             try moveSkillAndProjectionsToRecovery(
                 skill: plan.skillURL,
+                projectRoot: plan.root,
                 to: plan.entryDir.appendingPathComponent(plan.skillName),
                 projections: plan.projections,
                 recovery: plan.entryDir,
@@ -386,6 +389,8 @@ extension MetagentCore {
         let entryDir = URL(fileURLWithPath: archivePath)
         let archivedBundle = entryDir.appendingPathComponent(entry.skillName)
         let destination = URL(fileURLWithPath: entry.skillPath)
+        let projectRoot = URL(fileURLWithPath: entry.projectRoot)
+        try validateSkillMutationPath(destination, in: projectRoot)
 
         guard fileManager.fileExists(atPath: archivedBundle.path) else {
             throw archiveError(9, "archive entry at \(entryDir.path) has no \(entry.skillName) bundle; restore it by hand")
@@ -398,6 +403,7 @@ extension MetagentCore {
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        try validateSkillMutationPath(destination, in: projectRoot)
         try fileManager.moveItem(at: archivedBundle, to: destination)
         guard isRegularOrSymlinkedFile(destination.appendingPathComponent("SKILL.md")) else {
             throw archiveError(11, "restore verification failed: \(destination.path) has no SKILL.md")
@@ -417,6 +423,9 @@ extension MetagentCore {
                 continue
             }
             do {
+                guard isUnsymlinkedDescendant(original, of: projectRoot) else {
+                    throw archiveError(12, "the projection destination crosses a linked container")
+                }
                 try fileManager.createDirectory(
                     at: original.deletingLastPathComponent(),
                     withIntermediateDirectories: true
@@ -433,7 +442,10 @@ extension MetagentCore {
 
         // The entry folder only comes down when everything in it went back;
         // otherwise it stays as the record of what still needs a home.
-        let leftovers = lines.contains { $0.hasPrefix("warning: ") && $0.contains("left the archived projection") }
+        let leftovers = entry.projections.contains { projection in
+            let archived = entryDir.appendingPathComponent(projection.archivedSubpath)
+            return isSymlink(archived) || fileManager.fileExists(atPath: archived.path)
+        }
         if leftovers {
             lines.append("kept \(entryDir.path) because it still holds unrestored projection link(s)")
         } else {
@@ -499,6 +511,7 @@ extension MetagentCore {
         let entryDir = URL(fileURLWithPath: archivePath)
         let archivedBundle = entryDir.appendingPathComponent(entry.skillName)
         let destination = URL(fileURLWithPath: entry.skillPath)
+        try validateSkillMutationPath(destination, in: URL(fileURLWithPath: entry.projectRoot))
         guard fileManager.fileExists(atPath: archivedBundle.path) else {
             throw archiveError(9, "archive entry at \(entryDir.path) has no \(entry.skillName) bundle; restore it by hand")
         }

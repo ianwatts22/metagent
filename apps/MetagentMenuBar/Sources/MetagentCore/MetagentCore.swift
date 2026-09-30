@@ -494,6 +494,7 @@ public enum MetagentCore {
             .appendingPathComponent(".agents")
             .appendingPathComponent("skills")
             .appendingPathComponent(skillName)
+        try validateSkillMutationPath(expectedSkillURL, in: requestedRoot)
         if allowManagedRemoval,
            canonicalProjectPath(requestedRoot) != canonicalProjectPath(homeURL()),
            !fileManager.fileExists(atPath: expectedSkillURL.path),
@@ -571,6 +572,7 @@ public enum MetagentCore {
         }
 
         let skillURL = URL(fileURLWithPath: agentsSkill.path)
+        try validateSkillMutationPath(skillURL, in: root)
         var lines: [String] = []
         let (projections, retained) = partitionSameNameSkills(
             in: project,
@@ -608,6 +610,11 @@ public enum MetagentCore {
                     : try runDotagentsRemoval(root: root, skillName: skillName)
                 if !output.isEmpty {
                     lines.append(output)
+                }
+                if agentsSkill.manager == "skills-cli",
+                   try completeScopedSkillsCLIRemoval(root: root, skillName: skillName, recovery: recovery)
+                {
+                    lines.append("completed removal from the shared canonical collection")
                 }
             } catch {
                 throw NSError(domain: "MetagentSkillUninstall", code: 7, userInfo: [
@@ -676,6 +683,7 @@ public enum MetagentCore {
         lines.append("saved recovery state to \(recovery.path)")
         try moveSkillAndProjectionsToRecovery(
             skill: skillURL,
+            projectRoot: root,
             to: recoveredSkill,
             projections: projections,
             recovery: recovery,
@@ -820,6 +828,7 @@ public enum MetagentCore {
                 }
 
                 let skillURL = URL(fileURLWithPath: skill.path)
+                try validateSkillMutationPath(skillURL, in: root)
                 let (projections, retained) = partitionSameNameSkills(
                     in: project,
                     skillName: skillName,
@@ -853,8 +862,17 @@ public enum MetagentCore {
         }
 
         let commandError: Error?
+        var completedSharedCollectionNames = Set<String>()
         do {
+            for removal in removals {
+                try validateSkillMutationPath(removal.skillURL, in: root)
+            }
             _ = try runSkillsCLIRemoval(root: root, skillNames: removals.map(\.skillName))
+            for removal in removals where try completeScopedSkillsCLIRemoval(
+                root: root, skillName: removal.skillName, recovery: removal.recovery
+            ) {
+                completedSharedCollectionNames.insert(removal.skillName)
+            }
             commandError = nil
         } catch {
             commandError = error
@@ -948,6 +966,9 @@ public enum MetagentCore {
                 retainedBackupCount: removal.retainedBackups.count
             )
             restoreRetainedSkillBackups(removal.retainedBackups, lines: &lines)
+            if completedSharedCollectionNames.contains(removal.skillName) {
+                lines.append("completed removal from the shared canonical collection")
+            }
             if reconciledProjectLockNames.contains(removal.skillName) {
                 lines.append("removed a stale project lock entry left by skills-cli")
             }
@@ -999,6 +1020,7 @@ public enum MetagentCore {
         }
         try moveSkillAndProjectionsToRecovery(
             skill: skill,
+            projectRoot: root,
             to: recoveredSkill,
             projections: projections,
             recovery: recovery,

@@ -209,6 +209,14 @@ extension MetagentCore {
         }
         guard !resolvable.isEmpty else { return outcomes }
 
+        let root = URL(fileURLWithPath: projectRoot).standardizedFileURL
+        guard root.resolvingSymlinksInPath().standardizedFileURL.path == root.path else {
+            return outcomes + resolvable.map {
+                SkillRemovalTargetOutcome(target: $0, succeeded: false,
+                    failureMessage: "The selected project root changed into a link; select the project again before removing skills.")
+            }
+        }
+
         let batch = uninstallSkills(
             projectRoot: projectRoot,
             skillNames: resolvable.compactMap(\.skillName),
@@ -446,7 +454,7 @@ func globalSkillLockPath() -> URL {
 
 func skillsCLIRemovalCommand(root: URL, skillName: String) -> String {
     let globalFlag = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? " --global" : ""
-    return "npx --yes skills remove \(skillName) --yes\(globalFlag)"
+    return "npx --yes skills remove \(skillName) --yes\(globalFlag) --agent codex claude-code"
 }
 
 func dotagentsRemovalCommand(root: URL, skillName: String) -> String {
@@ -459,8 +467,10 @@ func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
 }
 
 func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
+    try validateManagedSkillRemovalContainers(in: root)
     let arguments = ["--yes", "skills", "remove"] + skillNames + ["--yes"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--global"] : [])
+        + ["--agent", "codex", "claude-code"]
     let result = try runSubprocess(
         executable: try npxExecutable(),
         arguments: arguments,
@@ -482,6 +492,7 @@ func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
 }
 
 func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
+    try validateManagedSkillRemovalContainers(in: root)
     let arguments = ["--yes", "@sentry/dotagents"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--user"] : [])
         + ["remove", skillName, "--yes"]
@@ -503,6 +514,37 @@ func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
         failureMessage: "dotagents remove failed"
     )
     return combined
+}
+
+/// Scoped Skills CLI cleanup can deliberately retain the shared canonical
+/// collection for another detected app. Complete only the explicitly selected
+/// bundle and lock entry ourselves; never expand the manager's provider scope.
+@discardableResult
+func completeScopedSkillsCLIRemoval(root: URL, skillName: String, recovery: URL) throws -> Bool {
+    let skill = root.appendingPathComponent(".agents/skills").appendingPathComponent(skillName)
+    guard fileManager.fileExists(atPath: skill.path) else { return false }
+    try validateSkillMutationPath(skill, in: root)
+    let locks = try readProjectSkillLocksValidated(root: root)
+    let retired = recovery.appendingPathComponent("shared-canonical").appendingPathComponent(skillName)
+    try fileManager.createDirectory(at: retired.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fileManager.moveItem(at: skill, to: retired)
+    do {
+        if locks[skillName] != nil {
+            _ = try removeProjectSkillLockEntries(root: root, skillNames: [skillName])
+        }
+    } catch {
+        let originalError = error
+        do {
+            try validateSkillMutationPath(skill, in: root)
+            try fileManager.moveItem(at: retired, to: skill)
+        } catch {
+            throw NSError(domain: "MetagentSkillUninstall", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "Shared collection removal failed and rollback was incomplete: \(originalError.localizedDescription)\nRollback error: \(error.localizedDescription)\nRecovery state: \(recovery.path)"
+            ])
+        }
+        throw originalError
+    }
+    return true
 }
 
 func standaloneSkillRemovalTarget(
@@ -613,6 +655,10 @@ func finishManagedSkillRemoval(
     for (index, projection) in projections.enumerated() {
         let projectionURL = URL(fileURLWithPath: projection.path)
         guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
+        guard !hasSymlinkedAncestor(of: projectionURL, below: projectRoot) else {
+            lines.append("warning: left projection behind a linked container: \(projectionURL.path)")
+            continue
+        }
         let projectionRecovery = recovery
             .appendingPathComponent("projections")
             .appendingPathComponent("\(index)-\(projection.location)")
@@ -666,6 +712,7 @@ func snapshotRetainedSkills(
 /// back before the error propagates, so a partial removal never survives.
 func moveSkillAndProjectionsToRecovery(
     skill: URL,
+    projectRoot: URL,
     to recoveredSkill: URL,
     projections: [SkillInventoryItem],
     recovery: URL,
@@ -673,10 +720,16 @@ func moveSkillAndProjectionsToRecovery(
     rollbackErrorCode: Int,
     rollbackFailureSummary: String
 ) throws {
+    try validateSkillMutationPath(skill, in: projectRoot)
     var movedProjections: [(original: URL, recovery: URL)] = []
     do {
         for (index, projection) in projections.enumerated() {
             let projectionURL = URL(fileURLWithPath: projection.path)
+            guard !hasSymlinkedAncestor(of: projectionURL, below: projectRoot) else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+                    NSLocalizedDescriptionKey: "The projection path changed or crosses a linked container: \(projectionURL.path)"
+                ])
+            }
             let projectionRecovery = recovery
                 .appendingPathComponent("projections")
                 .appendingPathComponent("\(index)-\(projection.location)")
@@ -688,6 +741,7 @@ func moveSkillAndProjectionsToRecovery(
             try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
             movedProjections.append((projectionURL, projectionRecovery))
         }
+        try validateSkillMutationPath(skill, in: projectRoot)
         try fileManager.moveItem(at: skill, to: recoveredSkill)
     } catch {
         var rollbackFailures: [String] = []
@@ -704,6 +758,43 @@ func moveSkillAndProjectionsToRecovery(
             ])
         }
         throw error
+    }
+}
+
+func validateSkillMutationPath(_ skill: URL, in projectRoot: URL) throws {
+    guard isUnsymlinkedDescendant(skill, of: projectRoot) else {
+        throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+            NSLocalizedDescriptionKey: "The skill path changed or crosses a linked container; refusing to modify \(skill.path)"
+        ])
+    }
+}
+
+/// A manager can follow provider ancestors before Metagent's own cleanup runs.
+/// Validate its containers at the dispatch boundary, allowing only the legacy
+/// whole-collection alias that points back to this root's canonical collection.
+func validateManagedSkillRemovalContainers(in root: URL) throws {
+    let canonical = root.appendingPathComponent(".agents/skills")
+    try validateSkillMutationPath(canonical, in: root)
+    let isGlobal = canonicalProjectPath(root) == canonicalProjectPath(homeURL())
+    for (directory, environmentKey) in [(".codex", "CODEX_HOME"), (".claude", "CLAUDE_CONFIG_DIR")] {
+        let provider = root.appendingPathComponent(directory)
+        if isGlobal,
+           let configured = ProcessInfo.processInfo.environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty,
+           URL(fileURLWithPath: configured).standardizedFileURL.path != provider.path
+        {
+            throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "\(environmentKey) selects another provider directory; use its owning manager after reviewing that directory. Metagent left it untouched."
+            ])
+        }
+        try validateSkillMutationPath(provider, in: root)
+        let container = provider.appendingPathComponent("skills")
+        if isSymlink(container),
+           container.resolvingSymlinksInPath().standardizedFileURL.path == canonical.path
+        {
+            continue
+        }
+        try validateSkillMutationPath(container, in: root)
     }
 }
 

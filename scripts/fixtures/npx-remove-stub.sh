@@ -10,6 +10,7 @@ fi
 
 [[ -z "${METAGENT_NPX_LOG:-}" ]] || printf '%s\n' "$*" >>"$METAGENT_NPX_LOG"
 for skill_name in "${@:4}"; do
+  [[ "$skill_name" == "--agent" ]] && break
   [[ "$skill_name" == "--yes" || "$skill_name" == "--global" ]] && continue
   mv "$target_root/.agents/skills/$skill_name" "$target_root/.agents/skills/.removed-$skill_name"
   if [[ -e "$target_root/.codex/skills/$skill_name" ]]; then
