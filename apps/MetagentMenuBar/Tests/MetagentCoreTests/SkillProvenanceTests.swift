@@ -56,7 +56,7 @@ final class SkillProvenanceTests: XCTestCase {
 
         let removal = try MetagentCore.planSkillRemoval(projectRoot: root.path, skillName: "demo")
         XCTAssertEqual(removal.manager, "skills-cli")
-        XCTAssertEqual(removal.command, "npx --yes skills remove demo --yes")
+        XCTAssertEqual(removal.command, "npx --yes skills remove demo --yes --agent codex claude-code")
         XCTAssertTrue(removal.applySupported)
     }
 

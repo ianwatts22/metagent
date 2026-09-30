@@ -454,7 +454,7 @@ func globalSkillLockPath() -> URL {
 
 func skillsCLIRemovalCommand(root: URL, skillName: String) -> String {
     let globalFlag = canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? " --global" : ""
-    return "npx --yes skills remove \(skillName) --yes\(globalFlag)"
+    return "npx --yes skills remove \(skillName) --yes\(globalFlag) --agent codex claude-code"
 }
 
 func dotagentsRemovalCommand(root: URL, skillName: String) -> String {
@@ -467,8 +467,10 @@ func runSkillsCLIRemoval(root: URL, skillName: String) throws -> String {
 }
 
 func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
+    try validateManagedSkillRemovalContainers(in: root)
     let arguments = ["--yes", "skills", "remove"] + skillNames + ["--yes"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--global"] : [])
+        + ["--agent", "codex", "claude-code"]
     let result = try runSubprocess(
         executable: try npxExecutable(),
         arguments: arguments,
@@ -490,6 +492,7 @@ func runSkillsCLIRemoval(root: URL, skillNames: [String]) throws -> String {
 }
 
 func runDotagentsRemoval(root: URL, skillName: String) throws -> String {
+    try validateManagedSkillRemovalContainers(in: root)
     let arguments = ["--yes", "@sentry/dotagents"]
         + (canonicalProjectPath(root) == canonicalProjectPath(homeURL()) ? ["--user"] : [])
         + ["remove", skillName, "--yes"]
@@ -732,6 +735,35 @@ func validateSkillMutationPath(_ skill: URL, in projectRoot: URL) throws {
         throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
             NSLocalizedDescriptionKey: "The skill path changed or crosses a linked container; refusing to modify \(skill.path)"
         ])
+    }
+}
+
+/// A manager can follow provider ancestors before Metagent's own cleanup runs.
+/// Validate its containers at the dispatch boundary, allowing only the legacy
+/// whole-collection alias that points back to this root's canonical collection.
+func validateManagedSkillRemovalContainers(in root: URL) throws {
+    let canonical = root.appendingPathComponent(".agents/skills")
+    try validateSkillMutationPath(canonical, in: root)
+    let isGlobal = canonicalProjectPath(root) == canonicalProjectPath(homeURL())
+    for (directory, environmentKey) in [(".codex", "CODEX_HOME"), (".claude", "CLAUDE_CONFIG_DIR")] {
+        let provider = root.appendingPathComponent(directory)
+        if isGlobal,
+           let configured = ProcessInfo.processInfo.environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty,
+           URL(fileURLWithPath: configured).standardizedFileURL.path != provider.path
+        {
+            throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "\(environmentKey) selects another provider directory; use its owning manager after reviewing that directory. Metagent left it untouched."
+            ])
+        }
+        try validateSkillMutationPath(provider, in: root)
+        let container = provider.appendingPathComponent("skills")
+        if isSymlink(container),
+           container.resolvingSymlinksInPath().standardizedFileURL.path == canonical.path
+        {
+            continue
+        }
+        try validateSkillMutationPath(container, in: root)
     }
 }
 

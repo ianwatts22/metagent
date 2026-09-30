@@ -3,6 +3,80 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillContainmentTests: XCTestCase {
+    func testManagedRemovalRefusesLinkedProviderContainersBeforeDispatch() throws {
+        let fixture = try makeTemporaryRoot(prefix: "metagent-managed-provider").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let previousNpx = ProcessInfo.processInfo.environment["METAGENT_NPX"]
+        defer { restoreEnvironment("METAGENT_NPX", previousNpx) }
+        let marker = fixture.appendingPathComponent("manager-invoked")
+        let command = fixture.appendingPathComponent("npx-fixture")
+        try "#!/bin/sh\ntouch '\(marker.path)'\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+        setenv("METAGENT_NPX", command.path, 1)
+
+        for path in [".codex", ".claude", ".codex/skills", ".claude/skills"] {
+            let project = fixture.appendingPathComponent(UUID().uuidString)
+            let external = fixture.appendingPathComponent(UUID().uuidString)
+            try writeSkillFixture(at: project.appendingPathComponent(".agents/skills/demo"), name: "demo")
+            let externalSkill = external.appendingPathComponent(path.hasSuffix("/skills") ? "demo" : "skills/demo")
+            try writeSkillFixture(at: externalSkill, name: "demo", body: "External sentinel.")
+            let link = project.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: external)
+
+            XCTAssertThrowsError(try runSkillsCLIRemoval(root: project, skillNames: ["demo", "second"]))
+            XCTAssertThrowsError(try runDotagentsRemoval(root: project, skillName: "demo"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), path)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: externalSkill.appendingPathComponent("SKILL.md").path))
+        }
+    }
+
+    func testGlobalManagedRemovalRefusesOtherConfiguredProviderDirectories() throws {
+        let fixture = try makeTemporaryRoot(prefix: "metagent-managed-global").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let keys = ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "METAGENT_NPX"]
+        let previous = keys.map { ProcessInfo.processInfo.environment[$0] }
+        defer { for (key, value) in zip(keys, previous) { restoreEnvironment(key, value) } }
+        try writeSkillFixture(at: fixture.appendingPathComponent(".agents/skills/demo"), name: "demo")
+        let marker = fixture.appendingPathComponent("manager-invoked")
+        let command = fixture.appendingPathComponent("npx-fixture")
+        try "#!/bin/sh\ntouch '\(marker.path)'\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+        setenv("HOME", fixture.path, 1)
+        setenv("METAGENT_NPX", command.path, 1)
+        for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+            unsetenv("CODEX_HOME")
+            unsetenv("CLAUDE_CONFIG_DIR")
+            setenv(key, fixture.appendingPathComponent("another-provider").path, 1)
+            XCTAssertThrowsError(try runSkillsCLIRemoval(root: fixture, skillName: "demo"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    func testManagedRemovalKeepsCanonicalCollectionAliasAndScopesSkillsCLI() throws {
+        let fixture = try makeTemporaryRoot(prefix: "metagent-managed-scope").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let previousNpx = ProcessInfo.processInfo.environment["METAGENT_NPX"]
+        defer { restoreEnvironment("METAGENT_NPX", previousNpx) }
+        let project = fixture.appendingPathComponent("project")
+        try writeSkillFixture(at: project.appendingPathComponent(".agents/skills/demo"), name: "demo")
+        try FileManager.default.createDirectory(at: project.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: project.appendingPathComponent(".claude/skills"),
+            withDestinationURL: project.appendingPathComponent(".agents/skills"))
+        let capture = fixture.appendingPathComponent("arguments")
+        let command = fixture.appendingPathComponent("npx-fixture")
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture.path)'\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+        setenv("METAGENT_NPX", command.path, 1)
+
+        _ = try runSkillsCLIRemoval(root: project, skillNames: ["demo", "second"])
+
+        let arguments = try String(contentsOf: capture, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(arguments, ["--yes", "skills", "remove", "demo", "second", "--yes",
+            "--agent", "codex", "claude-code"])
+    }
+
     func testSavedLifecycleTargetCannotReselectReplacedProjectRoot() throws {
         let fixture = try makeTemporaryRoot(prefix: "metagent-root-replay").resolvingSymlinksInPath()
         defer { try? FileManager.default.removeItem(at: fixture) }

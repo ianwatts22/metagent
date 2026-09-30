@@ -63,6 +63,13 @@ For a local skill, Metagent moves the canonical bundle and its per-skill project
 
 For a skills CLI package, Metagent first copies the bundle and applicable lock files into the same recovery area, invokes `npx skills remove`, verifies both the bundle and lock entry are absent, and removes dangling per-skill projections. Independent same-name bundles are retained.
 
+The manager handoff is scoped to Codex and Claude Code, the provider locations
+Metagent inventories. Linked provider directories block managed removal before
+the manager runs; the legacy `skills` alias to this root's `.agents/skills`
+remains supported. Nonstandard global `CODEX_HOME` or `CLAUDE_CONFIG_DIR`
+locations require manual review through their owning manager. Other providers
+are left untouched rather than delegated to an unrestricted cleanup.
+
 Codex system, Codex-installed, and plugin-cache skills remain read-only and cannot be removed through Metagent.
 
 ## Archiving
