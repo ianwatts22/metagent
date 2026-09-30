@@ -209,6 +209,14 @@ extension MetagentCore {
         }
         guard !resolvable.isEmpty else { return outcomes }
 
+        let root = URL(fileURLWithPath: projectRoot).standardizedFileURL
+        guard root.resolvingSymlinksInPath().standardizedFileURL.path == root.path else {
+            return outcomes + resolvable.map {
+                SkillRemovalTargetOutcome(target: $0, succeeded: false,
+                    failureMessage: "The selected project root changed into a link; select the project again before removing skills.")
+            }
+        }
+
         let batch = uninstallSkills(
             projectRoot: projectRoot,
             skillNames: resolvable.compactMap(\.skillName),
@@ -613,6 +621,10 @@ func finishManagedSkillRemoval(
     for (index, projection) in projections.enumerated() {
         let projectionURL = URL(fileURLWithPath: projection.path)
         guard isSymlink(projectionURL) || fileManager.fileExists(atPath: projectionURL.path) else { continue }
+        guard !hasSymlinkedAncestor(of: projectionURL, below: projectRoot) else {
+            lines.append("warning: left projection behind a linked container: \(projectionURL.path)")
+            continue
+        }
         let projectionRecovery = recovery
             .appendingPathComponent("projections")
             .appendingPathComponent("\(index)-\(projection.location)")
@@ -666,6 +678,7 @@ func snapshotRetainedSkills(
 /// back before the error propagates, so a partial removal never survives.
 func moveSkillAndProjectionsToRecovery(
     skill: URL,
+    projectRoot: URL,
     to recoveredSkill: URL,
     projections: [SkillInventoryItem],
     recovery: URL,
@@ -673,10 +686,16 @@ func moveSkillAndProjectionsToRecovery(
     rollbackErrorCode: Int,
     rollbackFailureSummary: String
 ) throws {
+    try validateSkillMutationPath(skill, in: projectRoot)
     var movedProjections: [(original: URL, recovery: URL)] = []
     do {
         for (index, projection) in projections.enumerated() {
             let projectionURL = URL(fileURLWithPath: projection.path)
+            guard !hasSymlinkedAncestor(of: projectionURL, below: projectRoot) else {
+                throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+                    NSLocalizedDescriptionKey: "The projection path changed or crosses a linked container: \(projectionURL.path)"
+                ])
+            }
             let projectionRecovery = recovery
                 .appendingPathComponent("projections")
                 .appendingPathComponent("\(index)-\(projection.location)")
@@ -688,6 +707,7 @@ func moveSkillAndProjectionsToRecovery(
             try fileManager.moveItem(at: projectionURL, to: projectionRecovery)
             movedProjections.append((projectionURL, projectionRecovery))
         }
+        try validateSkillMutationPath(skill, in: projectRoot)
         try fileManager.moveItem(at: skill, to: recoveredSkill)
     } catch {
         var rollbackFailures: [String] = []
@@ -704,6 +724,14 @@ func moveSkillAndProjectionsToRecovery(
             ])
         }
         throw error
+    }
+}
+
+func validateSkillMutationPath(_ skill: URL, in projectRoot: URL) throws {
+    guard isUnsymlinkedDescendant(skill, of: projectRoot) else {
+        throw NSError(domain: "MetagentSkillUninstall", code: 11, userInfo: [
+            NSLocalizedDescriptionKey: "The skill path changed or crosses a linked container; refusing to modify \(skill.path)"
+        ])
     }
 }
 

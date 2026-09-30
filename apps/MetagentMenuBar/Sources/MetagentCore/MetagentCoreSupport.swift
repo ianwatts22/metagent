@@ -365,6 +365,18 @@ func hasSymlinkedAncestor(of url: URL, below root: URL) -> Bool {
     return false
 }
 
+/// The caller resolves the selected root once; aliases above it stay supported.
+/// Missing ordinary descendants are safe, but even dangling links are rejected.
+func isUnsymlinkedDescendant(_ url: URL, of root: URL) -> Bool {
+    let root = root.standardizedFileURL
+    let path = url.standardizedFileURL
+    return path.path.hasPrefix(root.path + "/")
+        && root.resolvingSymlinksInPath().standardizedFileURL.path == root.path
+        && !isSymlink(path)
+        && !hasSymlinkedAncestor(of: path, below: root)
+        && path.resolvingSymlinksInPath().standardizedFileURL.path == path.path
+}
+
 func isDirectoryOrSymlinkedDirectory(_ url: URL) -> Bool {
     var isDirectory = ObjCBool(false)
     guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }

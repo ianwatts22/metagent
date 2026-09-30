@@ -464,6 +464,7 @@ func readAgentsSkills(
     }
 
     let symlinkedContainer = isSymlink(skillsDir)
+        || hasSymlinkedAncestor(of: skillsDir, below: projectRoot(for: skillsDir))
 
     for entry in entries.sorted(by: { $0.path < $1.path }) {
         guard isDirectoryOrSymlinkedDirectory(entry) else { continue }
@@ -526,7 +527,8 @@ func readInventorySkills(
         scope: scope,
         depth: 0,
         maxDepth: 2,
-        symlinkedContainer: isSymlink(skillsDir),
+        symlinkedContainer: isSymlink(skillsDir)
+            || hasSymlinkedAncestor(of: skillsDir, below: projectRoot(for: skillsDir)),
         canonicalAgents: canonicalAgents,
         inventory: &inventory
     )
@@ -588,7 +590,7 @@ func collectInventorySkills(
             scope: scope,
             depth: depth + 1,
             maxDepth: maxDepth,
-            symlinkedContainer: symlinkedContainer,
+            symlinkedContainer: symlinkedContainer || isSymlink(entry),
             canonicalAgents: canonicalAgents,
             inventory: &inventory
         )

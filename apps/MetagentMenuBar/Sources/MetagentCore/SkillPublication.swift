@@ -456,13 +456,19 @@ public extension MetagentCore {
             }
 
             let repository = URL(fileURLWithPath: catalog.localRepositoryPath)
-            let readiness = assessSkillPublicationReadiness(
+            let rootUnchanged = repository.resolvingSymlinksInPath().standardizedFileURL.path
+                == repository.standardizedFileURL.path
+            let readiness = rootUnchanged ? assessSkillPublicationReadiness(
                 sourcePath: source.path,
                 repositoryPath: repository.path,
                 skillsRelativePath: catalog.skillsRelativePath,
                 destinationName: record.destinationName,
                 allowedSourceRoot: allowedSourceRoot
-            )
+            ) : SkillPublishReadiness(status: .blocked, sourceHash: nil, findings: [publicationFinding(
+                id: "linked-repository",
+                message: "The selected publishing checkout changed into a link.",
+                remediation: "Select the publishing checkout again to approve its new location."
+            )])
             snapshot.records[index].findings = readiness.findings
             guard readiness.status == .ready, let sourceHash = readiness.sourceHash else {
                 snapshot.records[index].state = .updateBlocked
@@ -599,6 +605,16 @@ public extension MetagentCore {
             )
         }
 
+        let destination = repository.appendingPathComponent(skillsRelativePath)
+            .appendingPathComponent(destinationName)
+        if !isUnsymlinkedDescendant(destination, of: repository) {
+            findings.append(publicationFinding(
+                id: "linked-destination",
+                message: "The publication destination crosses a linked directory or skill.",
+                remediation: "Use physical directories inside the selected publishing checkout."
+            ))
+        }
+
         if pathsOverlap(source, repository) {
             findings.append(publicationFinding(
                 id: "overlapping-roots",
@@ -690,6 +706,12 @@ private func mirrorSkillPublication(
     destinationName: String,
     expectedHash: String
 ) throws {
+    let repository = repository.standardizedFileURL
+    let destination = repository.appendingPathComponent(skillsRelativePath)
+        .appendingPathComponent(destinationName)
+    guard isUnsymlinkedDescendant(destination, of: repository) else {
+        throw publicationError("The publication destination crosses a linked directory or skill.")
+    }
     var findings: [SkillPublishFinding] = []
     let files = try publicationFiles(in: source, findings: &findings)
     guard !findings.contains(where: { $0.severity == .blocking }) else {
@@ -700,13 +722,11 @@ private func mirrorSkillPublication(
     try fileManager.createDirectory(at: skillsRoot, withIntermediateDirectories: true)
     let stage = skillsRoot.appendingPathComponent(".metagent-stage-\(UUID().uuidString)")
     let backup = skillsRoot.appendingPathComponent(".metagent-backup-\(UUID().uuidString)")
-    let destination = skillsRoot.appendingPathComponent(destinationName, isDirectory: true)
     try fileManager.createDirectory(at: stage, withIntermediateDirectories: true)
     var movedDestinationToBackup = false
     defer {
-        try? fileManager.removeItem(at: stage)
-        if movedDestinationToBackup, fileManager.fileExists(atPath: backup.path) {
-            try? fileManager.removeItem(at: backup)
+        if isUnsymlinkedDescendant(stage, of: repository) {
+            try? fileManager.removeItem(at: stage)
         }
     }
 
@@ -724,26 +744,35 @@ private func mirrorSkillPublication(
 
     try validateStagedPublication(stage, expectedHash: expectedHash)
 
+    guard isUnsymlinkedDescendant(destination, of: repository),
+          isUnsymlinkedDescendant(stage, of: repository) else {
+        throw publicationError("The publication destination changed while staging the skill.")
+    }
+
     do {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.moveItem(at: destination, to: backup)
             movedDestinationToBackup = true
         }
         try fileManager.moveItem(at: stage, to: destination)
-        if movedDestinationToBackup {
+        if movedDestinationToBackup, isUnsymlinkedDescendant(backup, of: repository) {
             if (try? fileManager.removeItem(at: backup)) != nil {
                 movedDestinationToBackup = false
             }
         }
     } catch {
         if movedDestinationToBackup,
+           isUnsymlinkedDescendant(destination, of: repository),
+           isUnsymlinkedDescendant(backup, of: repository),
            !fileManager.fileExists(atPath: destination.path),
            fileManager.fileExists(atPath: backup.path)
         {
-            try? fileManager.moveItem(at: backup, to: destination)
-            movedDestinationToBackup = false
+            if (try? fileManager.moveItem(at: backup, to: destination)) != nil {
+                movedDestinationToBackup = false
+            }
         }
-        throw publicationError("Could not update the public checkout safely: \(error.localizedDescription)")
+        let recovery = movedDestinationToBackup ? " Recovery copy: \(backup.path)" : ""
+        throw publicationError("Could not update the public checkout safely: \(error.localizedDescription)\(recovery)")
     }
 }
 

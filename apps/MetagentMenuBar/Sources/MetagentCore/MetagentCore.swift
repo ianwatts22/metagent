@@ -494,6 +494,7 @@ public enum MetagentCore {
             .appendingPathComponent(".agents")
             .appendingPathComponent("skills")
             .appendingPathComponent(skillName)
+        try validateSkillMutationPath(expectedSkillURL, in: requestedRoot)
         if allowManagedRemoval,
            canonicalProjectPath(requestedRoot) != canonicalProjectPath(homeURL()),
            !fileManager.fileExists(atPath: expectedSkillURL.path),
@@ -571,6 +572,7 @@ public enum MetagentCore {
         }
 
         let skillURL = URL(fileURLWithPath: agentsSkill.path)
+        try validateSkillMutationPath(skillURL, in: root)
         var lines: [String] = []
         let (projections, retained) = partitionSameNameSkills(
             in: project,
@@ -676,6 +678,7 @@ public enum MetagentCore {
         lines.append("saved recovery state to \(recovery.path)")
         try moveSkillAndProjectionsToRecovery(
             skill: skillURL,
+            projectRoot: root,
             to: recoveredSkill,
             projections: projections,
             recovery: recovery,
@@ -820,6 +823,7 @@ public enum MetagentCore {
                 }
 
                 let skillURL = URL(fileURLWithPath: skill.path)
+                try validateSkillMutationPath(skillURL, in: root)
                 let (projections, retained) = partitionSameNameSkills(
                     in: project,
                     skillName: skillName,
@@ -854,6 +858,9 @@ public enum MetagentCore {
 
         let commandError: Error?
         do {
+            for removal in removals {
+                try validateSkillMutationPath(removal.skillURL, in: root)
+            }
             _ = try runSkillsCLIRemoval(root: root, skillNames: removals.map(\.skillName))
             commandError = nil
         } catch {
@@ -999,6 +1006,7 @@ public enum MetagentCore {
         }
         try moveSkillAndProjectionsToRecovery(
             skill: skill,
+            projectRoot: root,
             to: recoveredSkill,
             projections: projections,
             recovery: recovery,

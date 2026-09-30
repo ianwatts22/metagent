@@ -21,6 +21,10 @@ The broader private skills directory is never exported. Stopping mirroring
 leaves the last copy in place. Nothing commits, pushes, changes repository
 visibility, or runs an install automatically.
 
+The selected checkout may be reached through an alias, but destination paths
+inside it must use physical directories. Linked or dangling skills directories
+and destination bundles block mirroring; external targets are left untouched.
+
 Each card separates **mirror state** from an explicit **Check Git Status**:
 
 Once mirroring is configured, the skill's context menu disables duplicate setup

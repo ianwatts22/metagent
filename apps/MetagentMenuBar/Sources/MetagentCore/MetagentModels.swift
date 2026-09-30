@@ -574,11 +574,12 @@ public struct SkillRemovalTarget: Sendable, Codable, Identifiable, Hashable {
     }
 
     public static func canonical(projectRoot: String, skillName: String) -> SkillRemovalTarget {
-        SkillRemovalTarget(
-            id: "canonical:\(projectRoot):\(skillName)",
+        let root = canonicalProjectPath(URL(fileURLWithPath: projectRoot))
+        return SkillRemovalTarget(
+            id: "canonical:\(root):\(skillName)",
             displayName: skillName,
             method: .canonical,
-            projectRoot: projectRoot,
+            projectRoot: root,
             skillName: skillName
         )
     }
