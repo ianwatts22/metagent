@@ -55,6 +55,22 @@ executing those helpers. Installed but unused drivers such as Git LFS do not
 block publishing. Attribute configuration is retained so stripping user
 configuration cannot silently change Git's interpretation.
 
+Publish reviews screen the exact immutable Git blobs that will be sent, after
+built-in encoding and line-ending conversions. Fresh publishes and retries both
+require a valid UTF-8 skill manifest, safe file names/content, bundled script
+references, regular files, and the existing 10 MB/file and 50 MB/bundle limits.
+Generated or repository-local files excluded from mirroring must not be added
+directly to the outgoing skill tree. A retained safe export remains publishable
+even when its canonical source is missing or disabled.
+
+Git replacement objects are disabled throughout the publication operation.
+Retry inspects stored commit headers and permits exactly one parent matching the
+remote head; local replacement refs, grafts, or shallow metadata cannot disguise
+extra outgoing history. Ordinary shallow checkouts still publish/retry; a
+shallow boundary at the pending commit must be deepened manually before retry.
+Declared non-UTF-8 author metadata is preserved. These deterministic checks do
+not replace the user's action-time publish approval.
+
 A credential-free GitHub `origin` and a supported current `SKILL.md` name
 provide repository/skills.sh links and a copyable, single-skill install command.
 Renaming the destination folder does not change the manifest's install name.

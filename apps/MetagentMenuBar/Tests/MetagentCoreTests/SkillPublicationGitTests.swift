@@ -3,6 +3,221 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillPublicationGitTests: XCTestCase {
+    func testPublishScreensExactOutgoingCheckoutContent() throws {
+        let unsafeFiles = [
+            ("notes.txt", "token = abcdefghijklmnopqrstuvwxyz123456"),
+            (".env", "PUBLIC_SETTING=yes"),
+            (".cache/private.txt", "generated checkout content"),
+            ("SKILL.md", "Not a skill manifest"),
+            ("notes.txt", "/Users/example/private/project"),
+            ("SKILL.md", "---\nname: test\ndescription: Test\n---\nRun scripts/missing.py"),
+        ]
+        for (path, content) in unsafeFiles {
+            let fixture = try GitPublicationFixture()
+            defer { fixture.remove() }
+            try fixture.commit()
+            try fixture.configureBareRemote()
+            let head = try fixture.git(["rev-parse", "HEAD"])
+            try fixture.write(content, at: "skills/folder-name/\(path)")
+
+            let preview = fixture.preparePublish()
+
+            XCTAssertFalse(preview.isReady, "Accepted unscreened \(path)")
+            XCTAssertEqual(try fixture.git(["rev-parse", "HEAD"]), head)
+            XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), head)
+        }
+    }
+
+    func testRetryScreensStoredBytesEvenWhenBlobReplacementLooksSafe() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let remoteHead = try fixture.git(["rev-parse", "HEAD"])
+        try fixture.writeSkill("token = abcdefghijklmnopqrstuvwxyz123456")
+        try fixture.git(["add", "."])
+        try fixture.git(["commit", "-m", "Pending publish", "-m",
+            "Metagent-Skill-Publication: \(fixture.record.id)"])
+        let blob = try fixture.git(["rev-parse", "HEAD:skills/folder-name/SKILL.md"])
+        let safeFile = fixture.bareRemote.appendingPathComponent("safe-manifest")
+        try "---\nname: safe\ndescription: Safe replacement\n---\nPublic\n"
+            .write(to: safeFile, atomically: true, encoding: .utf8)
+        let replacement = try fixture.git(["hash-object", "-w", safeFile.path])
+        try fixture.git(["replace", blob, replacement])
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertFalse(preview.isReady)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), remoteHead)
+    }
+
+    func testRetryRejectsHiddenMergeParentEvenWithLegacyGraft() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let remoteHead = try fixture.git(["rev-parse", "HEAD"])
+        let baseTree = try fixture.git(["rev-parse", "HEAD^{tree}"])
+        let hiddenParent = try fixture.git(["commit-tree", baseTree, "-m", "Unapproved history"])
+        try fixture.writeSkill("Safe public update")
+        try fixture.git(["add", "."])
+        let tree = try fixture.git(["write-tree"])
+        let merge = try fixture.git(["commit-tree", tree, "-p", remoteHead, "-p", hiddenParent,
+            "-m", "Metagent-Skill-Publication: \(fixture.record.id)"])
+        try fixture.git(["update-ref", "HEAD", merge, remoteHead])
+        try fixture.write("\(merge) \(remoteHead)\n", at: ".git/info/grafts")
+
+        XCTAssertFalse(fixture.preparePublish().isReady)
+    }
+
+    func testPublishRejectsOversizedAndNonUTF8ManifestBlobs() throws {
+        for (path, data) in [
+            ("asset.bin", Data(repeating: 65, count: 10 * 1_024 * 1_024 + 1)),
+            ("SKILL.md", Data([0xff, 0xfe])),
+        ] {
+            let fixture = try GitPublicationFixture()
+            defer { fixture.remove() }
+            try fixture.commit()
+            try fixture.configureBareRemote()
+            try data.write(to: fixture.root.appendingPathComponent("skills/folder-name/\(path)"))
+            let preview = fixture.preparePublish()
+            XCTAssertFalse(preview.isReady)
+            if path == "asset.bin" { XCTAssertTrue(preview.blocker?.contains("10 MB") == true) }
+        }
+    }
+
+    func testBundleSizeCountsEveryPathEvenWhenBlobsAreShared() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let data = Data(repeating: 65, count: 9 * 1_024 * 1_024)
+        for index in 0..<6 {
+            try data.write(to: fixture.root.appendingPathComponent("skills/folder-name/asset-\(index).bin"))
+        }
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertFalse(preview.isReady)
+        XCTAssertTrue(preview.blocker?.contains("50 MB") == true)
+    }
+
+    func testPublishScreensBytesAfterBuiltInGitEncodingTransformation() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.write("skills/folder-name/encoded.txt working-tree-encoding=UTF-16LE\n", at: ".gitattributes")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let encoded = "token = abcdefghijklmnopqrstuvwxyz123456".data(using: .utf16LittleEndian)!
+        try encoded.write(to: fixture.root.appendingPathComponent("skills/folder-name/encoded.txt"))
+
+        XCTAssertFalse(fixture.preparePublish().isReady)
+    }
+
+    func testSafeRetainedCopyPreservesBinaryAssetsExecutableScriptsAndEOLConversion() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.write("skills/folder-name/SKILL.md text eol=lf\n", at: ".gitattributes")
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try fixture.write("---\r\nname: retained-copy\r\ndescription: Safe retained export\r\n---\r\nRun scripts/helper.sh\r\n",
+            at: "skills/folder-name/SKILL.md")
+        try fixture.write("#!/bin/sh\nprintf 'public\\n'\n", at: "skills/folder-name/scripts/helper.sh")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+            ofItemAtPath: fixture.root.appendingPathComponent("skills/folder-name/scripts/helper.sh").path)
+        let asset = Data([0, 255, 254, 10, 9, 0])
+        try asset.write(to: fixture.root.appendingPathComponent("skills/folder-name/asset.bin"))
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(fixture.publish(preview, message: "Publish safe retained copy").outcome, .published)
+        XCTAssertTrue(try fixture.bareGit(["ls-tree", "HEAD", "skills/folder-name/scripts/helper.sh"]).hasPrefix("100755"))
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "HEAD:skills/folder-name/asset.bin"]),
+            try fixture.git(["hash-object", "skills/folder-name/asset.bin"]))
+    }
+
+    func testRetryBlocksHiddenShallowParentButPublishesWithOrdinaryShallowBase() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let base = try fixture.git(["rev-parse", "HEAD"])
+        try fixture.writeSkill("Safe pending publish")
+        try fixture.rejectPushes()
+        let pending = fixture.publish(fixture.preparePublish(), message: "Safe update")
+        XCTAssertEqual(pending.outcome, .committedLocally, pending.message)
+        try fixture.write("\(try XCTUnwrap(pending.commit))\n", at: ".git/shallow")
+
+        let retry = fixture.preparePublish()
+
+        XCTAssertFalse(retry.isReady)
+        XCTAssertTrue(retry.blocker?.contains("shallow") == true)
+        try fixture.write("\(base)\n", at: ".git/shallow")
+        try fixture.allowPushes()
+        let ordinary = fixture.preparePublish()
+        XCTAssertTrue(ordinary.isReady, ordinary.blocker ?? "")
+        let result = fixture.publish(ordinary, message: "Retry safe update")
+        XCTAssertEqual(result.outcome, .published, result.message)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), pending.commit)
+    }
+
+    func testRetryAcceptsNonUTF8AuthorMetadataWithoutReinterpretingTreeOrParents() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let base = try fixture.git(["rev-parse", "HEAD"])
+        try fixture.writeSkill("Safe retained update")
+        try fixture.git(["add", "."])
+        let tree = try fixture.git(["write-tree"])
+        var bytes = Data("tree \(tree)\nparent \(base)\nauthor Caf".utf8)
+        bytes.append(0xe9)
+        bytes.append(Data(" <publication@example.invalid> 1800000000 +0000\ncommitter Test <publication@example.invalid> 1800000000 +0000\nencoding ISO-8859-1\n\nMetagent-Skill-Publication: \(fixture.record.id)\n".utf8))
+        let commitFile = fixture.bareRemote.appendingPathComponent("latin1-commit")
+        try bytes.write(to: commitFile)
+        let commit = try fixture.git(["hash-object", "-t", "commit", "-w", commitFile.path])
+        try fixture.git(["update-ref", "HEAD", commit, base])
+
+        let preview = fixture.preparePublish()
+
+        XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+        XCTAssertEqual(preview.commitToPush, commit)
+        XCTAssertEqual(fixture.publish(preview, message: "Retry retained update").outcome, .published)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), commit)
+    }
+
+    func testRetryRejectsStoredSymlink() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        try FileManager.default.createSymbolicLink(
+            at: fixture.root.appendingPathComponent("skills/folder-name/external"),
+            withDestinationURL: fixture.bareRemote)
+        try fixture.git(["add", "."])
+        try fixture.git(["commit", "-m", "Metagent-Skill-Publication: \(fixture.record.id)"])
+
+        XCTAssertFalse(fixture.preparePublish().isReady)
+    }
+
+    func testFreshPublishRejectsReplacementBaselineWithUnapprovedOutsideFiles() throws {
+        let fixture = try GitPublicationFixture()
+        defer { fixture.remove() }
+        try fixture.commit()
+        try fixture.configureBareRemote()
+        let head = try fixture.git(["rev-parse", "HEAD"])
+        try fixture.write("Unapproved outside content", at: "outside.txt")
+        try fixture.git(["add", "."])
+        let tree = try fixture.git(["write-tree"])
+        let replacement = try fixture.git(["commit-tree", tree, "-m", "Replacement baseline"])
+        try fixture.git(["replace", head, replacement])
+        try fixture.writeSkill("Safe selected update")
+
+        XCTAssertFalse(fixture.preparePublish().isReady)
+        XCTAssertEqual(try fixture.bareGit(["rev-parse", "refs/heads/main"]), head)
+    }
+
     func testExplicitPublishCommitsOnlyApprovedNewSkillAndPushesIt() throws {
         let fixture = try GitPublicationFixture()
         defer { fixture.remove() }

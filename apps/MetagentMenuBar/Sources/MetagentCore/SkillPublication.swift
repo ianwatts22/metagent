@@ -812,7 +812,7 @@ private func publicationFiles(
         totalBytes: &totalBytes,
         findings: &findings
     )
-    if totalBytes > 50 * 1_024 * 1_024 {
+    if totalBytes > Int64(publicationMaximumBundleBytes) {
         findings.append(publicationFinding(
             id: "bundle-too-large",
             message: "The skill bundle is larger than 50 MB.",
@@ -888,20 +888,11 @@ private func collectPublicationFiles(
             ))
             continue
         }
-        if isPublicationSecretFileName(name)
-            || publicationSecretExtensions.contains(entry.pathExtension.lowercased())
-        {
-            findings.append(publicationFinding(
-                id: "secret-file:\(relativePath)",
-                relativePath: relativePath,
-                message: "This file name commonly contains credentials.",
-                remediation: "Remove the file and rotate any credential it contained."
-            ))
-        }
+        inspectPublicationFileName(relativePath, findings: &findings)
 
         let byteCount = Int64(values.fileSize ?? 0)
         totalBytes += byteCount
-        if byteCount > 10 * 1_024 * 1_024 {
+        if byteCount > Int64(publicationMaximumFileBytes) {
             findings.append(publicationFinding(
                 id: "large-file:\(relativePath)",
                 relativePath: relativePath,
@@ -929,6 +920,31 @@ private func inspectPublicationTextFile(
     guard let handle = try? FileHandle(forReadingFrom: file) else { return }
     defer { try? handle.close() }
     guard let data = try? handle.readToEnd() else { return }
+    inspectPublicationContent(data, relativePath: relativePath, findings: &findings)
+}
+
+func inspectPublicationFileName(_ relativePath: String, findings: inout [SkillPublishFinding]) {
+    let name = relativePath.split(separator: "/").last.map(String.init) ?? relativePath
+    let suffix = URL(fileURLWithPath: name).pathExtension.lowercased()
+    if isPublicationSecretFileName(name) || publicationSecretExtensions.contains(suffix) {
+        findings.append(publicationFinding(
+            id: "secret-file:\(relativePath)",
+            relativePath: relativePath,
+            message: "This file name commonly contains credentials.",
+            remediation: "Remove the file and rotate any credential it contained."
+        ))
+    }
+}
+
+func publicationPathIsExcluded(_ relativePath: String) -> Bool {
+    relativePath.split(separator: "/").contains { publicationSkippedNames.contains(String($0)) }
+}
+
+func inspectPublicationContent(
+    _ data: Data,
+    relativePath: String,
+    findings: inout [SkillPublishFinding]
+) {
     let text = String(decoding: data, as: UTF8.self)
 
     if containsPublicationPersonalPath(text) {
@@ -978,7 +994,7 @@ private func publicationDirectoryHash(_ directory: URL) -> String? {
     return publicationContentHash(files)
 }
 
-private func hasPublishableSkillFrontmatter(_ text: String) -> Bool {
+func hasPublishableSkillFrontmatter(_ text: String) -> Bool {
     let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
     let lines = normalized.components(separatedBy: "\n")
     guard lines.first == "---",
@@ -1120,6 +1136,9 @@ private func publicationError(_ message: String) -> NSError {
         userInfo: [NSLocalizedDescriptionKey: message]
     )
 }
+
+let publicationMaximumFileBytes = 10 * 1_024 * 1_024
+let publicationMaximumBundleBytes = 50 * 1_024 * 1_024
 
 private let publicationSkippedNames: Set<String> = [
     ".DS_Store",
