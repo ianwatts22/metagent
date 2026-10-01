@@ -87,8 +87,8 @@ extension SkillProject {
     /// Combines scans of the same root. The first scan owns the skills directory;
     /// later scans replace matching inventory rows without losing folder metadata.
     public func merging(with additional: SkillProject) -> SkillProject {
-        var skillsByID = Dictionary(uniqueKeysWithValues: skills.map { ($0.id, $0) })
-        for skill in additional.skills {
+        var skillsByID: [String: SkillInventoryItem] = [:]
+        for skill in skills + additional.skills {
             skillsByID[skill.id] = skill
         }
         return SkillProject(

@@ -28,5 +28,16 @@ final class SkillProjectMergeTests: XCTestCase {
         XCTAssertEqual(merged.skills, [second, replacement])
         XCTAssertEqual(merged.skills.map(\.id), [second.id, first.id])
         XCTAssertEqual(merged.merging(with: additional), merged)
+
+        let repeatedRows = SkillProject(
+            root: root, skillsDir: original.skillsDir,
+            validSkills: ["zulu"], skills: [first, replacement]
+        )
+        XCTAssertEqual(
+            repeatedRows.merging(with: SkillProject(
+                root: root, skillsDir: original.skillsDir, validSkills: [], skills: []
+            )).skills,
+            [replacement]
+        )
     }
 }
