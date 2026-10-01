@@ -117,7 +117,7 @@ final class SkillTableRowStore: ObservableObject {
         )
 
         guard !Task.isCancelled else { return nil }
-        let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill.coreSkill })
+        let overlaps = MetagentCore.detectSkillOverlaps(inventoryRows.map { $0.skill })
 
         guard !Task.isCancelled else { return nil }
         let usageRows = UsageSkillRow.rows(

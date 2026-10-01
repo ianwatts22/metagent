@@ -192,14 +192,14 @@ struct EmptyStateView: View {
 }
 
 struct RepairPreviewView: View {
-    let preview: RepairPreview
+    let preview: SkillsRepairReport
     let showsRawOutput: Bool
     let rawLines: [String]
     let onApply: () -> Void
     let onCopySummary: () -> Void
     let onCopyRawOutput: () -> Void
     let onToggleRawOutput: () -> Void
-    let onOpenProject: (RepairProjectPreview) -> Void
+    let onOpenProject: (SkillsRepairProject) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -285,7 +285,7 @@ struct RepairPreviewView: View {
 }
 
 struct RepairProjectView: View {
-    let project: RepairProjectPreview
+    let project: SkillsRepairProject
     let onOpen: () -> Void
 
     var body: some View {
@@ -341,7 +341,7 @@ struct RepairProjectView: View {
 }
 
 struct LineGroup: View {
-    let lines: [RepairLinePreview]
+    let lines: [SkillsRepairLine]
     let tint: Color
 
     var body: some View {

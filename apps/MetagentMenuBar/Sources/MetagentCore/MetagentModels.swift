@@ -83,6 +83,25 @@ public struct SkillProject: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+extension SkillProject {
+    /// Combines scans of the same root. The first scan owns the skills directory;
+    /// later scans replace matching inventory rows without losing folder metadata.
+    public func merging(with additional: SkillProject) -> SkillProject {
+        var skillsByID: [String: SkillInventoryItem] = [:]
+        for skill in skills + additional.skills {
+            skillsByID[skill.id] = skill
+        }
+        return SkillProject(
+            root: root,
+            skillsDir: skillsDir,
+            validSkills: Array(Set(validSkills + additional.validSkills)).sorted(),
+            skills: skillsByID.values.sorted(),
+            invalidSkillDirs: Array(Set(invalidSkillDirs + additional.invalidSkillDirs)).sorted(),
+            hiddenSkillDirs: Array(Set(hiddenSkillDirs + additional.hiddenSkillDirs)).sorted()
+        )
+    }
+}
+
 public struct SkillInventoryItem: Codable, Equatable, Identifiable, Comparable, Sendable {
     public var id: String { "\(location):\(path)" }
     public var name: String

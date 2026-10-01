@@ -1133,21 +1133,6 @@ func hasProjectInventorySurface(_ project: SkillProject) -> Bool {
         || !project.hiddenSkillDirs.isEmpty
 }
 
-func mergeSkillProjects(_ existing: SkillProject, _ additional: SkillProject) -> SkillProject {
-    var skillsByID = Dictionary(uniqueKeysWithValues: existing.skills.map { ($0.id, $0) })
-    for skill in additional.skills {
-        skillsByID[skill.id] = skill
-    }
-    return SkillProject(
-        root: existing.root,
-        skillsDir: existing.skillsDir,
-        validSkills: Array(Set(existing.validSkills + additional.validSkills)).sorted(),
-        skills: skillsByID.values.sorted(),
-        invalidSkillDirs: Array(Set(existing.invalidSkillDirs + additional.invalidSkillDirs)).sorted(),
-        hiddenSkillDirs: Array(Set(existing.hiddenSkillDirs + additional.hiddenSkillDirs)).sorted()
-    )
-}
-
 func hasCanonicalSkillsSurface(_ project: SkillProject) -> Bool {
     !project.validSkills.isEmpty
         || !project.invalidSkillDirs.isEmpty

@@ -68,7 +68,7 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var lastOutputTitle: String?
     @Published private(set) var lastOutputLines: [String] = []
     @Published private(set) var lastOutputWasFailure = false
-    @Published private(set) var repairPreview: RepairPreview?
+    @Published private(set) var repairPreview: SkillsRepairReport?
     @Published private(set) var showsRawOutput = false
     @Published private(set) var usageSnapshot = SkillUsageSnapshot.empty
     @Published private(set) var isUsageRefreshing = false
@@ -1541,7 +1541,7 @@ final class MetagentModel: ObservableObject {
             return CommandOutcome(
                 succeeded: true,
                 lines: Self.renderRepairReport(report),
-                repairPreview: RepairPreview(report: report)
+                repairPreview: report
             )
         } completion: { [weak self] result in
             guard let self, result.succeeded else { return }
@@ -1832,7 +1832,7 @@ final class MetagentModel: ObservableObject {
         copyToPasteboard(repairPreview.summaryText)
     }
 
-    func openProject(_ project: RepairProjectPreview) {
+    func openProject(_ project: SkillsRepairProject) {
         openProjectRoot(project.root)
     }
 
@@ -2264,32 +2264,20 @@ func localMCPApplication(for server: MCPServerHealth, endpoint: URL?) -> LocalMC
 struct CommandOutcome: Sendable {
     let succeeded: Bool
     let lines: [String]
-    let repairPreview: RepairPreview?
+    let repairPreview: SkillsRepairReport?
     var doctorReport: DoctorReport? = nil
 }
 
 struct ProjectStatus: Identifiable, Sendable {
-    let id: String
-    let root: String
-    let validSkills: [String]
-    let skills: [SkillStatus]
+    let coreProject: SkillProject
 
-    var coreProject: SkillProject {
-        SkillProject(
-            root: root,
-            skillsDir: skills.first?.location == "plugin"
-                ? URL(fileURLWithPath: root).appendingPathComponent("skills").path
-                : URL(fileURLWithPath: root).appendingPathComponent(".agents/skills").path,
-            validSkills: validSkills,
-            skills: skills.map(\.coreSkill)
-        )
-    }
+    var id: String { coreProject.id }
+    var root: String { coreProject.root }
+    var validSkills: [String] { coreProject.validSkills }
+    var skills: [SkillInventoryItem] { coreProject.skills }
 
     fileprivate init(project: SkillProject) {
-        self.id = project.root
-        self.root = project.root
-        self.validSkills = project.validSkills
-        self.skills = project.skills.map(SkillStatus.init(skill:))
+        coreProject = project
     }
 
     var name: String {
@@ -2299,50 +2287,17 @@ struct ProjectStatus: Identifiable, Sendable {
         return URL(fileURLWithPath: root).lastPathComponent
     }
 
-    var agentsSkillCount: Int {
-        skills.filter { $0.location == "agents" }.count
-    }
-
-    var codexSkillCount: Int {
-        skills.filter { $0.location == "codex" }.count
-    }
-
-    var claudeSkillCount: Int {
-        skills.filter { $0.location == "claude" }.count
-    }
-
-    var pluginSkillCount: Int {
-        skills.filter { $0.location == "plugin" }.count
-    }
+    var agentsSkillCount: Int { skills.filter { $0.location == "agents" }.count }
+    var codexSkillCount: Int { skills.filter { $0.location == "codex" }.count }
+    var claudeSkillCount: Int { skills.filter { $0.location == "claude" }.count }
+    var pluginSkillCount: Int { skills.filter { $0.location == "plugin" }.count }
 
     func agentsSkillCount(manager: String) -> Int {
         skills.filter { $0.location == "agents" && $0.manager == manager }.count
     }
 
     func merged(with other: ProjectStatus) -> ProjectStatus {
-        var validSkills = self.validSkills
-        for skill in other.validSkills where !validSkills.contains(skill) {
-            validSkills.append(skill)
-        }
-
-        var skillsByID = Dictionary(uniqueKeysWithValues: skills.map { ($0.id, $0) })
-        for skill in other.skills {
-            skillsByID[skill.id] = skill
-        }
-
-        return ProjectStatus(
-            id: id,
-            root: root,
-            validSkills: validSkills.sorted(),
-            skills: skillsByID.values.sorted()
-        )
-    }
-
-    private init(id: String, root: String, validSkills: [String], skills: [SkillStatus]) {
-        self.id = id
-        self.root = root
-        self.validSkills = validSkills
-        self.skills = skills
+        ProjectStatus(project: coreProject.merging(with: other.coreProject))
     }
 }
 
@@ -2354,199 +2309,6 @@ extension ProjectStatus {
     }
 }
 #endif
-
-struct SkillStatus: Identifiable, Comparable, Sendable {
-    let skill: SkillInventoryItem
-
-    fileprivate init(skill: SkillInventoryItem) {
-        self.skill = skill
-    }
-
-    var id: String { skill.id }
-    var coreSkill: SkillInventoryItem { skill }
-
-    var name: String { skill.name }
-    var description: String? { skill.description }
-    var path: String { skill.path }
-    var location: String { skill.location }
-    var locationLabel: String { skill.locationLabel }
-    var originKind: String { skill.originKind }
-    var scope: String { skill.scope }
-    var manager: String { skill.manager }
-    var authority: String { skill.authority }
-    var mutability: String { skill.mutability }
-    var representation: String { skill.representation }
-    var canonicalPath: String { skill.canonicalPath }
-    var source: String? { skill.source }
-    var sourceType: String? { skill.sourceType }
-    var sourceURL: String? { skill.sourceURL }
-    var ref: String? { skill.ref }
-    var updatedAt: String? { skill.updatedAt }
-    var folderKind: String { skill.folderKind }
-    var tokenEstimate: Int { skill.tokenEstimate }
-    var referenceFileCount: Int { skill.referenceFileCount }
-    var scriptFileCount: Int { skill.scriptFileCount }
-    var assetFileCount: Int { skill.assetFileCount }
-    var otherFileCount: Int { skill.otherFileCount }
-    var iconSmallPath: String? { skill.iconSmallPath }
-    var iconLargePath: String? { skill.iconLargePath }
-
-    var originText: String? {
-        switch manager {
-        case "skills-cli":
-            return "Skills CLI"
-        case "dotagents":
-            return "dotagents"
-        case "external-cli":
-            return authority
-        case "local":
-            return "Local / unknown"
-        case "codex-plugin":
-            return "Plugin"
-        case "codex":
-            return authority == "codex-system" ? "Codex system" : "Codex installed"
-        case "claude":
-            return "Claude installed"
-        default:
-            return "\(manager) · \(authority)"
-        }
-    }
-
-    var tableOriginText: String {
-        originText ?? (skill.symlinkedContainer ? "symlink mirror" : "n/a")
-    }
-
-    static func < (left: SkillStatus, right: SkillStatus) -> Bool {
-        if left.location != right.location {
-            return left.location < right.location
-        }
-        if left.name != right.name {
-            return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
-        }
-        return left.path < right.path
-    }
-
-}
-
-struct RepairPreview: Sendable {
-    let apply: Bool
-    let mode: String
-    let summary: RepairSummaryPreview
-    let projects: [RepairProjectPreview]
-
-    init(report: SkillsRepairReport) {
-        self.apply = report.apply
-        self.mode = report.mode
-        self.summary = RepairSummaryPreview(summary: report.summary)
-        self.projects = report.projects.map(RepairProjectPreview.init(project:))
-    }
-
-    var title: String {
-        apply ? "Resolve Cleanup" : "Cleanup Preview"
-    }
-
-    var plannedCodexProjectionPaths: [String] {
-        projects.flatMap(\.plannedCodexProjectionPaths)
-    }
-
-    var canApply: Bool {
-        !projects.isEmpty && summary.actionCount > 0
-    }
-
-    var actionsByProject: [String: [String]] {
-        Dictionary(uniqueKeysWithValues: projects.map { project in
-            (project.root, project.actions.map(\.text).sorted())
-        })
-    }
-
-    var summaryText: String {
-        [
-            "\(title): \(summary.projectCount) projects",
-            "\(summary.validSkillCount) valid skills",
-            "\(summary.actionCount) planned actions",
-            "\(summary.warningCount) warnings"
-        ].joined(separator: ", ")
-    }
-}
-
-struct RepairSummaryPreview: Sendable {
-    let projectCount: Int
-    let validSkillCount: Int
-    let warningCount: Int
-    let actionCount: Int
-    let skippedCount: Int
-
-    init(summary: SkillsRepairSummary) {
-        self.projectCount = summary.projectCount
-        self.validSkillCount = summary.validSkillCount
-        self.warningCount = summary.warningCount
-        self.actionCount = summary.actionCount
-        self.skippedCount = summary.skippedCount
-    }
-}
-
-struct RepairProjectPreview: Identifiable, Sendable {
-    let root: String
-    let name: String
-    let validSkillCount: Int
-    let warningCount: Int
-    let actionCount: Int
-    let skippedCount: Int
-    let lines: [RepairLinePreview]
-    let plannedCodexProjectionPaths: [String]
-
-    var id: String { root }
-
-    init(project: SkillsRepairProject) {
-        self.root = project.root
-        self.name = project.name
-        self.validSkillCount = project.validSkillCount
-        self.warningCount = project.warningCount
-        self.actionCount = project.actionCount
-        self.skippedCount = project.skippedCount
-        self.lines = project.lines.map(RepairLinePreview.init(line:))
-        self.plannedCodexProjectionPaths = project.plannedCodexProjectionPaths
-    }
-
-    var displayName: String {
-        name.isEmpty ? URL(fileURLWithPath: root).lastPathComponent : name
-    }
-
-    var actions: [RepairLinePreview] {
-        lines.filter { $0.kind == .action }
-    }
-
-    var warnings: [RepairLinePreview] {
-        lines.filter { $0.kind == .warning }
-    }
-
-    var skipped: [RepairLinePreview] {
-        lines.filter { $0.kind == .skipped }
-    }
-
-    var info: [RepairLinePreview] {
-        lines.filter { $0.kind == .info }
-    }
-}
-
-struct RepairLinePreview: Identifiable, Sendable {
-    let kind: RepairLineKind
-    let text: String
-
-    var id: String { "\(kind.rawValue)-\(text)" }
-
-    init(line: SkillsRepairLine) {
-        self.kind = RepairLineKind(rawValue: line.kind.rawValue) ?? .info
-        self.text = line.text
-    }
-}
-
-enum RepairLineKind: String, Sendable {
-    case action
-    case warning
-    case skipped
-    case info
-}
 
 private extension Result {
     var value: Success? {
