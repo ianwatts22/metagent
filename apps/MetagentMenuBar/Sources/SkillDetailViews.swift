@@ -137,7 +137,7 @@ struct SkillInfoView: View {
                     LabeledContent("Other files", value: row.otherFileCount.formatted())
                 }
 
-                if let inventory = row.skill.coreSkill.scriptInventory,
+                if let inventory = row.skill.scriptInventory,
                    !inventory.scripts.isEmpty || !inventory.warnings.isEmpty
                 {
                     SkillScriptsSection(inventory: inventory)

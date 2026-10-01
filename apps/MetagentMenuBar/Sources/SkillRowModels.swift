@@ -959,8 +959,8 @@ struct DuplicateReviewGroup: Identifiable {
 
 struct InventorySkillRow: Identifiable, Sendable {
     let project: ProjectStatus
-    let skill: SkillStatus
-    let variants: [SkillStatus]
+    let skill: SkillInventoryItem
+    let variants: [SkillInventoryItem]
     let metagentScore: MetagentSkillScore
     let pluginEval: PluginEvalSkillAssessment?
     let codexReview: CodexSkillReview?
@@ -975,8 +975,8 @@ struct InventorySkillRow: Identifiable, Sendable {
 
     init(
         project: ProjectStatus,
-        skill: SkillStatus,
-        variants: [SkillStatus],
+        skill: SkillInventoryItem,
+        variants: [SkillInventoryItem],
         metagentScore: MetagentSkillScore,
         pluginEval: PluginEvalSkillAssessment?,
         codexReview: CodexSkillReview?,
@@ -1085,8 +1085,8 @@ struct InventorySkillRow: Identifiable, Sendable {
                     skill: skill,
                     variants: sortedVariants,
                     metagentScore: MetagentCore.scoreSkill(
-                        skill.coreSkill,
-                        variants: (portfolioVariantsByName[skill.name] ?? sortedVariants).map(\.coreSkill),
+                        skill,
+                        variants: (portfolioVariantsByName[skill.name] ?? sortedVariants),
                         usage: matchedUsage,
                         usageCoverageComplete: usage.isBackfillComplete
                     ),
@@ -1105,7 +1105,7 @@ struct InventorySkillRow: Identifiable, Sendable {
         }
     }
 
-    private static func canonicalSkillOrder(_ left: SkillStatus, _ right: SkillStatus) -> Bool {
+    private static func canonicalSkillOrder(_ left: SkillInventoryItem, _ right: SkillInventoryItem) -> Bool {
         let leftRepresentationPriority = left.representation == "canonical" ? 0 : 1
         let rightRepresentationPriority = right.representation == "canonical" ? 0 : 1
         if leftRepresentationPriority != rightRepresentationPriority {
@@ -1121,7 +1121,7 @@ struct InventorySkillRow: Identifiable, Sendable {
     }
 
     private static func canonicalSkillIdentity(
-        _ skill: SkillStatus,
+        _ skill: SkillInventoryItem,
         canonicalPathKey: String
     ) -> String {
         if let pluginKey = pluginUsageMatchKey(skill) {
@@ -1134,7 +1134,7 @@ struct InventorySkillRow: Identifiable, Sendable {
     }
 
     private static func canonicalSkillIdentity(
-        _ skill: SkillStatus,
+        _ skill: SkillInventoryItem,
         canonicalPathKey: String,
         canonicalizer: inout SkillPathCanonicalizer
     ) -> String {
@@ -1292,8 +1292,8 @@ struct InventorySkillRow: Identifiable, Sendable {
     var removalRequest: SkillRemovalRequest? {
         MetagentCore.resolveSkillRemovalTarget(
             projectRoot: project.root,
-            skill: skill.coreSkill,
-            variants: variants.map(\.coreSkill)
+            skill: skill,
+            variants: variants
         )
     }
     /// Archiving is a pure file move, so only unmanaged file-backed skills
@@ -1334,7 +1334,7 @@ func pluginUsageMatchKey(id: String, canonicalPath: String?) -> String? {
     return identity.key
 }
 
-func pluginUsageMatchKey(_ skill: SkillStatus) -> String? {
+func pluginUsageMatchKey(_ skill: SkillInventoryItem) -> String? {
     guard skill.location == "plugin",
           let identity = pluginCacheIdentity(skill.canonicalPath)
     else { return nil }

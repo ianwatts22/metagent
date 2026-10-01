@@ -229,12 +229,12 @@ public enum MetagentCore {
         let home = try scanHomeSkills(maxDepth: homeDepth)
         var projects = Dictionary(uniqueKeysWithValues: configured.projects.map { ($0.root, $0) })
         for project in home.projects {
-            projects[project.root] = projects[project.root].map { mergeSkillProjects($0, project) } ?? project
+            projects[project.root] = projects[project.root].map { $0.merging(with: project) } ?? project
         }
         var warnings = configured.warnings + home.warnings
         do {
             for project in try scanCodexPlugins().projects {
-                projects[project.root] = projects[project.root].map { mergeSkillProjects($0, project) } ?? project
+                projects[project.root] = projects[project.root].map { $0.merging(with: project) } ?? project
             }
         } catch {
             warnings.append("Codex plugin inventory unavailable: \(error.localizedDescription)")
@@ -360,7 +360,7 @@ public enum MetagentCore {
             for project in report.projects {
                 let root = canonicalProjectPath(URL(fileURLWithPath: project.root))
                 projects[root] = projects[root].map {
-                    mergeSkillProjects($0, project)
+                    $0.merging(with: project)
                 } ?? project
             }
         }
