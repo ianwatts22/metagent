@@ -56,6 +56,10 @@ struct MetagentCLI {
             try runCodebase(Array(args.dropFirst()))
         case "mcp":
             try runMCP(Array(args.dropFirst()))
+        case "notion":
+            let rest = Array(args.dropFirst())
+            guard rest.first == "proof" else { throw CLIError.message("usage: metagent notion proof <start|finish|list>") }
+            try NotionTransportProof.run(Array(rest.dropFirst()))
         case "help", "--help", "-h":
             printHelp()
         default:
@@ -1356,6 +1360,7 @@ struct MetagentCLI {
           metagent codebase [--root PATH] [--json] [--long-file-threshold N]
           metagent mcp <install|status|remove> [flags]
           metagent mcp --stdio
+          metagent notion proof <start|finish|list>
         """)
     }
 
