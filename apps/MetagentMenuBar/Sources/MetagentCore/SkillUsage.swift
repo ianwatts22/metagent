@@ -1044,8 +1044,15 @@ private final class SkillUsageStore {
               lockInfo.st_nlink == 1,
               fchmod(lockDescriptor, mode_t(0o600)) == 0
         else { throw refreshLockError("protect refresh lock") }
-        guard flock(lockDescriptor, LOCK_EX | LOCK_NB) == 0 else {
-            guard errno == EWOULDBLOCK else { throw refreshLockError("acquire refresh lock") }
+        // Foreground callers already run off the UI thread and must eventually
+        // observe fresh data, even when the previous snapshot is empty or
+        // complete. Maintenance can yield to the active owner and retry later.
+        let isMaintenance = options.minimumMaintenanceIntervalSeconds > 0
+        let lockOperation = LOCK_EX | (isMaintenance ? LOCK_NB : 0)
+        guard flock(lockDescriptor, lockOperation) == 0 else {
+            guard isMaintenance, errno == EWOULDBLOCK else {
+                throw refreshLockError("acquire refresh lock")
+            }
             return try deferredRefresh()
         }
         defer { flock(lockDescriptor, LOCK_UN) }

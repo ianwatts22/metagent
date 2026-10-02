@@ -1885,7 +1885,7 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
-    func testForegroundAndMaintenanceDeferUntilRefreshLockIsReleased() throws {
+    func testMaintenanceDefersUntilRefreshLockIsReleased() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let skill = try fixture.makeSkill(at: "workspace/.agents/skills/locked", name: "locked")
@@ -1907,17 +1907,15 @@ final class SkillUsageTests: XCTestCase {
 
         var maintenance = fixture.options
         maintenance.minimumMaintenanceIntervalSeconds = 60
-        for options in [fixture.options, maintenance] {
-            let deferred = try MetagentCore.refreshSkillUsage(options: options)
-            XCTAssertTrue(deferred.wasDeferred)
-            XCTAssertEqual(deferred.filesRead, 0)
-            XCTAssertEqual(deferred.snapshot.processedBytes, seed.snapshot.processedBytes)
-        }
+        let deferred = try MetagentCore.refreshSkillUsage(options: maintenance)
+        XCTAssertTrue(deferred.wasDeferred)
+        XCTAssertEqual(deferred.filesRead, 0)
+        XCTAssertEqual(deferred.snapshot.processedBytes, seed.snapshot.processedBytes)
 
         // An alternate path to the same database must not create another lane.
         let alias = fixture.root.appendingPathComponent("usage-alias.sqlite")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.database)
-        var aliasOptions = fixture.options
+        var aliasOptions = maintenance
         aliasOptions.databasePath = alias.path
         XCTAssertTrue(try MetagentCore.refreshSkillUsage(options: aliasOptions).wasDeferred)
 
@@ -1926,6 +1924,56 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertFalse(resumed.wasDeferred, "A busy attempt must not consume the maintenance interval")
         XCTAssertTrue(resumed.snapshot.isBackfillComplete)
         XCTAssertEqual(resumed.snapshot.totalInvocations, 1)
+    }
+
+    func testForegroundWaitsForRefreshLockWithEmptyAndCompleteSnapshots() throws {
+        for startsComplete in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let skill = try fixture.makeSkill(at: "workspace/.agents/skills/foreground", name: "foreground")
+            let rollout = fixture.sessions.appendingPathComponent("rollout-foreground.jsonl")
+            var records = [
+                fixture.line(type: "session_meta", payload: ["id": "foreground", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "initial-read", command: "cat \(skill.path)")
+            ]
+            try fixture.write(records, to: rollout)
+            if startsComplete {
+                let initial = try MetagentCore.refreshSkillUsage(options: fixture.options)
+                XCTAssertTrue(initial.snapshot.isBackfillComplete)
+            }
+            records.append(fixture.toolCall(callID: "new-read", command: "cat \(skill.path)"))
+            try fixture.write(records, to: rollout)
+
+            let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+            let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            guard descriptor >= 0 else { return }
+            defer { close(descriptor) }
+            XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+            let started = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            let options = fixture.options
+            DispatchQueue.global().async {
+                started.signal()
+                defer { finished.signal() }
+                do {
+                    let report = try MetagentCore.refreshSkillUsage(options: options)
+                    XCTAssertFalse(report.wasDeferred)
+                    XCTAssertTrue(report.snapshot.isBackfillComplete)
+                    XCTAssertEqual(report.snapshot.totalInvocations, 2)
+                } catch {
+                    XCTFail("Foreground refresh failed: \(error)")
+                }
+            }
+            XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+            let finishedWhileLocked = finished.wait(timeout: .now() + 0.1) == .success
+            XCTAssertFalse(finishedWhileLocked, "Foreground refresh must wait for the current writer")
+            XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+            if !finishedWhileLocked {
+                XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+            }
+        }
     }
 
     func testMaintenanceIntervalDefersDuplicateBackgroundWorkButNotManualRefresh() throws {
