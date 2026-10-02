@@ -1885,6 +1885,49 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testForegroundAndMaintenanceDeferUntilRefreshLockIsReleased() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/locked", name: "locked")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "locked", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "locked-read", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-locked.jsonl"))
+        var seedOptions = fixture.options
+        seedOptions.maxBytes = 1
+        let seed = try MetagentCore.refreshSkillUsage(options: seedOptions)
+        XCTAssertTrue(seed.hasMore)
+
+        let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+        let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+        var maintenance = fixture.options
+        maintenance.minimumMaintenanceIntervalSeconds = 60
+        for options in [fixture.options, maintenance] {
+            let deferred = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertTrue(deferred.wasDeferred)
+            XCTAssertEqual(deferred.filesRead, 0)
+            XCTAssertEqual(deferred.snapshot.processedBytes, seed.snapshot.processedBytes)
+        }
+
+        // An alternate path to the same database must not create another lane.
+        let alias = fixture.root.appendingPathComponent("usage-alias.sqlite")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.database)
+        var aliasOptions = fixture.options
+        aliasOptions.databasePath = alias.path
+        XCTAssertTrue(try MetagentCore.refreshSkillUsage(options: aliasOptions).wasDeferred)
+
+        XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+        let resumed = try MetagentCore.refreshSkillUsage(options: maintenance)
+        XCTAssertFalse(resumed.wasDeferred, "A busy attempt must not consume the maintenance interval")
+        XCTAssertTrue(resumed.snapshot.isBackfillComplete)
+        XCTAssertEqual(resumed.snapshot.totalInvocations, 1)
+    }
+
     func testMaintenanceIntervalDefersDuplicateBackgroundWorkButNotManualRefresh() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

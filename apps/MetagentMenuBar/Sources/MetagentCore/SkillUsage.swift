@@ -372,6 +372,7 @@ private struct UsageSourceCatalogOwnedPaths: Sendable {
             databaseURL.path + "-journal",
             databaseURL.path + "-shm",
             databaseURL.path + "-wal",
+            databaseURL.resolvingSymlinksInPath().appendingPathExtension("refresh.lock").path,
             cacheURL.path,
             cacheURL.appendingPathExtension("lock").path,
         ]))
@@ -1028,6 +1029,27 @@ private final class SkillUsageStore {
     }
 
     func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageStoredRefreshResult {
+        // SQLite serializes individual writes, but discovery and parsing happen
+        // between transactions. Hold one process-shared lock for the entire
+        // refresh so a slower slice cannot overwrite a newer cursor or reset.
+        let lockPath = path.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+        let lockDescriptor = Darwin.open(
+            lockPath.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR
+        )
+        guard lockDescriptor >= 0 else { throw refreshLockError("open refresh lock") }
+        defer { close(lockDescriptor) }
+        var lockInfo = stat()
+        guard fstat(lockDescriptor, &lockInfo) == 0,
+              lockInfo.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              lockInfo.st_nlink == 1,
+              fchmod(lockDescriptor, mode_t(0o600)) == 0
+        else { throw refreshLockError("protect refresh lock") }
+        guard flock(lockDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+            guard errno == EWOULDBLOCK else { throw refreshLockError("acquire refresh lock") }
+            return try deferredRefresh()
+        }
+        defer { flock(lockDescriptor, LOCK_UN) }
+
         let parserGenerationChanged = try prepareParserVersion()
         if parserGenerationChanged {
             UsageSourceCatalogCache.shared.invalidate(databasePath: path.standardizedFileURL.path)
@@ -1037,20 +1059,7 @@ private final class SkillUsageStore {
             guard let claimedLeaseID = try claimMaintenanceLease(
                 minimumIntervalSeconds: options.minimumMaintenanceIntervalSeconds
             ) else {
-                let (current, snapshotGeneration) = try snapshotWithCurrentLaunchGeneration()
-                return SkillUsageStoredRefreshResult(
-                    report: SkillUsageRefreshReport(
-                        snapshot: current,
-                        filesRead: 0,
-                        bytesRead: 0,
-                        processedBytesAdvanced: 0,
-                        invocationsAdded: 0,
-                        hasMore: !current.isBackfillComplete,
-                        wasDeferred: true,
-                        warnings: []
-                    ),
-                    snapshotGeneration: snapshotGeneration
-                )
+                return try deferredRefresh()
             }
             maintenanceLeaseID = claimedLeaseID
         }
@@ -1373,6 +1382,29 @@ private final class SkillUsageStore {
         NSError(domain: "MetagentSkillUsageLaunchCache", code: Int(errno), userInfo: [
             NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(errno)))"
         ])
+    }
+
+    private func refreshLockError(_ operation: String) -> NSError {
+        NSError(domain: "MetagentSkillUsageRefresh", code: Int(errno), userInfo: [
+            NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(errno)))"
+        ])
+    }
+
+    private func deferredRefresh() throws -> SkillUsageStoredRefreshResult {
+        let (current, snapshotGeneration) = try snapshotWithCurrentLaunchGeneration()
+        return SkillUsageStoredRefreshResult(
+            report: SkillUsageRefreshReport(
+                snapshot: current,
+                filesRead: 0,
+                bytesRead: 0,
+                processedBytesAdvanced: 0,
+                invocationsAdded: 0,
+                hasMore: !current.isBackfillComplete,
+                wasDeferred: true,
+                warnings: []
+            ),
+            snapshotGeneration: snapshotGeneration
+        )
     }
 
     private func claimMaintenanceLease(minimumIntervalSeconds: TimeInterval) throws -> String? {
