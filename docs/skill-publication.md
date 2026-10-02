@@ -22,10 +22,10 @@ Git checkout for publication through [skills.sh](https://skills.sh).
 1. Create or clone a public Git repository. Its standard layout is
    `skills/<skill-name>/SKILL.md`.
 2. In **Skills**, right-click an editable canonical skill and choose
-   **Publish…**.
+   **Publishing → Prepare for Publishing…**.
 3. Choose the repository checkout, review readiness, and select
-   **Start Local Mirroring**. The last successful repository is remembered for
-   subsequent skills. Each source needs its own destination folder name.
+   **Copy Skill**. The last successful repository is remembered for subsequent
+   skills. **Details** lets you change the destination folder name if needed.
 4. Use the **Published** view to check status, sync now, open the public copy,
    or stop mirroring.
 5. Use **Publish…** or **Publish Update…** to review the exact destination,

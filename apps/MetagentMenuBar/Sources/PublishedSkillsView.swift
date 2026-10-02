@@ -467,6 +467,7 @@ func skillPublicationUnavailableReason(_ skill: SkillInventoryItem) -> String? {
 struct SkillPublicationSetupSheet: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
+    let onStartCopy: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var repositoryPath = ""
     @State private var destinationName: String
@@ -475,10 +476,12 @@ struct SkillPublicationSetupSheet: View {
     @State private var isCreatingRepository = false
     @State private var repositorySetup: SkillPublicationRepositorySetup?
     @State private var repositorySetupRevision = 0
+    @State private var showsDetails = false
 
-    init(model: MetagentModel, row: InventorySkillRow) {
+    init(model: MetagentModel, row: InventorySkillRow, onStartCopy: @escaping () -> Void) {
         self.model = model
         self.row = row
+        self.onStartCopy = onStartCopy
         _destinationName = State(initialValue: row.skillName.lowercased().replacingOccurrences(of: "_", with: "-"))
         _repositoryPath = State(initialValue: model.publicationSnapshot.preferredRepositoryPath ?? "")
     }
@@ -493,98 +496,137 @@ struct SkillPublicationSetupSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Prepare \(row.skillName) for publishing")
+            Text("Copy \(row.skillName)")
                 .font(.title2.bold())
-            Text("Metagent continuously mirrors only this skill into a separate Git checkout. Automatic mirroring never commits or pushes; unsafe updates keep the last safe copy in place. After mirroring, you can review and explicitly publish.")
+                .lineLimit(2)
+            Text("Choose a folder for your publishing copy.")
                 .foregroundStyle(.secondary)
 
-            LabeledContent("Canonical source") {
-                Text(displayUserPath(row.canonicalPath))
-                    .font(.callout.monospaced())
-                    .textSelection(.enabled)
-            }
-            LabeledContent("Destination repository") {
-                HStack {
-                    Text(repositoryPath.isEmpty ? "Choose a local checkout" : displayUserPath(repositoryPath))
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                    Button("Choose…") { chooseRepository() }
-                    if !model.publicationSnapshot.catalogs.isEmpty {
-                        Menu("Recent") {
-                            ForEach(model.publicationSnapshot.catalogs) { catalog in
-                                Button(displayUserPath(catalog.localRepositoryPath)) {
-                                    repositoryPath = catalog.localRepositoryPath
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Publishing folder")
+                    .font(.callout.weight(.medium))
+                HStack(spacing: 12) {
+                    Image(systemName: "folder")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    if repositoryPath.isEmpty {
+                        Button("Choose Folder…") { chooseRepository() }
+                        Button(isCreatingRepository ? "Preparing…" : "Use Default Folder") {
+                            createPublishingRepository()
+                        }
+                        .help("Create ~/public-agent-setup with local Git. Nothing is uploaded.")
+                    } else {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(URL(fileURLWithPath: repositoryPath).lastPathComponent)
+                                .font(.callout.weight(.medium))
+                            Text(displayUserPath(repositoryPath))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 0)
+                        Menu("Change…") {
+                            Button("Choose Folder…") { chooseRepository() }
+                            if !model.publicationSnapshot.catalogs.isEmpty {
+                                Menu("Recent Folders") {
+                                    ForEach(model.publicationSnapshot.catalogs) { catalog in
+                                        Button(displayUserPath(catalog.localRepositoryPath)) {
+                                            repositoryPath = catalog.localRepositoryPath
+                                            repositorySetup = nil
+                                        }
+                                    }
                                 }
                             }
+                            Divider()
+                            Button("Use Default Folder") { createPublishingRepository() }
                         }
+                        .fixedSize()
                     }
                 }
                 .disabled(isCreatingRepository)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
             }
-            HStack {
-                Button(isCreatingRepository ? "Preparing folder…" : "Create publishing folder") {
-                    createPublishingRepository()
-                }
-                .disabled(isCreatingRepository)
-                Text("~/public-agent-setup · initializes local Git only")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let repositorySetup {
+            if let repositorySetup, !repositorySetup.succeeded {
                 Text(repositorySetup.message)
                     .font(.caption)
-                    .foregroundStyle(repositorySetup.succeeded ? Color.secondary : Color.orange)
+                    .foregroundStyle(.orange)
             }
-            LabeledContent("Destination folder name") {
-                TextField("skill-name", text: $destinationName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 240)
-            }
-            if !repositoryPath.isEmpty {
-                Text("Only this skill's files → \(displayUserPath(repositoryPath))/\(skillsRelativePath)/\(destinationName)")
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-            }
-            Text("Next: review the mirrored copy and use Publish when ready, then share the install command. Repository visibility is checked separately.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             if isCheckingReadiness {
-                Label("Checking publication safety…", systemImage: "arrow.triangle.2.circlepath")
+                Label("Checking…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let readiness {
                 Label(
-                    readiness.status == .ready ? "Ready to mirror" : "Fix these before publishing",
+                    readiness.status == .ready ? "Ready to copy" : "Fix these before copying",
                     systemImage: readiness.status == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
                 )
+                .font(.caption)
                 .foregroundStyle(readiness.status == .ready ? .green : .orange)
-                ForEach(readiness.findings) { finding in
-                    Text("• \(finding.message) \(finding.remediation)")
+                ForEach(readiness.findings.filter { $0.severity == .blocking }) { finding in
+                    Text("\(finding.message) \(finding.remediation)")
                         .font(.caption)
-                        .foregroundStyle(finding.severity == .blocking ? .orange : .secondary)
+                        .foregroundStyle(.orange)
                 }
             }
 
-            Spacer()
+            DisclosureGroup("Details", isExpanded: $showsDetails) {
+                VStack(alignment: .leading, spacing: 10) {
+                    LabeledContent("Folder name") {
+                        TextField("skill-name", text: $destinationName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 240)
+                    }
+                    Text("Source: \(displayUserPath(row.canonicalPath))")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                    if !repositoryPath.isEmpty {
+                        Text("Copy: \(displayUserPath(repositoryPath))/\(skillsRelativePath)/\(destinationName)")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    Text("Metagent keeps this skill's copy up to date. It never commits or uploads automatically, and unsafe updates leave the last safe copy in place. Review and publish from Published.")
+                        .font(.caption)
+                    if let repositorySetup, repositorySetup.succeeded {
+                        Text(repositorySetup.message)
+                            .font(.caption)
+                    }
+                    ForEach(readiness?.findings.filter { $0.severity != .blocking } ?? []) { finding in
+                        Text("\(finding.message) \(finding.remediation)")
+                            .font(.caption)
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            }
+            Text("Kept in sync locally. Review and publish in Published.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Start Local Mirroring") {
+                Button("Copy Skill") {
                     let accepted = model.enableSkillPublication(
                         sourcePath: row.canonicalPath,
                         skillName: row.skillName,
                         repositoryPath: repositoryPath,
                         destinationName: destinationName
                     )
-                    if accepted { dismiss() }
+                    if accepted {
+                        dismiss()
+                        onStartCopy()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(readiness?.status != .ready || model.isPublicationSyncing || isCreatingRepository)
+                .disabled(readiness?.status != .ready || isCheckingReadiness || model.isPublicationSyncing || isCreatingRepository)
             }
         }
         .padding(22)
-        .frame(minWidth: 620, minHeight: 420)
+        .frame(width: 520)
         .task(id: readinessInput) {
             readiness = nil
             guard !repositoryPath.isEmpty else {
@@ -617,8 +659,8 @@ struct SkillPublicationSetupSheet: View {
 
     private func chooseRepository() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Public Skills Repository"
-        panel.prompt = "Choose Repository"
+        panel.title = "Choose Publishing Folder"
+        panel.prompt = "Choose Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false

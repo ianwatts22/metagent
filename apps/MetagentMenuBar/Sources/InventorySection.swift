@@ -580,7 +580,9 @@ struct InventorySection: View {
             SkillIconEditorView(model: model, row: row)
         }
         .sheet(item: $publicationTarget) { row in
-            SkillPublicationSetupSheet(model: model, row: row)
+            SkillPublicationSetupSheet(model: model, row: row) {
+                selectedViewRaw = SkillTableView.published.rawValue
+            }
         }
     }
 
@@ -655,7 +657,11 @@ struct InventorySection: View {
             }
     }
 
-    private func copyPublicationLink(record: SkillPublicationRecord, catalog: SkillPublicationCatalog, command: Bool) {
+    private enum PublicationLinkAction {
+        case openRepository, copyInstallCommand, copySkillsLink
+    }
+
+    private func usePublicationLink(record: SkillPublicationRecord, catalog: SkillPublicationCatalog, action: PublicationLinkAction) {
         Task {
             // Resolve origin at the time of the user's request, so repository
             // renames do not keep producing cached install URLs.
@@ -664,13 +670,17 @@ struct InventorySection: View {
             }.value
             guard let links = status.links else {
                 let alert = NSAlert()
-                alert.messageText = "Install link unavailable"
+                alert.messageText = "Publishing link unavailable"
                 alert.informativeText = "Use Manage Publishing → Check Git Status. A valid GitHub origin and mirrored SKILL.md are required."
                 alert.runModal()
                 return
             }
+            if action == .openRepository {
+                NSWorkspace.shared.open(links.repositoryURL)
+                return
+            }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(command ? links.installCommand : links.skillsURL.absoluteString, forType: .string)
+            NSPasteboard.general.setString(action == .copyInstallCommand ? links.installCommand : links.skillsURL.absoluteString, forType: .string)
         }
     }
 
@@ -685,79 +695,85 @@ struct InventorySection: View {
             Button("View Skill", systemImage: "doc.text.magnifyingglass") {
                 viewedSkill = inventory
             }
-            Button("Get Info", systemImage: "info.circle") {
-                inspectedSkill = inventory
-            }
-            Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
-                scoreAnalysisSkill = inventory
-            }
-            if let record = activeSkillPublication(for: inventory.canonicalPath, in: model.publicationSnapshot) {
-                Button("Publishing configured", systemImage: "checkmark.circle") {}
-                    .disabled(true)
-                Button("Manage Publishing…", systemImage: "shippingbox.and.arrow.backward") {
-                    selectedViewRaw = SkillTableView.published.rawValue
-                }
-                if let catalog = model.publicationSnapshot.catalogs.first(where: { $0.id == record.catalogID }) {
-                    Button("Copy Install Command", systemImage: "doc.on.doc") {
-                        copyPublicationLink(record: record, catalog: catalog, command: true)
-                    }
-                    Button("Copy skills.sh Link", systemImage: "link") {
-                        copyPublicationLink(record: record, catalog: catalog, command: false)
-                    }
-                }
-            } else {
-                let unavailableReason = skillPublicationUnavailableReason(inventory.skill)
-                Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
-                    publicationTarget = inventory
-                }
-                .disabled(unavailableReason != nil)
-                .help(unavailableReason ?? "Prepare this skill for publishing")
-                if let unavailableReason {
-                    Text(unavailableReason)
-                        .font(.caption)
-                }
-            }
-            Button(
-                inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
-                systemImage: "photo.badge.plus"
-            ) {
-                iconTarget = inventory
-            }
-            .disabled(!inventory.canEditIcon)
-            Divider()
         }
-        Button("Show in Finder", systemImage: "folder") {
-            openSkillDirectories(openableURLs)
-        }
-        .disabled(openableURLs.isEmpty)
-        Button("Open SKILL.md", systemImage: "doc.text") {
-            openSkillFiles(skillFiles)
-        }
-        .disabled(skillFiles.isEmpty)
         Button("Open in Editor", systemImage: "chevron.left.forwardslash.chevron.right") {
             openSkillDirectoriesInEditor(openableURLs, skillFiles: skillFiles)
         }
         .disabled(openableURLs.isEmpty)
-        Divider()
-        let reviewableRows = contextRows.compactMap(\.inventory)
-        Button(
-            reviewableRows.count > 1
-                ? "Review \(reviewableRows.count) with Codex…"
-                : "Review with Codex…",
-            systemImage: "cloud"
-        ) {
-            pendingConfirmation = .codexReview(reviewableRows)
+        Button("Show in Finder", systemImage: "folder") {
+            openSkillDirectories(openableURLs)
         }
-        .disabled(model.isRunning || model.isSkillEvaluating || reviewableRows.isEmpty)
-        Divider()
-        Button("Copy Path", systemImage: "doc.on.doc") {
-            copyPaths(contextRows)
+        .disabled(openableURLs.isEmpty)
+        if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+            Menu("Publishing") {
+                if let record = activeSkillPublication(for: inventory.canonicalPath, in: model.publicationSnapshot) {
+                    Button("Manage Publishing…", systemImage: "shippingbox.and.arrow.backward") {
+                        selectedViewRaw = SkillTableView.published.rawValue
+                    }
+                    if let catalog = model.publicationSnapshot.catalogs.first(where: { $0.id == record.catalogID }) {
+                        Divider()
+                        Button("Open GitHub", systemImage: "arrow.up.right.square") {
+                            usePublicationLink(record: record, catalog: catalog, action: .openRepository)
+                        }
+                        Button("Copy Install Command", systemImage: "doc.on.doc") {
+                            usePublicationLink(record: record, catalog: catalog, action: .copyInstallCommand)
+                        }
+                        Button("Copy skills.sh Link", systemImage: "link") {
+                            usePublicationLink(record: record, catalog: catalog, action: .copySkillsLink)
+                        }
+                    }
+                } else {
+                    let unavailableReason = skillPublicationUnavailableReason(inventory.skill)
+                    Button("Prepare for Publishing…", systemImage: "shippingbox.and.arrow.backward") {
+                        publicationTarget = inventory
+                    }
+                    .disabled(unavailableReason != nil)
+                    .help(unavailableReason ?? "Prepare this skill for publishing")
+                    if let unavailableReason {
+                        Text(unavailableReason)
+                    }
+                }
+            }
         }
-        .disabled(paths.isEmpty)
-        Button("Copy Improvement Instructions", systemImage: "wand.and.sparkles") {
-            copyToImprove(contextRows)
+        Menu("More") {
+            if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+                Button("Get Info", systemImage: "info.circle") {
+                    inspectedSkill = inventory
+                }
+                Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
+                    scoreAnalysisSkill = inventory
+                }
+                Button(
+                    inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
+                    systemImage: "photo.badge.plus"
+                ) {
+                    iconTarget = inventory
+                }
+                .disabled(!inventory.canEditIcon)
+                Divider()
+            }
+            let reviewableRows = contextRows.compactMap(\.inventory)
+            Button(
+                reviewableRows.count > 1 ? "Review \(reviewableRows.count) with Codex…" : "Review with Codex…",
+                systemImage: "cloud"
+            ) {
+                pendingConfirmation = .codexReview(reviewableRows)
+            }
+            .disabled(model.isRunning || model.isSkillEvaluating || reviewableRows.isEmpty)
+            Button("Open SKILL.md", systemImage: "doc.text") {
+                openSkillFiles(skillFiles)
+            }
+            .disabled(skillFiles.isEmpty)
+            Divider()
+            Button("Copy Path", systemImage: "doc.on.doc") {
+                copyPaths(contextRows)
+            }
+            .disabled(paths.isEmpty)
+            Button("Copy Improvement Instructions", systemImage: "wand.and.sparkles") {
+                copyToImprove(contextRows)
+            }
+            .disabled(paths.isEmpty)
         }
-        .disabled(paths.isEmpty)
         Divider()
         let archivableRows = contextRows.compactMap(\.inventory).filter { $0.archiveRequest != nil }
         Button(

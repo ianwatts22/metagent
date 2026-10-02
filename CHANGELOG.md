@@ -3,6 +3,13 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.9.1 — 2026-10-02
+
+- Skill menus keep everyday actions up front and group publishing and advanced
+  tools into smaller submenus.
+- A compact publishing dialog puts folder selection first, with optional
+  details and a clear handoff to Published after copying.
+
 ## v0.9.0 — 2026-10-02
 
 - Publish editable project skills as well as personal skills, and remember the
