@@ -82,9 +82,9 @@ struct MetagentPanel: View {
                     brandMark
                     directoryScopeControl
                     Spacer(minLength: 0)
-                    activityControl
                     statusFailureControl
                     attentionControl
+                    activityControl
                     refreshControl
                     settingsControl
                 }
@@ -96,9 +96,9 @@ struct MetagentPanel: View {
                 directoryScopeControl
                 navigation
                 Spacer(minLength: 0)
-                activityControl
                 statusFailureControl
                 attentionControl
+                activityControl
                 refreshControl
                 settingsControl
             }
@@ -138,23 +138,27 @@ struct MetagentPanel: View {
         if showsOpenWindowButton { openMainWindow() }
     }
 
-    /// Attention states only; work in progress reports through the refresh
-    /// slot instead, so the control line never grows a second capsule.
+    /// Background progress and attention share one compact toolbar slot.
     @ViewBuilder
     private var activityControl: some View {
-        if let activity = model.activity, activity.needsAttention {
+        if let activity = toolbarActivity {
             Button {
                 showsActivityDetails = true
             } label: {
                 ActivityBadge(activity: activity)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Usage history needs attention")
-            .accessibilityHint("Show why usage metrics are provisional")
+            .accessibilityLabel(activity.label)
+            .accessibilityHint("Show background progress and why usage metrics are provisional")
+            .accessibilityIdentifier("metagent.catalog.history")
             .popover(isPresented: $showsActivityDetails, arrowEdge: .top) {
                 ActivityDetailsPopover(activity: activity, canContinue: !model.isRefreshing) {
                     showsActivityDetails = false
-                    model.refreshUsage()
+                    if activity.needsAttention {
+                        model.refreshUsage()
+                    } else {
+                        model.refreshAll()
+                    }
                 }
             }
         }
@@ -162,33 +166,18 @@ struct MetagentPanel: View {
 
     /// The one reload: rescan skills and Doctor findings, recheck MCP
     /// configuration, and continue indexing session history. While work is
-    /// running the button gives its slot to the progress indicator — reload
-    /// would be a no-op then anyway.
-    @ViewBuilder
+    /// running it remains visible but disabled. Background progress has its
+    /// own slot, so the next small continuation never hides the user's reload.
     private var refreshControl: some View {
-        if let activity = toolbarActivity, !activity.needsAttention {
-            Button { showsActivityDetails = true } label: {
-                ActivityBadge(activity: activity)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("metagent.catalog.history")
-            .popover(isPresented: $showsActivityDetails, arrowEdge: .top) {
-                ActivityDetailsPopover(activity: activity, canContinue: !model.isRefreshing) {
-                    showsActivityDetails = false
-                    model.refreshAll()
-                }
-            }
-        } else {
-            Button {
-                model.refreshAll()
-            } label: {
-                ToolbarIconLabel(systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.plain)
-            .disabled(model.isRefreshing)
-            .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
-            .accessibilityLabel("Reload")
+        Button {
+            model.refreshAll()
+        } label: {
+            ToolbarIconLabel(systemImage: "arrow.clockwise")
         }
+        .buttonStyle(.plain)
+        .disabled(model.isRefreshing)
+        .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
+        .accessibilityLabel("Reload")
     }
 
     private var toolbarActivity: AppActivity? {
