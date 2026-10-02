@@ -131,7 +131,10 @@ public struct SkillPublicationSnapshot: Codable, Equatable, Sendable {
         if let catalog = catalogs.first(where: { $0.id == preferredCatalogID }) {
             return catalog.localRepositoryPath
         }
-        return catalogs.count == 1 ? catalogs[0].localRepositoryPath : nil
+        guard catalogs.count == 1, records.contains(where: {
+            $0.catalogID == catalogs[0].id && $0.lastMirroredHash != nil
+        }) else { return nil }
+        return catalogs[0].localRepositoryPath
     }
 
     public init(

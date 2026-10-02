@@ -613,11 +613,23 @@ final class SkillPublicationTests: XCTestCase {
         defer { fixture.remove() }
         try FileManager.default.createDirectory(at: fixture.store.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        try #"{"version":1,"catalogs":[{"id":"old","localRepositoryPath":"/old/repo","skillsRelativePath":"skills"}],"records":[]}"#
+        try #"{"version":1,"catalogs":[{"id":"old","localRepositoryPath":"/old/repo","skillsRelativePath":"skills"}],"records":[{"id":"published","sourceCanonicalPath":"/project/.agents/skills/local","skillName":"local","catalogID":"old","destinationName":"local","automaticMirroringEnabled":true,"state":"mirrored","lastMirroredHash":"previous-hash","findings":[]}]}"#
             .write(to: fixture.store, atomically: true, encoding: .utf8)
         let snapshot = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
         XCTAssertNil(snapshot.preferredCatalogID)
         XCTAssertEqual(snapshot.preferredRepositoryPath, "/old/repo")
+    }
+
+    func testFirstBlockedAttemptDoesNotBecomeTheDefaultRepository() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "blocked")
+        try "PRIVATE_TOKEN=fixture\n".write(to: source.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        let report = try MetagentCore.enableSkillPublication(sourcePath: source.path,
+            skillName: "blocked", repositoryPath: fixture.repository.path, storePath: fixture.store)
+        XCTAssertEqual(report.snapshot.records.first?.state, .updateBlocked)
+        XCTAssertNil(report.snapshot.preferredRepositoryPath)
+        XCTAssertNil(MetagentCore.loadSkillPublicationSnapshot(path: fixture.store).preferredRepositoryPath)
     }
 }
 
