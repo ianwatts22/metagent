@@ -3,6 +3,17 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.9.0 — 2026-10-02
+
+- Publish editable project skills as well as personal skills, and remember the
+  last successfully used publishing folder for the next skill.
+- Publishing setup can create a local repository, reuse existing destinations,
+  and expose install links without configuring the same skill twice.
+- Safer publishing reviews the exact outgoing Git content and preserves usable
+  retries. Skill removal and mirroring have tighter filesystem safeguards.
+- Incomplete usage indexing stays visibly provisional, and shared inventory
+  models preserve project metadata more reliably.
+
 ## v0.8.1 — 2026-09-07
 
 - Refreshes keep existing metrics and duplicate results visible while new data

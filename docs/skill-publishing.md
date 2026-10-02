@@ -5,8 +5,11 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 
 ## Publishing selected skills from the app
 
-In **Skills → Published**, choose one canonical `~/.agents/skills` skill and a
-separate Git checkout. If you do not have one, **Create publishing folder**
+In **Skills**, use **Publish…** on an editable canonical skill in either
+`~/.agents/skills` or a project's `.agents/skills`, then choose a separate Git
+checkout. Each skill is configured individually; multiple skills can publish
+to the same checkout. Installed packages and runtime copies must be published
+from their editable canonical source. If you do not have a checkout, **Create publishing folder**
 creates `~/public-agent-setup` and initializes a local Git repository on `main`,
 then selects it. An empty existing folder can be initialized, and a valid
 standalone repository at that path can be reused. Other nonempty folders,
@@ -14,7 +17,9 @@ files, and symlinks are left untouched. Setup does not stage or commit files,
 create a GitHub repository, or push. Before using **Publish**, connect a GitHub
 remote and make the initial commit and push with upstream tracking. The existing
 Publish action requires an established remote branch; setup does not bypass it.
-Previous destinations can be reused. **Start
+The last repository successfully used for local mirroring becomes the default
+for the next skill, including after restarting the app. **Recent** and **Choose…**
+can select a different destination; blocked attempts leave the default unchanged. **Start
 Local Mirroring** checks the bundle and copies only that skill to
 `skills/<destination-name>`; source-file changes continue to mirror one way.
 The broader private skills directory is never exported. Stopping mirroring

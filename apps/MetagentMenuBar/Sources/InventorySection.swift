@@ -402,7 +402,7 @@ struct InventorySection: View {
                     model: model,
                     availableSkills: cachedRows
                         .compactMap(\.inventory)
-                        .filter(model.isPrimaryPublishableSkill)
+                        .filter { skillPublicationUnavailableReason($0.skill) == nil }
                         .sorted {
                             $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
                         },
@@ -706,10 +706,16 @@ struct InventorySection: View {
                     }
                 }
             } else {
+                let unavailableReason = skillPublicationUnavailableReason(inventory.skill)
                 Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
                     publicationTarget = inventory
                 }
-                .disabled(!model.isPrimaryPublishableSkill(inventory))
+                .disabled(unavailableReason != nil)
+                .help(unavailableReason ?? "Prepare this skill for publishing")
+                if let unavailableReason {
+                    Text(unavailableReason)
+                        .font(.caption)
+                }
             }
             Button(
                 inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
