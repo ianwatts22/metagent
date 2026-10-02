@@ -2235,6 +2235,10 @@ private final class SkillUsageStore {
         var runs: [ParsedAgentRun] = []
         var warning: String?
         var bytesRead: Int64 = 0
+        // Reuse the scratch space across records in this file slice. Most
+        // session records are short; allocating and zeroing 64 KiB for each
+        // one costs more than reading their contents.
+        var lineBuffer = [CChar](repeating: 0, count: 64 * 1_024)
         var nextThrottleAt = throttleEveryBytes > 0
             ? ((throttleOffset / throttleEveryBytes) + 1) * throttleEveryBytes
             : 0
@@ -2249,7 +2253,7 @@ private final class SkillUsageStore {
             let lineReadLimit = bytesRead == 0
                 ? maxRecordBytes
                 : min(remainingLineBudget, maxRecordBytes)
-            let read = readBoundedLine(file, maxBytes: lineReadLimit)
+            let read = readBoundedLine(file, maxBytes: lineReadLimit, buffer: &lineBuffer)
             guard let read else { break }
             if read.exceededLimit {
                 if bytesRead > 0, remainingLineBudget < maxRecordBytes {
@@ -2258,7 +2262,7 @@ private final class SkillUsageStore {
                     break
                 }
                 if !read.isTerminated {
-                    discardRemainderOfLine(file)
+                    discardRemainderOfLine(file, buffer: &lineBuffer)
                 }
                 state.offset = Int64(ftello(file))
                 bytesRead += max(0, state.offset - lineStart)
@@ -2305,8 +2309,10 @@ private final class SkillUsageStore {
         )
     }
 
-    private func discardRemainderOfLine(_ file: UnsafeMutablePointer<FILE>) {
-        var buffer = [CChar](repeating: 0, count: 64 * 1_024)
+    private func discardRemainderOfLine(
+        _ file: UnsafeMutablePointer<FILE>,
+        buffer: inout [CChar]
+    ) {
         while fgets(&buffer, Int32(buffer.count), file) != nil {
             let count = Int(strlen(buffer))
             if count > 0, buffer[count - 1] == 10 { break }
@@ -2315,10 +2321,9 @@ private final class SkillUsageStore {
 
     private func readBoundedLine(
         _ file: UnsafeMutablePointer<FILE>,
-        maxBytes: Int64
+        maxBytes: Int64,
+        buffer: inout [CChar]
     ) -> (data: Data, isTerminated: Bool, exceededLimit: Bool)? {
-        let bufferSize = 64 * 1_024
-        var buffer = [CChar](repeating: 0, count: bufferSize)
         var data = Data()
         while true {
             guard fgets(&buffer, Int32(buffer.count), file) != nil else {
@@ -2328,7 +2333,7 @@ private final class SkillUsageStore {
             guard Int64(data.count + count) <= maxBytes else {
                 return (Data(), count > 0 && buffer[count - 1] == 10, true)
             }
-            data.append(buffer.withUnsafeBytes { Data($0.prefix(count)) })
+            buffer.withUnsafeBytes { data.append(contentsOf: $0.prefix(count)) }
             if count > 0, buffer[count - 1] == 10 {
                 return (data, true, false)
             }

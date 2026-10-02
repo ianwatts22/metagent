@@ -1558,6 +1558,33 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(resumed.warnings.isEmpty)
     }
 
+    func testReadsShortRecordsAfterRecordsSpanningMultipleReadBuffers() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/reused-buffer", name: "reused-buffer")
+        let rollout = fixture.sessions.appendingPathComponent("rollout-reused-buffer.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "reused-buffer-session",
+                "cwd": fixture.root.path,
+                "padding": String(repeating: "long résumé 🦋", count: 12_000)
+            ]),
+            fixture.toolCall(callID: "first-read", command: "cat \(skill.path)"),
+            fixture.line(type: "event_msg", payload: [
+                "type": "agent_message",
+                "message": String(repeating: "shorter noise", count: 6_000)
+            ]),
+            fixture.toolCall(callID: "second-read", command: "cat \(skill.path)")
+        ], to: rollout)
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(report.snapshot.totalInvocations, 2)
+        XCTAssertEqual(report.snapshot.summaries.first?.skillName, "reused-buffer")
+        XCTAssertTrue(report.snapshot.isBackfillComplete)
+        XCTAssertEqual(report.snapshot.processedBytes, report.snapshot.totalBytes)
+        XCTAssertTrue(report.warnings.isEmpty)
+    }
+
     func testSkipsARecordLargerThanTheRecordLimitAndResumes() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
