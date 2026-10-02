@@ -355,6 +355,46 @@ final class SkillPublicationTests: XCTestCase {
         XCTAssertEqual(renamed.snapshot.records.last?.state, .mirrored)
     }
 
+    func testStoppedNeverMirroredLegacyCollisionDoesNotPreventOriginalOwnerResuming() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "original")
+        let report = try MetagentCore.enableSkillPublication(sourcePath: source.path, skillName: "original",
+            repositoryPath: fixture.repository.path, destinationName: "shared", storePath: fixture.store)
+        var legacy = report.snapshot
+        legacy.records[0].automaticMirroringEnabled = false
+        legacy.records[0].state = .disabled
+        legacy.records.append(SkillPublicationRecord(id: "abandoned-attempt",
+            sourceCanonicalPath: fixture.sourceRoot.appendingPathComponent("failed").path,
+            skillName: "failed", catalogID: try XCTUnwrap(legacy.catalogs.first).id,
+            destinationName: "shared", automaticMirroringEnabled: false, state: .disabled))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacy).write(to: fixture.store)
+        let readiness = MetagentCore.assessSkillPublicationReadiness(sourcePath: source.path,
+            repositoryPath: fixture.repository.path, destinationName: "shared", storePath: fixture.store)
+        XCTAssertEqual(readiness.status, .ready)
+        let resumed = try MetagentCore.enableSkillPublication(sourcePath: source.path, skillName: "original",
+            repositoryPath: fixture.repository.path, destinationName: "shared", storePath: fixture.store)
+        XCTAssertEqual(resumed.snapshot.records.first { $0.skillName == "original" }?.state, .mirrored)
+        XCTAssertEqual(resumed.snapshot.records.first { $0.id == "abandoned-attempt" }?.automaticMirroringEnabled, false)
+    }
+
+    func testReadinessBlocksUnreadablePublicationStore() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "safe")
+        try FileManager.default.createDirectory(at: fixture.store.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let corrupt = Data("not a valid publication store".utf8)
+        try corrupt.write(to: fixture.store)
+        let readiness = MetagentCore.assessSkillPublicationReadiness(sourcePath: source.path,
+            repositoryPath: fixture.repository.path, destinationName: "safe", storePath: fixture.store)
+        XCTAssertEqual(readiness.status, .blocked)
+        XCTAssertEqual(readiness.findings.first?.id, "publication-store-unreadable")
+        XCTAssertEqual(try Data(contentsOf: fixture.store), corrupt)
+    }
+
     func testExistingCatalogMetadataSurvivesEnablingAnotherSkill() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }

@@ -143,11 +143,12 @@ public struct SkillPublicationSnapshot: Codable, Equatable, Sendable {
         let catalogIDs = Set(catalogs.filter {
             URL(fileURLWithPath: $0.localRepositoryPath).resolvingSymlinksInPath().standardizedFileURL.path == repository
         }.map(\.id))
-        // Stopped publications still own their public copy; a different source
-        // must use a different destination rather than silently replacing it.
+        // Stopped publications retain an existing public copy, but abandoned
+        // attempts that never mirrored must not prevent its owner resuming.
         return records.first {
             catalogIDs.contains($0.catalogID) && $0.destinationName == destinationName
                 && $0.sourceCanonicalPath != source
+                && ($0.automaticMirroringEnabled || $0.lastMirroredHash != nil)
         }
     }
 
@@ -578,7 +579,16 @@ public extension MetagentCore {
         destinationName: String,
         storePath: URL? = nil
     ) -> SkillPublishReadiness {
-        let snapshot = loadSkillPublicationSnapshot(path: storePath)
+        let snapshot: SkillPublicationSnapshot
+        do {
+            snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
+        } catch {
+            return SkillPublishReadiness(status: .blocked, sourceHash: nil, findings: [publicationFinding(
+                id: "publication-store-unreadable",
+                message: "The saved publication configuration could not be read.",
+                remediation: "Restore the publication store before selecting a destination."
+            )])
+        }
         if let conflict = snapshot.destinationConflict(sourcePath: sourcePath,
             repositoryPath: repositoryPath, destinationName: destinationName) {
             return SkillPublishReadiness(status: .blocked, sourceHash: nil, findings: [publicationFinding(
