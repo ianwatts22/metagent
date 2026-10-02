@@ -469,10 +469,12 @@ final class SkillPublicationTests: XCTestCase {
         } == true)
     }
 
-    func testPublicAPIRejectsSourcesOutsidePrimarySkillsRoot() throws {
+    func testPublicAPIRejectsSourcesOutsideCanonicalSkillsFolders() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
-        let source = try fixture.skill(named: "outside-primary")
+        let original = try fixture.skill(named: "outside-primary")
+        let source = fixture.root.appendingPathComponent("outside-primary")
+        try FileManager.default.moveItem(at: original, to: source)
 
         XCTAssertThrowsError(try MetagentCore.enableSkillPublication(
             sourcePath: source.path,
@@ -485,7 +487,9 @@ final class SkillPublicationTests: XCTestCase {
     func testPublicReconcileBlocksPersistedOutOfRootRecordAndRetainsCopy() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
-        let source = try fixture.skill(named: "persisted-outside")
+        let original = try fixture.skill(named: "persisted-outside")
+        let source = fixture.root.appendingPathComponent("persisted-outside")
+        try FileManager.default.moveItem(at: original, to: source)
         _ = try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: source.path,
             skillName: "persisted-outside",
@@ -533,6 +537,87 @@ final class SkillPublicationTests: XCTestCase {
             atPath: fixture.publicSkill(named: "stop-mirroring")
                 .appendingPathComponent("SKILL.md").path
         ))
+    }
+
+    func testSequentialProjectSkillsPublishAndReconcileIndependently() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let first = try fixture.skill(named: "first")
+        let second = fixture.root.appendingPathComponent("other-project/.agents/skills/second")
+        try writeSkillFixture(at: second, name: "second", body: "Portable second skill.")
+
+        for source in [first, second] {
+            XCTAssertTrue(MetagentCore.isSkillPublicationSource(source.path))
+            XCTAssertEqual(MetagentCore.assessSkillPublicationReadiness(
+                sourcePath: source.path, repositoryPath: fixture.repository.path,
+                destinationName: source.lastPathComponent
+            ).status, .ready)
+            let report = try MetagentCore.enableSkillPublication(
+                sourcePath: source.path, skillName: source.lastPathComponent,
+                repositoryPath: fixture.repository.path, storePath: fixture.store
+            )
+            XCTAssertTrue(report.blockedRecordIDs.isEmpty)
+        }
+        try "updated\n".write(to: first.appendingPathComponent("references/note.md"),
+                              atomically: true, encoding: .utf8)
+        let reconciled = try MetagentCore.reconcileSkillPublications(storePath: fixture.store)
+        XCTAssertEqual(reconciled.snapshot.records.count, 2)
+        XCTAssertTrue(reconciled.snapshot.records.allSatisfy { $0.state == .mirrored })
+        XCTAssertEqual(try String(contentsOf: fixture.publicSkill(named: "first")
+            .appendingPathComponent("references/note.md"), encoding: .utf8), "updated\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.publicSkill(named: "second")
+            .appendingPathComponent("SKILL.md").path))
+    }
+
+    func testCanonicalSourceCheckRejectsRuntimeCopiesNestedFilesAndEscapingLinks() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill(named: "canonical")
+        let outside = fixture.root.appendingPathComponent("outside")
+        try writeSkillFixture(at: outside, name: "outside", body: "Portable instructions.")
+        let link = fixture.sourceRoot.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        XCTAssertFalse(MetagentCore.isSkillPublicationSource(link.path))
+        XCTAssertFalse(MetagentCore.isSkillPublicationSource(source.appendingPathComponent("references").path))
+        XCTAssertFalse(MetagentCore.isSkillPublicationSource(fixture.root.appendingPathComponent(".claude/skills/copy").path))
+        XCTAssertTrue(MetagentCore.isSkillPublicationSource(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agents/skills/personal").path))
+    }
+
+    func testLastSuccessfulRepositoryPersistsAcrossMultipleCatalogsAndBlockedAttempts() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        let first = try fixture.skill(named: "first")
+        let second = try fixture.skill(named: "second")
+        let otherRepository = fixture.root.appendingPathComponent("other-public")
+        try FileManager.default.createDirectory(at: otherRepository.appendingPathComponent(".git"),
+                                                withIntermediateDirectories: true)
+        for (source, repository) in [(first, fixture.repository), (second, otherRepository)] {
+            _ = try MetagentCore.enableSkillPublication(sourcePath: source.path,
+                skillName: source.lastPathComponent, repositoryPath: repository.path, storePath: fixture.store)
+            XCTAssertEqual(MetagentCore.loadSkillPublicationSnapshot(path: fixture.store).preferredRepositoryPath,
+                           repository.resolvingSymlinksInPath().path)
+        }
+        let blocked = try fixture.skill(named: "blocked")
+        try "PRIVATE_TOKEN=fixture\n".write(to: blocked.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        let report = try MetagentCore.enableSkillPublication(sourcePath: blocked.path,
+            skillName: "blocked", repositoryPath: fixture.repository.path, storePath: fixture.store)
+        XCTAssertFalse(report.blockedRecordIDs.isEmpty)
+        let reloaded = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
+        XCTAssertEqual(reloaded.catalogs.count, 2)
+        XCTAssertEqual(reloaded.preferredRepositoryPath, otherRepository.resolvingSymlinksInPath().path)
+    }
+
+    func testLegacyPublicationStoreKeepsItsSingleRepositoryDefault() throws {
+        let fixture = try PublicationFixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(at: fixture.store.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try #"{"version":1,"catalogs":[{"id":"old","localRepositoryPath":"/old/repo","skillsRelativePath":"skills"}],"records":[]}"#
+            .write(to: fixture.store, atomically: true, encoding: .utf8)
+        let snapshot = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
+        XCTAssertNil(snapshot.preferredCatalogID)
+        XCTAssertEqual(snapshot.preferredRepositoryPath, "/old/repo")
     }
 }
 

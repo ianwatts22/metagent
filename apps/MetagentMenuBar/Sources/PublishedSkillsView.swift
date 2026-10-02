@@ -53,7 +53,7 @@ struct PublishedSkillsView: View {
                         .foregroundStyle(.secondary)
                     Text("No skills selected for publishing")
                         .font(.callout.weight(.semibold))
-                    Text("Choose a canonical skill from ~/.agents/skills. Metagent will keep its public-repository copy current without committing or pushing.")
+                    Text("Choose an editable personal or project skill. Metagent will keep its public-repository copy current without committing or pushing.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -79,7 +79,7 @@ struct PublishedSkillsView: View {
     private var skillPicker: some View {
         Menu("Choose a Skill…", systemImage: "plus") {
             if selectableSkills.isEmpty {
-                Text("No more publishable global skills found")
+                Text("No more editable skills available to publish")
             } else {
                 ForEach(selectableSkills) { skill in
                     Button(skill.skillName) {
@@ -452,6 +452,18 @@ func activeSkillPublication(for canonicalPath: String, in snapshot: SkillPublica
     }
 }
 
+func skillPublicationUnavailableReason(_ skill: SkillInventoryItem) -> String? {
+    guard skill.mutability == "editable", skill.manager != "codex-plugin" else {
+        return "Publish the editable source, not an installed package."
+    }
+    guard skill.representation == "canonical",
+          MetagentCore.isSkillPublicationSource(skill.canonicalPath)
+    else {
+        return "Publish from a personal or project .agents/skills folder."
+    }
+    return nil
+}
+
 struct SkillPublicationSetupSheet: View {
     @ObservedObject var model: MetagentModel
     let row: InventorySkillRow
@@ -468,8 +480,7 @@ struct SkillPublicationSetupSheet: View {
         self.model = model
         self.row = row
         _destinationName = State(initialValue: row.skillName.lowercased().replacingOccurrences(of: "_", with: "-"))
-        let catalogs = model.publicationSnapshot.catalogs
-        _repositoryPath = State(initialValue: catalogs.count == 1 ? catalogs[0].localRepositoryPath : "")
+        _repositoryPath = State(initialValue: model.publicationSnapshot.preferredRepositoryPath ?? "")
     }
 
     private var readinessInput: String {
@@ -611,6 +622,9 @@ struct SkillPublicationSetupSheet: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        if !repositoryPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: repositoryPath, isDirectory: true)
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         repositoryPath = url.standardizedFileURL.path
         repositorySetup = nil

@@ -517,21 +517,6 @@ final class MetagentModel: ObservableObject {
         reconcileSkillPublications()
     }
 
-    func isPrimaryPublishableSkill(_ skill: InventorySkillRow) -> Bool {
-        guard skill.skill.representation == "canonical",
-              skill.skill.mutability == "editable",
-              skill.skill.manager != "codex-plugin"
-        else { return false }
-        let source = URL(fileURLWithPath: skill.canonicalPath)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        let primaryRoot = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agents/skills", isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        return source.deletingLastPathComponent().path == primaryRoot.path
-    }
-
     @discardableResult
     func enableSkillPublication(
         sourcePath: String,
@@ -546,12 +531,8 @@ final class MetagentModel: ObservableObject {
         let source = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        let primaryRoot = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agents/skills", isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        guard source.deletingLastPathComponent().path == primaryRoot.path else {
-            publicationStatusText = "Only canonical ~/.agents/skills can be published."
+        guard MetagentCore.isSkillPublicationSource(source.path) else {
+            publicationStatusText = "Publish from a personal or project .agents/skills folder."
             return false
         }
         isPublicationSyncing = true

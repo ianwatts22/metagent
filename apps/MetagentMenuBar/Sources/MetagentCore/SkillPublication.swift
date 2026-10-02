@@ -123,14 +123,26 @@ public struct SkillPublicationSnapshot: Codable, Equatable, Sendable {
     public let version: Int
     public var catalogs: [SkillPublicationCatalog]
     public var records: [SkillPublicationRecord]
+    public var preferredCatalogID: String?
+
+    /// Reuse the last successful destination; older single-catalog stores
+    /// already have an unambiguous default.
+    public var preferredRepositoryPath: String? {
+        if let catalog = catalogs.first(where: { $0.id == preferredCatalogID }) {
+            return catalog.localRepositoryPath
+        }
+        return catalogs.count == 1 ? catalogs[0].localRepositoryPath : nil
+    }
 
     public init(
         catalogs: [SkillPublicationCatalog] = [],
-        records: [SkillPublicationRecord] = []
+        records: [SkillPublicationRecord] = [],
+        preferredCatalogID: String? = nil
     ) {
         self.version = Self.version
         self.catalogs = catalogs
         self.records = records
+        self.preferredCatalogID = preferredCatalogID
     }
 
     public static let empty = SkillPublicationSnapshot()
@@ -160,6 +172,12 @@ private struct SkillPublicationFile {
 }
 
 public extension MetagentCore {
+    /// Canonical personal and project skills share the same publication flow.
+    /// Runtime copies and links that resolve outside a canonical container do not.
+    static func isSkillPublicationSource(_ sourcePath: String) -> Bool {
+        isDirectPublicationSkill(URL(fileURLWithPath: sourcePath), in: nil)
+    }
+
     static func loadSkillPublicationSnapshot(path: URL? = nil) -> SkillPublicationSnapshot {
         let url = path ?? skillPublicationStorePath()
         guard let data = try? Data(contentsOf: url),
@@ -235,7 +253,7 @@ public extension MetagentCore {
             remoteURL: remoteURL,
             storePath: storePath,
             now: now,
-            allowedSourceRoot: primaryPublicationSkillsRoot()
+            allowedSourceRoot: nil
         )
     }
 
@@ -274,7 +292,7 @@ public extension MetagentCore {
         remoteURL: String?,
         storePath: URL?,
         now: Date,
-        allowedSourceRoot: URL
+        allowedSourceRoot: URL?
     ) throws -> SkillPublicationReconcileReport {
         let source = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath()
@@ -284,7 +302,7 @@ public extension MetagentCore {
             .standardizedFileURL
         let destination = destinationName ?? source.lastPathComponent
         guard isDirectPublicationSkill(source, in: allowedSourceRoot) else {
-            throw publicationError("Only canonical ~/.agents/skills can be published.")
+            throw publicationError("Publish from a personal or project .agents/skills folder.")
         }
         guard isValidPublicationName(destination) else {
             throw publicationError(
@@ -335,10 +353,21 @@ public extension MetagentCore {
             snapshot.records.append(record)
         }
         try saveSkillPublicationSnapshot(snapshot, path: storePath)
-        return try reconcileSkillPublications(
+        let report = try reconcileSkillPublications(
             storePath: storePath,
             now: now,
             allowedSourceRoot: allowedSourceRoot
+        )
+        guard report.snapshot.records.first(where: { $0.id == recordID })?.state == .mirrored else {
+            return report
+        }
+        var updated = report.snapshot
+        updated.preferredCatalogID = catalogID
+        try saveSkillPublicationSnapshot(updated, path: storePath)
+        return SkillPublicationReconcileReport(
+            snapshot: updated,
+            mirroredRecordIDs: report.mirroredRecordIDs,
+            blockedRecordIDs: report.blockedRecordIDs
         )
     }
 
@@ -369,7 +398,7 @@ public extension MetagentCore {
         return try reconcileSkillPublications(
             storePath: storePath,
             now: now,
-            allowedSourceRoot: primaryPublicationSkillsRoot()
+            allowedSourceRoot: nil
         )
     }
 
@@ -401,7 +430,7 @@ public extension MetagentCore {
     private static func reconcileSkillPublications(
         storePath: URL?,
         now: Date,
-        allowedSourceRoot: URL
+        allowedSourceRoot: URL?
     ) throws -> SkillPublicationReconcileReport {
         var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
         var mirrored: [String] = []
@@ -439,8 +468,8 @@ public extension MetagentCore {
             guard isDirectPublicationSkill(source, in: allowedSourceRoot) else {
                 let finding = publicationFinding(
                     id: "source-outside-primary-root",
-                    message: "Only canonical ~/.agents/skills can be published.",
-                    remediation: "Move the skill into ~/.agents/skills and publish it from there."
+                    message: "The source is outside a canonical skills folder.",
+                    remediation: "Publish from a personal or project .agents/skills folder."
                 )
                 snapshot.records[index].state = .updateBlocked
                 snapshot.records[index].findings = [finding]
@@ -532,7 +561,7 @@ public extension MetagentCore {
             repositoryPath: repositoryPath,
             skillsRelativePath: skillsRelativePath,
             destinationName: destinationName,
-            allowedSourceRoot: primaryPublicationSkillsRoot()
+            allowedSourceRoot: nil
         )
     }
 
@@ -562,7 +591,7 @@ public extension MetagentCore {
         repositoryPath: String,
         skillsRelativePath: String,
         destinationName: String,
-        allowedSourceRoot: URL
+        allowedSourceRoot: URL?
     ) -> SkillPublishReadiness {
         let source = URL(fileURLWithPath: sourcePath)
             .resolvingSymlinksInPath()
@@ -575,8 +604,8 @@ public extension MetagentCore {
         if !isDirectPublicationSkill(source, in: allowedSourceRoot) {
             findings.append(publicationFinding(
                 id: "source-outside-primary-root",
-                message: "Only canonical ~/.agents/skills can be published.",
-                remediation: "Move the skill into ~/.agents/skills and publish it from there."
+                message: "The source is outside a canonical skills folder.",
+                remediation: "Publish from a personal or project .agents/skills folder."
             ))
         }
 
@@ -1110,10 +1139,15 @@ private func primaryPublicationSkillsRoot() -> URL {
         .standardizedFileURL
 }
 
-private func isDirectPublicationSkill(_ source: URL, in allowedRoot: URL) -> Bool {
+private func isDirectPublicationSkill(_ source: URL, in allowedRoot: URL?) -> Bool {
     let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
-    let resolvedRoot = allowedRoot.resolvingSymlinksInPath().standardizedFileURL
-    return resolvedSource.deletingLastPathComponent().path == resolvedRoot.path
+    let container = resolvedSource.deletingLastPathComponent()
+    if let allowedRoot {
+        return container.path == allowedRoot.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+    if container.path == primaryPublicationSkillsRoot().path { return true }
+    return container.lastPathComponent == "skills"
+        && container.deletingLastPathComponent().lastPathComponent == ".agents"
 }
 
 private func skillPublicationEncoder() -> JSONEncoder {
