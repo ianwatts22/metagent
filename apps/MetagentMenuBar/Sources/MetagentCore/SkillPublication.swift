@@ -125,16 +125,30 @@ public struct SkillPublicationSnapshot: Codable, Equatable, Sendable {
     public var records: [SkillPublicationRecord]
     public var preferredCatalogID: String?
 
-    /// Reuse the last successful destination; older single-catalog stores
-    /// already have an unambiguous default.
+    /// Reuse the last successful destination, or a legacy store's uniquely
+    /// successful catalog. Failed attempts must not erase that legacy default.
     public var preferredRepositoryPath: String? {
         if let catalog = catalogs.first(where: { $0.id == preferredCatalogID }) {
             return catalog.localRepositoryPath
         }
-        guard catalogs.count == 1, records.contains(where: {
-            $0.catalogID == catalogs[0].id && $0.lastMirroredHash != nil
-        }) else { return nil }
-        return catalogs[0].localRepositoryPath
+        let successfulIDs = Set(records.filter { $0.lastMirroredHash != nil }.map(\.catalogID))
+        let successfulCatalogs = catalogs.filter { successfulIDs.contains($0.id) }
+        return successfulCatalogs.count == 1 ? successfulCatalogs[0].localRepositoryPath : nil
+    }
+
+    public func destinationConflict(sourcePath: String, repositoryPath: String,
+                                    destinationName: String) -> SkillPublicationRecord? {
+        let repository = URL(fileURLWithPath: repositoryPath).resolvingSymlinksInPath().standardizedFileURL.path
+        let source = URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().standardizedFileURL.path
+        let catalogIDs = Set(catalogs.filter {
+            URL(fileURLWithPath: $0.localRepositoryPath).resolvingSymlinksInPath().standardizedFileURL.path == repository
+        }.map(\.id))
+        // Stopped publications still own their public copy; a different source
+        // must use a different destination rather than silently replacing it.
+        return records.first {
+            catalogIDs.contains($0.catalogID) && $0.destinationName == destinationName
+                && $0.sourceCanonicalPath != source
+        }
     }
 
     public init(
@@ -314,6 +328,10 @@ public extension MetagentCore {
         }
 
         var snapshot = try loadSkillPublicationSnapshotForMutation(path: storePath)
+        if let conflict = snapshot.destinationConflict(sourcePath: source.path,
+            repositoryPath: repository.path, destinationName: destination) {
+            throw publicationError("This destination belongs to \(conflict.sourceCanonicalPath). Choose a different destination folder name.")
+        }
         let catalogID = publicationCatalogID(repository.path)
         if let index = snapshot.catalogs.firstIndex(where: { $0.id == catalogID }) {
             let existing = snapshot.catalogs[index]
@@ -557,8 +575,18 @@ public extension MetagentCore {
         sourcePath: String,
         repositoryPath: String,
         skillsRelativePath: String = "skills",
-        destinationName: String
+        destinationName: String,
+        storePath: URL? = nil
     ) -> SkillPublishReadiness {
+        let snapshot = loadSkillPublicationSnapshot(path: storePath)
+        if let conflict = snapshot.destinationConflict(sourcePath: sourcePath,
+            repositoryPath: repositoryPath, destinationName: destinationName) {
+            return SkillPublishReadiness(status: .blocked, sourceHash: nil, findings: [publicationFinding(
+                id: "destination-collision",
+                message: "This destination belongs to \(conflict.sourceCanonicalPath).",
+                remediation: "Choose a different destination folder name."
+            )])
+        }
         return assessSkillPublicationReadiness(
             sourcePath: sourcePath,
             repositoryPath: repositoryPath,

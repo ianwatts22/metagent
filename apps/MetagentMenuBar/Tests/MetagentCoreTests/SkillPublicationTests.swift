@@ -310,7 +310,7 @@ final class SkillPublicationTests: XCTestCase {
         ))
     }
 
-    func testDestinationCollisionBlocksBothRecords() throws {
+    func testOccupiedDestinationRejectsNewSourceWithoutDisruptingExistingMirror() throws {
         let fixture = try PublicationFixture()
         defer { fixture.remove() }
         let first = try fixture.skill(named: "first")
@@ -322,16 +322,37 @@ final class SkillPublicationTests: XCTestCase {
             destinationName: "shared",
             storePath: fixture.store
         )
-        let report = try MetagentCore.enableSkillPublicationForTesting(
+        let before = try Data(contentsOf: fixture.store)
+        let readiness = MetagentCore.assessSkillPublicationReadiness(
+            sourcePath: second.path, repositoryPath: fixture.repository.path,
+            destinationName: "shared", storePath: fixture.store
+        )
+        XCTAssertEqual(readiness.status, .blocked)
+        XCTAssertEqual(readiness.findings.first?.id, "destination-collision")
+        XCTAssertThrowsError(try MetagentCore.enableSkillPublicationForTesting(
             sourcePath: second.path,
             skillName: "second",
             repositoryPath: fixture.repository.path,
             destinationName: "shared",
             storePath: fixture.store
-        )
-
-        XCTAssertEqual(report.blockedRecordIDs.count, 2)
-        XCTAssertTrue(report.snapshot.records.allSatisfy { $0.state == .updateBlocked })
+        ))
+        XCTAssertEqual(try Data(contentsOf: fixture.store), before)
+        let snapshot = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
+        XCTAssertEqual(snapshot.records.count, 1)
+        XCTAssertEqual(snapshot.records.first?.state, .mirrored)
+        XCTAssertEqual(try String(contentsOf: fixture.publicSkill(named: "shared").appendingPathComponent("SKILL.md"),
+                                  encoding: .utf8),
+                       try String(contentsOf: first.appendingPathComponent("SKILL.md"), encoding: .utf8))
+        // Resuming the same source remains valid, even through a repository alias.
+        XCTAssertNil(snapshot.destinationConflict(sourcePath: first.path,
+            repositoryPath: fixture.repository.appendingPathComponent(".").path, destinationName: "shared"))
+        let stopped = try MetagentCore.disableSkillPublication(recordID: XCTUnwrap(snapshot.records.first).id,
+                                                                storePath: fixture.store)
+        XCTAssertNotNil(stopped.destinationConflict(sourcePath: second.path,
+            repositoryPath: fixture.repository.path, destinationName: "shared"))
+        let renamed = try MetagentCore.enableSkillPublicationForTesting(sourcePath: second.path, skillName: "second",
+            repositoryPath: fixture.repository.path, destinationName: "second", storePath: fixture.store)
+        XCTAssertEqual(renamed.snapshot.records.last?.state, .mirrored)
     }
 
     func testExistingCatalogMetadataSurvivesEnablingAnotherSkill() throws {
@@ -615,9 +636,17 @@ final class SkillPublicationTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         try #"{"version":1,"catalogs":[{"id":"old","localRepositoryPath":"/old/repo","skillsRelativePath":"skills"}],"records":[{"id":"published","sourceCanonicalPath":"/project/.agents/skills/local","skillName":"local","catalogID":"old","destinationName":"local","automaticMirroringEnabled":true,"state":"mirrored","lastMirroredHash":"previous-hash","findings":[]}]}"#
             .write(to: fixture.store, atomically: true, encoding: .utf8)
-        let snapshot = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
+        var snapshot = MetagentCore.loadSkillPublicationSnapshot(path: fixture.store)
         XCTAssertNil(snapshot.preferredCatalogID)
         XCTAssertEqual(snapshot.preferredRepositoryPath, "/old/repo")
+        snapshot.catalogs.append(SkillPublicationCatalog(id: "failed", localRepositoryPath: "/failed/repo"))
+        snapshot.records.append(SkillPublicationRecord(id: "blocked", sourceCanonicalPath: "/project/.agents/skills/blocked",
+            skillName: "blocked", catalogID: "failed", destinationName: "blocked", state: .updateBlocked))
+        XCTAssertEqual(snapshot.preferredRepositoryPath, "/old/repo")
+        try JSONEncoder().encode(snapshot).write(to: fixture.store)
+        XCTAssertEqual(MetagentCore.loadSkillPublicationSnapshot(path: fixture.store).preferredRepositoryPath, "/old/repo")
+        snapshot.records[1].lastMirroredHash = "another-success"
+        XCTAssertNil(snapshot.preferredRepositoryPath, "Multiple legacy successful catalogs remain ambiguous")
     }
 
     func testFirstBlockedAttemptDoesNotBecomeTheDefaultRepository() throws {

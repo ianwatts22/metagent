@@ -82,7 +82,7 @@ struct PublishedSkillsView: View {
                 Text("No more editable skills available to publish")
             } else {
                 ForEach(selectableSkills) { skill in
-                    Button(skill.skillName) {
+                    Button("\(skill.skillName) — \(displayUserPath(skill.canonicalPath))") {
                         onChooseSkill(skill)
                     }
                 }
