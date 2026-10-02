@@ -252,7 +252,7 @@ struct InventorySection: View {
     private func toolbarControls(countText: String) -> some View {
         SkillViewSelector(selection: selectedViewBinding)
         if selectedView != .published, selectedView != .duplicates {
-            filterControls
+            filterControls()
         }
         Spacer(minLength: 0)
         CountChip(text: countText)
@@ -262,11 +262,11 @@ struct InventorySection: View {
     }
 
     @ViewBuilder
-    private var filterControls: some View {
+    private func filterControls(searchWidth: CGFloat = 220) -> some View {
         GlassSearchField(
             placeholder: "Search",
             text: $query,
-            width: 220,
+            width: searchWidth,
             accessibilityIdentifier: "metagent.skills.search"
         )
 
@@ -412,7 +412,7 @@ struct InventorySection: View {
                     }
                     if selectedView != .published, selectedView != .duplicates {
                         HStack(spacing: 8) {
-                            filterControls
+                            filterControls(searchWidth: 160)
                             Spacer(minLength: 0)
                         }
                     }
