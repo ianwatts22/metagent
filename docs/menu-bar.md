@@ -10,8 +10,9 @@ inventory writes, or scans. The preview command is absent from production builds
 
 Without a cached inventory, the real app shows cataloging until the first scan
 returns, or a retry state if every inventory source fails. Cached results remain
-visible during refresh. Usage history indexes separately with a non-blocking
-banner while its metrics are provisional.
+visible during refresh. Usage history indexes separately with a compact progress
+indicator in the top-right toolbar. Click it for progress details and Reload;
+its metrics remain provisional until indexing finishes.
 
 The macOS app is the primary `metagent` product surface. It imports the shared Swift `MetagentCore` package directly and exposes both:
 
@@ -42,7 +43,7 @@ Current surface:
 - shared Needs attention list and toolbar notification bell, with per-condition Ignore/Restore and explicit repair previews
 - contextual repair preview shown only when a fix is available
 - one native inset `Skills` table with persisted `Summary`, `Review`, `Inventory`, and `Usage` presets, plus a guided `Duplicates` decision queue. The view switcher uses the same glass track and accent capsule as the main navigation rather than a segmented picker wrapped in glass, which rendered a squared selection and resized as labels changed.
-- destination pages carry no title of their own, because the active tab already names them. Row counts appear as one quiet chip beside the controls. Search and the usage-lifecycle filter stay in the open; location, grouping, and source visibility live behind one `Filters` menu that reports how many of them are off their defaults.
+- destination pages carry no title of their own, because the active tab already names them. Skills uses one view dropdown instead of a second tab strip. Search and a distinctly labeled grouping menu stay visible; usage, location, and source visibility share one `Filters` menu with an active-filter count and Reset Filters. Row counts and a compact archive button sit at the end of the row. Specialized Published and Duplicates views do not show irrelevant table filters.
 - Plugin Eval runs by itself in the background for visible skills with no cached result, so score columns fill in without a menu command. Failures are recorded rather than retried, so one broken skill cannot loop. Re-running Plugin Eval for a single skill and the Codex review both live in the row context menu; the Codex review stays explicit and confirmed because it uploads skill contents to OpenAI.
 - `Summary` shows Skill, Location, Source, a compact Upstream, numeric Weeks old, Utility, estimated tokens, and 30d Usage, ordered by 30-day usage; `Review` contains Quality, Plugin Eval, Utility, and Codex review; `Inventory` adds description, version/ref, and reference/script counts; `Usage` shows recent/all-time reads and recency; State remains an optional column
 - `Duplicates` detects distinct canonical bundles with the same skill identity, while ignoring Claude/Codex projections of one canonical folder. Its compact decision queue compares installed copies, usage, location, manager, update age, and abbreviated paths; makes similarity and plugin-replacement recommendations explicit; distinguishes global skills from named project skills; expands one or two candidates across the available comparison width; lets the user mark each removable copy Keep or Remove; and routes the final selection through the existing destructive approval. Exact copies, global-plus-project copies that may be intentional for collaborators, and unresolved same-name collisions remain judgment calls.

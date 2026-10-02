@@ -686,7 +686,7 @@ final class MetagentModel: ObservableObject {
             : "\(blocked) of \(enabled.count) publications need attention"
     }
 
-    private var usageIndexingProgress: Double? {
+    var usageIndexingProgress: Double? {
         guard usageSnapshot.totalBytes > 0 else { return nil }
         return min(1, max(
             0,

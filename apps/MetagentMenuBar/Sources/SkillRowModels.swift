@@ -400,36 +400,32 @@ enum SkillTableView: String, CaseIterable, Identifiable {
     }
 }
 
-/// A segmented `Picker` wrapped in glass drew a squared selection inside the
-/// capsule and resized as labels changed. This mirrors the main navigation
-/// instead: one glass track, an accent capsule for the active view.
+/// These are different views of Skills, not another level of app navigation.
 struct SkillViewSelector: View {
     @Binding var selection: SkillTableView
 
     var body: some View {
-        HStack(spacing: 3) {
+        Menu {
             ForEach(SkillTableView.allCases) { view in
-                let isSelected = selection == view
                 Button {
                     selection = view
                 } label: {
-                    Text(view.title)
-                        .font(.callout.weight(isSelected ? .semibold : .medium))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .background(isSelected ? Color.accentColor : Color.clear, in: Capsule())
-                        .contentShape(Capsule())
+                    if selection == view {
+                        Label(view.title, systemImage: "checkmark")
+                    } else {
+                        Text(view.title)
+                    }
                 }
-                .buttonStyle(.plain)
                 .accessibilityIdentifier("metagent.skills.view.\(view.rawValue)")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
+        } label: {
+            GlassMenuLabel(title: selection.title, systemImage: "tablecells", width: 142)
         }
-        .padding(4)
-        .glassEffect(.regular, in: Capsule())
+        .buttonStyle(.plain)
+        .help("Choose a Skills view")
+        .accessibilityLabel("Skills view")
+        .accessibilityValue(selection.title)
+        .accessibilityIdentifier("metagent.skills.view-selector")
     }
 }
 

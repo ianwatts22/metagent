@@ -240,6 +240,7 @@ struct InventorySection: View {
     private var activeAdvancedFilterCount: Int {
         var count = hiddenSources == [.notInstalled] ? 0 : 1
         if scopeFilter != .all { count += 1 }
+        if usageFilter != .all { count += 1 }
         return count
     }
 
@@ -250,9 +251,13 @@ struct InventorySection: View {
     @ViewBuilder
     private func toolbarControls(countText: String) -> some View {
         SkillViewSelector(selection: selectedViewBinding)
-        CountChip(text: countText)
         if selectedView != .published, selectedView != .duplicates {
             filterControls
+        }
+        Spacer(minLength: 0)
+        CountChip(text: countText)
+        if !model.archivedSkills.isEmpty, selectedView != .duplicates {
+            archivedSkillsMenu
         }
     }
 
@@ -261,40 +266,43 @@ struct InventorySection: View {
         GlassSearchField(
             placeholder: "Search",
             text: $query,
-            width: 150,
+            width: 220,
             accessibilityIdentifier: "metagent.skills.search"
         )
 
-        // Usage is the question this app exists to answer, so it stays in the
-        // open alongside search and grouping.
         GlassSelectionMenu(
-            title: "Usage",
-            selection: $usageFilter,
-            options: Array(UsageFilter.allCases),
-            optionTitle: { $0.title },
-            width: 158
+            title: "Group",
+            selection: groupingBinding,
+            options: Array(SkillGrouping.allCases),
+            optionTitle: { $0 == .none ? "Group: None" : "Group: \($0.title)" },
+            width: 168,
+            systemImage: "rectangle.3.group"
         )
-        .accessibilityIdentifier("metagent.skills.usage-filter")
-
-        if selectedView != .duplicates {
-            GlassSelectionMenu(
-                title: "Group",
-                selection: groupingBinding,
-                options: Array(SkillGrouping.allCases),
-                optionTitle: { $0.title },
-                width: 150
-            )
-            .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
-        }
+        .help("Group skills by source, location, or upstream")
 
         Menu {
+            Section("Usage") {
+                ForEach(UsageFilter.allCases) { filter in
+                    Button {
+                        usageFilter = filter
+                        selection.removeAll()
+                    } label: {
+                        if usageFilter == filter {
+                            Label(filter.title, systemImage: "checkmark")
+                        } else {
+                            Text(filter.title)
+                        }
+                    }
+                }
+            }
+
             Picker("Location", selection: $scopeFilter) {
                 ForEach(SkillScopeFilter.allCases) { scope in
                     Text(scope.title).tag(scope)
                 }
             }
 
-            Section("Visible sources") {
+            Menu("Sources") {
                 Button("Show All Sources") {
                     hiddenSourceRaw = ""
                     selection.removeAll()
@@ -310,6 +318,14 @@ struct InventorySection: View {
                     )
                 }
             }
+            Divider()
+            Button("Reset Filters") {
+                usageFilter = .all
+                scopeFilter = .all
+                hiddenSourceRaw = SkillSourceCategory.notInstalled.rawValue
+                selection.removeAll()
+            }
+            .disabled(activeAdvancedFilterCount == 0)
         } label: {
             GlassMenuLabel(
                 title: advancedFilterTitle,
@@ -317,12 +333,11 @@ struct InventorySection: View {
                 width: activeAdvancedFilterCount == 0 ? 112 : 128
             )
         }
-        .help("Location and which skill sources are visible")
+        .help("Filter by usage, location, and source")
         .buttonStyle(.plain)
-
-        if !model.archivedSkills.isEmpty {
-            archivedSkillsMenu
-        }
+        .accessibilityLabel("Filters")
+        .accessibilityValue(usageFilter.title)
+        .accessibilityIdentifier("metagent.skills.filters")
     }
 
     /// Appears only while something is set aside, so the toolbar carries no
@@ -342,13 +357,18 @@ struct InventorySection: View {
                 NSWorkspace.shared.open(MetagentCore.archivedSkillsRoot())
             }
         } label: {
-            GlassMenuLabel(
-                title: "Archived · \(model.archivedSkills.count)",
-                systemImage: "archivebox",
-                width: 128
-            )
+            GlassMenuLabel(title: nil, systemImage: "archivebox", width: 36, showsChevron: false)
+                .overlay(alignment: .topTrailing) {
+                    Text("\(model.archivedSkills.count)")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .allowsHitTesting(false)
+                }
         }
-        .help("Skills set aside in Metagent's Archived Skills folder. No agent runtime sees them until restored.")
+        .help("\(model.archivedSkills.count) archived skills. Open to restore a skill or show the archive in Finder.")
+        .accessibilityLabel("Archived skills")
+        .accessibilityValue("\(model.archivedSkills.count)")
         .buttonStyle(.plain)
     }
 
@@ -379,7 +399,6 @@ struct InventorySection: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     toolbarControls(countText: countText)
-                    Spacer(minLength: 0)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -387,6 +406,9 @@ struct InventorySection: View {
                         SkillViewSelector(selection: selectedViewBinding)
                         CountChip(text: countText)
                         Spacer(minLength: 0)
+                        if !model.archivedSkills.isEmpty, selectedView != .duplicates {
+                            archivedSkillsMenu
+                        }
                     }
                     if selectedView != .published, selectedView != .duplicates {
                         HStack(spacing: 8) {

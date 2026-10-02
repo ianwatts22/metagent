@@ -552,19 +552,26 @@ private final class AccessibilityProbe {
     }
 
     func normalizeSkillsSummary(window: AXUIElement) throws {
-        let summary = try waitForIdentifier(window, identifier: "metagent.skills.view.summary")
-        if try isSelected(summary) { return }
+        let selectorIdentifier = "metagent.skills.view-selector"
+        let selector = try waitForIdentifier(window, identifier: selectorIdentifier)
+        if try value(selector) == "Summary" { return }
         let content = try contentElement(window, section: "Skills")
         guard let previous = try identifier(content) else {
             throw ProbeError.state("Skills content-ready element has no AXIdentifier.")
         }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(window, &pid) == .success else {
+            throw ProbeError.state("Could not identify the Skills window's application.")
+        }
+        try performPress(selector, description: "Skills view menu")
+        let summary = try menuItem(AXUIElementCreateApplication(pid), name: "Summary")
         try performPress(summary, description: "Skills Summary view")
-        try waitUntil("Skills Summary view selected state") {
+        try waitUntil("Skills Summary view selected value") {
             guard let current = try self.findByIdentifier(
                 window,
-                identifier: "metagent.skills.view.summary"
+                identifier: selectorIdentifier
             ) else { return false }
-            return try self.isSelected(current)
+            return try self.value(current) == "Summary"
         }
         _ = try waitForContentChange(
             retained: content,
@@ -869,7 +876,7 @@ private func runCommonInteractions(
     var skippedSections: [[String: Any]] = []
     let filters = [
         (
-            "Skills", "metagent.skills.usage-filter",
+            "Skills", "metagent.skills.filters",
             (label: "All skills", state: "usage-all"),
             (label: "Observed", state: "usage-observed")
         ),
@@ -1334,7 +1341,7 @@ private func controlTraversalSelfTest() throws {
     // Content is encountered before the nested toolbar control, including
     // while the desired control is absent during SwiftUI replacement. A
     // generic BFS would request content children before reaching the control.
-    let expected = "metagent.skills.usage-filter"
+    let expected = "metagent.skills.filters"
     for contentRole in [kAXTableRole, kAXOutlineRole, kAXGroupRole] {
         for controlPresent in [false, true] {
             var visited: [Int] = []

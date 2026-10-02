@@ -39,12 +39,6 @@ struct MetagentPanel: View {
                         model.refreshStatus()
                     }
                 } else {
-                    if model.isUsageRefreshing || (model.usageSnapshot.totalFiles > 0 && !model.usageSnapshot.isBackfillComplete) {
-                        CatalogingHistoryBanner(
-                            detail: model.usageStatusText,
-                            needsAttention: model.isUsageIndexingStalled
-                        )
-                    }
                     panelContent
                 }
 
@@ -158,7 +152,7 @@ struct MetagentPanel: View {
             .accessibilityLabel("Usage history needs attention")
             .accessibilityHint("Show why usage metrics are provisional")
             .popover(isPresented: $showsActivityDetails, arrowEdge: .top) {
-                ActivityDetailsPopover(activity: activity) {
+                ActivityDetailsPopover(activity: activity, canContinue: !model.isRefreshing) {
                     showsActivityDetails = false
                     model.refreshUsage()
                 }
@@ -172,8 +166,18 @@ struct MetagentPanel: View {
     /// would be a no-op then anyway.
     @ViewBuilder
     private var refreshControl: some View {
-        if let activity = model.activity, !activity.needsAttention {
-            ActivityBadge(activity: activity)
+        if let activity = toolbarActivity, !activity.needsAttention {
+            Button { showsActivityDetails = true } label: {
+                ActivityBadge(activity: activity)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("metagent.catalog.history")
+            .popover(isPresented: $showsActivityDetails, arrowEdge: .top) {
+                ActivityDetailsPopover(activity: activity, canContinue: !model.isRefreshing) {
+                    showsActivityDetails = false
+                    model.refreshAll()
+                }
+            }
         } else {
             Button {
                 model.refreshAll()
@@ -185,6 +189,14 @@ struct MetagentPanel: View {
             .help("Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history")
             .accessibilityLabel("Reload")
         }
+    }
+
+    private var toolbarActivity: AppActivity? {
+        if let activity = model.activity { return activity }
+        // Keep progress available between cooperative slices, without turning
+        // normal background catch-up into an attention warning or page banner.
+        guard model.usageSnapshot.totalFiles > 0, !model.usageSnapshot.isBackfillComplete else { return nil }
+        return .working(progress: model.usageIndexingProgress, label: model.usageStatusText)
     }
 
     private var brandMark: some View {
@@ -494,13 +506,15 @@ struct ActivityBadge: View {
 
 private struct ActivityDetailsPopover: View {
     let activity: AppActivity
+    let canContinue: Bool
     let onContinue: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Usage indexing needs attention", systemImage: "exclamationmark.triangle.fill")
+            Label(activity.needsAttention ? "Usage indexing needs attention" : "Background activity",
+                  systemImage: activity.needsAttention ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
                 .font(.headline)
-                .foregroundStyle(.orange)
+                .foregroundStyle(activity.needsAttention ? Color.orange : Color.primary)
 
             Text(activity.label)
                 .font(.callout.weight(.semibold))
@@ -510,16 +524,23 @@ private struct ActivityDetailsPopover: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("A retry runs one small slice. Once it advances, Metagent resumes the remaining slices automatically in the background without monopolizing CPU or energy.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if case let .working(progress, _) = activity, let progress {
+                ProgressView(value: progress)
+            }
+
+            if activity.needsAttention {
+                Text("A retry runs one small slice. Once it advances, Metagent resumes the remaining slices automatically in the background without monopolizing CPU or energy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Spacer()
-                Button("Retry indexing", action: onContinue)
+                Button(activity.needsAttention ? "Retry indexing" : "Reload", action: onContinue)
                     .buttonStyle(.borderedProminent)
                     .buttonBorderShape(.capsule)
+                    .disabled(!canContinue)
             }
         }
         .padding(16)
@@ -527,6 +548,9 @@ private struct ActivityDetailsPopover: View {
     }
 
     private var explanation: String {
+        if !activity.needsAttention {
+            return "You can keep browsing while Metagent works. Metrics that depend on incomplete history remain provisional; missing reads are not evidence that a skill went unused."
+        }
         if activity.label == "No retained sessions indexed" {
             return "Metagent has not found any retained local agent sessions yet, so usage metrics do not have evidence to summarize."
         }
@@ -659,6 +683,7 @@ where Option: Hashable & Identifiable {
     let options: [Option]
     let optionTitle: (Option) -> String
     let width: CGFloat
+    var systemImage: String? = nil
 
     var body: some View {
         Menu {
@@ -676,7 +701,7 @@ where Option: Hashable & Identifiable {
         } label: {
             GlassMenuLabel(
                 title: optionTitle(selection),
-                systemImage: selection == options.first ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill",
+                systemImage: systemImage ?? (selection == options.first ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill"),
                 width: width
             )
         }

@@ -3,6 +3,13 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.9.2 — 2026-10-02
+
+- Background history progress stays in the toolbar, with details on click,
+  instead of a banner across every page.
+- Skills uses a compact view dropdown and one filter menu, with clearer
+  grouping and an archive button that no longer truncates its label.
+
 ## v0.9.1 — 2026-10-02
 
 - Skill menus keep everyday actions up front and group publishing and advanced

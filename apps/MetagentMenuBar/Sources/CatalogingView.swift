@@ -54,30 +54,6 @@ struct CatalogingView: View {
     }
 }
 
-struct CatalogingHistoryBanner: View {
-    let detail: String
-    var needsAttention = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: needsAttention ? "exclamationmark.triangle" : "clock.arrow.circlepath")
-                .foregroundStyle(needsAttention ? Color.orange : Color.accentColor)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(needsAttention ? "Usage history needs attention" : "Cataloging usage history")
-                    .font(.callout.weight(.semibold))
-                Text("\(detail) · You can browse now; usage metrics are provisional.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityIdentifier("metagent.catalog.history")
-    }
-}
-
 /// Presentation-only fixtures: never touch the user's inventory or caches.
 struct CatalogingPreview: View {
     @Environment(\.dismiss) private var dismiss
@@ -99,7 +75,11 @@ struct CatalogingPreview: View {
             Divider()
             switch scenario {
             case "Usage history":
-                CatalogingHistoryBanner(detail: "24 of 80 session files indexed")
+                HStack {
+                    Text("Background indexing stays in the toolbar")
+                    Spacer()
+                    ActivityBadge(activity: .working(progress: 0.3, label: "24 of 80 session files indexed"))
+                }
                 ContentUnavailableView("Inventory is ready", systemImage: "checkmark.circle",
                                        description: Text("The app remains usable while history fills in."))
             case "Scan failed":
