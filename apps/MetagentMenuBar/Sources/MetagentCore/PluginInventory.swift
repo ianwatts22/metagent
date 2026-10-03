@@ -107,16 +107,37 @@ public struct PluginInventorySnapshot: Sendable {
 extension MetagentCore {
 
     public static func scanPluginInventory() -> PluginInventorySnapshot {
+        pluginInventory(codex: Result { try allCodexPlugins() }, home: homeURL())
+    }
+
+    /// Both app surfaces use one observed plugin list, including one shared
+    /// failure, instead of launching two concurrent Codex queries per reload.
+    public static func scanPluginInventoryAndSkills() -> (
+        inventory: PluginInventorySnapshot, skills: Result<SkillScanReport, Error>
+    ) {
+        scanPluginInventoryAndSkills(loadCodexPlugins: allCodexPlugins, home: homeURL())
+    }
+
+    static func scanPluginInventoryAndSkills(
+        loadCodexPlugins: () throws -> [CodexPlugin], home: URL
+    ) -> (inventory: PluginInventorySnapshot, skills: Result<SkillScanReport, Error>) {
+        let codex = Result { try loadCodexPlugins() }
+        return (pluginInventory(codex: codex, home: home), codex.map(codexPluginSkillReport))
+    }
+
+    private static func pluginInventory(
+        codex: Result<[CodexPlugin], Error>, home: URL
+    ) -> PluginInventorySnapshot {
         var records: [PluginRecord] = []
         var warnings: [String] = []
 
         do {
-            records += try allCodexPlugins().map(PluginRecord.init(codexPlugin:))
+            records += try codex.get().map(PluginRecord.init(codexPlugin:))
         } catch {
             warnings.append("Codex plugin inventory unavailable: \(error.localizedDescription)")
         }
 
-        let claude = claudePluginRecords(home: homeURL())
+        let claude = claudePluginRecords(home: home)
         records += claude.records
         warnings += claude.warnings
 

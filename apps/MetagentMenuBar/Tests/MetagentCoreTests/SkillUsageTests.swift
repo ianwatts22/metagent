@@ -2417,6 +2417,98 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testCatalogMetadataEventsStayBoundedAndConsumptionPreservesLaterChanges() {
+        let modified = FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        let first = "/private/tmp/metagent-catalog-events/first.jsonl"
+        let second = "/private/tmp/metagent-catalog-events/second.jsonl"
+        let consumed = MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            [(first, modified), (first, modified)], [], [(second, modified)]
+        ])
+        XCTAssertEqual(consumed, [Set([first]), Set(), Set([second])])
+        let paths = (0..<256).map { "/private/tmp/metagent-catalog-events/\($0).jsonl" }
+        XCTAssertEqual(MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            paths.map { ($0, modified) } + [(paths[0], modified)]
+        ]), [Set(paths)])
+        XCTAssertNil(MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            paths.map { ($0, modified) } + [(second, modified)]
+        ])[0], "overflow must fall back, not silently lose changed files")
+        let structural = FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemIsFile)
+        let invalidated = MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            [(first, modified), (second, structural)], [], [(first, modified)]
+        ])
+        XCTAssertTrue(invalidated.allSatisfy { $0 == nil }, "structural invalidation stays sticky until rediscovery")
+    }
+
+    func testChangedFileMetadataPatchesCatalogWithoutReplayingOtherSources() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/changed", name: "changed")
+        let source = fixture.sessions.appendingPathComponent("rollout-changed.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "changed", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "first", command: "cat \(skill.path)")
+        ], to: source)
+        let unchanged = fixture.sessions.appendingPathComponent("rollout-unchanged.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "unchanged"])
+        ], to: unchanged)
+        let unchangedBytes = Int64(try Data(contentsOf: unchanged).count)
+        var options = fixture.options
+        options.reusesSourceCatalog = true
+        let first = try MetagentCore.refreshSkillUsage(options: options)
+        try fixture.append([fixture.toolCall(callID: "second", command: "cat \(skill.path)")], to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
+        let changed = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(changed.snapshot.totalInvocations, 2)
+        XCTAssertEqual(changed.filesRead, 1)
+        XCTAssertEqual(changed.snapshot.completedFiles, 2)
+        XCTAssertGreaterThan(changed.snapshot.processedBytes, first.snapshot.processedBytes)
+        XCTAssertEqual(changed.bytesRead, changed.snapshot.processedBytes - first.snapshot.processedBytes)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1,
+            MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
+        )
+        XCTAssertEqual(try MetagentCore.refreshSkillUsage(options: options).bytesRead, 0)
+
+        // A real truncation is still detected through the refreshed metadata.
+        try Data().write(to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
+        let truncated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(truncated.snapshot.processedBytes, unchangedBytes)
+        XCTAssertEqual(truncated.snapshot.totalInvocations, 0)
+    }
+
+    func testUnknownOrStructuralSourceChangesStillRequireFullDiscovery() throws {
+        for flags in [
+            kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile,
+            kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile,
+            kFSEventStreamEventFlagMustScanSubDirs,
+            kFSEventStreamEventFlagUserDropped,
+            kFSEventStreamEventFlagRootChanged,
+        ] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            var options = fixture.options
+            options.reusesSourceCatalog = true
+            _ = try MetagentCore.refreshSkillUsage(options: options)
+            let source = fixture.sessions.appendingPathComponent("rollout-new.jsonl")
+            try fixture.write([fixture.line(type: "session_meta", payload: ["id": "new"])], to: source)
+            XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+                databasePath: fixture.database.path, sourcePath: source.path,
+                flags: FSEventStreamEventFlags(flags)
+            ))
+            let report = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(report.snapshot.totalFiles, 1)
+            XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 2)
+        }
+    }
+
     func testStaleCatalogSizeCannotResetANewerCursorButRealTruncationStillDoes() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -2525,9 +2617,10 @@ final class SkillUsageTests: XCTestCase {
         try fixture.append([
             fixture.toolCall(callID: "growth-read", command: "cat \(firstSkill.path)")
         ], to: rollout)
-        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
-            databasePath: fixture.database.path
-        )
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: rollout.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
         XCTAssertEqual(
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
             2
@@ -2541,12 +2634,17 @@ final class SkillUsageTests: XCTestCase {
             [.modificationDate: Date().addingTimeInterval(2)],
             ofItemAtPath: rollout.path
         )
-        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
-            databasePath: fixture.database.path
-        )
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: rollout.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
         let sameSizeRewrite = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(sameSizeRewrite.snapshot.totalInvocations, 2)
         XCTAssertEqual(sameSizeRewrite.snapshot.summaries.map(\.skillName), ["other"])
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1,
+            "growth and in-place rewrites refresh file metadata without walking the tree"
+        )
 
         let archivedRollout = archived.appendingPathComponent(rollout.lastPathComponent)
         try FileManager.default.moveItem(at: rollout, to: archivedRollout)

@@ -11,6 +11,8 @@ AGENTS.md for the release procedure.
   progress, and background work resumes from saved record boundaries.
 - Growing sessions no longer restart because of stale file metadata, and large
   tool outputs are matched more efficiently, with less database connection churn.
+- Background session updates avoid walking unchanged history, inventory refreshes
+  share one plugin query, and Overview does less repeated attention work.
 
 ## v0.9.2 — 2026-10-02
 

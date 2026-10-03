@@ -91,9 +91,10 @@ struct OverviewSection: View {
     }
 
     private var overviewContent: some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
-            if !attentionItems.isEmpty || !attentionStore.ignored.isEmpty {
-                AttentionCenterList(model: model, store: attentionStore, items: attentionItems,
+        let items = attentionItems
+        return VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
+            if !items.isEmpty || !attentionStore.ignored.isEmpty {
+                AttentionCenterList(model: model, store: attentionStore, items: items,
                                     openDuplicateReview: openDuplicateReview)
                     .cardBackground()
             }

@@ -184,6 +184,52 @@ final class PluginInventoryTests: XCTestCase {
 
     // MARK: - Marketplace snapshot versions
 
+    func testCombinedPluginScanLoadsOnceAndKeepsDisabledPluginsOutOfSkills() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-combined-plugin-tests")
+        let active = home.appendingPathComponent("active")
+        let disabled = home.appendingPathComponent("disabled")
+        try writeSkillFixture(at: active.appendingPathComponent("skills/demo"))
+        try writeSkillFixture(at: disabled.appendingPathComponent("skills/hidden"), name: "hidden")
+        let plugins = [active, disabled].enumerated().map { index, path in
+            CodexPlugin(pluginId: "\(path.lastPathComponent)@fixture", name: path.lastPathComponent,
+                marketplaceName: "fixture", version: "1.0.0", installed: true, enabled: index == 0,
+                source: .init(path: path.path), marketplaceSource: nil)
+        }
+        var loads = 0
+        let scan = MetagentCore.scanPluginInventoryAndSkills(loadCodexPlugins: {
+            loads += 1
+            return plugins
+        }, home: home)
+        XCTAssertEqual(loads, 1)
+        XCTAssertEqual(scan.inventory.records.map(\.name), ["active", "disabled"])
+        XCTAssertEqual(scan.inventory.records.map(\.enabled), [true, false])
+        let skills = try scan.skills.get()
+        XCTAssertEqual(skills.projects.flatMap(\.skills).map(\.name), ["demo"])
+    }
+
+    func testCombinedPluginFailureIsSharedWithoutHidingClaudeInventory() throws {
+        let home = try makeTemporaryRoot(prefix: "metagent-combined-plugin-tests")
+        let directory = home.appendingPathComponent(".claude/plugins")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("""
+        {"version": 2, "plugins": {"local@fixture": [{"scope": "user", "version": "1.0.0"}]}}
+        """.utf8).write(to: directory.appendingPathComponent("installed_plugins.json"))
+        var loads = 0
+        let failure = NSError(domain: "PluginFixture", code: 42,
+            userInfo: [NSLocalizedDescriptionKey: "Fixture unavailable"])
+        let scan = MetagentCore.scanPluginInventoryAndSkills(loadCodexPlugins: {
+            loads += 1
+            throw failure
+        }, home: home)
+        XCTAssertEqual(loads, 1, "a failed query must not be retried independently by the other surface")
+        XCTAssertThrowsError(try scan.skills.get()) { error in
+            XCTAssertEqual((error as NSError).domain, failure.domain)
+            XCTAssertEqual((error as NSError).code, failure.code)
+        }
+        XCTAssertEqual(scan.inventory.records.map(\.pluginID), ["local@fixture"])
+        XCTAssertEqual(scan.inventory.warnings, ["Codex plugin inventory unavailable: Fixture unavailable"])
+    }
+
     func testCodexSnapshotVersionResolvesPluginPathThroughManifest() throws {
         let home = try makeTemporaryRoot(prefix: "metagent-plugin-tests")
         let marketplace = home.appendingPathComponent(".codex/.tmp/marketplaces/vendor")

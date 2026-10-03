@@ -300,12 +300,16 @@ private struct UsageSourceCatalogKey: Hashable, Sendable {
 
 private struct UsageSourceCatalogItem: Sendable {
     let path: String
+    let watchPath: String
     var size: Int64
-    let modifiedAt: Double
-    let fileIdentity: String
+    var modifiedAt: Double
+    var fileIdentity: String
 
     init(source: UsageSource) {
         path = source.path
+        // Preserve stored checkpoint paths while matching macOS events, which
+        // use canonical paths even for fixed /var and /tmp aliases.
+        watchPath = URL(fileURLWithPath: source.path).resolvingSymlinksInPath().path
         size = source.size
         modifiedAt = source.modifiedAt
         fileIdentity = source.fileIdentity
@@ -313,7 +317,8 @@ private struct UsageSourceCatalogItem: Sendable {
 }
 
 /// One passive invalidation stream per live catalog. It does no polling and
-/// marks the catalog dirty for any recursive change under a session root.
+/// records bounded metadata changes for known files; structural changes require
+/// full discovery rather than trying to infer a new directory tree.
 /// Foreground refreshes still force discovery, and the cache also has a maximum
 /// age, so stream setup failure or a dropped event cannot make reuse permanent.
 private let usageSourceCatalogInvalidatingEventFlags = FSEventStreamEventFlags(
@@ -494,6 +499,8 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     private let lock = NSLock()
     private var baselineEventID: FSEventStreamEventId?
     private var dirty = false
+    private var requiresDiscovery = false
+    private var modifiedFiles: Set<String> = []
     private var invalidationDescription = "none"
 
     init(roots: [String] = [], databasePath: String? = nil) {
@@ -562,6 +569,25 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
                 invalidationDescription = "flags=0x\(String(flags, radix: 16)), event=\(eventID), baseline=\(baselineEventID), scope=\(scope)"
             }
             dirty = true
+            let fileMetadataFlags = FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemModified |
+                    kFSEventStreamEventFlagItemInodeMetaMod |
+                    kFSEventStreamEventFlagItemFinderInfoMod |
+                    kFSEventStreamEventFlagItemChangeOwner |
+                    kFSEventStreamEventFlagItemXattrMod
+            )
+            let isFileMetadataChange = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) != 0
+                && flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemIsSymlink) == 0
+                && flags & usageSourceCatalogInvalidatingEventFlags & ~fileMetadataFlags == 0
+            let catalogPath = eventPath.map { canonicalUsageWatchPaths([$0]).first ?? $0 }
+            if !requiresDiscovery, isFileMetadataChange,
+               let catalogPath, catalogPath.hasSuffix(".jsonl"),
+               modifiedFiles.count < 256 || modifiedFiles.contains(catalogPath) {
+                modifiedFiles.insert(catalogPath)
+            } else {
+                requiresDiscovery = true
+                modifiedFiles.removeAll()
+            }
         }
         lock.unlock()
     }
@@ -570,7 +596,23 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
         lock.lock()
         if !dirty { invalidationDescription = reason }
         dirty = true
+        requiresDiscovery = true
+        modifiedFiles.removeAll()
         lock.unlock()
+    }
+
+    /// Consuming before metadata reads lets changes arriving during those
+    /// reads remain pending for the next refresh. Structural changes are
+    /// sticky until a new watcher/full discovery replaces this catalog.
+    func consumeModifiedFiles() -> Set<String>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !requiresDiscovery else { return nil }
+        let paths = modifiedFiles
+        modifiedFiles.removeAll(keepingCapacity: true)
+        dirty = false
+        invalidationDescription = "none"
+        return paths
     }
 }
 
@@ -754,6 +796,17 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     func markDirty() {
         state.markDirty()
     }
+
+    func modifiedFilesForReuse() -> Set<String>? {
+        guard isStarted, let stream else { return nil }
+        FSEventStreamFlushSync(stream)
+        queue.sync {}
+        return state.consumeModifiedFiles()
+    }
+
+    func recordFileEventForTesting(path: String, flags: FSEventStreamEventFlags) {
+        state.handle(flags, eventID: 0, eventPath: path)
+    }
 }
 
 private final class UsageSourceCatalogCache: @unchecked Sendable {
@@ -775,6 +828,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         roots: [String],
         allowsReuse: Bool,
         maximumAgeSeconds: TimeInterval,
+        metadata: (String) -> UsageSourceMetadata?,
         materialize: ([UsageSourceCatalogItem]) -> [UsageSource],
         discover: () -> [UsageSource]
     ) -> [UsageSource] {
@@ -788,7 +842,8 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         }
         if let items = reusableItems(
             for: key,
-            maximumAgeSeconds: maximumAgeSeconds
+            maximumAgeSeconds: maximumAgeSeconds,
+            metadata: metadata
         ) {
             return materialize(items)
         }
@@ -868,28 +923,80 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         return false
     }
 
+    func recordFileEventForTesting(databasePath: String, sourcePath: String, flags: FSEventStreamEventFlags) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let matching = entries.filter { $0.key.databasePath == databasePath }
+        for entry in matching.values {
+            entry.watcher.recordFileEventForTesting(path: sourcePath, flags: flags)
+        }
+        return !matching.isEmpty
+    }
+
     private func reusableItems(
         for key: UsageSourceCatalogKey,
-        maximumAgeSeconds: TimeInterval
+        maximumAgeSeconds: TimeInterval,
+        metadata: (String) -> UsageSourceMetadata?
     ) -> [UsageSourceCatalogItem]? {
         lock.lock()
         defer { lock.unlock() }
         guard maximumAgeSeconds > 0,
               let entry = entries[key]
         else { return nil }
-        guard !entry.watcher.isDirty else {
-            reuseDiagnostics[key] = "invalidated before reuse: \(entry.watcher.diagnostics)"
-            return nil
-        }
         guard ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds else {
             reuseDiagnostics[key] = "catalog age expired"
             return nil
         }
-        return entry.items
+        guard var modifiedFiles = entry.watcher.modifiedFilesForReuse() else {
+            reuseDiagnostics[key] = "invalidated before reuse: \(entry.watcher.diagnostics)"
+            return nil
+        }
+        guard !modifiedFiles.isEmpty else { return entry.items }
+        var items = entry.items
+        var matchedPaths: Set<String> = []
+        for index in items.indices where modifiedFiles.contains(items[index].watchPath) {
+            guard let current = metadata(items[index].path) else {
+                reuseDiagnostics[key] = "changed source unavailable; full discovery required"
+                return nil
+            }
+            items[index].size = current.size
+            items[index].modifiedAt = current.modifiedAt
+            items[index].fileIdentity = current.fileIdentity
+            matchedPaths.insert(items[index].watchPath)
+        }
+        modifiedFiles.subtract(matchedPaths)
+        guard modifiedFiles.isEmpty else {
+            reuseDiagnostics[key] = "unknown changed source; full discovery required"
+            return nil
+        }
+        entries[key] = Entry(items: items, createdAt: entry.createdAt, watcher: entry.watcher)
+        return items
     }
 }
 
 extension MetagentCore {
+    static func skillUsageCatalogEventBatchesForTesting(
+        batches: [[(path: String, flags: FSEventStreamEventFlags)]]
+    ) -> [Set<String>?] {
+        let state = UsageSourceCatalogWatcherState()
+        state.arm(baselineEventID: 100)
+        return batches.map { events in
+            for event in events {
+                state.handle(event.flags, eventID: 101, eventPath: event.path)
+            }
+            return state.consumeModifiedFiles()
+        }
+    }
+
+    static func recordSkillUsageSourceEventForTesting(
+        databasePath: String, sourcePath: String, flags: FSEventStreamEventFlags
+    ) -> Bool {
+        UsageSourceCatalogCache.shared.recordFileEventForTesting(
+            databasePath: standardizedUsageDatabasePath(databasePath),
+            sourcePath: URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path,
+            flags: flags
+        )
+    }
     static func skillUsageRefreshConnectionCountsForTesting(
         options: SkillUsageRefreshOptions
     ) throws -> (refresh: Int, cachePublication: Int) {
@@ -1238,6 +1345,7 @@ private final class SkillUsageStore {
             roots: catalogRoots,
             allowsReuse: options.reusesSourceCatalog,
             maximumAgeSeconds: options.sourceCatalogMaximumAgeSeconds,
+            metadata: self.sourceMetadata,
             materialize: { items in
                 self.materializeCatalogItems(
                     items,

@@ -14,6 +14,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 - megabyte-scale Unicode outputs for successful, mismatched, and partial skill
   reads, including the confirmation matcher rather than only irrelevant records;
 - convergence of a 36-session backlog through three bounded refresh slices.
+- a cached 15,456-session refresh after appending to one known session, with
+  appending and native event-delivery delay outside the measured block.
 
 Run it from the repository root:
 
@@ -85,6 +87,9 @@ The performance lane also runs `skillTablePresentationPerformanceProxy`
 explicitly. That deterministic model-layer proxy compares the old repeated
 filter/sort row pipeline with the shared one-pass pipeline. It is not a SwiftUI
 render benchmark and is not evidence of input-to-present latency.
+The attention fingerprint proxy compares the old per-byte formatting with the
+current encoder and requires identical results, preserving saved dismissals.
+Neither proxy measures the complete SwiftUI interaction or settled idle cost.
 
 The native interaction probe services the main run loop while waiting for app
 termination, launch completion, and exact-PID registration. AppKit's
@@ -146,6 +151,14 @@ rename, and cloned-directory events still invalidate the catalog.
 The watcher synchronously flushes daemon-buffered startup events before capturing
 its event watermark, then starts discovery. Changes after that watermark still
 invalidate; ancestor identity changes during startup are never cleared by arming.
+For a reusable maintenance catalog, metadata-only events on up to 256 known
+JSONL files refresh those entries without another recursive walk. Reuse flushes
+and drains the native stream before consuming changed paths. Unknown files,
+creation, removal, rename, directory or symlink changes, event loss, and queue
+overflow require full discovery. Events arriving during metadata reads remain
+pending for the next refresh. Canonical event paths match fixed macOS aliases
+without changing stored checkpoint paths. Explicit foreground refreshes still
+force discovery; the 15-minute catalog lifetime remains unchanged.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
 Cached discovery metadata older than a saved cursor is verified on disk before
@@ -156,6 +169,11 @@ complete, and keeps explicit refreshes unthrottled. The release-mode bounded AC
 slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
 separately from the scheduled rate; running-app measurements remain the
 authority for live throughput and foreground responsiveness.
+
+Inventory reloads collect plugin status and enabled plugin skills from one Codex
+query. A query failure is shared by both consumers, while Claude inventory
+remains available. This removes a duplicate subprocess, not the need to rescan
+local skill contents or perform explicitly enabled plugin updates.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests

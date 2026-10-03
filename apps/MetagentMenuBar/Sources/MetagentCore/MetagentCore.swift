@@ -216,8 +216,12 @@ public enum MetagentCore {
     }
 
     public static func scanCodexPlugins() throws -> SkillScanReport {
-        let plugins = try installedCodexPlugins()
-        let projects = plugins.compactMap(readCodexPluginSkills).sorted { $0.root < $1.root }
+        codexPluginSkillReport(try allCodexPlugins())
+    }
+
+    static func codexPluginSkillReport(_ plugins: [CodexPlugin]) -> SkillScanReport {
+        let projects = plugins.filter { $0.installed && $0.enabled }
+            .compactMap(readCodexPluginSkills).sorted { $0.root < $1.root }
         return SkillScanReport(projects: projects)
     }
 

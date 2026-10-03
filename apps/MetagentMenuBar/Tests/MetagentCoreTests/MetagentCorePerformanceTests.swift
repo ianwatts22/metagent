@@ -382,6 +382,57 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.hasMore, false)
     }
 
+    func testPerformanceRoutineUsageAppendRefresh() throws {
+        guard runsPerformanceTests else { return }
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        defer { MetagentCore.resetSkillUsageSourceCatalogForTesting() }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-routine-usage")
+        let sessions = root.appendingPathComponent("sessions")
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database
+        ))
+        var paths: [String] = []
+        for index in 0..<15_456 {
+            let source = sessions.appendingPathComponent("2026/08/\(index % 28 + 1)/rollout-\(index).jsonl")
+            try write("", to: source)
+            paths.append(source.path)
+        }
+        try seedCompletedUsageSources(paths, database: database)
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database,
+            reusesSourceCatalog: true
+        )
+        _ = try MetagentCore.refreshSkillUsage(options: options)
+        let activeSource = URL(fileURLWithPath: paths[0])
+        let record = Data((performanceJSONLine(type: "event_msg", payload: [
+            "type": "token_count", "info": ["total_token_usage": ["input_tokens": 1]]
+        ]) + "\n").utf8)
+        let optionsForMeasurement = measureOptions
+        optionsForMeasurement.invocationOptions = [.manuallyStart]
+        var lastReport: SkillUsageRefreshReport?
+        measure(metrics: performanceMetrics, options: optionsForMeasurement) {
+            // Appending and allowing native watcher delivery are preparation,
+            // not part of the CPU/wall cost of the subsequent refresh.
+            let handle = try! FileHandle(forWritingTo: activeSource)
+            try! handle.seekToEnd()
+            try! handle.write(contentsOf: record)
+            try! handle.close()
+            usleep(300_000)
+            startMeasuring()
+            lastReport = try! MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(lastReport?.snapshot.totalFiles, paths.count)
+        XCTAssertEqual(lastReport?.filesRead, 1)
+        XCTAssertEqual(lastReport?.bytesRead, Int64(record.count))
+        XCTAssertEqual(lastReport?.hasMore, false)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database), 2,
+            "only database setup and initial catalog discovery may walk the retained tree: "
+                + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database)
+        )
+    }
+
     func testPerformanceUsageContinuationReusesOneDiscoveryAcrossSevenSlices() throws {
         guard runsPerformanceTests else { return }
         MetagentCore.resetSkillUsageSourceCatalogForTesting()

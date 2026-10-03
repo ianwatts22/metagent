@@ -731,7 +731,7 @@ final class MetagentModel: ObservableObject {
         let generation = statusRefreshGeneration
         isRunning = true
         refreshArchivedSkills()
-        refreshPluginInventory()
+        isPluginInventoryRefreshing = true
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
         coreStatusText = "Swift core"
@@ -746,7 +746,7 @@ final class MetagentModel: ObservableObject {
                     MetagentCore.loadSkillEvaluationSnapshot()
                 }.value
             }
-            let (scan, homeScan, pluginScan) = await inventoryResults
+            let (scan, homeScan, pluginScan, pluginSnapshot) = await inventoryResults
             let doctor = await Task.detached(priority: .utility) {
                 Self.doctorResult(scan: scan, homeScan: homeScan)
             }.value
@@ -755,6 +755,7 @@ final class MetagentModel: ObservableObject {
                 scan: scan,
                 homeScan: homeScan,
                 pluginScan: pluginScan,
+                pluginSnapshot: pluginSnapshot,
                 doctor: doctor,
                 evaluations: evaluations,
                 generation: generation
@@ -881,19 +882,6 @@ final class MetagentModel: ObservableObject {
         externalMCPActionIDs.removeAll()
         mcpVerification.invalidate()
         refreshMCPHealth()
-    }
-
-    func refreshPluginInventory() {
-        guard !isPluginInventoryRefreshing else { return }
-        isPluginInventoryRefreshing = true
-        Task {
-            let snapshot = await Task.detached(priority: .utility) {
-                MetagentCore.scanPluginInventory()
-            }.value
-            pluginInventory = snapshot
-            isPluginInventoryRefreshing = false
-            autoUpdatePluginsIfDue()
-        }
     }
 
     static let pluginAutoUpdateEnabledKey = "metagent.plugins.auto-update.v1"
@@ -1733,7 +1721,7 @@ final class MetagentModel: ObservableObject {
         statusRefreshGeneration += 1
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
-            let (scan, homeScan, pluginScan) = await Self.scanInventory()
+            let (scan, homeScan, pluginScan, pluginSnapshot) = await Self.scanInventory()
             let doctor = await Task.detached(priority: .utility) {
                 Self.doctorResult(scan: scan, homeScan: homeScan)
             }.value
@@ -1749,6 +1737,7 @@ final class MetagentModel: ObservableObject {
 
             let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
             if didRefreshInventory {
+                pluginInventory = pluginSnapshot
                 projects = Self.mergeProjects(refreshedProjects)
                 inventoryRevision += 1
                 updateInventorySummary()
@@ -1857,11 +1846,15 @@ final class MetagentModel: ObservableObject {
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
         pluginScan: Result<SkillScanReport, Error>,
+        pluginSnapshot: PluginInventorySnapshot,
         doctor: Result<DoctorReport, Error>,
         evaluations: SkillEvaluationSnapshot,
         generation: Int
     ) {
         guard generation == statusRefreshGeneration else { return }
+        pluginInventory = pluginSnapshot
+        isPluginInventoryRefreshing = false
+        autoUpdatePluginsIfDue()
         skillEvaluations = evaluations
         lastRunText = Self.timestamp()
 
@@ -2046,7 +2039,8 @@ final class MetagentModel: ObservableObject {
     nonisolated private static func scanInventory() async -> (
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
-        pluginScan: Result<SkillScanReport, Error>
+        pluginScan: Result<SkillScanReport, Error>,
+        pluginInventory: PluginInventorySnapshot
     ) {
         async let scanResult = Task.detached {
             Result { try MetagentCore.scanSkills() }
@@ -2062,9 +2056,10 @@ final class MetagentModel: ObservableObject {
             }
         }.value
         async let pluginScanResult = Task.detached {
-            Result { try MetagentCore.scanCodexPlugins() }
+            MetagentCore.scanPluginInventoryAndSkills()
         }.value
-        return await (scanResult, homeScanResult, pluginScanResult)
+        let plugins = await pluginScanResult
+        return await (scanResult, homeScanResult, plugins.skills, plugins.inventory)
     }
 
     nonisolated private static func doctorResult(
