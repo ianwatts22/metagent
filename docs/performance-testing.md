@@ -143,6 +143,9 @@ the database path so an old inode cannot hide a database replacement.
 Delayed creation notices for an already-owned state directory are ignored only
 while its device, inode, and birth time still match; real replacement, removal,
 rename, and cloned-directory events still invalidate the catalog.
+The watcher synchronously flushes daemon-buffered startup events before capturing
+its event watermark, then starts discovery. Changes after that watermark still
+invalidate; ancestor identity changes during startup are never cleared by arming.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
 Cached discovery metadata older than a saved cursor is verified on disk before

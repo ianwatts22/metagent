@@ -515,8 +515,8 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
 
     func arm(baselineEventID: FSEventStreamEventId) {
         lock.lock()
-        dirty = false
-        invalidationDescription = "none"
+        // An ancestor change during startup invalidates the attached inode
+        // descriptors. A later discovery cannot make those old watchers valid.
         self.baselineEventID = baselineEventID
         lock.unlock()
     }
@@ -597,8 +597,12 @@ private final class UsageRootChangeWatcher: @unchecked Sendable {
 
 private func armUsageSourceCatalogWatcherState(
     _ state: UsageSourceCatalogWatcherState,
-    on queue: DispatchQueue
+    on queue: DispatchQueue,
+    flushPendingEvents: () -> Void
 ) {
+    // Flush the daemon's buffered startup events before capturing its event
+    // watermark. Draining our queue alone cannot deliver daemon-side buffers.
+    flushPendingEvents()
     // Capture the system event watermark on the callback queue. Events
     // generated before it are reflected by the full discovery that starts
     // after this block; later events invalidate even if callbacks arrive out
@@ -705,7 +709,9 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         FSEventStreamSetDispatchQueue(created, queue)
         isStarted = FSEventStreamStart(created)
         if isStarted {
-            armUsageSourceCatalogWatcherState(state, on: queue)
+            armUsageSourceCatalogWatcherState(state, on: queue) {
+                FSEventStreamFlushSync(created)
+            }
         } else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
@@ -956,14 +962,27 @@ extension MetagentCore {
     static func skillUsageCatalogArmingDrainsQueuedCallbacksForTesting() -> Bool {
         let state = UsageSourceCatalogWatcherState()
         let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog-test")
-        queue.async {
-            state.handle(
-                FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
-                eventID: 1
-            )
+        var didFlush = false
+        armUsageSourceCatalogWatcherState(state, on: queue) {
+            didFlush = true
+            queue.async {
+                state.handle(
+                    FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
+                    eventID: 0
+                )
+            }
         }
-        armUsageSourceCatalogWatcherState(state, on: queue)
-        return !state.isDirty
+        queue.sync {}
+        return didFlush && !state.isDirty
+    }
+
+    static func skillUsageCatalogArmingPreservesIdentityChangeForTesting() -> Bool {
+        let state = UsageSourceCatalogWatcherState()
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-catalog-identity-test")
+        armUsageSourceCatalogWatcherState(state, on: queue) {
+            queue.async { state.markDirty(reason: "ancestor identity changed") }
+        }
+        return state.isDirty
     }
 
     static func skillUsageCatalogInvalidatesEventForTesting(

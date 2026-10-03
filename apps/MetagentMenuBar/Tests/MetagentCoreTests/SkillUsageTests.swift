@@ -416,6 +416,13 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testContinuationCatalogDoesNotClearStartupAncestorIdentityChanges() {
+        XCTAssertTrue(
+            MetagentCore.skillUsageCatalogArmingPreservesIdentityChangeForTesting(),
+            "discovery cannot repair descriptors attached to an ancestor that moved during startup"
+        )
+    }
+
     func testContinuationCatalogUsesEventWatermarkInsteadOfCallbackTiming() {
         let modified = FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)
         XCTAssertFalse(MetagentCore.skillUsageCatalogInvalidatesEventForTesting(
