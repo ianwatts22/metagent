@@ -47,6 +47,55 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.projects.flatMap(\.skills).count, 192)
     }
 
+    func testPerformanceProjectedSkillInventory() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-projections")
+        let canonical = root.appendingPathComponent(".agents/skills")
+        let claude = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let reference = String(repeating: "Unicode café 東京 reference text with scripts/demo.py instructions.\n", count: 128)
+        for index in 0..<48 {
+            let bundle = canonical.appendingPathComponent("skill-\(index)")
+            try writeSkillFixture(at: bundle, name: "skill-\(index)", body: "Run scripts/demo.py.")
+            for directory in ["references", "scripts", "agents"] {
+                try FileManager.default.createDirectory(
+                    at: bundle.appendingPathComponent(directory), withIntermediateDirectories: true
+                )
+            }
+            for document in 0..<6 {
+                try reference.write(
+                    to: bundle.appendingPathComponent("references/guide-\(document).md"),
+                    atomically: true, encoding: .utf8
+                )
+            }
+            try "#!/usr/bin/env python3\nprint('fixture')\n".write(
+                to: bundle.appendingPathComponent("scripts/demo.py"), atomically: true, encoding: .utf8
+            )
+            try "interface:\n  icon_small: ./assets/icon.svg\n".write(
+                to: bundle.appendingPathComponent("agents/openai.yaml"), atomically: true, encoding: .utf8
+            )
+            try FileManager.default.createSymbolicLink(
+                at: claude.appendingPathComponent("skill-\(index)"), withDestinationURL: bundle
+            )
+        }
+        let codex = root.appendingPathComponent(".codex")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: codex.appendingPathComponent("skills"), withDestinationURL: canonical
+        )
+        let expected = try assertLatencyBudget("projected skill inventory", seconds: 4) {
+            try readProjectSkills(root: root)
+        }
+        XCTAssertEqual(expected.validSkills.count, 48)
+        XCTAssertEqual(expected.skills.count, 144)
+        XCTAssertTrue(expected.skills.allSatisfy { $0.scriptInventory?.scripts.count == 1 })
+        var measured: SkillProject?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = try! readProjectSkills(root: root)
+        }
+        XCTAssertEqual(measured, expected)
+    }
+
     func testPerformanceDoctorPortfolioAudit() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
@@ -382,6 +431,57 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.hasMore, false)
     }
 
+    func testPerformanceRoutineUsageAppendRefresh() throws {
+        guard runsPerformanceTests else { return }
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        defer { MetagentCore.resetSkillUsageSourceCatalogForTesting() }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-routine-usage")
+        let sessions = root.appendingPathComponent("sessions")
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database
+        ))
+        var paths: [String] = []
+        for index in 0..<15_456 {
+            let source = sessions.appendingPathComponent("2026/08/\(index % 28 + 1)/rollout-\(index).jsonl")
+            try write("", to: source)
+            paths.append(source.path)
+        }
+        try seedCompletedUsageSources(paths, database: database)
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database,
+            reusesSourceCatalog: true
+        )
+        _ = try MetagentCore.refreshSkillUsage(options: options)
+        let activeSource = URL(fileURLWithPath: paths[0])
+        let record = Data((performanceJSONLine(type: "event_msg", payload: [
+            "type": "token_count", "info": ["total_token_usage": ["input_tokens": 1]]
+        ]) + "\n").utf8)
+        let optionsForMeasurement = measureOptions
+        optionsForMeasurement.invocationOptions = [.manuallyStart]
+        var lastReport: SkillUsageRefreshReport?
+        measure(metrics: performanceMetrics, options: optionsForMeasurement) {
+            // Appending and allowing native watcher delivery are preparation,
+            // not part of the CPU/wall cost of the subsequent refresh.
+            let handle = try! FileHandle(forWritingTo: activeSource)
+            try! handle.seekToEnd()
+            try! handle.write(contentsOf: record)
+            try! handle.close()
+            usleep(300_000)
+            startMeasuring()
+            lastReport = try! MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(lastReport?.snapshot.totalFiles, paths.count)
+        XCTAssertEqual(lastReport?.filesRead, 1)
+        XCTAssertEqual(lastReport?.bytesRead, Int64(record.count))
+        XCTAssertEqual(lastReport?.hasMore, false)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database), 2,
+            "only database setup and initial catalog discovery may walk the retained tree: "
+                + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database)
+        )
+    }
+
     func testPerformanceUsageContinuationReusesOneDiscoveryAcrossSevenSlices() throws {
         guard runsPerformanceTests else { return }
         MetagentCore.resetSkillUsageSourceCatalogForTesting()
@@ -451,6 +551,100 @@ final class MetagentCorePerformanceTests: XCTestCase {
         )
         XCTAssertEqual(reports.last?.snapshot.totalFiles, sourceCount)
         XCTAssertEqual(reports.last?.snapshot.completedFiles, sourceCount)
+    }
+
+    func testPerformanceExternalPowerUsageSlice() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-external-power")
+        let sessions = root.appendingPathComponent("sessions")
+        try writeUsageNoise(
+            minimumBytes: 64 * 1_024 * 1_024,
+            to: sessions.appendingPathComponent("rollout-large.jsonl")
+        )
+        let plan = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false,
+            isOnExternalPower: true
+        )
+        // Allow XCTest's unreported calibration invocations as well as the
+        // requested samples, just like the other cold-store benchmarks.
+        let databases = (0..<25).map {
+            root.appendingPathComponent("usage-\($0).sqlite").path
+        }
+        // Prime each disposable store/catalog outside the measured slice. No
+        // real session history or user database participates in this fixture.
+        for database in databases {
+            _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                sessionRoots: [sessions.path], databasePath: database,
+                maxBytes: 1, maxFiles: 1, reusesSourceCatalog: true
+            ))
+        }
+        func runSlice(database: String) throws -> SkillUsageRefreshReport {
+            var options = plan.refreshOptions(databasePath: database)
+            options.sessionRoots = [sessions.path]
+            return try MetagentCore.refreshSkillUsage(options: options)
+        }
+        let preflight = try assertLatencyBudget("bounded AC backfill slice", seconds: 4) {
+            try runSlice(database: databases[0])
+        }
+        XCTAssertGreaterThan(preflight.processedBytesAdvanced, 0)
+        XCTAssertLessThanOrEqual(preflight.bytesRead, plan.maxBytes)
+        XCTAssertTrue(preflight.hasMore)
+        var iteration = 1
+        var reports: [SkillUsageRefreshReport] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            reports.append(try! runSlice(database: databases[iteration]))
+            iteration += 1
+        }
+        print("[Metagent performance] bounded AC slice bytes: \(reports.map(\.processedBytesAdvanced)); cadence: \(plan.scheduleDelaySeconds)s")
+        XCTAssertTrue(reports.allSatisfy { $0.processedBytesAdvanced > 0 && !$0.wasDeferred && $0.warnings.isEmpty })
+    }
+
+    func testPerformanceLargePendingReadOutputs() throws {
+        guard runsPerformanceTests else { return }
+        let pending = (0..<30).map { index in
+            let skill = ParsedSkillIdentity(
+                id: "fixture:\(index)", name: "large-output-\(index)", confirmationName: "large-output-\(index)",
+                canonicalPath: "/fixture/\(index)", scope: "project"
+            )
+            return ParsedUsageEvent(
+                id: "fixture-read-\(index)", skill: skill, occurredAt: "2026-10-01T10:00:00Z",
+                sessionID: "fixture", turnID: "turn", cwd: "/fixture",
+                sourcePath: "/fixture/session.jsonl", callID: "read"
+            )
+        }
+        let noise = String(repeating: "Unicode fixture café 東京 without frontmatter.\n", count: 25_000)
+        // Exercise successful, mismatched, and frontmatter-free outputs, not
+        // merely the irrelevant-record fast path. Preparation is unmeasured.
+        let outputs = [noise + "name: 'large-output-0'\n", noise + "name: another-skill\n", noise]
+        let records = try outputs.map { output in
+            try JSONSerialization.data(withJSONObject: [
+                "type": "response_item", "timestamp": "2026-10-01T10:00:00Z",
+                "payload": ["type": "function_call_output", "call_id": "read", "output": output]
+            ])
+        }
+        func decodeOutputs() -> [Int] {
+            records.map { record in
+                var state = UsageSourceState()
+                state.pendingEvents = ["read": pending]
+                var cache: [String: ParsedSkillIdentity] = [:]
+                var events: [ParsedUsageEvent] = []
+                var runs: [ParsedAgentRun] = []
+                SkillUsageRecordDecoder().parseLine(
+                    record, lineOffset: 0, sourcePath: "/fixture/session.jsonl", state: &state,
+                    identityCache: &cache, events: &events, runs: &runs
+                )
+                return events.count
+            }
+        }
+        XCTAssertEqual(assertLatencyBudget("large pending-read outputs", seconds: 1) {
+            decodeOutputs()
+        }, [1, 0, 30])
+        var result: [Int] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            result = decodeOutputs()
+        }
+        XCTAssertEqual(result, [1, 0, 30])
     }
 
     func testPerformanceUsageSnapshotAggregation() throws {

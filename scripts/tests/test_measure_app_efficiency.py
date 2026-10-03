@@ -19,6 +19,12 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
         path.chmod(0o755)
 
     def test_sampler_writes_complete_csv_text_and_json_reports(self) -> None:
+        self.check_sampler_reports(has_descendants=False)
+
+    def test_sampler_counts_nonempty_descendant_processes(self) -> None:
+        self.check_sampler_reports(has_descendants=True)
+
+    def check_sampler_reports(self, *, has_descendants: bool) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fake_bin = root / "bin"
@@ -44,7 +50,12 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
 
             self.write_executable(
                 fake_bin / "pgrep",
-                'if [[ "${1:-}" == "-P" ]]; then exit 1; fi\n'
+                'if [[ "${1:-}" == "-P" ]]; then\n'
+                '  if [[ "${2:-}" == "4242" && "${METAGENT_TEST_DESCENDANTS}" == "1" ]]; then\n'
+                '    printf "4250\\n4251\\n"; exit\n'
+                '  fi\n'
+                '  exit 1\n'
+                'fi\n'
                 'if [[ "$*" == *"Metagent Dev.app"* ]]; then printf "4242\\n"; exit; fi\n'
                 'if [[ "$*" == *"Metagent.app"* ]]; then printf "4343\\n"; exit; fi\n'
                 "exit 1\n",
@@ -53,6 +64,7 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
                 fake_bin / "sleep",
                 ":\n",
             )
+            self.write_executable(fake_bin / "paste", 'exec /usr/bin/paste "$@"\n')
             self.write_executable(
                 fake_bin / "sample",
                 'while (($#)); do\n'
@@ -104,6 +116,9 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
             self.write_executable(
                 fake_bin / "ps",
                 'args="$*"\n'
+                'if [[ "$args" == "-p 4250,4251 -o %cpu=,rss=" ]]; then\n'
+                '  printf "1.25 1024\\n2.50 2048\\n"; exit\n'
+                'fi\n'
                 'if [[ "$args" == *"-o rss="* ]]; then printf "102400\\n"; exit; fi\n'
                 'if [[ "$args" == *"-o time="* ]]; then\n'
                 '  state="${METAGENT_TEST_STATE}/ps-count"\n'
@@ -127,6 +142,7 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
                 {
                     "HOME": str(fake_home),
                     "METAGENT_TEST_STATE": str(root),
+                    "METAGENT_TEST_DESCENDANTS": "1" if has_descendants else "0",
                     "PATH": f"{fake_bin}:{environment['PATH']}",
                     "PYTHONDONTWRITEBYTECODE": "1",
                 }
@@ -190,7 +206,14 @@ class MeasureAppEfficiencyIntegrationTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["processed_usage_delta_bytes"], "1048576")
             self.assertEqual(rows[1]["processed_usage_delta_bytes"], "1048576")
-            self.assertEqual(rows[0]["observed_descendant_processes"], "0")
+            self.assertEqual(
+                rows[0]["observed_descendant_processes"],
+                "2" if has_descendants else "0",
+            )
+            if has_descendants:
+                self.assertEqual(rows[0]["observed_descendant_rss_kib"], "3072")
+                self.assertEqual(rows[0]["observed_descendant_reported_cpu_percent"], "3.75")
+                self.assertEqual(report["observed_descendants"]["sample_peak_processes"], 2)
 
     def test_sampler_refuses_to_overwrite_existing_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

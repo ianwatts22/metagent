@@ -731,7 +731,7 @@ final class MetagentModel: ObservableObject {
         let generation = statusRefreshGeneration
         isRunning = true
         refreshArchivedSkills()
-        refreshPluginInventory()
+        isPluginInventoryRefreshing = true
         statusText = "Checking status..."
         systemImage = "arrow.triangle.2.circlepath"
         coreStatusText = "Swift core"
@@ -746,7 +746,7 @@ final class MetagentModel: ObservableObject {
                     MetagentCore.loadSkillEvaluationSnapshot()
                 }.value
             }
-            let (scan, homeScan, pluginScan) = await inventoryResults
+            let (scan, homeScan, pluginScan, pluginSnapshot) = await inventoryResults
             let doctor = await Task.detached(priority: .utility) {
                 Self.doctorResult(scan: scan, homeScan: homeScan)
             }.value
@@ -755,6 +755,7 @@ final class MetagentModel: ObservableObject {
                 scan: scan,
                 homeScan: homeScan,
                 pluginScan: pluginScan,
+                pluginSnapshot: pluginSnapshot,
                 doctor: doctor,
                 evaluations: evaluations,
                 generation: generation
@@ -881,19 +882,6 @@ final class MetagentModel: ObservableObject {
         externalMCPActionIDs.removeAll()
         mcpVerification.invalidate()
         refreshMCPHealth()
-    }
-
-    func refreshPluginInventory() {
-        guard !isPluginInventoryRefreshing else { return }
-        isPluginInventoryRefreshing = true
-        Task {
-            let snapshot = await Task.detached(priority: .utility) {
-                MetagentCore.scanPluginInventory()
-            }.value
-            pluginInventory = snapshot
-            isPluginInventoryRefreshing = false
-            autoUpdatePluginsIfDue()
-        }
     }
 
     static let pluginAutoUpdateEnabledKey = "metagent.plugins.auto-update.v1"
@@ -1239,11 +1227,14 @@ final class MetagentModel: ObservableObject {
         Task {
             var shouldContinueMaintenance = false
             do {
-                let report = try await Task.detached(priority: .background) {
-                    try autoreleasepool {
+                let result = try await Task.detached(priority: .background) {
+                    let startedAtUptime = ProcessInfo.processInfo.systemUptime
+                    let report = try autoreleasepool {
                         try MetagentCore.refreshSkillUsage(options: refreshOptions)
                     }
+                    return (report: report, startedAtUptime: startedAtUptime)
                 }.value
+                let report = result.report
                 let previousUsage = usageSnapshot
                 let usageChanged = report.snapshot != previousUsage
                 let refreshesSkillPresentation = SkillTableUsageSignature(report.snapshot)
@@ -1256,7 +1247,10 @@ final class MetagentModel: ObservableObject {
                     skillTableRowRevision += 1
                 }
                 if maintenancePlan != nil {
-                    usageMaintenanceSchedule.recordCompletion(wasDeferred: report.wasDeferred)
+                    usageMaintenanceSchedule.recordCompletion(
+                        wasDeferred: report.wasDeferred,
+                        startedAtUptime: result.startedAtUptime
+                    )
                 }
                 usageStatusText = Self.usageStatus(report.snapshot)
                 shouldContinueMaintenance = report.hasMore
@@ -1299,24 +1293,30 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    private func scheduleUsageMaintenance() {
-        usageMaintenanceTask?.cancel()
+    private func currentUsageMaintenancePlan() -> SkillUsageMaintenancePlan? {
         let processInfo = ProcessInfo.processInfo
         let isThermallyConstrained = processInfo.thermalState == .serious
             || processInfo.thermalState == .critical
         let remainingBytes = max(0, usageSnapshot.totalBytes - usageSnapshot.processedBytes)
         let remainingFiles = max(0, usageSnapshot.totalFiles - usageSnapshot.completedFiles)
-        guard let plan = usageMaintenanceSchedule.plan(
+        return usageMaintenanceSchedule.plan(
             isEnergyConstrained: processInfo.isLowPowerModeEnabled || isThermallyConstrained,
+            isOnExternalPower: processInfo.thermalState == .nominal
+                && SkillUsageMaintenancePlan.hasExternalPower(),
             remainingBytes: remainingBytes,
             remainingFiles: remainingFiles
-        ) else {
+        )
+    }
+
+    private func scheduleUsageMaintenance() {
+        usageMaintenanceTask?.cancel()
+        guard let plan = currentUsageMaintenancePlan() else {
             usageMaintenanceTask = nil
             return
         }
         let delay = usageMaintenanceSchedule.delayBeforeNextRun(
             plan: plan,
-            nowUptime: processInfo.systemUptime
+            nowUptime: ProcessInfo.processInfo.systemUptime
         )
         usageMaintenanceTask = Task { [weak self] in
             try? await Task.sleep(
@@ -1325,7 +1325,11 @@ final class MetagentModel: ObservableObject {
             )
             guard !Task.isCancelled, let self else { return }
             usageMaintenanceTask = nil
-            if isRunning || isSkillEvaluating || isCodebaseSizeRefreshing {
+            // Power/thermal state can change while the timer sleeps. Never
+            // carry a fast AC slice onto battery or into thermal pressure.
+            if currentUsageMaintenancePlan() != plan
+                || isRunning || isSkillEvaluating || isCodebaseSizeRefreshing
+            {
                 usageMaintenanceSchedule.resetDeadline()
                 scheduleUsageMaintenance()
                 return
@@ -1717,7 +1721,7 @@ final class MetagentModel: ObservableObject {
         statusRefreshGeneration += 1
         let reconcilingIDs = completedSkillRemovalIDs
         Task {
-            let (scan, homeScan, pluginScan) = await Self.scanInventory()
+            let (scan, homeScan, pluginScan, pluginSnapshot) = await Self.scanInventory()
             let doctor = await Task.detached(priority: .utility) {
                 Self.doctorResult(scan: scan, homeScan: homeScan)
             }.value
@@ -1733,6 +1737,7 @@ final class MetagentModel: ObservableObject {
 
             let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
             if didRefreshInventory {
+                pluginInventory = pluginSnapshot
                 projects = Self.mergeProjects(refreshedProjects)
                 inventoryRevision += 1
                 updateInventorySummary()
@@ -1841,11 +1846,15 @@ final class MetagentModel: ObservableObject {
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
         pluginScan: Result<SkillScanReport, Error>,
+        pluginSnapshot: PluginInventorySnapshot,
         doctor: Result<DoctorReport, Error>,
         evaluations: SkillEvaluationSnapshot,
         generation: Int
     ) {
         guard generation == statusRefreshGeneration else { return }
+        pluginInventory = pluginSnapshot
+        isPluginInventoryRefreshing = false
+        autoUpdatePluginsIfDue()
         skillEvaluations = evaluations
         lastRunText = Self.timestamp()
 
@@ -2030,7 +2039,8 @@ final class MetagentModel: ObservableObject {
     nonisolated private static func scanInventory() async -> (
         scan: Result<SkillScanReport, Error>,
         homeScan: Result<SkillScanReport, Error>,
-        pluginScan: Result<SkillScanReport, Error>
+        pluginScan: Result<SkillScanReport, Error>,
+        pluginInventory: PluginInventorySnapshot
     ) {
         async let scanResult = Task.detached {
             Result { try MetagentCore.scanSkills() }
@@ -2046,9 +2056,10 @@ final class MetagentModel: ObservableObject {
             }
         }.value
         async let pluginScanResult = Task.detached {
-            Result { try MetagentCore.scanCodexPlugins() }
+            MetagentCore.scanPluginInventoryAndSkills()
         }.value
-        return await (scanResult, homeScanResult, pluginScanResult)
+        let plugins = await pluginScanResult
+        return await (scanResult, homeScanResult, plugins.skills, plugins.inventory)
     }
 
     nonisolated private static func doctorResult(

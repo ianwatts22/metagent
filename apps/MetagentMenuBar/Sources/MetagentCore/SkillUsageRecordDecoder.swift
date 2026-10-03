@@ -151,7 +151,7 @@ struct SkillUsageRecordDecoder {
                 return
             }
             let output = collectStrings(payload["output"] ?? payload["result"]).joined(separator: "\n")
-            events.append(contentsOf: pending.filter { outputConfirmsRead($0, output: output) })
+            events.append(contentsOf: confirmedReads(pending, output: output))
             return
         }
         guard ["custom_tool_call", "function_call", "local_shell_call"].contains(itemType) else {
@@ -212,12 +212,25 @@ struct SkillUsageRecordDecoder {
         Data("SKILL.md".utf8),
     ]
 
-    private func outputConfirmsRead(_ event: ParsedUsageEvent, output: String) -> Bool {
-        let escaped = NSRegularExpression.escapedPattern(for: event.skill.confirmationName)
-        let pattern = #"(?im)^.*\bname:\s*[\"']?"# + escaped + #"[\"']?\s*$"#
-        if output.range(of: pattern, options: .regularExpression) != nil { return true }
-        if output.range(of: #"(?im)^.*\bname:\s*[\"']?[^\r\n]+$"#, options: .regularExpression) != nil {
-            return false
+    private func confirmedReads(_ pending: [ParsedUsageEvent], output: String) -> [ParsedUsageEvent] {
+        // A compound command may have dozens of pending reads. Scan its large
+        // output once, then preserve the per-skill matcher on just name lines.
+        // The shared fallback is also computed once for partial reads.
+        let text = output as NSString
+        let nameLines = Self.frontmatterNamePattern.matches(
+            in: output, range: NSRange(location: 0, length: text.length)
+        ).map { text.substring(with: $0.range) }
+        if !nameLines.isEmpty {
+            return pending.filter { event in
+                let escaped = NSRegularExpression.escapedPattern(for: event.skill.confirmationName)
+                let pattern = #"(?im)^.*\bname:\s*[\"']?"# + escaped + #"[\"']?\s*$"#
+                guard let confirmation = try? NSRegularExpression(pattern: pattern) else { return false }
+                return nameLines.contains { line in
+                    confirmation.firstMatch(
+                        in: line, range: NSRange(location: 0, length: (line as NSString).length)
+                    ) != nil
+                }
+            }
         }
         let substantiveLines = output.components(separatedBy: .newlines).filter { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -227,11 +240,21 @@ struct SkillUsageRecordDecoder {
             return true
         }
         guard let first = substantiveLines.first?.trimmingCharacters(in: .whitespaces) else {
-            return false
+            return []
         }
-        let leadingFailure = #"(?i)^(?:Script failed|Rejected\(|Process exited with code\s+(?:-[0-9]+|[1-9][0-9]*)\b|(?:cat|sed|head|tail|bat|zsh|bash|sh):.*(?:No such file or directory|Permission denied|Operation not permitted|command not found|cannot open|can't open))"#
-        return first.range(of: leadingFailure, options: .regularExpression) == nil
+        let succeeded = Self.leadingFailurePattern.firstMatch(
+            in: first, range: NSRange(first.startIndex..<first.endIndex, in: first)
+        ) == nil
+        return succeeded ? pending : []
     }
+
+    private static let frontmatterNamePattern = try! NSRegularExpression(
+        pattern: #"(?im)^.*\bname:\s*[\"']?[^\r\n]+$"#
+    )
+
+    private static let leadingFailurePattern = try! NSRegularExpression(
+        pattern: #"(?i)^(?:Script failed|Rejected\(|Process exited with code\s+(?:-[0-9]+|[1-9][0-9]*)\b|(?:cat|sed|head|tail|bat|zsh|bash|sh):.*(?:No such file or directory|Permission denied|Operation not permitted|command not found|cannot open|can't open))"#
+    )
 
     private func collectStrings(_ value: Any?) -> [String] {
         if let value = value as? String {

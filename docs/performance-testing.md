@@ -3,6 +3,8 @@
 Metagent has an opt-in performance lane for the core work behind an app refresh:
 
 - skill discovery across 24 projects and 192 skill bundles;
+- inventory statistics for 48 Unicode/reference/script bundles represented in
+  `.agents`, Codex, and Claude, including per-skill and whole-container links;
 - Doctor analysis of the same portfolio;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
   with discovery excluded from the measured work;
@@ -11,7 +13,11 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 - cold usage backfill across 10 session files and 300 observed skill reads;
 - usage parsing across 20,000 irrelevant token/message records surrounding 40
   observed skill reads;
+- megabyte-scale Unicode outputs for successful, mismatched, and partial skill
+  reads, including the confirmation matcher rather than only irrelevant records;
 - convergence of a 36-session backlog through three bounded refresh slices.
+- a cached 15,456-session refresh after appending to one known session, with
+  appending and native event-delivery delay outside the measured block.
 
 Run it from the repository root:
 
@@ -83,6 +89,9 @@ The performance lane also runs `skillTablePresentationPerformanceProxy`
 explicitly. That deterministic model-layer proxy compares the old repeated
 filter/sort row pipeline with the shared one-pass pipeline. It is not a SwiftUI
 render benchmark and is not evidence of input-to-present latency.
+The attention fingerprint proxy compares the old per-byte formatting with the
+current encoder and requires identical results, preserving saved dismissals.
+Neither proxy measures the complete SwiftUI interaction or settled idle cost.
 
 The native interaction probe services the main run loop while waiting for app
 termination, launch completion, and exact-PID registration. AppKit's
@@ -102,28 +111,89 @@ An explicit refresh reads at most 8 MiB or 12 session files before returning.
 If history remains, the app continues with background maintenance instead of
 waiting for another launch. The first normal-power continuation reads at most
 8 MiB or 12 files after 45 seconds. Once that continuation has built the reusable
-source catalog, catch-up consolidates three slices into one 24 MiB or 36-file
-wake every 135 seconds. The byte and file rates are unchanged, but two of every
-three repeated database, snapshot, cache, and UI update cycles disappear. Low
-Power Mode or serious thermal pressure uses 2 MiB or 4 files every 180 seconds.
+source catalog, external-power catch-up uses up to 32 MiB or 48 files every 12
+seconds, with a two-second cooperative parsing budget. The deadline is checked
+between complete records; discovery, persistence, aggregation, and one indivisible
+record can extend total refresh time. This is a 15× scheduled byte-rate ceiling
+versus the previous 24 MiB/135-second policy, not a guaranteed live throughput.
+Battery, unknown power source, or fair thermal pressure retains that previous
+24 MiB/36-file/135-second policy. Low Power Mode or serious thermal pressure uses
+2 MiB or 4 files every 180 seconds. Power and thermal state are checked again at
+timer execution, so a queued fast slice is not carried onto battery power.
 
 Production and dev builds share one SQLite lease. The normal-power lease remains
-45 seconds even during the 135-second catch-up cadence, so fewer timer wakeups do
-not lengthen cross-process exclusion. The constrained lease is 180 seconds. Only
+45 seconds during battery catch-up, and 12 seconds for external-power catch-up.
+The constrained lease is 180 seconds. Cadence is measured start-to-start, matching
+the monotonic scheduler rather than adding each slice's work time to its delay. Only
 one process performs a maintenance slice in each lease interval; an explicit
 user refresh is never deferred. Deadlines use monotonic uptime and advance from
-the prior deadline so slice duration does not reduce sustained throughput.
+the actual slice start, not completion, so work time and timer jitter do not
+silently shorten the next lease interval or reduce sustained throughput. Missed
+deadlines are rebased after sleep rather than replayed in a busy retry loop.
 Maintenance timers allow roughly one-ninth of their interval as tolerance, up
 to 30 seconds, so macOS can coalesce wakeups.
-Within each background slice, normal maintenance yields for 25 milliseconds
+Within each battery or first-continuation slice, maintenance yields for 25 milliseconds
 after each 512 KiB and constrained maintenance yields for 50 milliseconds after
 each 256 KiB. This adds cooperative pacing between parsed records without
 throttling explicit user refreshes or reducing the amount of history each
-maintenance wake processes.
-This keeps the current index moving toward complete coverage without restoring
-the old sustained full-core parser loop. The app still prioritizes the most
-recent session files, and an explicit refresh remains immediate; the slower
-cadence primarily affects convergence of old retained history.
+maintenance wake processes. Healthy AC catch-up uses its two-second parsing
+budget, byte/file caps, background priority, and between-slice cadence instead
+of intra-slice sleeps: macOS can stretch short background sleeps far beyond
+their requested duration, spending the parsing budget without doing work.
+The whole discovery/parse/persistence operation also has one process-shared
+lock, preventing a slower app/helper refresh from overwriting a newer cursor.
+Background work yields on contention; explicit refreshes wait off the UI thread.
+Each locked refresh reuses one SQLite connection across its file slices, avoiding
+repeated page-cache loss and WAL-watcher teardown. The connection is closed before
+the refresh lock is released; subsequent launch-cache generation checks reopen
+the database path so an old inode cannot hide a database replacement.
+Delayed creation notices for an already-owned state directory are ignored only
+while its device, inode, and birth time still match; real replacement, removal,
+rename, and cloned-directory events still invalidate the catalog.
+The watcher synchronously flushes daemon-buffered startup events before capturing
+its event watermark, then starts discovery. Changes after that watermark still
+invalidate; ancestor identity changes during startup are never cleared by arming.
+For a reusable maintenance catalog, metadata-only events on up to 256 known
+JSONL files refresh those entries without another recursive walk. Reuse flushes
+and drains the native stream before consuming changed paths. Unknown files,
+creation, removal, rename, directory or symlink changes, event loss, and queue
+overflow require full discovery. Events arriving during metadata reads remain
+pending for the next refresh. Canonical event paths match fixed macOS aliases
+without changing stored checkpoint paths. Explicit foreground refreshes still
+force discovery; the 15-minute catalog lifetime remains unchanged.
+Changed files with multiple hard links also require discovery: the native event
+may name only one alias, but all aliases must refresh their rewrite fingerprints.
+All writers must use the updated implementation for this protection to apply.
+No parser-generation bump or history reset is needed for this policy change.
+Cached discovery metadata older than a saved cursor is verified on disk before
+deciding a source was truncated. This prevents a growing rollout from being
+replayed while preserving real truncation and replacement detection.
+The app still prioritizes the most recent session files, stops maintenance when
+complete, and keeps explicit refreshes unthrottled. The release-mode bounded AC
+slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
+separately from the scheduled rate; running-app measurements remain the
+authority for live throughput and foreground responsiveness.
+
+Inventory reloads collect plugin status and enabled plugin skills from one Codex
+query. A query failure is shared by both consumers, while Claude inventory
+remains available. This removes a duplicate subprocess, not the need to rescan
+local skill contents or perform explicitly enabled plugin updates.
+
+Within one synchronous project scan, representations of the same canonical
+bundle share one content/statistics read. That read uses the resolved directory:
+URL-based enumeration can reject a per-skill symlink at its root and otherwise
+silently omit text statistics and script-reference evidence. Display names,
+ownership, projection paths, and icon paths remain representation-specific.
+Icon references are resolved against each displayed path, not copied from the
+first representation. Independent same-named bundles do not share statistics.
+The cache is discarded when the scan returns; later scans reread same-size edits
+with unchanged modification dates, script hashes, and retargeted projections.
+Deterministic tests require one bundle read per canonical identity and retain
+the existing inner-symlink containment rules. This is a core inventory benchmark,
+not a full Reload, input-to-present, settled-idle, or energy measurement.
+Content character/word counters use one pass without building a discarded word
+array. The reference tests retain Swift `Character` grapheme and whitespace
+semantics, including combining marks, emoji, CRLF, and Unicode separators.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests
@@ -143,6 +213,12 @@ the same test order rather than comparing one isolated test with a suite run.
 
 The XCTest lane measures bounded core operations. Use the process sampler for
 idle and whole-app behavior after installing and starting the selected channel:
+
+Usage throughput is the net change in the shared database's processed-byte
+counter. The summary separately reports forward bytes, regressed bytes, and
+regression sample count; a replay/reset loss is never silently discarded. This
+counter includes every writer and changing source membership, so compare source
+checkpoints as well when attributing a regression to one app.
 
 ```bash
 scripts/measure-app-efficiency.sh \

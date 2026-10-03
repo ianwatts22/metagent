@@ -13,6 +13,9 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
     public var maxRecordBytes: Int64
     public var throttleEveryBytes: Int64
     public var throttleDelayMilliseconds: Int
+    /// Cooperative wall-time budget for parsing, checked between complete
+    /// records. Zero leaves explicit refreshes governed only by byte/file caps.
+    public var maximumDurationSeconds: TimeInterval
     /// Zero means an explicit foreground refresh. A positive value makes this
     /// a cooperative background refresh: only one app process may claim the
     /// shared database during the interval.
@@ -33,6 +36,7 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         maxRecordBytes: Int64 = 8 * 1_024 * 1_024,
         throttleEveryBytes: Int64 = 0,
         throttleDelayMilliseconds: Int = 0,
+        maximumDurationSeconds: TimeInterval = 0,
         minimumMaintenanceIntervalSeconds: TimeInterval = 0,
         reusesSourceCatalog: Bool = false,
         sourceCatalogMaximumAgeSeconds: TimeInterval = 15 * 60
@@ -44,6 +48,7 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         self.maxRecordBytes = max(1, maxRecordBytes)
         self.throttleEveryBytes = max(0, throttleEveryBytes)
         self.throttleDelayMilliseconds = max(0, throttleDelayMilliseconds)
+        self.maximumDurationSeconds = max(0, maximumDurationSeconds)
         self.minimumMaintenanceIntervalSeconds = max(0, minimumMaintenanceIntervalSeconds)
         self.reusesSourceCatalog = reusesSourceCatalog
         self.sourceCatalogMaximumAgeSeconds = max(0, sourceCatalogMaximumAgeSeconds)
@@ -248,6 +253,7 @@ private struct UsageSourceMetadata {
     let size: Int64
     let modifiedAt: Double
     let fileIdentity: String
+    var hasMultipleLinks = false
 }
 
 
@@ -295,12 +301,16 @@ private struct UsageSourceCatalogKey: Hashable, Sendable {
 
 private struct UsageSourceCatalogItem: Sendable {
     let path: String
-    let size: Int64
-    let modifiedAt: Double
-    let fileIdentity: String
+    let watchPath: String
+    var size: Int64
+    var modifiedAt: Double
+    var fileIdentity: String
 
     init(source: UsageSource) {
         path = source.path
+        // Preserve stored checkpoint paths while matching macOS events, which
+        // use canonical paths even for fixed /var and /tmp aliases.
+        watchPath = URL(fileURLWithPath: source.path).resolvingSymlinksInPath().path
         size = source.size
         modifiedAt = source.modifiedAt
         fileIdentity = source.fileIdentity
@@ -308,7 +318,8 @@ private struct UsageSourceCatalogItem: Sendable {
 }
 
 /// One passive invalidation stream per live catalog. It does no polling and
-/// marks the catalog dirty for any recursive change under a session root.
+/// records bounded metadata changes for known files; structural changes require
+/// full discovery rather than trying to infer a new directory tree.
 /// Foreground refreshes still force discovery, and the cache also has a maximum
 /// age, so stream setup failure or a dropped event cannot make reuse permanent.
 private let usageSourceCatalogInvalidatingEventFlags = FSEventStreamEventFlags(
@@ -362,6 +373,7 @@ private func skillUsageLaunchCacheURL(for databaseURL: URL) -> URL {
 private struct UsageSourceCatalogOwnedPaths: Sendable {
     private let exactPaths: Set<String>
     private let stateDirectoryPath: String
+    private let stateDirectoryIdentity: String?
     private let temporaryCachePrefix: String
 
     init(databasePath: String) {
@@ -372,12 +384,14 @@ private struct UsageSourceCatalogOwnedPaths: Sendable {
             databaseURL.path + "-journal",
             databaseURL.path + "-shm",
             databaseURL.path + "-wal",
+            databaseURL.resolvingSymlinksInPath().appendingPathExtension("refresh.lock").path,
             cacheURL.path,
             cacheURL.appendingPathExtension("lock").path,
         ]))
         stateDirectoryPath = canonicalUsageWatchPaths([
             databaseURL.deletingLastPathComponent().path,
         ]).first ?? databaseURL.deletingLastPathComponent().path
+        stateDirectoryIdentity = usageDirectoryIdentity(stateDirectoryPath)
         temporaryCachePrefix = canonicalUsageWatchPaths([
             cacheURL.deletingLastPathComponent().appendingPathComponent(
                 ".\(cacheURL.lastPathComponent)."
@@ -399,14 +413,35 @@ private struct UsageSourceCatalogOwnedPaths: Sendable {
                 kFSEventStreamEventFlagItemRenamed |
                 kFSEventStreamEventFlagItemCloned
         )
-        // File-events mode emits the changed child separately. Ignore only the
-        // directory bookkeeping that accompanies our own atomic SQLite/cache
-        // writes; structural changes and dropped streams remain authoritative.
-        return flags & structuralFlags == 0
+        if flags & structuralFlags == 0 { return true }
+        // A delayed creation notice can describe a directory that already
+        // existed when the watcher was armed.
+        // Ignore only a delayed creation for the exact same directory inode.
+        // Removal, rename, clone, replacement, and dropped streams still force
+        // discovery, and changed children have their own file-mode events.
+        let destructiveFlags = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagItemRemoved |
+                kFSEventStreamEventFlagItemRenamed |
+                kFSEventStreamEventFlagItemCloned
+        )
+        guard flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated) != 0,
+              flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0,
+              flags & destructiveFlags == 0,
+              let stateDirectoryIdentity
+        else { return false }
+        return usageDirectoryIdentity(stateDirectoryPath) == stateDirectoryIdentity
     }
 }
 
 private let stableSystemSymlinkPaths: Set<String> = ["/etc", "/tmp", "/var"]
+
+private func usageDirectoryIdentity(_ path: String) -> String? {
+    var metadata = stat()
+    guard lstat(path, &metadata) == 0,
+          metadata.st_mode & S_IFMT == S_IFDIR
+    else { return nil }
+    return "\(metadata.st_dev):\(metadata.st_ino):\(metadata.st_birthtimespec.tv_sec):\(metadata.st_birthtimespec.tv_nsec)"
+}
 
 private func usagePathContainsMutableSymlink(_ path: String) -> Bool {
     let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
@@ -465,6 +500,9 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     private let lock = NSLock()
     private var baselineEventID: FSEventStreamEventId?
     private var dirty = false
+    private var requiresDiscovery = false
+    private var modifiedFiles: Set<String> = []
+    private var invalidationDescription = "none"
 
     init(roots: [String] = [], databasePath: String? = nil) {
         self.roots = roots
@@ -477,9 +515,16 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
         return dirty
     }
 
+    var diagnostics: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "armed=\(baselineEventID != nil), dirty=\(dirty), invalidation=\(invalidationDescription)"
+    }
+
     func arm(baselineEventID: FSEventStreamEventId) {
         lock.lock()
-        dirty = false
+        // An ancestor change during startup invalidates the attached inode
+        // descriptors. A later discovery cannot make those old watchers valid.
         self.baselineEventID = baselineEventID
         lock.unlock()
     }
@@ -518,15 +563,57 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
             || eventID == 0
             || eventID > baselineEventID)
         {
+            if !dirty {
+                let scope = eventPath.map { path in
+                    roots.contains(path) ? "root" : "non-root"
+                } ?? "missing-path"
+                invalidationDescription = "flags=0x\(String(flags, radix: 16)), event=\(eventID), baseline=\(baselineEventID), scope=\(scope)"
+            }
             dirty = true
+            let fileMetadataFlags = FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemModified |
+                    kFSEventStreamEventFlagItemInodeMetaMod |
+                    kFSEventStreamEventFlagItemFinderInfoMod |
+                    kFSEventStreamEventFlagItemChangeOwner |
+                    kFSEventStreamEventFlagItemXattrMod
+            )
+            let isFileMetadataChange = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) != 0
+                && flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemIsSymlink) == 0
+                && flags & usageSourceCatalogInvalidatingEventFlags & ~fileMetadataFlags == 0
+            let catalogPath = eventPath.map { canonicalUsageWatchPaths([$0]).first ?? $0 }
+            if !requiresDiscovery, isFileMetadataChange,
+               let catalogPath, catalogPath.hasSuffix(".jsonl"),
+               modifiedFiles.count < 256 || modifiedFiles.contains(catalogPath) {
+                modifiedFiles.insert(catalogPath)
+            } else {
+                requiresDiscovery = true
+                modifiedFiles.removeAll()
+            }
         }
         lock.unlock()
     }
 
-    func markDirty() {
+    func markDirty(reason: String = "explicit invalidation") {
         lock.lock()
+        if !dirty { invalidationDescription = reason }
         dirty = true
+        requiresDiscovery = true
+        modifiedFiles.removeAll()
         lock.unlock()
+    }
+
+    /// Consuming before metadata reads lets changes arriving during those
+    /// reads remain pending for the next refresh. Structural changes are
+    /// sticky until a new watcher/full discovery replaces this catalog.
+    func consumeModifiedFiles() -> Set<String>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !requiresDiscovery else { return nil }
+        let paths = modifiedFiles
+        modifiedFiles.removeAll(keepingCapacity: true)
+        dirty = false
+        invalidationDescription = "none"
+        return paths
     }
 }
 
@@ -553,8 +640,12 @@ private final class UsageRootChangeWatcher: @unchecked Sendable {
 
 private func armUsageSourceCatalogWatcherState(
     _ state: UsageSourceCatalogWatcherState,
-    on queue: DispatchQueue
+    on queue: DispatchQueue,
+    flushPendingEvents: () -> Void
 ) {
+    // Flush the daemon's buffered startup events before capturing its event
+    // watermark. Draining our queue alone cannot deliver daemon-side buffers.
+    flushPendingEvents()
     // Capture the system event watermark on the callback queue. Events
     // generated before it are reflected by the full discovery that starts
     // after this block; later events invalidate even if callbacks arrive out
@@ -590,7 +681,7 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         var hasUnwatchedExistingIdentityPath = false
         identityChangeWatchers = usageIdentityWatchPaths(roots).compactMap { path in
             guard let watcher = UsageRootChangeWatcher(path: path, queue: queue, onChange: { [state] in
-                state.markDirty()
+                state.markDirty(reason: "ancestor identity changed")
             }) else {
                 if usageRootIsMissing(path) {
                     missingIdentityPathsWithoutDescriptors.append(path)
@@ -661,7 +752,9 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         FSEventStreamSetDispatchQueue(created, queue)
         isStarted = FSEventStreamStart(created)
         if isStarted {
-            armUsageSourceCatalogWatcherState(state, on: queue)
+            armUsageSourceCatalogWatcherState(state, on: queue) {
+                FSEventStreamFlushSync(created)
+            }
         } else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
@@ -682,6 +775,10 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         state.isDirty
     }
 
+    var diagnostics: String {
+        "watcherStarted=\(isStarted), \(state.diagnostics)"
+    }
+
     func canRetainCatalogAfterDiscovery() -> Bool {
         guard isStarted, let stream else { return false }
         // Discovery may last long enough for stream delivery latency to hide a
@@ -700,6 +797,17 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     func markDirty() {
         state.markDirty()
     }
+
+    func modifiedFilesForReuse() -> Set<String>? {
+        guard isStarted, let stream else { return nil }
+        FSEventStreamFlushSync(stream)
+        queue.sync {}
+        return state.consumeModifiedFiles()
+    }
+
+    func recordFileEventForTesting(path: String, flags: FSEventStreamEventFlags) {
+        state.handle(flags, eventID: 0, eventPath: path)
+    }
 }
 
 private final class UsageSourceCatalogCache: @unchecked Sendable {
@@ -714,12 +822,14 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [UsageSourceCatalogKey: Entry] = [:]
     private var discoveryCounts: [UsageSourceCatalogKey: Int] = [:]
+    private var reuseDiagnostics: [UsageSourceCatalogKey: String] = [:]
 
     func sources(
         key: UsageSourceCatalogKey,
         roots: [String],
         allowsReuse: Bool,
         maximumAgeSeconds: TimeInterval,
+        metadata: (String) -> UsageSourceMetadata?,
         materialize: ([UsageSourceCatalogItem]) -> [UsageSource],
         discover: () -> [UsageSource]
     ) -> [UsageSource] {
@@ -733,7 +843,8 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         }
         if let items = reusableItems(
             for: key,
-            maximumAgeSeconds: maximumAgeSeconds
+            maximumAgeSeconds: maximumAgeSeconds,
+            metadata: metadata
         ) {
             return materialize(items)
         }
@@ -754,6 +865,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
                 watcher: watcher
             )
         } else {
+            reuseDiagnostics[key] = "not retained after discovery: \(watcher.diagnostics)"
             entries.removeValue(forKey: key)
         }
         lock.unlock()
@@ -776,6 +888,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         lock.lock()
         entries.removeAll()
         discoveryCounts.removeAll()
+        reuseDiagnostics.removeAll()
         lock.unlock()
     }
 
@@ -789,22 +902,130 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         }
     }
 
+    func diagnostics(databasePath: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return reuseDiagnostics.filter { $0.key.databasePath == databasePath }
+            .map(\.value).sorted().joined(separator: "; ")
+    }
+
+    func overrideCachedSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        for key in entries.keys where key.databasePath == databasePath {
+            guard let entry = entries[key], let index = entry.items.firstIndex(where: {
+                URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == sourcePath
+            }) else { continue }
+            var items = entry.items
+            items[index].size = size
+            entries[key] = Entry(items: items, createdAt: entry.createdAt, watcher: entry.watcher)
+            return true
+        }
+        return false
+    }
+
+    func recordFileEventForTesting(databasePath: String, sourcePath: String, flags: FSEventStreamEventFlags) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let matching = entries.filter { $0.key.databasePath == databasePath }
+        for entry in matching.values {
+            entry.watcher.recordFileEventForTesting(path: sourcePath, flags: flags)
+        }
+        return !matching.isEmpty
+    }
+
     private func reusableItems(
         for key: UsageSourceCatalogKey,
-        maximumAgeSeconds: TimeInterval
+        maximumAgeSeconds: TimeInterval,
+        metadata: (String) -> UsageSourceMetadata?
     ) -> [UsageSourceCatalogItem]? {
         lock.lock()
         defer { lock.unlock() }
         guard maximumAgeSeconds > 0,
-              let entry = entries[key],
-              !entry.watcher.isDirty,
-              ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds
+              let entry = entries[key]
         else { return nil }
-        return entry.items
+        guard ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds else {
+            reuseDiagnostics[key] = "catalog age expired"
+            return nil
+        }
+        guard var modifiedFiles = entry.watcher.modifiedFilesForReuse() else {
+            reuseDiagnostics[key] = "invalidated before reuse: \(entry.watcher.diagnostics)"
+            return nil
+        }
+        guard !modifiedFiles.isEmpty else { return entry.items }
+        var items = entry.items
+        var matchedPaths: Set<String> = []
+        for index in items.indices where modifiedFiles.contains(items[index].watchPath) {
+            guard let current = metadata(items[index].path) else {
+                reuseDiagnostics[key] = "changed source unavailable; full discovery required"
+                return nil
+            }
+            // FSEvents may name only the written alias of a hardlinked inode.
+            // Discover all paths again so their cursors/fingerprints reset
+            // together, even when the event omitted the hardlink flag.
+            guard !current.hasMultipleLinks else {
+                reuseDiagnostics[key] = "hardlinked changed source; full discovery required"
+                return nil
+            }
+            items[index].size = current.size
+            items[index].modifiedAt = current.modifiedAt
+            items[index].fileIdentity = current.fileIdentity
+            matchedPaths.insert(items[index].watchPath)
+        }
+        modifiedFiles.subtract(matchedPaths)
+        guard modifiedFiles.isEmpty else {
+            reuseDiagnostics[key] = "unknown changed source; full discovery required"
+            return nil
+        }
+        entries[key] = Entry(items: items, createdAt: entry.createdAt, watcher: entry.watcher)
+        return items
     }
 }
 
 extension MetagentCore {
+    static func skillUsageCatalogEventBatchesForTesting(
+        batches: [[(path: String, flags: FSEventStreamEventFlags)]]
+    ) -> [Set<String>?] {
+        let state = UsageSourceCatalogWatcherState()
+        state.arm(baselineEventID: 100)
+        return batches.map { events in
+            for event in events {
+                state.handle(event.flags, eventID: 101, eventPath: event.path)
+            }
+            return state.consumeModifiedFiles()
+        }
+    }
+
+    static func recordSkillUsageSourceEventForTesting(
+        databasePath: String, sourcePath: String, flags: FSEventStreamEventFlags
+    ) -> Bool {
+        UsageSourceCatalogCache.shared.recordFileEventForTesting(
+            databasePath: standardizedUsageDatabasePath(databasePath),
+            sourcePath: URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path,
+            flags: flags
+        )
+    }
+    static func skillUsageRefreshConnectionCountsForTesting(
+        options: SkillUsageRefreshOptions
+    ) throws -> (refresh: Int, cachePublication: Int) {
+        let store = try SkillUsageStore(path: options.databasePath)
+        let result = try store.refresh(options: options)
+        let refreshCount = store.databaseOpenCount
+        try store.saveLaunchSnapshot(
+            result.report.snapshot,
+            databaseGeneration: result.snapshotGeneration
+        )
+        return (refreshCount, store.databaseOpenCount - refreshCount)
+    }
+
+    static func overrideSkillUsageCachedSourceSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
+        UsageSourceCatalogCache.shared.overrideCachedSizeForTesting(
+            databasePath: URL(fileURLWithPath: databasePath).standardizedFileURL.path,
+            sourcePath: URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path,
+            size: size
+        )
+    }
+
     static func resetSkillUsageSourceCatalogForTesting() {
         UsageSourceCatalogCache.shared.resetForTesting()
     }
@@ -841,6 +1062,12 @@ extension MetagentCore {
         )
     }
 
+    static func skillUsageSourceCatalogDiagnosticsForTesting(databasePath: String) -> String {
+        UsageSourceCatalogCache.shared.diagnostics(
+            databasePath: standardizedUsageDatabasePath(databasePath)
+        )
+    }
+
     static func shouldInvalidateSkillUsageSourceCatalogForTesting(
         eventFlags: FSEventStreamEventFlags
     ) -> Bool {
@@ -850,14 +1077,27 @@ extension MetagentCore {
     static func skillUsageCatalogArmingDrainsQueuedCallbacksForTesting() -> Bool {
         let state = UsageSourceCatalogWatcherState()
         let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog-test")
-        queue.async {
-            state.handle(
-                FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
-                eventID: 1
-            )
+        var didFlush = false
+        armUsageSourceCatalogWatcherState(state, on: queue) {
+            didFlush = true
+            queue.async {
+                state.handle(
+                    FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified),
+                    eventID: 0
+                )
+            }
         }
-        armUsageSourceCatalogWatcherState(state, on: queue)
-        return !state.isDirty
+        queue.sync {}
+        return didFlush && !state.isDirty
+    }
+
+    static func skillUsageCatalogArmingPreservesIdentityChangeForTesting() -> Bool {
+        let state = UsageSourceCatalogWatcherState()
+        let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-catalog-identity-test")
+        armUsageSourceCatalogWatcherState(state, on: queue) {
+            queue.async { state.markDirty(reason: "ancestor identity changed") }
+        }
+        return state.isDirty
     }
 
     static func skillUsageCatalogInvalidatesEventForTesting(
@@ -884,6 +1124,18 @@ extension MetagentCore {
         state.arm(baselineEventID: 100)
         state.handle(flags, eventID: 101, eventPath: eventPath)
         return state.isDirty
+    }
+
+    static func skillUsageOwnedDirectoryCreationForTesting(
+        databasePath: String,
+        replaceDirectory: () throws -> Void
+    ) rethrows -> (originalIgnored: Bool, replacementIgnored: Bool) {
+        let owned = UsageSourceCatalogOwnedPaths(databasePath: databasePath)
+        let directory = URL(fileURLWithPath: databasePath).deletingLastPathComponent().path
+        let flags = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsDir)
+        let originalIgnored = owned.contains(directory, flags: flags)
+        try replaceDirectory()
+        return (originalIgnored, owned.contains(directory, flags: flags))
     }
 
     static func canonicalSkillUsageWatchPathsForTesting(_ paths: [String]) -> [String] {
@@ -1013,6 +1265,8 @@ struct SkillUsageLaunchCacheEnvelope: Codable, Equatable {
 private final class SkillUsageStore {
     private let path: URL
     private let fileManager = FileManager.default
+    private var refreshDatabase: OpaquePointer?
+    private(set) var databaseOpenCount = 0
 
     init(path: String?) throws {
         if let path {
@@ -1028,6 +1282,47 @@ private final class SkillUsageStore {
     }
 
     func refresh(options: SkillUsageRefreshOptions) throws -> SkillUsageStoredRefreshResult {
+        // SQLite serializes individual writes, but discovery and parsing happen
+        // between transactions. Hold one process-shared lock for the entire
+        // refresh so a slower slice cannot overwrite a newer cursor or reset.
+        let lockPath = path.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+        let lockDescriptor = Darwin.open(
+            lockPath.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR
+        )
+        guard lockDescriptor >= 0 else { throw refreshLockError("open refresh lock") }
+        defer { close(lockDescriptor) }
+        var lockInfo = stat()
+        guard fstat(lockDescriptor, &lockInfo) == 0,
+              lockInfo.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              lockInfo.st_nlink == 1,
+              fchmod(lockDescriptor, mode_t(0o600)) == 0
+        else { throw refreshLockError("protect refresh lock") }
+        // Foreground callers already run off the UI thread and must eventually
+        // observe fresh data, even when the previous snapshot is empty or
+        // complete. Maintenance can yield to the active owner and retry later.
+        let isMaintenance = options.minimumMaintenanceIntervalSeconds > 0
+        let lockOperation = LOCK_EX | (isMaintenance ? LOCK_NB : 0)
+        guard flock(lockDescriptor, lockOperation) == 0 else {
+            guard isMaintenance, errno == EWOULDBLOCK else {
+                throw refreshLockError("acquire refresh lock")
+            }
+            return try deferredRefresh()
+        }
+        defer { flock(lockDescriptor, LOCK_UN) }
+
+        // Reuse one connection only while this refresh owns the process-shared
+        // lock. Reopening per file discards the page cache and repeatedly tears
+        // down SQLite's WAL watchers. Close before releasing the lock; later
+        // launch-cache generation checks must reopen the current database path
+        // so replacement detection never consults an old inode.
+        var sharedDatabase: OpaquePointer?
+        try open(&sharedDatabase)
+        refreshDatabase = sharedDatabase
+        defer {
+            refreshDatabase = nil
+            sqlite3_close(sharedDatabase)
+        }
+
         let parserGenerationChanged = try prepareParserVersion()
         if parserGenerationChanged {
             UsageSourceCatalogCache.shared.invalidate(databasePath: path.standardizedFileURL.path)
@@ -1037,20 +1332,7 @@ private final class SkillUsageStore {
             guard let claimedLeaseID = try claimMaintenanceLease(
                 minimumIntervalSeconds: options.minimumMaintenanceIntervalSeconds
             ) else {
-                let (current, snapshotGeneration) = try snapshotWithCurrentLaunchGeneration()
-                return SkillUsageStoredRefreshResult(
-                    report: SkillUsageRefreshReport(
-                        snapshot: current,
-                        filesRead: 0,
-                        bytesRead: 0,
-                        processedBytesAdvanced: 0,
-                        invocationsAdded: 0,
-                        hasMore: !current.isBackfillComplete,
-                        wasDeferred: true,
-                        warnings: []
-                    ),
-                    snapshotGeneration: snapshotGeneration
-                )
+                return try deferredRefresh()
             }
             maintenanceLeaseID = claimedLeaseID
         }
@@ -1071,6 +1353,7 @@ private final class SkillUsageStore {
             roots: catalogRoots,
             allowsReuse: options.reusesSourceCatalog,
             maximumAgeSeconds: options.sourceCatalogMaximumAgeSeconds,
+            metadata: self.sourceMetadata,
             materialize: { items in
                 self.materializeCatalogItems(
                     items,
@@ -1162,9 +1445,13 @@ private final class SkillUsageStore {
         var invocationsAdded = 0
         var warnings: [String] = []
         var identityCache: [String: ParsedSkillIdentity] = [:]
+        let deadline = options.maximumDurationSeconds > 0
+            ? ContinuousClock.now.advanced(by: .seconds(options.maximumDurationSeconds))
+            : nil
 
         for sourceIndex in candidateIndices {
             guard filesRead < options.maxFiles, bytesRead < options.maxBytes else { break }
+            if bytesRead > 0, let deadline, ContinuousClock.now >= deadline { break }
             let source = sources[sourceIndex]
             let state = try loadSourceState(path: source.path) ?? UsageSourceState()
             let remainingBudget = max(1, options.maxBytes - bytesRead)
@@ -1176,6 +1463,7 @@ private final class SkillUsageStore {
                 throttleEveryBytes: options.throttleEveryBytes,
                 throttleDelayMilliseconds: options.throttleDelayMilliseconds,
                 throttleOffset: bytesRead,
+                deadline: deadline,
                 identityCache: &identityCache
             )
             let added = try save(result: result, source: source)
@@ -1375,29 +1663,67 @@ private final class SkillUsageStore {
         ])
     }
 
+    private func refreshLockError(_ operation: String) -> NSError {
+        NSError(domain: "MetagentSkillUsageRefresh", code: Int(errno), userInfo: [
+            NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(errno)))"
+        ])
+    }
+
+    private func deferredRefresh() throws -> SkillUsageStoredRefreshResult {
+        let (current, snapshotGeneration) = try snapshotWithCurrentLaunchGeneration()
+        return SkillUsageStoredRefreshResult(
+            report: SkillUsageRefreshReport(
+                snapshot: current,
+                filesRead: 0,
+                bytesRead: 0,
+                processedBytesAdvanced: 0,
+                invocationsAdded: 0,
+                hasMore: !current.isBackfillComplete,
+                wasDeferred: true,
+                warnings: []
+            ),
+            snapshotGeneration: snapshotGeneration
+        )
+    }
+
     private func claimMaintenanceLease(minimumIntervalSeconds: TimeInterval) throws -> String? {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let now = Date()
         try exec(db, "BEGIN IMMEDIATE;")
         do {
-            let lastFinished = try scalarText(
+            // The scheduler uses start-to-start deadlines. Measuring the lane
+            // from completion would reject every next fast slice (its wait is
+            // cadence minus work time), silently halving sustained throughput.
+            // Older stores have only the completion timestamp; honor it until
+            // the first updated writer records a start.
+            let lastStarted = try scalarText(
                 db,
-                "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_finished_at';"
+                """
+                SELECT COALESCE(
+                    (SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_started_at'),
+                    (SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_finished_at')
+                );
+                """
             ).flatMap(MetagentCore.parseSkillUsageTimestamp)
             let leaseExpires = try scalarText(
                 db,
                 "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_lease_expires_at';"
             ).flatMap(MetagentCore.parseSkillUsageTimestamp)
-            if lastFinished.map({ now.timeIntervalSince($0) < minimumIntervalSeconds }) == true
+            if lastStarted.map({ now.timeIntervalSince($0) < minimumIntervalSeconds }) == true
                 || leaseExpires.map({ $0 > now }) == true
             {
                 try exec(db, "COMMIT;")
                 return nil
             }
             let leaseID = UUID().uuidString.lowercased()
+            try upsertMetadata(
+                db,
+                key: "maintenance_started_at",
+                value: iso8601Formatter.string(from: now)
+            )
             try upsertMetadata(
                 db,
                 key: "maintenance_lease_expires_at",
@@ -1415,7 +1741,7 @@ private final class SkillUsageStore {
     private func finishMaintenanceLease(id: String) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -1447,7 +1773,7 @@ private final class SkillUsageStore {
     func snapshot() throws -> SkillUsageSnapshot {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN;")
         do {
@@ -1466,7 +1792,7 @@ private final class SkillUsageStore {
     ) {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -1505,7 +1831,7 @@ private final class SkillUsageStore {
     ) {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN;")
         do {
@@ -1522,7 +1848,7 @@ private final class SkillUsageStore {
     fileprivate func currentLaunchGeneration() throws -> SkillUsageStoreGeneration {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         return try launchGeneration(db)
     }
@@ -1553,7 +1879,7 @@ private final class SkillUsageStore {
     func dailyCounts(calendar: Calendar) throws -> [SkillUsageDayCount] {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let table = try previousGenerationExists(db)
             ? previousSkillUsageEventsTable
@@ -1607,7 +1933,7 @@ private final class SkillUsageStore {
     ) throws -> AgentRunDurationStats {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
 
         let hasPrevious = try previousGenerationExists(db)
@@ -1823,7 +2149,8 @@ private final class SkillUsageStore {
             size: Int64(info.st_size),
             modifiedAt: TimeInterval(info.st_mtimespec.tv_sec)
                 + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000,
-            fileIdentity: fileIdentity(info)
+            fileIdentity: fileIdentity(info),
+            hasMultipleLinks: info.st_nlink > 1
         )
     }
 
@@ -1929,13 +2256,18 @@ private final class SkillUsageStore {
         var sources: [UsageSource] = []
         sources.reserveCapacity(items.count)
         for item in items {
+            let checkpoint = checkpoints[item.path]
+            // Parsing can pass discovery-time EOF in an actively appended
+            // rollout. Verify stale metadata before treating that as truncation.
+            let cachedMetadataIsBehind = checkpoint.map {
+                $0.offset > item.size || $0.fileSize > item.size || $0.modifiedAt > item.modifiedAt
+            } ?? false
+            let metadata = cachedMetadataIsBehind
+                ? sourceMetadata(path: item.path)
+                : UsageSourceMetadata(size: item.size, modifiedAt: item.modifiedAt, fileIdentity: item.fileIdentity)
             appendSource(
                 path: item.path,
-                metadata: UsageSourceMetadata(
-                    size: item.size,
-                    modifiedAt: item.modifiedAt,
-                    fileIdentity: item.fileIdentity
-                ),
+                metadata: metadata,
                 checkpoints: checkpoints,
                 checkpointsByIdentity: checkpointsByIdentity,
                 sources: &sources
@@ -2193,6 +2525,7 @@ private final class SkillUsageStore {
         throttleEveryBytes: Int64,
         throttleDelayMilliseconds: Int,
         throttleOffset: Int64,
+        deadline: ContinuousClock.Instant?,
         identityCache: inout [String: ParsedSkillIdentity]
     ) -> FileParseResult {
         guard let file = fopen(source.path, "r") else {
@@ -2235,10 +2568,18 @@ private final class SkillUsageStore {
         var runs: [ParsedAgentRun] = []
         var warning: String?
         var bytesRead: Int64 = 0
+        // Reuse the scratch space across records in this file slice. Most
+        // session records are short; allocating and zeroing 64 KiB for each
+        // one costs more than reading their contents.
+        var lineBuffer = [CChar](repeating: 0, count: 64 * 1_024)
         var nextThrottleAt = throttleEveryBytes > 0
             ? ((throttleOffset / throttleEveryBytes) + 1) * throttleEveryBytes
             : 0
         while true {
+            // Finish at least one record even with a tiny time budget, then
+            // checkpoint at a record boundary so the next slice never replays
+            // already committed events or mistakes a yield for a stalled file.
+            if bytesRead > 0, let deadline, ContinuousClock.now >= deadline { break }
             let lineStart = Int64(ftello(file))
             let remainingLineBudget = maxBytes - bytesRead
             guard remainingLineBudget > 0 else { break }
@@ -2249,7 +2590,7 @@ private final class SkillUsageStore {
             let lineReadLimit = bytesRead == 0
                 ? maxRecordBytes
                 : min(remainingLineBudget, maxRecordBytes)
-            let read = readBoundedLine(file, maxBytes: lineReadLimit)
+            let read = readBoundedLine(file, maxBytes: lineReadLimit, buffer: &lineBuffer)
             guard let read else { break }
             if read.exceededLimit {
                 if bytesRead > 0, remainingLineBudget < maxRecordBytes {
@@ -2258,7 +2599,7 @@ private final class SkillUsageStore {
                     break
                 }
                 if !read.isTerminated {
-                    discardRemainderOfLine(file)
+                    discardRemainderOfLine(file, buffer: &lineBuffer)
                 }
                 state.offset = Int64(ftello(file))
                 bytesRead += max(0, state.offset - lineStart)
@@ -2305,8 +2646,10 @@ private final class SkillUsageStore {
         )
     }
 
-    private func discardRemainderOfLine(_ file: UnsafeMutablePointer<FILE>) {
-        var buffer = [CChar](repeating: 0, count: 64 * 1_024)
+    private func discardRemainderOfLine(
+        _ file: UnsafeMutablePointer<FILE>,
+        buffer: inout [CChar]
+    ) {
         while fgets(&buffer, Int32(buffer.count), file) != nil {
             let count = Int(strlen(buffer))
             if count > 0, buffer[count - 1] == 10 { break }
@@ -2315,10 +2658,9 @@ private final class SkillUsageStore {
 
     private func readBoundedLine(
         _ file: UnsafeMutablePointer<FILE>,
-        maxBytes: Int64
+        maxBytes: Int64,
+        buffer: inout [CChar]
     ) -> (data: Data, isTerminated: Bool, exceededLimit: Bool)? {
-        let bufferSize = 64 * 1_024
-        var buffer = [CChar](repeating: 0, count: bufferSize)
         var data = Data()
         while true {
             guard fgets(&buffer, Int32(buffer.count), file) != nil else {
@@ -2328,7 +2670,7 @@ private final class SkillUsageStore {
             guard Int64(data.count + count) <= maxBytes else {
                 return (Data(), count > 0 && buffer[count - 1] == 10, true)
             }
-            data.append(buffer.withUnsafeBytes { Data($0.prefix(count)) })
+            buffer.withUnsafeBytes { data.append(contentsOf: $0.prefix(count)) }
             if count > 0, buffer[count - 1] == 10 {
                 return (data, true, false)
             }
@@ -2339,7 +2681,7 @@ private final class SkillUsageStore {
     private func save(result: FileParseResult, source: UsageSource) throws -> Int {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2449,7 +2791,7 @@ private final class SkillUsageStore {
     private func loadSourceCheckpoints() throws -> [String: UsageSourceCheckpoint] {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var statement: OpaquePointer?
         try prepare(db, """
@@ -2492,7 +2834,7 @@ private final class SkillUsageStore {
     private func loadSourceState(path: String) throws -> UsageSourceState? {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var statement: OpaquePointer?
         try prepare(db, """
@@ -2538,7 +2880,7 @@ private final class SkillUsageStore {
     ) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2584,7 +2926,7 @@ private final class SkillUsageStore {
     private func resetSources(_ paths: [String]) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2662,7 +3004,7 @@ private final class SkillUsageStore {
     ) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var values = [
             "total_files": String(progress.totalFiles),
@@ -2705,7 +3047,7 @@ private final class SkillUsageStore {
     private func prepareParserVersion() throws -> Bool {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let current = try scalarText(
             db,
@@ -2788,9 +3130,14 @@ private final class SkillUsageStore {
     }
 
     private func open(_ db: inout OpaquePointer?) throws {
+        if let refreshDatabase {
+            db = refreshDatabase
+            return
+        }
         guard sqlite3_open(path.path, &db) == SQLITE_OK else {
             throw databaseError(db, "open \(path.path)")
         }
+        databaseOpenCount += 1
         try exec(db, "PRAGMA journal_mode=WAL;")
         try exec(db, "PRAGMA synchronous=NORMAL;")
         try exec(db, "PRAGMA busy_timeout=2500;")
@@ -2799,6 +3146,11 @@ private final class SkillUsageStore {
         // of megabytes to disk on every read; persistent usage data remains in
         // the WAL-backed database above.
         try exec(db, "PRAGMA temp_store=MEMORY;")
+    }
+
+    private func closeDatabase(_ db: OpaquePointer?) {
+        guard db != refreshDatabase else { return }
+        sqlite3_close(db)
     }
 
     private func createSchema(_ db: OpaquePointer?) throws {

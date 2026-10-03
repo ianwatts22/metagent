@@ -388,10 +388,38 @@ final class SkillUsageTests: XCTestCase {
         ))
     }
 
+    func testDelayedOwnedDirectoryCreationIsIgnoredOnlyWhileItsIdentityMatches() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let directory = fixture.sessions.appendingPathComponent("metagent-state")
+        let oldDirectory = fixture.root.appendingPathComponent("old-metagent-state")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let database = directory.appendingPathComponent("usage.sqlite")
+        let result = try MetagentCore.skillUsageOwnedDirectoryCreationForTesting(databasePath: database.path) {
+            try FileManager.default.moveItem(at: directory, to: oldDirectory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        XCTAssertTrue(result.originalIgnored, "a late creation notice for the already-watched directory is not a new source")
+        XCTAssertFalse(result.replacementIgnored, "a recreated directory must never reuse the old catalog")
+        for flag in [kFSEventStreamEventFlagItemRemoved, kFSEventStreamEventFlagItemRenamed, kFSEventStreamEventFlagItemCloned] {
+            XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesPathEventForTesting(
+                roots: [fixture.sessions.path], databasePath: database.path,
+                eventPath: directory.path, flags: FSEventStreamEventFlags(flag)
+            ))
+        }
+    }
+
     func testContinuationCatalogArmsOnlyAfterQueuedCallbacksDrain() {
         XCTAssertTrue(
             MetagentCore.skillUsageCatalogArmingDrainsQueuedCallbacksForTesting(),
             "callbacks queued before the event watermark must run while the catalog is disarmed"
+        )
+    }
+
+    func testContinuationCatalogDoesNotClearStartupAncestorIdentityChanges() {
+        XCTAssertTrue(
+            MetagentCore.skillUsageCatalogArmingPreservesIdentityChangeForTesting(),
+            "discovery cannot repair descriptors attached to an ancestor that moved during startup"
         )
     }
 
@@ -1486,6 +1514,36 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(Set(summaries.map(\.id)).count, 2)
     }
 
+    func testTimeBoundedSliceCheckpointsWholeRecordsAndResumesWithoutReplay() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/timed", name: "timed")
+        for index in 0..<2 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "timed-\(index)", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "timed-read-\(index)", command: "cat \(skill.path)")
+            ], to: fixture.sessions.appendingPathComponent("rollout-timed-\(index).jsonl"))
+        }
+        var bounded = fixture.options
+        bounded.maximumDurationSeconds = 0.001
+        bounded.throttleEveryBytes = 1
+        bounded.throttleDelayMilliseconds = 1
+        let first = try MetagentCore.refreshSkillUsage(options: bounded)
+        XCTAssertGreaterThan(first.processedBytesAdvanced, 0)
+        XCTAssertTrue(first.hasMore)
+        XCTAssertEqual(first.filesRead, 1, "the deadline applies across the entire slice, not separately per file")
+        XCTAssertTrue(first.warnings.isEmpty, "a cooperative yield must not be reported as a malformed or stalled source")
+
+        let resumed = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertFalse(resumed.hasMore)
+        XCTAssertEqual(resumed.snapshot.totalInvocations, 2)
+        XCTAssertEqual(resumed.snapshot.processedBytes, resumed.snapshot.totalBytes)
+        let unchanged = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(unchanged.bytesRead, 0)
+        XCTAssertEqual(unchanged.invocationsAdded, 0)
+        XCTAssertEqual(unchanged.snapshot.totalInvocations, 2)
+    }
+
     func testThrottleCarriesAcrossSmallFiles() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1556,6 +1614,33 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(resumed.snapshot.totalInvocations, 1)
         XCTAssertTrue(resumed.snapshot.isBackfillComplete)
         XCTAssertTrue(resumed.warnings.isEmpty)
+    }
+
+    func testReadsShortRecordsAfterRecordsSpanningMultipleReadBuffers() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/reused-buffer", name: "reused-buffer")
+        let rollout = fixture.sessions.appendingPathComponent("rollout-reused-buffer.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: [
+                "id": "reused-buffer-session",
+                "cwd": fixture.root.path,
+                "padding": String(repeating: "long résumé 🦋", count: 12_000)
+            ]),
+            fixture.toolCall(callID: "first-read", command: "cat \(skill.path)"),
+            fixture.line(type: "event_msg", payload: [
+                "type": "agent_message",
+                "message": String(repeating: "shorter noise", count: 6_000)
+            ]),
+            fixture.toolCall(callID: "second-read", command: "cat \(skill.path)")
+        ], to: rollout)
+
+        let report = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(report.snapshot.totalInvocations, 2)
+        XCTAssertEqual(report.snapshot.summaries.first?.skillName, "reused-buffer")
+        XCTAssertTrue(report.snapshot.isBackfillComplete)
+        XCTAssertEqual(report.snapshot.processedBytes, report.snapshot.totalBytes)
+        XCTAssertTrue(report.warnings.isEmpty)
     }
 
     func testSkipsARecordLargerThanTheRecordLimitAndResumes() throws {
@@ -1858,6 +1943,97 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testMaintenanceDefersUntilRefreshLockIsReleased() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/locked", name: "locked")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "locked", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "locked-read", command: "cat \(skill.path)")
+        ], to: fixture.sessions.appendingPathComponent("rollout-locked.jsonl"))
+        var seedOptions = fixture.options
+        seedOptions.maxBytes = 1
+        let seed = try MetagentCore.refreshSkillUsage(options: seedOptions)
+        XCTAssertTrue(seed.hasMore)
+
+        let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+        let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+        var maintenance = fixture.options
+        maintenance.minimumMaintenanceIntervalSeconds = 60
+        let deferred = try MetagentCore.refreshSkillUsage(options: maintenance)
+        XCTAssertTrue(deferred.wasDeferred)
+        XCTAssertEqual(deferred.filesRead, 0)
+        XCTAssertEqual(deferred.snapshot.processedBytes, seed.snapshot.processedBytes)
+
+        // An alternate path to the same database must not create another lane.
+        let alias = fixture.root.appendingPathComponent("usage-alias.sqlite")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.database)
+        var aliasOptions = maintenance
+        aliasOptions.databasePath = alias.path
+        XCTAssertTrue(try MetagentCore.refreshSkillUsage(options: aliasOptions).wasDeferred)
+
+        XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+        let resumed = try MetagentCore.refreshSkillUsage(options: maintenance)
+        XCTAssertFalse(resumed.wasDeferred, "A busy attempt must not consume the maintenance interval")
+        XCTAssertTrue(resumed.snapshot.isBackfillComplete)
+        XCTAssertEqual(resumed.snapshot.totalInvocations, 1)
+    }
+
+    func testForegroundWaitsForRefreshLockWithEmptyAndCompleteSnapshots() throws {
+        for startsComplete in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let skill = try fixture.makeSkill(at: "workspace/.agents/skills/foreground", name: "foreground")
+            let rollout = fixture.sessions.appendingPathComponent("rollout-foreground.jsonl")
+            var records = [
+                fixture.line(type: "session_meta", payload: ["id": "foreground", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "initial-read", command: "cat \(skill.path)")
+            ]
+            try fixture.write(records, to: rollout)
+            if startsComplete {
+                let initial = try MetagentCore.refreshSkillUsage(options: fixture.options)
+                XCTAssertTrue(initial.snapshot.isBackfillComplete)
+            }
+            records.append(fixture.toolCall(callID: "new-read", command: "cat \(skill.path)"))
+            try fixture.write(records, to: rollout)
+
+            let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
+            let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            guard descriptor >= 0 else { return }
+            defer { close(descriptor) }
+            XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+            let started = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            let options = fixture.options
+            DispatchQueue.global().async {
+                started.signal()
+                defer { finished.signal() }
+                do {
+                    let report = try MetagentCore.refreshSkillUsage(options: options)
+                    XCTAssertFalse(report.wasDeferred)
+                    XCTAssertTrue(report.snapshot.isBackfillComplete)
+                    XCTAssertEqual(report.snapshot.totalInvocations, 2)
+                } catch {
+                    XCTFail("Foreground refresh failed: \(error)")
+                }
+            }
+            XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+            let finishedWhileLocked = finished.wait(timeout: .now() + 0.1) == .success
+            XCTAssertFalse(finishedWhileLocked, "Foreground refresh must wait for the current writer")
+            XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+            if !finishedWhileLocked {
+                XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+            }
+        }
+    }
+
     func testMaintenanceIntervalDefersDuplicateBackgroundWorkButNotManualRefresh() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1908,6 +2084,38 @@ final class SkillUsageTests: XCTestCase {
         let manual = try MetagentCore.refreshSkillUsage(options: manualOptions)
         XCTAssertFalse(manual.wasDeferred)
         XCTAssertEqual(manual.filesRead, 1)
+    }
+
+    func testMaintenanceCadenceUsesSliceStartRatherThanFinish() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        for index in 0..<3 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "cadence-\(index)", "cwd": fixture.root.path])
+            ], to: fixture.sessions.appendingPathComponent("rollout-cadence-\(index).jsonl"))
+        }
+        var options = fixture.options
+        options.maxFiles = 1
+        options.minimumMaintenanceIntervalSeconds = 60
+        let first = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertFalse(first.wasDeferred)
+        XCTAssertTrue(first.hasMore)
+
+        // Model a slice that started more than one cadence ago but has only
+        // just finished. Its finish time must not defer the next deadline.
+        try fixture.executeSQL("""
+        UPDATE skill_usage_metadata SET value = '2000-01-01T00:00:00Z'
+        WHERE key = 'maintenance_started_at';
+        """)
+        let next = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertFalse(next.wasDeferred)
+        XCTAssertGreaterThan(next.processedBytesAdvanced, 0)
+
+        // A pre-upgrade store without the new key still honors its recent
+        // completion timestamp instead of bypassing the shared lane.
+        try fixture.executeSQL("DELETE FROM skill_usage_metadata WHERE key = 'maintenance_started_at';")
+        let legacy = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertTrue(legacy.wasDeferred)
     }
 
     func testMaintenanceSlicesDiscoverNewSessionFilesImmediately() throws {
@@ -2107,6 +2315,28 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(warm.snapshot.totalInvocations, 1)
     }
 
+    func testRefreshReusesOneConnectionButCachePublicationReopensTheDatabase() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/connections", name: "connections")
+        for index in 0..<24 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: [
+                    "id": "connection-\(index)", "cwd": fixture.root.path
+                ]),
+                fixture.toolCall(callID: "connection-\(index)", command: "cat \(skill.path)")
+            ], to: fixture.sessions.appendingPathComponent("rollout-connection-\(index).jsonl"))
+        }
+        var options = fixture.options
+        options.maxFiles = 24
+        let counts = try MetagentCore.skillUsageRefreshConnectionCountsForTesting(options: options)
+        XCTAssertEqual(counts.refresh, 1, "one refresh must not reopen and tear down WAL state for every file")
+        XCTAssertGreaterThan(counts.cachePublication, 0, "post-refresh generation checks must reopen the current database path")
+        let snapshot = try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertEqual(snapshot.totalInvocations, 24)
+        XCTAssertEqual(snapshot.completedFiles, 24)
+    }
+
     func testContinuationReusesCatalogUntilInvalidatedAndForegroundForcesDiscovery() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -2140,17 +2370,18 @@ final class SkillUsageTests: XCTestCase {
             1
         )
 
-        // Surface any event callbacks already in flight when the watcher was
-        // created. They predate the discovery baseline and must not invalidate
-        // the catalog that discovery just established.
-        usleep(250_000)
+        // Native event IDs can be assigned after the fixture's atomic writes
+        // finish. A late create/rename notice correctly forces rediscovery;
+        // establish actual reuse before measuring subsequent invalidation.
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         let warm = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(warm.filesRead, 0)
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            1
+            settledDiscoveryCount,
+            MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
         )
 
         let nested = fixture.sessions.appendingPathComponent("2026/08/28")
@@ -2173,7 +2404,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            2
+            settledDiscoveryCount + 1
         )
 
         _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
@@ -2181,9 +2412,181 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            3,
+            settledDiscoveryCount + 2,
             "an explicit foreground refresh must never trust the continuation catalog"
         )
+    }
+
+    func testCatalogMetadataEventsStayBoundedAndConsumptionPreservesLaterChanges() {
+        let modified = FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        let first = "/private/tmp/metagent-catalog-events/first.jsonl"
+        let second = "/private/tmp/metagent-catalog-events/second.jsonl"
+        let consumed = MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            [(first, modified), (first, modified)], [], [(second, modified)]
+        ])
+        XCTAssertEqual(consumed, [Set([first]), Set(), Set([second])])
+        let paths = (0..<256).map { "/private/tmp/metagent-catalog-events/\($0).jsonl" }
+        XCTAssertEqual(MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            paths.map { ($0, modified) } + [(paths[0], modified)]
+        ]), [Set(paths)])
+        XCTAssertNil(MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            paths.map { ($0, modified) } + [(second, modified)]
+        ])[0], "overflow must fall back, not silently lose changed files")
+        let structural = FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemIsFile)
+        let invalidated = MetagentCore.skillUsageCatalogEventBatchesForTesting(batches: [
+            [(first, modified), (second, structural)], [], [(first, modified)]
+        ])
+        XCTAssertTrue(invalidated.allSatisfy { $0 == nil }, "structural invalidation stays sticky until rediscovery")
+    }
+
+    func testChangedFileMetadataPatchesCatalogWithoutReplayingOtherSources() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/changed", name: "changed")
+        let source = fixture.sessions.appendingPathComponent("rollout-changed.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "changed", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "first", command: "cat \(skill.path)")
+        ], to: source)
+        let unchanged = fixture.sessions.appendingPathComponent("rollout-unchanged.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "unchanged"])
+        ], to: unchanged)
+        let unchangedBytes = Int64(try Data(contentsOf: unchanged).count)
+        var options = fixture.options
+        options.reusesSourceCatalog = true
+        let first = try MetagentCore.refreshSkillUsage(options: options)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
+        try fixture.append([fixture.toolCall(callID: "second", command: "cat \(skill.path)")], to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
+        let changed = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(changed.snapshot.totalInvocations, 2)
+        XCTAssertEqual(changed.filesRead, 1)
+        XCTAssertEqual(changed.snapshot.completedFiles, 2)
+        XCTAssertGreaterThan(changed.snapshot.processedBytes, first.snapshot.processedBytes)
+        XCTAssertEqual(changed.bytesRead, changed.snapshot.processedBytes - first.snapshot.processedBytes)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), settledDiscoveryCount,
+            MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
+        )
+        XCTAssertEqual(try MetagentCore.refreshSkillUsage(options: options).bytesRead, 0)
+
+        // A real truncation is still detected through the refreshed metadata.
+        try Data().write(to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
+        let truncated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(truncated.snapshot.processedBytes, unchangedBytes)
+        XCTAssertEqual(truncated.snapshot.totalInvocations, 0)
+    }
+
+    func testUnknownOrStructuralSourceChangesStillRequireFullDiscovery() throws {
+        for flags in [
+            kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile,
+            kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile,
+            kFSEventStreamEventFlagMustScanSubDirs,
+            kFSEventStreamEventFlagUserDropped,
+            kFSEventStreamEventFlagRootChanged,
+        ] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            var options = fixture.options
+            options.reusesSourceCatalog = true
+            let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
+            let source = fixture.sessions.appendingPathComponent("rollout-new.jsonl")
+            try fixture.write([fixture.line(type: "session_meta", payload: ["id": "new"])], to: source)
+            XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+                databasePath: fixture.database.path, sourcePath: source.path,
+                flags: FSEventStreamEventFlags(flags)
+            ))
+            let report = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(report.snapshot.totalFiles, 1)
+            XCTAssertEqual(
+                MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+                settledDiscoveryCount + 1
+            )
+        }
+    }
+
+    func testHardlinkedSessionRewriteRequiresDiscoveryEvenWithoutHardlinkEventFlags() throws {
+        for extraFlags in [0, kFSEventStreamEventFlagItemIsHardlink] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let skill = try fixture.makeSkill(at: "workspace/.agents/skills/first", name: "first")
+            _ = try fixture.makeSkill(at: "workspace/.agents/skills/other", name: "other")
+            let source = fixture.sessions.appendingPathComponent("a.jsonl")
+            let alias = fixture.sessions.appendingPathComponent("b.jsonl")
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "hardlinked", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "read", command: "cat \(skill.path)")
+            ], to: source)
+            try FileManager.default.linkItem(at: source, to: alias)
+            var options = fixture.options
+            options.reusesSourceCatalog = true
+            let initial = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(initial.snapshot.totalInvocations, 1)
+            let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
+            let original = try String(contentsOf: source, encoding: .utf8)
+            let replacement = original.replacingOccurrences(of: "first", with: "other")
+            XCTAssertEqual(original.utf8.count, replacement.utf8.count)
+            let writer = try FileHandle(forUpdating: source)
+            try writer.write(contentsOf: Data(replacement.utf8))
+            try writer.close()
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: source.path)
+            XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+                databasePath: fixture.database.path, sourcePath: source.path,
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile | extraFlags)
+            ))
+            let rewritten = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(rewritten.snapshot.totalInvocations, 1)
+            XCTAssertEqual(rewritten.snapshot.summaries.map(\.skillName), ["other"])
+            XCTAssertEqual(rewritten.snapshot.totalBytes, Int64(replacement.utf8.count * 2))
+            XCTAssertEqual(
+                MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+                settledDiscoveryCount + 1
+            )
+        }
+    }
+
+    func testStaleCatalogSizeCannotResetANewerCursorButRealTruncationStillDoes() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/growing", name: "growing")
+        let source = fixture.sessions.appendingPathComponent("rollout-growing.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "growing", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "growing-read", command: "cat \(skill.path)")
+        ], to: source)
+        var options = fixture.options
+        options.reusesSourceCatalog = true
+        let indexed = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(indexed.snapshot.totalInvocations, 1)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
+        XCTAssertTrue(MetagentCore.overrideSkillUsageCachedSourceSizeForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path, size: 1
+        ))
+        let stale = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(stale.bytesRead, 0, "a stale EOF must not replay an indexed rollout")
+        XCTAssertEqual(stale.snapshot.totalInvocations, 1)
+        XCTAssertEqual(stale.snapshot.processedBytes, indexed.snapshot.processedBytes)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+            settledDiscoveryCount
+        )
+
+        try Data().write(to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
+        let truncated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(truncated.snapshot.totalInvocations, 0, "real truncation must still remove stale observations")
+        XCTAssertEqual(truncated.snapshot.processedBytes, 0)
     }
 
     func testContinuationIgnoresItsDatabaseAndLaunchCacheInsideTheSessionRoot() throws {
@@ -2213,6 +2616,7 @@ final class SkillUsageTests: XCTestCase {
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
             1
         )
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         usleep(250_000)
         XCTAssertEqual(
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
@@ -2220,8 +2624,8 @@ final class SkillUsageTests: XCTestCase {
         )
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path),
-            1,
-            "Metagent's own SQLite and launch-cache writes must not dirty the session catalog"
+            settledDiscoveryCount,
+            "Metagent's own writes must not dirty the session catalog: \(MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database.path))"
         )
         XCTAssertNil(
             MetagentCore.loadCachedSkillUsageSnapshot(databasePath: database.path),
@@ -2262,31 +2666,45 @@ final class SkillUsageTests: XCTestCase {
             1
         )
 
+        _ = try fixture.settleReusableSourceCatalog(options: options)
+
         try fixture.append([
             fixture.toolCall(callID: "growth-read", command: "cat \(firstSkill.path)")
         ], to: rollout)
-        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
-            databasePath: fixture.database.path
-        )
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: rollout.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
         XCTAssertEqual(
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
             2
         )
 
+        _ = try fixture.settleReusableSourceCatalog(options: options)
+
         let oldContents = try String(contentsOf: rollout, encoding: .utf8)
         let rewritten = oldContents.replacingOccurrences(of: "first", with: "other")
         XCTAssertEqual(oldContents.utf8.count, rewritten.utf8.count)
-        try rewritten.write(to: rollout, atomically: false, encoding: .utf8)
+        // Foundation's String.write can emit a rename even with atomically:
+        // false. Use the existing inode so this fixture genuinely exercises a
+        // metadata-only rewrite instead of the structural fallback.
+        let writer = try FileHandle(forUpdating: rollout)
+        try writer.write(contentsOf: Data(rewritten.utf8))
+        try writer.close()
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(2)],
             ofItemAtPath: rollout.path
         )
-        MetagentCore.invalidateSkillUsageSourceCatalogForTesting(
-            databasePath: fixture.database.path
-        )
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: rollout.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
         let sameSizeRewrite = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(sameSizeRewrite.snapshot.totalInvocations, 2)
         XCTAssertEqual(sameSizeRewrite.snapshot.summaries.map(\.skillName), ["other"])
+        // Native notices can include coalesced rename flags even for this
+        // fixture's existing-inode write. Full discovery is valid then; this
+        // assertion protects fresh rewrite results, not a specific event batch.
 
         let archivedRollout = archived.appendingPathComponent(rollout.lastPathComponent)
         try FileManager.default.moveItem(at: rollout, to: archivedRollout)
@@ -2334,13 +2752,13 @@ final class SkillUsageTests: XCTestCase {
             maxFiles: 20,
             reusesSourceCatalog: true
         )
-        _ = try MetagentCore.refreshSkillUsage(options: reusable)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: reusable)
         _ = try MetagentCore.refreshSkillUsage(options: reusable)
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            1
+            settledDiscoveryCount
         )
 
         let expired = SkillUsageRefreshOptions(
@@ -2356,7 +2774,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            2
+            settledDiscoveryCount + 1
         )
 
         try fixture.executeSQL(
@@ -2368,7 +2786,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            3
+            settledDiscoveryCount + 2
         )
     }
 }
@@ -2444,6 +2862,33 @@ private final class Fixture {
         sessions = root.appendingPathComponent("sessions")
         database = root.appendingPathComponent("usage.sqlite")
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    }
+
+    func settleReusableSourceCatalog(options: SkillUsageRefreshOptions) throws -> Int {
+        let databasePath = try XCTUnwrap(options.databasePath)
+        for _ in 0..<8 {
+            _ = try MetagentCore.refreshSkillUsage(options: options)
+            let discoveries = MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath)
+            var reused = true
+            // Two unchanged delivery windows also drain late atomic-write
+            // metadata before tests deliberately override cached metadata.
+            for _ in 0..<2 {
+                usleep(250_000)
+                _ = try MetagentCore.refreshSkillUsage(options: options)
+                if MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath) != discoveries {
+                    reused = false
+                    break
+                }
+            }
+            if reused {
+                return discoveries
+            }
+        }
+        // This is bounded setup, not permission to rediscover forever: a
+        // disabled/broken cache still fails before the behavior assertions.
+        XCTFail("native catalog never established reuse: "
+            + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: databasePath))
+        return MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath)
     }
 
     func makeSkill(at relativePath: String, name: String) throws -> URL {

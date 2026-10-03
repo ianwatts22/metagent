@@ -3,6 +3,19 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.10.0 — 2026-10-02
+
+- History catches up faster when plugged in, with short bounded slices and
+  conservative battery, Low Power Mode, and thermal limits.
+- Concurrent app and helper refreshes no longer overwrite newer history
+  progress, and background work resumes from saved record boundaries.
+- Growing sessions no longer restart because of stale file metadata, and large
+  tool outputs are matched more efficiently, with less database connection churn.
+- Background session updates avoid walking unchanged history, inventory refreshes
+  share one plugin query, and Overview does less repeated attention work.
+- Inventory refreshes read shared skill bundles once, with complete statistics
+  and script references for per-skill projections.
+
 ## v0.9.2 — 2026-10-02
 
 - Background history progress stays in the toolbar, with details on click,

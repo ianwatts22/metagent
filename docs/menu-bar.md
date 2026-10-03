@@ -82,7 +82,7 @@ Refresh behavior:
 - The latest inventory snapshot is persisted to `~/Library/Application Support/Metagent/inventory.sqlite`.
 - Plugin Eval and Codex review results are persisted to `~/Library/Application Support/Metagent/skill-evaluations-v1.json`.
 - Cached usage loads from `~/Library/Application Support/Metagent/usage.sqlite` immediately.
-- A low-priority, resumable session backfill runs after launch. It sleeps after each 16 MiB of input, updates in bounded windows, and stops when it reaches the current end of retained Codex history.
+- A low-priority, resumable session backfill runs after launch and stops when it reaches the current end of retained Codex history. Plugged-in catch-up uses short, time-bounded slices; battery, Low Power Mode, and thermal pressure retain conservative limits. [Performance testing](performance-testing.md#usage-freshness-and-energy-pacing) defines the scheduling and measurement policy.
 - The same incremental parser stores metadata-only Codex run durations alongside skill reads. It uses the task's recorded start and completion timestamps, classifies the run as direct user work, automation, subagent work, guardian review, or unknown, and keeps copied pre-fork history out of the new session. Prompts, responses, reasoning, and tool payloads are not stored.
 - Parser upgrades keep the previous Usage results visible until the replacement index completes and swaps atomically.
 - Once current, there is no continuous polling of session history; launch or manual refresh processes newly appended session bytes.

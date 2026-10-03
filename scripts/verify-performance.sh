@@ -57,6 +57,14 @@ swift test \
   -Xswiftc -DDEBUG \
   --filter projectRowIndexPerformanceProxy
 
+# Preserve saved dismissal fingerprints while keeping their repeated Overview
+# and notification rendering work free of per-byte Foundation formatting.
+swift test \
+  --disable-sandbox \
+  --configuration release \
+  -Xswiftc -DDEBUG \
+  --filter attentionFingerprintPerformanceProxy
+
 summary_arguments=(
   "$performance_log"
   "$performance_result"
