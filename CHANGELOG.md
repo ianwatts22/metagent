@@ -5,7 +5,7 @@ AGENTS.md for the release procedure.
 
 ## v0.10.0 — 2026-10-02
 
-- History catches up faster when plugged in, with short paced slices and
+- History catches up faster when plugged in, with short bounded slices and
   conservative battery, Low Power Mode, and thermal limits.
 - Concurrent app and helper refreshes no longer overwrite newer history
   progress, and background work resumes from saved record boundaries.

@@ -21,8 +21,10 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(external.maxFiles, 48)
         XCTAssertEqual(external.minimumDatabaseLeaseSeconds, external.scheduleDelaySeconds)
         XCTAssertEqual(external.maximumDurationSeconds, 2)
-        XCTAssertEqual(external.throttleEveryBytes, battery.throttleEveryBytes)
-        XCTAssertEqual(external.throttleDelayMilliseconds, battery.throttleDelayMilliseconds)
+        XCTAssertEqual(external.throttleEveryBytes, 0)
+        XCTAssertEqual(external.throttleDelayMilliseconds, 0)
+        XCTAssertEqual(battery.throttleEveryBytes, 512 * 1_024)
+        XCTAssertEqual(battery.throttleDelayMilliseconds, 25)
         XCTAssertEqual(external.refreshOptions().maximumDurationSeconds, 2)
         XCTAssertEqual(external.clampedToTail(remainingBytes: 100, remainingFiles: 1)?.maximumDurationSeconds, 2)
 

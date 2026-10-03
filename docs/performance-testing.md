@@ -125,11 +125,14 @@ silently shorten the next lease interval or reduce sustained throughput. Missed
 deadlines are rebased after sleep rather than replayed in a busy retry loop.
 Maintenance timers allow roughly one-ninth of their interval as tolerance, up
 to 30 seconds, so macOS can coalesce wakeups.
-Within each background slice, normal maintenance yields for 25 milliseconds
+Within each battery or first-continuation slice, maintenance yields for 25 milliseconds
 after each 512 KiB and constrained maintenance yields for 50 milliseconds after
 each 256 KiB. This adds cooperative pacing between parsed records without
 throttling explicit user refreshes or reducing the amount of history each
-maintenance wake processes.
+maintenance wake processes. Healthy AC catch-up uses its two-second parsing
+budget, byte/file caps, background priority, and between-slice cadence instead
+of intra-slice sleeps: macOS can stretch short background sleeps far beyond
+their requested duration, spending the parsing budget without doing work.
 The whole discovery/parse/persistence operation also has one process-shared
 lock, preventing a slower app/helper refresh from overwriting a newer cursor.
 Background work yields on contention; explicit refreshes wait off the UI thread.
@@ -139,7 +142,7 @@ Cached discovery metadata older than a saved cursor is verified on disk before
 deciding a source was truncated. This prevents a growing rollout from being
 replayed while preserving real truncation and replacement detection.
 The app still prioritizes the most recent session files, stops maintenance when
-complete, and keeps explicit refreshes unthrottled. The release-mode paced AC
+complete, and keeps explicit refreshes unthrottled. The release-mode bounded AC
 slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
 separately from the scheduled rate; running-app measurements remain the
 authority for live throughput and foreground responsiveness.

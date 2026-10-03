@@ -128,8 +128,6 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
                     maxFiles: 48,
                     scheduleDelaySeconds: 12,
                     minimumDatabaseLeaseSeconds: 12,
-                    throttleEveryBytes: 512 * 1_024,
-                    throttleDelayMilliseconds: 25,
                     maximumDurationSeconds: 2
                 )
             }

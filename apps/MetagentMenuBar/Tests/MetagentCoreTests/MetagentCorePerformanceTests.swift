@@ -484,7 +484,7 @@ final class MetagentCorePerformanceTests: XCTestCase {
             options.sessionRoots = [sessions.path]
             return try MetagentCore.refreshSkillUsage(options: options)
         }
-        let preflight = try assertLatencyBudget("paced AC backfill slice", seconds: 4) {
+        let preflight = try assertLatencyBudget("bounded AC backfill slice", seconds: 4) {
             try runSlice(database: databases[0])
         }
         XCTAssertGreaterThan(preflight.processedBytesAdvanced, 0)
@@ -496,7 +496,7 @@ final class MetagentCorePerformanceTests: XCTestCase {
             reports.append(try! runSlice(database: databases[iteration]))
             iteration += 1
         }
-        print("[Metagent performance] paced AC slice bytes: \(reports.map(\.processedBytesAdvanced)); cadence: \(plan.scheduleDelaySeconds)s")
+        print("[Metagent performance] bounded AC slice bytes: \(reports.map(\.processedBytesAdvanced)); cadence: \(plan.scheduleDelaySeconds)s")
         XCTAssertTrue(reports.allSatisfy { $0.processedBytesAdvanced > 0 && !$0.wasDeferred && $0.warnings.isEmpty })
     }
 
