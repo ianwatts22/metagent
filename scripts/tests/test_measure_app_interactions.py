@@ -19,6 +19,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            timeout=10,
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -65,6 +66,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            timeout=10,
         )
 
         self.assertEqual(completed.returncode, 2)
@@ -77,6 +79,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            timeout=10,
         )
 
         self.assertEqual(completed.returncode, 2)
@@ -126,6 +129,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
+                timeout=10,
             )
 
         self.assertEqual(completed.returncode, 2)

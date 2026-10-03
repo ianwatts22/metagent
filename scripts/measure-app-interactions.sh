@@ -9,8 +9,7 @@ timeout_seconds=30
 output_root=""
 
 usage() {
-  cat <<'USAGE'
-Usage: scripts/measure-app-interactions.sh [--channel dev|prod]
+  printf '%s\n' 'Usage: scripts/measure-app-interactions.sh [--channel dev|prod]
        [--scenario tabs|common-interactions|skills-cycle|refresh|launch-warm|launch-cold] [--iterations COUNT]
        [--timeout SECONDS] [--output EMPTY_DIR]
 
@@ -24,8 +23,7 @@ and return to its enabled ready state. Launch scenarios stop/start the selected
 channel and leave it running; launch-cold requires it to be stopped beforehand.
 skills-cycle performs only Overview → Skills → Overview, with a one-second Skills
 dwell, so before/after memory captures have a reproducible view-cycle protocol.
-Existing output is never replaced.
-USAGE
+Existing output is never replaced.'
 }
 
 while (($# > 0)); do

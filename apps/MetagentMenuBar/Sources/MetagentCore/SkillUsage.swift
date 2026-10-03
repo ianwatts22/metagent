@@ -253,6 +253,7 @@ private struct UsageSourceMetadata {
     let size: Int64
     let modifiedAt: Double
     let fileIdentity: String
+    var hasMultipleLinks = false
 }
 
 
@@ -957,6 +958,13 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         for index in items.indices where modifiedFiles.contains(items[index].watchPath) {
             guard let current = metadata(items[index].path) else {
                 reuseDiagnostics[key] = "changed source unavailable; full discovery required"
+                return nil
+            }
+            // FSEvents may name only the written alias of a hardlinked inode.
+            // Discover all paths again so their cursors/fingerprints reset
+            // together, even when the event omitted the hardlink flag.
+            guard !current.hasMultipleLinks else {
+                reuseDiagnostics[key] = "hardlinked changed source; full discovery required"
                 return nil
             }
             items[index].size = current.size
@@ -2141,7 +2149,8 @@ private final class SkillUsageStore {
             size: Int64(info.st_size),
             modifiedAt: TimeInterval(info.st_mtimespec.tv_sec)
                 + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000,
-            fileIdentity: fileIdentity(info)
+            fileIdentity: fileIdentity(info),
+            hasMultipleLinks: info.st_nlink > 1
         )
     }
 

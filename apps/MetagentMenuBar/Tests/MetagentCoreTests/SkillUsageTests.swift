@@ -2509,6 +2509,42 @@ final class SkillUsageTests: XCTestCase {
         }
     }
 
+    func testHardlinkedSessionRewriteRequiresDiscoveryEvenWithoutHardlinkEventFlags() throws {
+        for extraFlags in [0, kFSEventStreamEventFlagItemIsHardlink] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let skill = try fixture.makeSkill(at: "workspace/.agents/skills/first", name: "first")
+            _ = try fixture.makeSkill(at: "workspace/.agents/skills/other", name: "other")
+            let source = fixture.sessions.appendingPathComponent("a.jsonl")
+            let alias = fixture.sessions.appendingPathComponent("b.jsonl")
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "hardlinked", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "read", command: "cat \(skill.path)")
+            ], to: source)
+            try FileManager.default.linkItem(at: source, to: alias)
+            var options = fixture.options
+            options.reusesSourceCatalog = true
+            let initial = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(initial.snapshot.totalInvocations, 1)
+            let original = try String(contentsOf: source, encoding: .utf8)
+            let replacement = original.replacingOccurrences(of: "first", with: "other")
+            XCTAssertEqual(original.utf8.count, replacement.utf8.count)
+            let writer = try FileHandle(forUpdating: source)
+            try writer.write(contentsOf: Data(replacement.utf8))
+            try writer.close()
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: source.path)
+            XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+                databasePath: fixture.database.path, sourcePath: source.path,
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile | extraFlags)
+            ))
+            let rewritten = try MetagentCore.refreshSkillUsage(options: options)
+            XCTAssertEqual(rewritten.snapshot.totalInvocations, 1)
+            XCTAssertEqual(rewritten.snapshot.summaries.map(\.skillName), ["other"])
+            XCTAssertEqual(rewritten.snapshot.totalBytes, Int64(replacement.utf8.count * 2))
+            XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 2)
+        }
+    }
+
     func testStaleCatalogSizeCannotResetANewerCursorButRealTruncationStillDoes() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -2629,7 +2665,12 @@ final class SkillUsageTests: XCTestCase {
         let oldContents = try String(contentsOf: rollout, encoding: .utf8)
         let rewritten = oldContents.replacingOccurrences(of: "first", with: "other")
         XCTAssertEqual(oldContents.utf8.count, rewritten.utf8.count)
-        try rewritten.write(to: rollout, atomically: false, encoding: .utf8)
+        // Foundation's String.write can emit a rename even with atomically:
+        // false. Use the existing inode so this fixture genuinely exercises a
+        // metadata-only rewrite instead of the structural fallback.
+        let writer = try FileHandle(forUpdating: rollout)
+        try writer.write(contentsOf: Data(rewritten.utf8))
+        try writer.close()
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(2)],
             ofItemAtPath: rollout.path
@@ -2641,10 +2682,9 @@ final class SkillUsageTests: XCTestCase {
         let sameSizeRewrite = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(sameSizeRewrite.snapshot.totalInvocations, 2)
         XCTAssertEqual(sameSizeRewrite.snapshot.summaries.map(\.skillName), ["other"])
-        XCTAssertEqual(
-            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1,
-            "growth and in-place rewrites refresh file metadata without walking the tree"
-        )
+        // Native notices can include coalesced rename flags even for this
+        // fixture's existing-inode write. Full discovery is valid then; this
+        // assertion protects fresh rewrite results, not a specific event batch.
 
         let archivedRollout = archived.appendingPathComponent(rollout.lastPathComponent)
         try FileManager.default.moveItem(at: rollout, to: archivedRollout)

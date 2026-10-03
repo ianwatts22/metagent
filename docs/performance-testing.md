@@ -159,6 +159,8 @@ overflow require full discovery. Events arriving during metadata reads remain
 pending for the next refresh. Canonical event paths match fixed macOS aliases
 without changing stored checkpoint paths. Explicit foreground refreshes still
 force discovery; the 15-minute catalog lifetime remains unchanged.
+Changed files with multiple hard links also require discovery: the native event
+may name only one alias, but all aliases must refresh their rewrite fingerprints.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
 Cached discovery metadata older than a saved cursor is verified on disk before
