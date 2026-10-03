@@ -2370,17 +2370,17 @@ final class SkillUsageTests: XCTestCase {
             1
         )
 
-        // Surface any event callbacks already in flight when the watcher was
-        // created. They predate the discovery baseline and must not invalidate
-        // the catalog that discovery just established.
-        usleep(250_000)
+        // Native event IDs can be assigned after the fixture's atomic writes
+        // finish. A late create/rename notice correctly forces rediscovery;
+        // establish actual reuse before measuring subsequent invalidation.
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         let warm = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(warm.filesRead, 0)
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            1,
+            settledDiscoveryCount,
             MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
         )
 
@@ -2404,7 +2404,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            2
+            settledDiscoveryCount + 1
         )
 
         _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
@@ -2412,7 +2412,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            3,
+            settledDiscoveryCount + 2,
             "an explicit foreground refresh must never trust the continuation catalog"
         )
     }
@@ -2496,7 +2496,7 @@ final class SkillUsageTests: XCTestCase {
             defer { fixture.remove() }
             var options = fixture.options
             options.reusesSourceCatalog = true
-            _ = try MetagentCore.refreshSkillUsage(options: options)
+            let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
             let source = fixture.sessions.appendingPathComponent("rollout-new.jsonl")
             try fixture.write([fixture.line(type: "session_meta", payload: ["id": "new"])], to: source)
             XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
@@ -2505,7 +2505,10 @@ final class SkillUsageTests: XCTestCase {
             ))
             let report = try MetagentCore.refreshSkillUsage(options: options)
             XCTAssertEqual(report.snapshot.totalFiles, 1)
-            XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 2)
+            XCTAssertEqual(
+                MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+                settledDiscoveryCount + 1
+            )
         }
     }
 
@@ -2842,6 +2845,23 @@ private final class Fixture {
         sessions = root.appendingPathComponent("sessions")
         database = root.appendingPathComponent("usage.sqlite")
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    }
+
+    func settleReusableSourceCatalog(options: SkillUsageRefreshOptions) throws -> Int {
+        for _ in 0..<8 {
+            _ = try MetagentCore.refreshSkillUsage(options: options)
+            let discoveries = MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path)
+            usleep(250_000)
+            _ = try MetagentCore.refreshSkillUsage(options: options)
+            if MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path) == discoveries {
+                return discoveries
+            }
+        }
+        // This is bounded setup, not permission to rediscover forever: a
+        // disabled/broken cache still fails before the behavior assertions.
+        XCTFail("native catalog never established reuse: "
+            + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database.path))
+        return MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path)
     }
 
     func makeSkill(at relativePath: String, name: String) throws -> URL {
