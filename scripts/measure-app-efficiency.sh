@@ -213,8 +213,7 @@ for ((second = 1; second <= duration; second += 1)); do
   current_processed_bytes="$(processed_usage_bytes)"
   processed_delta=""
   if [[ "$previous_processed_bytes" =~ ^[0-9]+$ \
-        && "$current_processed_bytes" =~ ^[0-9]+$ \
-        && "$current_processed_bytes" -ge "$previous_processed_bytes" ]]; then
+        && "$current_processed_bytes" =~ ^[0-9]+$ ]]; then
     processed_delta=$((current_processed_bytes - previous_processed_bytes))
   fi
   if [[ "$current_processed_bytes" =~ ^[0-9]+$ ]]; then

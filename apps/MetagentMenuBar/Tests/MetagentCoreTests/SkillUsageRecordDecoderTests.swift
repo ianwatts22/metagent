@@ -72,4 +72,40 @@ final class SkillUsageRecordDecoderTests: XCTestCase {
         XCTAssertTrue(runs.isEmpty)
         XCTAssertTrue(cache.isEmpty)
     }
+
+    func testSharedOutputConfirmationPreservesUnicodeQuotesAndPartialReadEvidence() throws {
+        let names = ["demo", "CAFÉ 東京", "literal.+[x]"]
+        func confirmed(_ output: String) throws -> [String] {
+            var state = UsageSourceState()
+            state.pendingEvents["read"] = names.map { name in
+                ParsedUsageEvent(
+                    id: name, skill: ParsedSkillIdentity(
+                        id: name, name: name, confirmationName: name,
+                        canonicalPath: "/fixture/\(name)", scope: "project"
+                    ), occurredAt: "2026-10-01T10:00:00Z", sessionID: "fixture",
+                    turnID: "turn", cwd: "/fixture", sourcePath: "/fixture/session.jsonl", callID: "read"
+                )
+            }
+            let record = try JSONSerialization.data(withJSONObject: [
+                "type": "response_item", "payload": [
+                    "type": "function_call_output", "call_id": "read", "output": output
+                ]
+            ])
+            var cache: [String: ParsedSkillIdentity] = [:]
+            var events: [ParsedUsageEvent] = []
+            var runs: [ParsedAgentRun] = []
+            SkillUsageRecordDecoder().parseLine(
+                record, lineOffset: 0, sourcePath: "/fixture/session.jsonl", state: &state,
+                identityCache: &cache, events: &events, runs: &runs
+            )
+            XCTAssertTrue(state.pendingEvents.isEmpty)
+            return events.map(\.skill.name)
+        }
+        XCTAssertEqual(try confirmed("9: name: 'café 東京'\n"), ["CAFÉ 東京"])
+        XCTAssertEqual(try confirmed("name: wrong\nname: \"literal.+[x]\"\n"), ["literal.+[x]"])
+        XCTAssertEqual(try confirmed("name:\n 'demo'\n"), ["demo"])
+        XCTAssertEqual(try confirmed("Output:\nScript completed\nWall time: 1s\npartial body"), names)
+        XCTAssertEqual(try confirmed("name: wrong"), [])
+        XCTAssertEqual(try confirmed("Script failed\npartial body"), [])
+    }
 }

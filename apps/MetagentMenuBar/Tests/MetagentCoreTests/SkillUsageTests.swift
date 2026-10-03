@@ -2366,6 +2366,35 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testStaleCatalogSizeCannotResetANewerCursorButRealTruncationStillDoes() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/growing", name: "growing")
+        let source = fixture.sessions.appendingPathComponent("rollout-growing.jsonl")
+        try fixture.write([
+            fixture.line(type: "session_meta", payload: ["id": "growing", "cwd": fixture.root.path]),
+            fixture.toolCall(callID: "growing-read", command: "cat \(skill.path)")
+        ], to: source)
+        var options = fixture.options
+        options.reusesSourceCatalog = true
+        let indexed = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(indexed.snapshot.totalInvocations, 1)
+        usleep(250_000)
+        XCTAssertTrue(MetagentCore.overrideSkillUsageCachedSourceSizeForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path, size: 1
+        ))
+        let stale = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(stale.bytesRead, 0, "a stale EOF must not replay an indexed rollout")
+        XCTAssertEqual(stale.snapshot.totalInvocations, 1)
+        XCTAssertEqual(stale.snapshot.processedBytes, indexed.snapshot.processedBytes)
+        XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1)
+
+        try Data().write(to: source)
+        let truncated = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertEqual(truncated.snapshot.totalInvocations, 0, "real truncation must still remove stale observations")
+        XCTAssertEqual(truncated.snapshot.processedBytes, 0)
+    }
+
     func testContinuationIgnoresItsDatabaseAndLaunchCacheInsideTheSessionRoot() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

@@ -11,6 +11,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 - cold usage backfill across 10 session files and 300 observed skill reads;
 - usage parsing across 20,000 irrelevant token/message records surrounding 40
   observed skill reads;
+- megabyte-scale Unicode outputs for successful, mismatched, and partial skill
+  reads, including the confirmation matcher rather than only irrelevant records;
 - convergence of a 36-session backlog through three bounded refresh slices.
 
 Run it from the repository root:
@@ -132,6 +134,9 @@ lock, preventing a slower app/helper refresh from overwriting a newer cursor.
 Background work yields on contention; explicit refreshes wait off the UI thread.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
+Cached discovery metadata older than a saved cursor is verified on disk before
+deciding a source was truncated. This prevents a growing rollout from being
+replayed while preserving real truncation and replacement detection.
 The app still prioritizes the most recent session files, stops maintenance when
 complete, and keeps explicit refreshes unthrottled. The release-mode paced AC
 slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
@@ -156,6 +161,12 @@ the same test order rather than comparing one isolated test with a suite run.
 
 The XCTest lane measures bounded core operations. Use the process sampler for
 idle and whole-app behavior after installing and starting the selected channel:
+
+Usage throughput is the net change in the shared database's processed-byte
+counter. The summary separately reports forward bytes, regressed bytes, and
+regression sample count; a replay/reset loss is never silently discarded. This
+counter includes every writer and changing source membership, so compare source
+checkpoints as well when attributing a regression to one app.
 
 ```bash
 scripts/measure-app-efficiency.sh \

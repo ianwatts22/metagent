@@ -500,6 +500,53 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertTrue(reports.allSatisfy { $0.processedBytesAdvanced > 0 && !$0.wasDeferred && $0.warnings.isEmpty })
     }
 
+    func testPerformanceLargePendingReadOutputs() throws {
+        guard runsPerformanceTests else { return }
+        let pending = (0..<30).map { index in
+            let skill = ParsedSkillIdentity(
+                id: "fixture:\(index)", name: "large-output-\(index)", confirmationName: "large-output-\(index)",
+                canonicalPath: "/fixture/\(index)", scope: "project"
+            )
+            return ParsedUsageEvent(
+                id: "fixture-read-\(index)", skill: skill, occurredAt: "2026-10-01T10:00:00Z",
+                sessionID: "fixture", turnID: "turn", cwd: "/fixture",
+                sourcePath: "/fixture/session.jsonl", callID: "read"
+            )
+        }
+        let noise = String(repeating: "Unicode fixture café 東京 without frontmatter.\n", count: 25_000)
+        // Exercise successful, mismatched, and frontmatter-free outputs, not
+        // merely the irrelevant-record fast path. Preparation is unmeasured.
+        let outputs = [noise + "name: 'large-output-0'\n", noise + "name: another-skill\n", noise]
+        let records = try outputs.map { output in
+            try JSONSerialization.data(withJSONObject: [
+                "type": "response_item", "timestamp": "2026-10-01T10:00:00Z",
+                "payload": ["type": "function_call_output", "call_id": "read", "output": output]
+            ])
+        }
+        func decodeOutputs() -> [Int] {
+            records.map { record in
+                var state = UsageSourceState()
+                state.pendingEvents = ["read": pending]
+                var cache: [String: ParsedSkillIdentity] = [:]
+                var events: [ParsedUsageEvent] = []
+                var runs: [ParsedAgentRun] = []
+                SkillUsageRecordDecoder().parseLine(
+                    record, lineOffset: 0, sourcePath: "/fixture/session.jsonl", state: &state,
+                    identityCache: &cache, events: &events, runs: &runs
+                )
+                return events.count
+            }
+        }
+        XCTAssertEqual(assertLatencyBudget("large pending-read outputs", seconds: 1) {
+            decodeOutputs()
+        }, [1, 0, 30])
+        var result: [Int] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            result = decodeOutputs()
+        }
+        XCTAssertEqual(result, [1, 0, 30])
+    }
+
     func testPerformanceUsageSnapshotAggregation() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeUsageBackfillFixture(sessionCount: 60, readsPerSession: 300)

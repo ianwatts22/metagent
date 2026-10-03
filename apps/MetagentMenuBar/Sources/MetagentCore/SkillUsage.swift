@@ -300,7 +300,7 @@ private struct UsageSourceCatalogKey: Hashable, Sendable {
 
 private struct UsageSourceCatalogItem: Sendable {
     let path: String
-    let size: Int64
+    var size: Int64
     let modifiedAt: Double
     let fileIdentity: String
 
@@ -795,6 +795,21 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         }
     }
 
+    func overrideCachedSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        for key in entries.keys where key.databasePath == databasePath {
+            guard let entry = entries[key], let index = entry.items.firstIndex(where: {
+                URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == sourcePath
+            }) else { continue }
+            var items = entry.items
+            items[index].size = size
+            entries[key] = Entry(items: items, createdAt: entry.createdAt, watcher: entry.watcher)
+            return true
+        }
+        return false
+    }
+
     private func reusableItems(
         for key: UsageSourceCatalogKey,
         maximumAgeSeconds: TimeInterval
@@ -811,6 +826,14 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
 }
 
 extension MetagentCore {
+    static func overrideSkillUsageCachedSourceSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
+        UsageSourceCatalogCache.shared.overrideCachedSizeForTesting(
+            databasePath: URL(fileURLWithPath: databasePath).standardizedFileURL.path,
+            sourcePath: URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path,
+            size: size
+        )
+    }
+
     static func resetSkillUsageSourceCatalogForTesting() {
         UsageSourceCatalogCache.shared.resetForTesting()
     }
@@ -1993,13 +2016,18 @@ private final class SkillUsageStore {
         var sources: [UsageSource] = []
         sources.reserveCapacity(items.count)
         for item in items {
+            let checkpoint = checkpoints[item.path]
+            // Parsing can pass discovery-time EOF in an actively appended
+            // rollout. Verify stale metadata before treating that as truncation.
+            let cachedMetadataIsBehind = checkpoint.map {
+                $0.offset > item.size || $0.fileSize > item.size || $0.modifiedAt > item.modifiedAt
+            } ?? false
+            let metadata = cachedMetadataIsBehind
+                ? sourceMetadata(path: item.path)
+                : UsageSourceMetadata(size: item.size, modifiedAt: item.modifiedAt, fileIdentity: item.fileIdentity)
             appendSource(
                 path: item.path,
-                metadata: UsageSourceMetadata(
-                    size: item.size,
-                    modifiedAt: item.modifiedAt,
-                    fileIdentity: item.fileIdentity
-                ),
+                metadata: metadata,
                 checkpoints: checkpoints,
                 checkpointsByIdentity: checkpointsByIdentity,
                 sources: &sources
