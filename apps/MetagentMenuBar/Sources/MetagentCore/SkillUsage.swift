@@ -826,6 +826,19 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
 }
 
 extension MetagentCore {
+    static func skillUsageRefreshConnectionCountsForTesting(
+        options: SkillUsageRefreshOptions
+    ) throws -> (refresh: Int, cachePublication: Int) {
+        let store = try SkillUsageStore(path: options.databasePath)
+        let result = try store.refresh(options: options)
+        let refreshCount = store.databaseOpenCount
+        try store.saveLaunchSnapshot(
+            result.report.snapshot,
+            databaseGeneration: result.snapshotGeneration
+        )
+        return (refreshCount, store.databaseOpenCount - refreshCount)
+    }
+
     static func overrideSkillUsageCachedSourceSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
         UsageSourceCatalogCache.shared.overrideCachedSizeForTesting(
             databasePath: URL(fileURLWithPath: databasePath).standardizedFileURL.path,
@@ -1042,6 +1055,8 @@ struct SkillUsageLaunchCacheEnvelope: Codable, Equatable {
 private final class SkillUsageStore {
     private let path: URL
     private let fileManager = FileManager.default
+    private var refreshDatabase: OpaquePointer?
+    private(set) var databaseOpenCount = 0
 
     init(path: String?) throws {
         if let path {
@@ -1084,6 +1099,19 @@ private final class SkillUsageStore {
             return try deferredRefresh()
         }
         defer { flock(lockDescriptor, LOCK_UN) }
+
+        // Reuse one connection only while this refresh owns the process-shared
+        // lock. Reopening per file discards the page cache and repeatedly tears
+        // down SQLite's WAL watchers. Close before releasing the lock; later
+        // launch-cache generation checks must reopen the current database path
+        // so replacement detection never consults an old inode.
+        var sharedDatabase: OpaquePointer?
+        try open(&sharedDatabase)
+        refreshDatabase = sharedDatabase
+        defer {
+            refreshDatabase = nil
+            sqlite3_close(sharedDatabase)
+        }
 
         let parserGenerationChanged = try prepareParserVersion()
         if parserGenerationChanged {
@@ -1450,7 +1478,7 @@ private final class SkillUsageStore {
     private func claimMaintenanceLease(minimumIntervalSeconds: TimeInterval) throws -> String? {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let now = Date()
         try exec(db, "BEGIN IMMEDIATE;")
@@ -1502,7 +1530,7 @@ private final class SkillUsageStore {
     private func finishMaintenanceLease(id: String) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -1534,7 +1562,7 @@ private final class SkillUsageStore {
     func snapshot() throws -> SkillUsageSnapshot {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN;")
         do {
@@ -1553,7 +1581,7 @@ private final class SkillUsageStore {
     ) {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -1592,7 +1620,7 @@ private final class SkillUsageStore {
     ) {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN;")
         do {
@@ -1609,7 +1637,7 @@ private final class SkillUsageStore {
     fileprivate func currentLaunchGeneration() throws -> SkillUsageStoreGeneration {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         return try launchGeneration(db)
     }
@@ -1640,7 +1668,7 @@ private final class SkillUsageStore {
     func dailyCounts(calendar: Calendar) throws -> [SkillUsageDayCount] {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let table = try previousGenerationExists(db)
             ? previousSkillUsageEventsTable
@@ -1694,7 +1722,7 @@ private final class SkillUsageStore {
     ) throws -> AgentRunDurationStats {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
 
         let hasPrevious = try previousGenerationExists(db)
@@ -2441,7 +2469,7 @@ private final class SkillUsageStore {
     private func save(result: FileParseResult, source: UsageSource) throws -> Int {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2551,7 +2579,7 @@ private final class SkillUsageStore {
     private func loadSourceCheckpoints() throws -> [String: UsageSourceCheckpoint] {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var statement: OpaquePointer?
         try prepare(db, """
@@ -2594,7 +2622,7 @@ private final class SkillUsageStore {
     private func loadSourceState(path: String) throws -> UsageSourceState? {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var statement: OpaquePointer?
         try prepare(db, """
@@ -2640,7 +2668,7 @@ private final class SkillUsageStore {
     ) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2686,7 +2714,7 @@ private final class SkillUsageStore {
     private func resetSources(_ paths: [String]) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         try exec(db, "BEGIN IMMEDIATE;")
         do {
@@ -2764,7 +2792,7 @@ private final class SkillUsageStore {
     ) throws {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         var values = [
             "total_files": String(progress.totalFiles),
@@ -2807,7 +2835,7 @@ private final class SkillUsageStore {
     private func prepareParserVersion() throws -> Bool {
         var db: OpaquePointer?
         try open(&db)
-        defer { sqlite3_close(db) }
+        defer { closeDatabase(db) }
         try createSchema(db)
         let current = try scalarText(
             db,
@@ -2890,9 +2918,14 @@ private final class SkillUsageStore {
     }
 
     private func open(_ db: inout OpaquePointer?) throws {
+        if let refreshDatabase {
+            db = refreshDatabase
+            return
+        }
         guard sqlite3_open(path.path, &db) == SQLITE_OK else {
             throw databaseError(db, "open \(path.path)")
         }
+        databaseOpenCount += 1
         try exec(db, "PRAGMA journal_mode=WAL;")
         try exec(db, "PRAGMA synchronous=NORMAL;")
         try exec(db, "PRAGMA busy_timeout=2500;")
@@ -2901,6 +2934,11 @@ private final class SkillUsageStore {
         // of megabytes to disk on every read; persistent usage data remains in
         // the WAL-backed database above.
         try exec(db, "PRAGMA temp_store=MEMORY;")
+    }
+
+    private func closeDatabase(_ db: OpaquePointer?) {
+        guard db != refreshDatabase else { return }
+        sqlite3_close(db)
     }
 
     private func createSchema(_ db: OpaquePointer?) throws {

@@ -136,6 +136,10 @@ their requested duration, spending the parsing budget without doing work.
 The whole discovery/parse/persistence operation also has one process-shared
 lock, preventing a slower app/helper refresh from overwriting a newer cursor.
 Background work yields on contention; explicit refreshes wait off the UI thread.
+Each locked refresh reuses one SQLite connection across its file slices, avoiding
+repeated page-cache loss and WAL-watcher teardown. The connection is closed before
+the refresh lock is released; subsequent launch-cache generation checks reopen
+the database path so an old inode cannot hide a database replacement.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
 Cached discovery metadata older than a saved cursor is verified on disk before

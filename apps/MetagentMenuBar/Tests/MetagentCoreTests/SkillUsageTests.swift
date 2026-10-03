@@ -2287,6 +2287,28 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(warm.snapshot.totalInvocations, 1)
     }
 
+    func testRefreshReusesOneConnectionButCachePublicationReopensTheDatabase() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/connections", name: "connections")
+        for index in 0..<24 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: [
+                    "id": "connection-\(index)", "cwd": fixture.root.path
+                ]),
+                fixture.toolCall(callID: "connection-\(index)", command: "cat \(skill.path)")
+            ], to: fixture.sessions.appendingPathComponent("rollout-connection-\(index).jsonl"))
+        }
+        var options = fixture.options
+        options.maxFiles = 24
+        let counts = try MetagentCore.skillUsageRefreshConnectionCountsForTesting(options: options)
+        XCTAssertEqual(counts.refresh, 1, "one refresh must not reopen and tear down WAL state for every file")
+        XCTAssertGreaterThan(counts.cachePublication, 0, "post-refresh generation checks must reopen the current database path")
+        let snapshot = try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertEqual(snapshot.totalInvocations, 24)
+        XCTAssertEqual(snapshot.completedFiles, 24)
+    }
+
     func testContinuationReusesCatalogUntilInvalidatedAndForegroundForcesDiscovery() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

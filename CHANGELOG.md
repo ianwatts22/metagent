@@ -10,7 +10,7 @@ AGENTS.md for the release procedure.
 - Concurrent app and helper refreshes no longer overwrite newer history
   progress, and background work resumes from saved record boundaries.
 - Growing sessions no longer restart because of stale file metadata, and large
-  tool outputs are matched more efficiently.
+  tool outputs are matched more efficiently, with less database connection churn.
 
 ## v0.9.2 — 2026-10-02
 
