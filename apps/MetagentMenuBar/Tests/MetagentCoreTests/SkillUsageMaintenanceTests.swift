@@ -55,6 +55,23 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10_002), 43)
     }
 
+    func testLateTimerDeliveryCannotShortenTheNextLeaseInterval() {
+        var schedule = SkillUsageMaintenanceSchedule()
+        schedule.recordCompletion(wasDeferred: false)
+        let plan = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp, isEnergyConstrained: false, isOnExternalPower: true
+        )
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 0), 12)
+        let actualStart = 12 + plan.scheduleToleranceSeconds
+        schedule.recordCompletion(wasDeferred: false, startedAtUptime: actualStart)
+        let completedAt = actualStart + 2
+        let nextStart = completedAt + schedule.delayBeforeNextRun(plan: plan, nowUptime: completedAt)
+        XCTAssertEqual(nextStart - actualStart, plan.minimumDatabaseLeaseSeconds, accuracy: 0.000_001)
+        let deadline = schedule.nextDueUptime
+        schedule.recordCompletion(wasDeferred: true, startedAtUptime: nextStart + 1)
+        XCTAssertEqual(schedule.nextDueUptime, deadline, "a deferred writer must not claim a new cadence anchor")
+    }
+
     func testFirstContinuationPreservesCurrentForegroundAdjacentBudget() {
         let plan = SkillUsageMaintenancePlan.recommended(
             phase: .firstContinuation,

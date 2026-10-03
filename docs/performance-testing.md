@@ -120,7 +120,8 @@ The constrained lease is 180 seconds. Cadence is measured start-to-start, matchi
 the monotonic scheduler rather than adding each slice's work time to its delay. Only
 one process performs a maintenance slice in each lease interval; an explicit
 user refresh is never deferred. Deadlines use monotonic uptime and advance from
-the prior deadline so slice duration does not reduce sustained throughput. Missed
+the actual slice start, not completion, so work time and timer jitter do not
+silently shorten the next lease interval or reduce sustained throughput. Missed
 deadlines are rebased after sleep rather than replayed in a busy retry loop.
 Maintenance timers allow roughly one-ninth of their interval as tolerance, up
 to 30 seconds, so macOS can coalesce wakeups.

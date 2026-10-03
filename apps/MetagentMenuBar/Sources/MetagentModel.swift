@@ -1239,11 +1239,14 @@ final class MetagentModel: ObservableObject {
         Task {
             var shouldContinueMaintenance = false
             do {
-                let report = try await Task.detached(priority: .background) {
-                    try autoreleasepool {
+                let result = try await Task.detached(priority: .background) {
+                    let startedAtUptime = ProcessInfo.processInfo.systemUptime
+                    let report = try autoreleasepool {
                         try MetagentCore.refreshSkillUsage(options: refreshOptions)
                     }
+                    return (report: report, startedAtUptime: startedAtUptime)
                 }.value
+                let report = result.report
                 let previousUsage = usageSnapshot
                 let usageChanged = report.snapshot != previousUsage
                 let refreshesSkillPresentation = SkillTableUsageSignature(report.snapshot)
@@ -1256,7 +1259,10 @@ final class MetagentModel: ObservableObject {
                     skillTableRowRevision += 1
                 }
                 if maintenancePlan != nil {
-                    usageMaintenanceSchedule.recordCompletion(wasDeferred: report.wasDeferred)
+                    usageMaintenanceSchedule.recordCompletion(
+                        wasDeferred: report.wasDeferred,
+                        startedAtUptime: result.startedAtUptime
+                    )
                 }
                 usageStatusText = Self.usageStatus(report.snapshot)
                 shouldContinueMaintenance = report.hasMore

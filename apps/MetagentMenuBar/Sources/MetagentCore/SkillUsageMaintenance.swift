@@ -209,13 +209,19 @@ public struct SkillUsageMaintenanceSchedule: Sendable, Equatable {
 
     /// A deferred lease never materialized the reusable catalog, so it must
     /// not advance to the larger watcher-armed phase.
-    public mutating func recordCompletion(wasDeferred: Bool) {
+    public mutating func recordCompletion(
+        wasDeferred: Bool,
+        startedAtUptime: TimeInterval? = nil
+    ) {
         guard !wasDeferred else { return }
+        // Timer tolerance can deliver this slice late. Anchor the next lease
+        // interval to its actual start, not the earlier planned deadline.
+        if let startedAtUptime { nextDueUptime = startedAtUptime }
         phase = .watcherArmedCatchUp
     }
 
     /// Returns the delay until the next absolute deadline. After a completed
-    /// slice, the next deadline advances from the prior deadline rather than
+    /// slice, the next deadline advances from its recorded start rather than
     /// from completion time; if work overran the cadence, the delay bottoms at
     /// zero rather than drifting every subsequent slice.
     public mutating func delayBeforeNextRun(
