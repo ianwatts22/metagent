@@ -115,12 +115,18 @@ public final class MCPAuthenticationCancellation: @unchecked Sendable {
 /// exited child, or fail on a restricted host; those cases retain polling.
 final class SubprocessExitWaiter {
     private let processID: pid_t
+    private let timerFlags: UInt32
     private var queue: Int32 = -1
 
     var usesEventWaiting: Bool { queue >= 0 }
 
-    init(processID: pid_t, queueFactory: () -> Int32 = kqueue) {
+    init(
+        processID: pid_t,
+        queueFactory: () -> Int32 = kqueue,
+        timerFlags: UInt32 = UInt32(NOTE_NSECONDS | NOTE_MACH_CONTINUOUS_TIME)
+    ) {
         self.processID = processID
+        self.timerFlags = timerFlags
         let descriptor = queueFactory()
         guard descriptor >= 0 else { return }
         guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
@@ -154,14 +160,25 @@ final class SubprocessExitWaiter {
         // TimeInterval permits infinity and very large values. Bound only an
         // individual kernel wait, not the caller's timeout policy or deadline.
         let boundedInterval = min(interval, 86_400)
-        let seconds = Int(boundedInterval)
-        let nanoseconds = Int(min((boundedInterval - Double(seconds)) * 1_000_000_000, 999_999_999))
-        var timeout = timespec(tv_sec: seconds, tv_nsec: nanoseconds)
+        let nanoseconds = Int(max(1, (boundedInterval * 1_000_000_000).rounded(.up)))
+        // kevent's relative syscall timeout excludes system sleep. A one-shot
+        // continuous timer on this same queue preserves elapsed-time deadlines
+        // without adding periodic polling wakeups.
+        var timer = kevent(
+            ident: 0, filter: Int16(EVFILT_TIMER),
+            flags: UInt16(EV_ADD | EV_ONESHOT), fflags: timerFlags,
+            data: nanoseconds, udata: nil
+        )
         var event = kevent()
-        let count = kevent(queue, nil, 0, &event, 1, &timeout)
+        let count = kevent(queue, &timer, 1, &event, 1, nil)
         if count == 0 || (count < 0 && errno == EINTR) { return false }
-        guard count == 1, event.flags & UInt16(EV_ERROR) == 0,
-              event.ident == UInt(processID), event.filter == Int16(EVFILT_PROC),
+        guard count == 1, event.flags & UInt16(EV_ERROR) == 0 else {
+            close(queue)
+            queue = -1
+            return false
+        }
+        if event.ident == 0, event.filter == Int16(EVFILT_TIMER) { return false }
+        guard event.ident == UInt(processID), event.filter == Int16(EVFILT_PROC),
               event.fflags & UInt32(NOTE_EXIT) != 0
         else {
             close(queue)
@@ -170,6 +187,11 @@ final class SubprocessExitWaiter {
         }
         return true
     }
+}
+
+private func continuousSubprocessTime() -> TimeInterval {
+    // Unlike uptime, this monotonic clock advances during system sleep.
+    Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
 }
 
 func runSubprocess(
@@ -263,8 +285,8 @@ func runSubprocess(
     try errorHandle.close()
 
     let exitWaiter = SubprocessExitWaiter(processID: processID)
-    let deadline = ProcessInfo.processInfo.systemUptime + timeout
-    var nextOutputObservation = ProcessInfo.processInfo.systemUptime + 0.05
+    let deadline = continuousSubprocessTime() + timeout
+    var nextOutputObservation = continuousSubprocessTime() + 0.05
     var waitStatus: Int32 = 0
     func waitForExit(_ options: Int32) -> pid_t {
         var result: pid_t
@@ -278,25 +300,25 @@ func runSubprocess(
         return result
     }
     var exited = waitForExit(WNOHANG) == processID
-    while !exited && ProcessInfo.processInfo.systemUptime < deadline {
-        let now = ProcessInfo.processInfo.systemUptime
+    while !exited && continuousSubprocessTime() < deadline {
+        let now = continuousSubprocessTime()
         let observationDeadline = outputObserver == nil ? deadline : nextOutputObservation
         let reportedExit = exitWaiter.wait(upTo: min(deadline, observationDeadline) - now)
-        if let outputObserver, ProcessInfo.processInfo.systemUptime >= nextOutputObservation {
+        if let outputObserver, continuousSubprocessTime() >= nextOutputObservation {
             outputObserver(
                 (try? Data(contentsOf: outputURL)) ?? Data(),
                 (try? Data(contentsOf: errorURL)) ?? Data()
             )
-            nextOutputObservation = ProcessInfo.processInfo.systemUptime + 0.25
+            nextOutputObservation = continuousSubprocessTime() + 0.25
         }
         exited = waitForExit(reportedExit ? 0 : WNOHANG) == processID
     }
     let timedOut = !exited
     if timedOut {
         kill(-processID, SIGTERM)
-        let terminationDeadline = ProcessInfo.processInfo.systemUptime + 2
+        let terminationDeadline = continuousSubprocessTime() + 2
         var processGroupAlive = isProcessGroupAlive(processID)
-        while processGroupAlive && ProcessInfo.processInfo.systemUptime < terminationDeadline {
+        while processGroupAlive && continuousSubprocessTime() < terminationDeadline {
             Thread.sleep(forTimeInterval: 0.05)
             if !exited {
                 exited = waitForExit(WNOHANG) == processID

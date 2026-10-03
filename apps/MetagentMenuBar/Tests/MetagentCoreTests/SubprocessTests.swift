@@ -16,15 +16,48 @@ final class SubprocessTests: XCTestCase {
         let descriptor = open("/dev/null", O_RDONLY)
         XCTAssertGreaterThanOrEqual(descriptor, 0)
         let waiter = SubprocessExitWaiter(processID: getpid(), queueFactory: { descriptor })
+        let descriptorResult = fcntl(descriptor, F_GETFD)
+        let descriptorError = errno
         XCTAssertFalse(waiter.usesEventWaiting)
-        XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
-        XCTAssertEqual(errno, EBADF)
+        XCTAssertEqual(descriptorResult, -1)
+        XCTAssertEqual(descriptorError, EBADF)
+        XCTAssertFalse(waiter.wait(upTo: 0.001))
+    }
+
+    func testTimerExpirationDoesNotReportProcessExitAndCanRearm() throws {
+        let waiter = SubprocessExitWaiter(processID: getpid())
+        _ = waiter.wait(upTo: 0.001)
+        try XCTSkipUnless(waiter.usesEventWaiting, "Process/timer events unavailable on this host.")
+        let started = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        XCTAssertFalse(waiter.wait(upTo: 0.015))
+        XCTAssertTrue(waiter.usesEventWaiting)
+        XCTAssertFalse(waiter.wait(upTo: 0.02))
+        XCTAssertTrue(waiter.usesEventWaiting)
+        XCTAssertGreaterThanOrEqual(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - started, 30_000_000)
+    }
+
+    func testTimerRegistrationFailureClosesDescriptorAndRetainsPolling() throws {
+        let descriptor = kqueue()
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        // Mutually exclusive time units make this a rejected timer change.
+        let waiter = SubprocessExitWaiter(
+            processID: getpid(), queueFactory: { descriptor },
+            timerFlags: UInt32(NOTE_SECONDS | NOTE_NSECONDS | NOTE_MACH_CONTINUOUS_TIME)
+        )
+        try XCTSkipUnless(waiter.usesEventWaiting, "Process events unavailable on this host.")
+        XCTAssertFalse(waiter.wait(upTo: 0.001))
+        let descriptorResult = fcntl(descriptor, F_GETFD)
+        let descriptorError = errno
+        XCTAssertFalse(waiter.usesEventWaiting)
+        XCTAssertEqual(descriptorResult, -1)
+        XCTAssertEqual(descriptorError, EBADF)
         XCTAssertFalse(waiter.wait(upTo: 0.001))
     }
 
     func testInterruptedExitEventWaitCanResumeWithoutLosingQueue() throws {
         let waiter = SubprocessExitWaiter(processID: getpid())
-        try XCTSkipUnless(waiter.usesEventWaiting, "Process events unavailable on this host.")
+        _ = waiter.wait(upTo: 0.001)
+        try XCTSkipUnless(waiter.usesEventWaiting, "Process/timer events unavailable on this host.")
         var action = sigaction()
         var original = sigaction()
         sigemptyset(&action.sa_mask)
@@ -128,8 +161,10 @@ final class SubprocessTests: XCTestCase {
         while kill(child, 0) == 0 && ProcessInfo.processInfo.systemUptime < deadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
-        XCTAssertEqual(kill(child, 0), -1)
-        XCTAssertEqual(errno, ESRCH)
+        let childResult = kill(child, 0)
+        let childError = errno
+        XCTAssertEqual(childResult, -1)
+        XCTAssertEqual(childError, ESRCH)
     }
 
     func testCancellationBeforeStartAndWhileRunningRemainsPrompt() throws {
@@ -157,10 +192,10 @@ final class SubprocessTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["METAGENT_RUN_SUBPROCESS_PERFORMANCE_TESTS"] == "1" else {
             return
         }
-        try XCTSkipUnless(
-            SubprocessExitWaiter(processID: getpid()).usesEventWaiting,
-            "Kernel process events unavailable; the correctness fallback retains polling."
-        )
+        let availability = SubprocessExitWaiter(processID: getpid())
+        _ = availability.wait(upTo: 0.001)
+        try XCTSkipUnless(availability.usesEventWaiting,
+            "Kernel process/timer events unavailable; the correctness fallback retains polling.")
         let started = ProcessInfo.processInfo.systemUptime
         for _ in 0..<40 {
             let result = try runSubprocess(
