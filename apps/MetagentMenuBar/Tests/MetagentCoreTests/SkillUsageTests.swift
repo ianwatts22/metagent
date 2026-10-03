@@ -1486,6 +1486,36 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(Set(summaries.map(\.id)).count, 2)
     }
 
+    func testTimeBoundedSliceCheckpointsWholeRecordsAndResumesWithoutReplay() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let skill = try fixture.makeSkill(at: "workspace/.agents/skills/timed", name: "timed")
+        for index in 0..<2 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "timed-\(index)", "cwd": fixture.root.path]),
+                fixture.toolCall(callID: "timed-read-\(index)", command: "cat \(skill.path)")
+            ], to: fixture.sessions.appendingPathComponent("rollout-timed-\(index).jsonl"))
+        }
+        var bounded = fixture.options
+        bounded.maximumDurationSeconds = 0.001
+        bounded.throttleEveryBytes = 1
+        bounded.throttleDelayMilliseconds = 1
+        let first = try MetagentCore.refreshSkillUsage(options: bounded)
+        XCTAssertGreaterThan(first.processedBytesAdvanced, 0)
+        XCTAssertTrue(first.hasMore)
+        XCTAssertEqual(first.filesRead, 1, "the deadline applies across the entire slice, not separately per file")
+        XCTAssertTrue(first.warnings.isEmpty, "a cooperative yield must not be reported as a malformed or stalled source")
+
+        let resumed = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertFalse(resumed.hasMore)
+        XCTAssertEqual(resumed.snapshot.totalInvocations, 2)
+        XCTAssertEqual(resumed.snapshot.processedBytes, resumed.snapshot.totalBytes)
+        let unchanged = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        XCTAssertEqual(unchanged.bytesRead, 0)
+        XCTAssertEqual(unchanged.invocationsAdded, 0)
+        XCTAssertEqual(unchanged.snapshot.totalInvocations, 2)
+    }
+
     func testThrottleCarriesAcrossSmallFiles() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -2026,6 +2056,38 @@ final class SkillUsageTests: XCTestCase {
         let manual = try MetagentCore.refreshSkillUsage(options: manualOptions)
         XCTAssertFalse(manual.wasDeferred)
         XCTAssertEqual(manual.filesRead, 1)
+    }
+
+    func testMaintenanceCadenceUsesSliceStartRatherThanFinish() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        for index in 0..<3 {
+            try fixture.write([
+                fixture.line(type: "session_meta", payload: ["id": "cadence-\(index)", "cwd": fixture.root.path])
+            ], to: fixture.sessions.appendingPathComponent("rollout-cadence-\(index).jsonl"))
+        }
+        var options = fixture.options
+        options.maxFiles = 1
+        options.minimumMaintenanceIntervalSeconds = 60
+        let first = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertFalse(first.wasDeferred)
+        XCTAssertTrue(first.hasMore)
+
+        // Model a slice that started more than one cadence ago but has only
+        // just finished. Its finish time must not defer the next deadline.
+        try fixture.executeSQL("""
+        UPDATE skill_usage_metadata SET value = '2000-01-01T00:00:00Z'
+        WHERE key = 'maintenance_started_at';
+        """)
+        let next = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertFalse(next.wasDeferred)
+        XCTAssertGreaterThan(next.processedBytesAdvanced, 0)
+
+        // A pre-upgrade store without the new key still honors its recent
+        // completion timestamp instead of bypassing the shared lane.
+        try fixture.executeSQL("DELETE FROM skill_usage_metadata WHERE key = 'maintenance_started_at';")
+        let legacy = try MetagentCore.refreshSkillUsage(options: options)
+        XCTAssertTrue(legacy.wasDeferred)
     }
 
     func testMaintenanceSlicesDiscoverNewSessionFilesImmediately() throws {

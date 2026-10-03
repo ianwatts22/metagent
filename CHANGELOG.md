@@ -3,6 +3,13 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.10.0 — 2026-10-02
+
+- History catches up faster when plugged in, with short paced slices and
+  conservative battery, Low Power Mode, and thermal limits.
+- Concurrent app and helper refreshes no longer overwrite newer history
+  progress, and background work resumes from saved record boundaries.
+
 ## v0.9.2 — 2026-10-02
 
 - Background history progress stays in the toolbar, with details on click,

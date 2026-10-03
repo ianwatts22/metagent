@@ -102,17 +102,24 @@ An explicit refresh reads at most 8 MiB or 12 session files before returning.
 If history remains, the app continues with background maintenance instead of
 waiting for another launch. The first normal-power continuation reads at most
 8 MiB or 12 files after 45 seconds. Once that continuation has built the reusable
-source catalog, catch-up consolidates three slices into one 24 MiB or 36-file
-wake every 135 seconds. The byte and file rates are unchanged, but two of every
-three repeated database, snapshot, cache, and UI update cycles disappear. Low
-Power Mode or serious thermal pressure uses 2 MiB or 4 files every 180 seconds.
+source catalog, external-power catch-up uses up to 32 MiB or 48 files every 12
+seconds, with a two-second cooperative parsing budget. The deadline is checked
+between complete records; discovery, persistence, aggregation, and one indivisible
+record can extend total refresh time. This is a 15× scheduled byte-rate ceiling
+versus the previous 24 MiB/135-second policy, not a guaranteed live throughput.
+Battery, unknown power source, or fair thermal pressure retains that previous
+24 MiB/36-file/135-second policy. Low Power Mode or serious thermal pressure uses
+2 MiB or 4 files every 180 seconds. Power and thermal state are checked again at
+timer execution, so a queued fast slice is not carried onto battery power.
 
 Production and dev builds share one SQLite lease. The normal-power lease remains
-45 seconds even during the 135-second catch-up cadence, so fewer timer wakeups do
-not lengthen cross-process exclusion. The constrained lease is 180 seconds. Only
+45 seconds during battery catch-up, and 12 seconds for external-power catch-up.
+The constrained lease is 180 seconds. Cadence is measured start-to-start, matching
+the monotonic scheduler rather than adding each slice's work time to its delay. Only
 one process performs a maintenance slice in each lease interval; an explicit
 user refresh is never deferred. Deadlines use monotonic uptime and advance from
-the prior deadline so slice duration does not reduce sustained throughput.
+the prior deadline so slice duration does not reduce sustained throughput. Missed
+deadlines are rebased after sleep rather than replayed in a busy retry loop.
 Maintenance timers allow roughly one-ninth of their interval as tolerance, up
 to 30 seconds, so macOS can coalesce wakeups.
 Within each background slice, normal maintenance yields for 25 milliseconds
@@ -120,10 +127,16 @@ after each 512 KiB and constrained maintenance yields for 50 milliseconds after
 each 256 KiB. This adds cooperative pacing between parsed records without
 throttling explicit user refreshes or reducing the amount of history each
 maintenance wake processes.
-This keeps the current index moving toward complete coverage without restoring
-the old sustained full-core parser loop. The app still prioritizes the most
-recent session files, and an explicit refresh remains immediate; the slower
-cadence primarily affects convergence of old retained history.
+The whole discovery/parse/persistence operation also has one process-shared
+lock, preventing a slower app/helper refresh from overwriting a newer cursor.
+Background work yields on contention; explicit refreshes wait off the UI thread.
+All writers must use the updated implementation for this protection to apply.
+No parser-generation bump or history reset is needed for this policy change.
+The app still prioritizes the most recent session files, stops maintenance when
+complete, and keeps explicit refreshes unthrottled. The release-mode paced AC
+slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
+separately from the scheduled rate; running-app measurements remain the
+authority for live throughput and foreground responsiveness.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests

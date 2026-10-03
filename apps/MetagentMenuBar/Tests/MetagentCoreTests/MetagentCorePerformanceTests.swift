@@ -453,6 +453,53 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(reports.last?.snapshot.completedFiles, sourceCount)
     }
 
+    func testPerformanceExternalPowerUsageSlice() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-external-power")
+        let sessions = root.appendingPathComponent("sessions")
+        try writeUsageNoise(
+            minimumBytes: 64 * 1_024 * 1_024,
+            to: sessions.appendingPathComponent("rollout-large.jsonl")
+        )
+        let plan = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false,
+            isOnExternalPower: true
+        )
+        // Allow XCTest's unreported calibration invocations as well as the
+        // requested samples, just like the other cold-store benchmarks.
+        let databases = (0..<25).map {
+            root.appendingPathComponent("usage-\($0).sqlite").path
+        }
+        // Prime each disposable store/catalog outside the measured slice. No
+        // real session history or user database participates in this fixture.
+        for database in databases {
+            _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                sessionRoots: [sessions.path], databasePath: database,
+                maxBytes: 1, maxFiles: 1, reusesSourceCatalog: true
+            ))
+        }
+        func runSlice(database: String) throws -> SkillUsageRefreshReport {
+            var options = plan.refreshOptions(databasePath: database)
+            options.sessionRoots = [sessions.path]
+            return try MetagentCore.refreshSkillUsage(options: options)
+        }
+        let preflight = try assertLatencyBudget("paced AC backfill slice", seconds: 4) {
+            try runSlice(database: databases[0])
+        }
+        XCTAssertGreaterThan(preflight.processedBytesAdvanced, 0)
+        XCTAssertLessThanOrEqual(preflight.bytesRead, plan.maxBytes)
+        XCTAssertTrue(preflight.hasMore)
+        var iteration = 1
+        var reports: [SkillUsageRefreshReport] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            reports.append(try! runSlice(database: databases[iteration]))
+            iteration += 1
+        }
+        print("[Metagent performance] paced AC slice bytes: \(reports.map(\.processedBytesAdvanced)); cadence: \(plan.scheduleDelaySeconds)s")
+        XCTAssertTrue(reports.allSatisfy { $0.processedBytesAdvanced > 0 && !$0.wasDeferred && $0.warnings.isEmpty })
+    }
+
     func testPerformanceUsageSnapshotAggregation() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeUsageBackfillFixture(sessionCount: 60, readsPerSession: 300)

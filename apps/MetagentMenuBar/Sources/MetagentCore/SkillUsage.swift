@@ -13,6 +13,9 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
     public var maxRecordBytes: Int64
     public var throttleEveryBytes: Int64
     public var throttleDelayMilliseconds: Int
+    /// Cooperative wall-time budget for parsing, checked between complete
+    /// records. Zero leaves explicit refreshes governed only by byte/file caps.
+    public var maximumDurationSeconds: TimeInterval
     /// Zero means an explicit foreground refresh. A positive value makes this
     /// a cooperative background refresh: only one app process may claim the
     /// shared database during the interval.
@@ -33,6 +36,7 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         maxRecordBytes: Int64 = 8 * 1_024 * 1_024,
         throttleEveryBytes: Int64 = 0,
         throttleDelayMilliseconds: Int = 0,
+        maximumDurationSeconds: TimeInterval = 0,
         minimumMaintenanceIntervalSeconds: TimeInterval = 0,
         reusesSourceCatalog: Bool = false,
         sourceCatalogMaximumAgeSeconds: TimeInterval = 15 * 60
@@ -44,6 +48,7 @@ public struct SkillUsageRefreshOptions: Sendable, Equatable {
         self.maxRecordBytes = max(1, maxRecordBytes)
         self.throttleEveryBytes = max(0, throttleEveryBytes)
         self.throttleDelayMilliseconds = max(0, throttleDelayMilliseconds)
+        self.maximumDurationSeconds = max(0, maximumDurationSeconds)
         self.minimumMaintenanceIntervalSeconds = max(0, minimumMaintenanceIntervalSeconds)
         self.reusesSourceCatalog = reusesSourceCatalog
         self.sourceCatalogMaximumAgeSeconds = max(0, sourceCatalogMaximumAgeSeconds)
@@ -1178,9 +1183,13 @@ private final class SkillUsageStore {
         var invocationsAdded = 0
         var warnings: [String] = []
         var identityCache: [String: ParsedSkillIdentity] = [:]
+        let deadline = options.maximumDurationSeconds > 0
+            ? ContinuousClock.now.advanced(by: .seconds(options.maximumDurationSeconds))
+            : nil
 
         for sourceIndex in candidateIndices {
             guard filesRead < options.maxFiles, bytesRead < options.maxBytes else { break }
+            if bytesRead > 0, let deadline, ContinuousClock.now >= deadline { break }
             let source = sources[sourceIndex]
             let state = try loadSourceState(path: source.path) ?? UsageSourceState()
             let remainingBudget = max(1, options.maxBytes - bytesRead)
@@ -1192,6 +1201,7 @@ private final class SkillUsageStore {
                 throttleEveryBytes: options.throttleEveryBytes,
                 throttleDelayMilliseconds: options.throttleDelayMilliseconds,
                 throttleOffset: bytesRead,
+                deadline: deadline,
                 identityCache: &identityCache
             )
             let added = try save(result: result, source: source)
@@ -1422,21 +1432,36 @@ private final class SkillUsageStore {
         let now = Date()
         try exec(db, "BEGIN IMMEDIATE;")
         do {
-            let lastFinished = try scalarText(
+            // The scheduler uses start-to-start deadlines. Measuring the lane
+            // from completion would reject every next fast slice (its wait is
+            // cadence minus work time), silently halving sustained throughput.
+            // Older stores have only the completion timestamp; honor it until
+            // the first updated writer records a start.
+            let lastStarted = try scalarText(
                 db,
-                "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_finished_at';"
+                """
+                SELECT COALESCE(
+                    (SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_started_at'),
+                    (SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_finished_at')
+                );
+                """
             ).flatMap(MetagentCore.parseSkillUsageTimestamp)
             let leaseExpires = try scalarText(
                 db,
                 "SELECT value FROM \(skillUsageMetadataTable) WHERE key = 'maintenance_lease_expires_at';"
             ).flatMap(MetagentCore.parseSkillUsageTimestamp)
-            if lastFinished.map({ now.timeIntervalSince($0) < minimumIntervalSeconds }) == true
+            if lastStarted.map({ now.timeIntervalSince($0) < minimumIntervalSeconds }) == true
                 || leaseExpires.map({ $0 > now }) == true
             {
                 try exec(db, "COMMIT;")
                 return nil
             }
             let leaseID = UUID().uuidString.lowercased()
+            try upsertMetadata(
+                db,
+                key: "maintenance_started_at",
+                value: iso8601Formatter.string(from: now)
+            )
             try upsertMetadata(
                 db,
                 key: "maintenance_lease_expires_at",
@@ -2232,6 +2257,7 @@ private final class SkillUsageStore {
         throttleEveryBytes: Int64,
         throttleDelayMilliseconds: Int,
         throttleOffset: Int64,
+        deadline: ContinuousClock.Instant?,
         identityCache: inout [String: ParsedSkillIdentity]
     ) -> FileParseResult {
         guard let file = fopen(source.path, "r") else {
@@ -2282,6 +2308,10 @@ private final class SkillUsageStore {
             ? ((throttleOffset / throttleEveryBytes) + 1) * throttleEveryBytes
             : 0
         while true {
+            // Finish at least one record even with a tiny time budget, then
+            // checkpoint at a record boundary so the next slice never replays
+            // already committed events or mistakes a yield for a stalled file.
+            if bytesRead > 0, let deadline, ContinuousClock.now >= deadline { break }
             let lineStart = Int64(ftello(file))
             let remainingLineBudget = maxBytes - bytesRead
             guard remainingLineBudget > 0 else { break }

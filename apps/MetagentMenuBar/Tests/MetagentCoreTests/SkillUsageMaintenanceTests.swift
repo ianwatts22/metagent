@@ -2,6 +2,59 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillUsageMaintenanceTests: XCTestCase {
+    func testExternalPowerCatchUpIsFasterWithoutRemovingCooperativeLimits() {
+        let battery = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false
+        )
+        let external = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false,
+            isOnExternalPower: true
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            Double(external.maxBytes) / external.scheduleDelaySeconds,
+            10 * Double(battery.maxBytes) / battery.scheduleDelaySeconds
+        )
+        XCTAssertEqual(external.maxBytes, 32 * 1_024 * 1_024)
+        XCTAssertEqual(external.maxFiles, 48)
+        XCTAssertEqual(external.minimumDatabaseLeaseSeconds, external.scheduleDelaySeconds)
+        XCTAssertEqual(external.maximumDurationSeconds, 2)
+        XCTAssertEqual(external.throttleEveryBytes, battery.throttleEveryBytes)
+        XCTAssertEqual(external.throttleDelayMilliseconds, battery.throttleDelayMilliseconds)
+        XCTAssertEqual(external.refreshOptions().maximumDurationSeconds, 2)
+        XCTAssertEqual(external.clampedToTail(remainingBytes: 100, remainingFiles: 1)?.maximumDurationSeconds, 2)
+
+        XCTAssertEqual(
+            SkillUsageMaintenancePlan.recommended(
+                phase: .firstContinuation,
+                isEnergyConstrained: false,
+                isOnExternalPower: true
+            ),
+            SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false),
+            "external power must not enlarge foreground-adjacent launch work"
+        )
+        XCTAssertEqual(
+            SkillUsageMaintenancePlan.recommended(
+                phase: .watcherArmedCatchUp,
+                isEnergyConstrained: true,
+                isOnExternalPower: true
+            ),
+            SkillUsageMaintenancePlan.recommended(isEnergyConstrained: true),
+            "low power and thermal limits take precedence over AC power"
+        )
+    }
+
+    func testMissedDeadlinesDoNotReplayASleepBacklog() {
+        var schedule = SkillUsageMaintenanceSchedule()
+        let plan = SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 0), 45)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10_000), 0)
+        XCTAssertEqual(schedule.nextDueUptime, 10_000)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10_002), 43)
+    }
+
     func testFirstContinuationPreservesCurrentForegroundAdjacentBudget() {
         let plan = SkillUsageMaintenancePlan.recommended(
             phase: .firstContinuation,
@@ -159,6 +212,7 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(options.throttleEveryBytes, 0)
         XCTAssertEqual(options.throttleDelayMilliseconds, 0)
         XCTAssertEqual(options.minimumMaintenanceIntervalSeconds, 0)
+        XCTAssertEqual(options.maximumDurationSeconds, 0)
         XCTAssertFalse(options.reusesSourceCatalog)
     }
 

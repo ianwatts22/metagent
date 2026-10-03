@@ -1299,24 +1299,30 @@ final class MetagentModel: ObservableObject {
         }
     }
 
-    private func scheduleUsageMaintenance() {
-        usageMaintenanceTask?.cancel()
+    private func currentUsageMaintenancePlan() -> SkillUsageMaintenancePlan? {
         let processInfo = ProcessInfo.processInfo
         let isThermallyConstrained = processInfo.thermalState == .serious
             || processInfo.thermalState == .critical
         let remainingBytes = max(0, usageSnapshot.totalBytes - usageSnapshot.processedBytes)
         let remainingFiles = max(0, usageSnapshot.totalFiles - usageSnapshot.completedFiles)
-        guard let plan = usageMaintenanceSchedule.plan(
+        return usageMaintenanceSchedule.plan(
             isEnergyConstrained: processInfo.isLowPowerModeEnabled || isThermallyConstrained,
+            isOnExternalPower: processInfo.thermalState == .nominal
+                && SkillUsageMaintenancePlan.hasExternalPower(),
             remainingBytes: remainingBytes,
             remainingFiles: remainingFiles
-        ) else {
+        )
+    }
+
+    private func scheduleUsageMaintenance() {
+        usageMaintenanceTask?.cancel()
+        guard let plan = currentUsageMaintenancePlan() else {
             usageMaintenanceTask = nil
             return
         }
         let delay = usageMaintenanceSchedule.delayBeforeNextRun(
             plan: plan,
-            nowUptime: processInfo.systemUptime
+            nowUptime: ProcessInfo.processInfo.systemUptime
         )
         usageMaintenanceTask = Task { [weak self] in
             try? await Task.sleep(
@@ -1325,7 +1331,11 @@ final class MetagentModel: ObservableObject {
             )
             guard !Task.isCancelled, let self else { return }
             usageMaintenanceTask = nil
-            if isRunning || isSkillEvaluating || isCodebaseSizeRefreshing {
+            // Power/thermal state can change while the timer sleeps. Never
+            // carry a fast AC slice onto battery or into thermal pressure.
+            if currentUsageMaintenancePlan() != plan
+                || isRunning || isSkillEvaluating || isCodebaseSizeRefreshing
+            {
                 usageMaintenanceSchedule.resetDeadline()
                 scheduleUsageMaintenance()
                 return
