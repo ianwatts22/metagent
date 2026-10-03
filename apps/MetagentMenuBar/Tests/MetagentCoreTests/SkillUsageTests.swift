@@ -388,6 +388,27 @@ final class SkillUsageTests: XCTestCase {
         ))
     }
 
+    func testDelayedOwnedDirectoryCreationIsIgnoredOnlyWhileItsIdentityMatches() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let directory = fixture.sessions.appendingPathComponent("metagent-state")
+        let oldDirectory = fixture.root.appendingPathComponent("old-metagent-state")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let database = directory.appendingPathComponent("usage.sqlite")
+        let result = try MetagentCore.skillUsageOwnedDirectoryCreationForTesting(databasePath: database.path) {
+            try FileManager.default.moveItem(at: directory, to: oldDirectory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        XCTAssertTrue(result.originalIgnored, "a late creation notice for the already-watched directory is not a new source")
+        XCTAssertFalse(result.replacementIgnored, "a recreated directory must never reuse the old catalog")
+        for flag in [kFSEventStreamEventFlagItemRemoved, kFSEventStreamEventFlagItemRenamed, kFSEventStreamEventFlagItemCloned] {
+            XCTAssertTrue(MetagentCore.skillUsageCatalogInvalidatesPathEventForTesting(
+                roots: [fixture.sessions.path], databasePath: database.path,
+                eventPath: directory.path, flags: FSEventStreamEventFlags(flag)
+            ))
+        }
+    }
+
     func testContinuationCatalogArmsOnlyAfterQueuedCallbacksDrain() {
         XCTAssertTrue(
             MetagentCore.skillUsageCatalogArmingDrainsQueuedCallbacksForTesting(),

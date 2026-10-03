@@ -367,6 +367,7 @@ private func skillUsageLaunchCacheURL(for databaseURL: URL) -> URL {
 private struct UsageSourceCatalogOwnedPaths: Sendable {
     private let exactPaths: Set<String>
     private let stateDirectoryPath: String
+    private let stateDirectoryIdentity: String?
     private let temporaryCachePrefix: String
 
     init(databasePath: String) {
@@ -384,6 +385,7 @@ private struct UsageSourceCatalogOwnedPaths: Sendable {
         stateDirectoryPath = canonicalUsageWatchPaths([
             databaseURL.deletingLastPathComponent().path,
         ]).first ?? databaseURL.deletingLastPathComponent().path
+        stateDirectoryIdentity = usageDirectoryIdentity(stateDirectoryPath)
         temporaryCachePrefix = canonicalUsageWatchPaths([
             cacheURL.deletingLastPathComponent().appendingPathComponent(
                 ".\(cacheURL.lastPathComponent)."
@@ -405,14 +407,35 @@ private struct UsageSourceCatalogOwnedPaths: Sendable {
                 kFSEventStreamEventFlagItemRenamed |
                 kFSEventStreamEventFlagItemCloned
         )
-        // File-events mode emits the changed child separately. Ignore only the
-        // directory bookkeeping that accompanies our own atomic SQLite/cache
-        // writes; structural changes and dropped streams remain authoritative.
-        return flags & structuralFlags == 0
+        if flags & structuralFlags == 0 { return true }
+        // A delayed creation notice can describe a directory that already
+        // existed when the watcher was armed.
+        // Ignore only a delayed creation for the exact same directory inode.
+        // Removal, rename, clone, replacement, and dropped streams still force
+        // discovery, and changed children have their own file-mode events.
+        let destructiveFlags = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagItemRemoved |
+                kFSEventStreamEventFlagItemRenamed |
+                kFSEventStreamEventFlagItemCloned
+        )
+        guard flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated) != 0,
+              flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0,
+              flags & destructiveFlags == 0,
+              let stateDirectoryIdentity
+        else { return false }
+        return usageDirectoryIdentity(stateDirectoryPath) == stateDirectoryIdentity
     }
 }
 
 private let stableSystemSymlinkPaths: Set<String> = ["/etc", "/tmp", "/var"]
+
+private func usageDirectoryIdentity(_ path: String) -> String? {
+    var metadata = stat()
+    guard lstat(path, &metadata) == 0,
+          metadata.st_mode & S_IFMT == S_IFDIR
+    else { return nil }
+    return "\(metadata.st_dev):\(metadata.st_ino):\(metadata.st_birthtimespec.tv_sec):\(metadata.st_birthtimespec.tv_nsec)"
+}
 
 private func usagePathContainsMutableSymlink(_ path: String) -> Bool {
     let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
@@ -926,6 +949,18 @@ extension MetagentCore {
         state.arm(baselineEventID: 100)
         state.handle(flags, eventID: 101, eventPath: eventPath)
         return state.isDirty
+    }
+
+    static func skillUsageOwnedDirectoryCreationForTesting(
+        databasePath: String,
+        replaceDirectory: () throws -> Void
+    ) rethrows -> (originalIgnored: Bool, replacementIgnored: Bool) {
+        let owned = UsageSourceCatalogOwnedPaths(databasePath: databasePath)
+        let directory = URL(fileURLWithPath: databasePath).deletingLastPathComponent().path
+        let flags = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsDir)
+        let originalIgnored = owned.contains(directory, flags: flags)
+        try replaceDirectory()
+        return (originalIgnored, owned.contains(directory, flags: flags))
     }
 
     static func canonicalSkillUsageWatchPathsForTesting(_ paths: [String]) -> [String] {

@@ -140,6 +140,9 @@ Each locked refresh reuses one SQLite connection across its file slices, avoidin
 repeated page-cache loss and WAL-watcher teardown. The connection is closed before
 the refresh lock is released; subsequent launch-cache generation checks reopen
 the database path so an old inode cannot hide a database replacement.
+Delayed creation notices for an already-owned state directory are ignored only
+while its device, inode, and birth time still match; real replacement, removal,
+rename, and cloned-directory events still invalidate the catalog.
 All writers must use the updated implementation for this protection to apply.
 No parser-generation bump or history reset is needed for this policy change.
 Cached discovery metadata older than a saved cursor is verified on disk before
