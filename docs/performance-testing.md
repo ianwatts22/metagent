@@ -191,6 +191,9 @@ with unchanged modification dates, script hashes, and retargeted projections.
 Deterministic tests require one bundle read per canonical identity and retain
 the existing inner-symlink containment rules. This is a core inventory benchmark,
 not a full Reload, input-to-present, settled-idle, or energy measurement.
+Content character/word counters use one pass without building a discarded word
+array. The reference tests retain Swift `Character` grapheme and whitespace
+semantics, including combining marks, emoji, CRLF, and Unicode separators.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests

@@ -3,6 +3,22 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillInventoryStatsTests: XCTestCase {
+    func testTextCountsPreserveWhitespaceAndUnicodeGraphemeSemantics() {
+        let inputs = [
+            "", "   \t\n\r\n", "single", " first\tsecond\nthird ",
+            "café 東京 👩🏽‍💻 e\u{301} 🇺🇸", "one\u{00a0}two\u{2003}three",
+            "white\u{2003}\u{301}space", "a\r\nb\u{2028}c\u{2029}d",
+            "zero\u{0}width\u{200b}joiner\u{2060}text",
+            String(repeating: "ASCII words with tabs\tand lines\n", count: 1_000),
+            String(repeating: "Unicode café 東京 👩🏽‍💻 e\u{301}\r\n", count: 1_000),
+        ]
+        for text in inputs {
+            let counts = skillTextCounts(text)
+            XCTAssertEqual(counts.characters, text.count)
+            XCTAssertEqual(counts.words, text.split(whereSeparator: \.isWhitespace).count)
+        }
+    }
+
     func testOneBundleReadPreservesEveryRepresentationAndContainmentResult() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-shared-stats")
         let bundle = try makeBundle(in: root)

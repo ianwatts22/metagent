@@ -805,8 +805,7 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
         categorizeSkillFile(root: root, path: entry, stats: &stats, otherFolders: &otherFolders)
         guard isSkillTextFile(entry) else { continue }
         guard let text = try? String(contentsOf: entry, encoding: .utf8) else { continue }
-        let characters = text.count
-        let words = text.split(whereSeparator: \.isWhitespace).count
+        let (characters, words) = skillTextCounts(text)
         stats.textFileCount += 1
         stats.characterCount += characters
         stats.wordCount += words
@@ -817,6 +816,19 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             stats.skillFileWordCount += words
         }
     }
+}
+
+func skillTextCounts(_ text: String) -> (characters: Int, words: Int) {
+    var characters = 0
+    var words = 0
+    var inWord = false
+    for character in text {
+        characters += 1
+        let whitespace = character.isWhitespace
+        if !whitespace, !inWord { words += 1 }
+        inWord = !whitespace
+    }
+    return (characters, words)
 }
 
 func skillDescription(from skillText: String) -> String? {
