@@ -47,6 +47,55 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.projects.flatMap(\.skills).count, 192)
     }
 
+    func testPerformanceProjectedSkillInventory() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-projections")
+        let canonical = root.appendingPathComponent(".agents/skills")
+        let claude = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let reference = String(repeating: "Unicode café 東京 reference text with scripts/demo.py instructions.\n", count: 128)
+        for index in 0..<48 {
+            let bundle = canonical.appendingPathComponent("skill-\(index)")
+            try writeSkillFixture(at: bundle, name: "skill-\(index)", body: "Run scripts/demo.py.")
+            for directory in ["references", "scripts", "agents"] {
+                try FileManager.default.createDirectory(
+                    at: bundle.appendingPathComponent(directory), withIntermediateDirectories: true
+                )
+            }
+            for document in 0..<6 {
+                try reference.write(
+                    to: bundle.appendingPathComponent("references/guide-\(document).md"),
+                    atomically: true, encoding: .utf8
+                )
+            }
+            try "#!/usr/bin/env python3\nprint('fixture')\n".write(
+                to: bundle.appendingPathComponent("scripts/demo.py"), atomically: true, encoding: .utf8
+            )
+            try "interface:\n  icon_small: ./assets/icon.svg\n".write(
+                to: bundle.appendingPathComponent("agents/openai.yaml"), atomically: true, encoding: .utf8
+            )
+            try FileManager.default.createSymbolicLink(
+                at: claude.appendingPathComponent("skill-\(index)"), withDestinationURL: bundle
+            )
+        }
+        let codex = root.appendingPathComponent(".codex")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: codex.appendingPathComponent("skills"), withDestinationURL: canonical
+        )
+        let expected = try assertLatencyBudget("projected skill inventory", seconds: 4) {
+            try readProjectSkills(root: root)
+        }
+        XCTAssertEqual(expected.validSkills.count, 48)
+        XCTAssertEqual(expected.skills.count, 144)
+        XCTAssertTrue(expected.skills.allSatisfy { $0.scriptInventory?.scripts.count == 1 })
+        var measured: SkillProject?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = try! readProjectSkills(root: root)
+        }
+        XCTAssertEqual(measured, expected)
+    }
+
     func testPerformanceDoctorPortfolioAudit() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
