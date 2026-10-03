@@ -2022,13 +2022,14 @@ private final class SkillUsageStore {
             ? try loadMetadata(db, table: previousSkillUsageMetadataTable)
             : metadata
 
-        // The window/grouping steps only need summary fields. Keep source
-        // provenance out of their transient rows rather than copying and
-        // sorting it for every historical event.
+        // Group the counts before selecting each latest identity. This avoids
+        // ranking and carrying display metadata through every historical row.
+        // Latest timestamps still break ties by rowid, and identity collisions
+        // consider all history rather than only the selected latest names.
         let sql = """
         WITH normalized AS (
           SELECT
-            skill_id, skill_name, canonical_path, scope, occurred_at,
+            skill_id, occurred_at,
             session_id, turn_id, evidence,
             rowid AS event_rowid,
             CASE
@@ -2037,41 +2038,37 @@ private final class SkillUsageStore {
               ELSE 'id:' || skill_id
             END AS aggregate_id
           FROM \(summariesTable)
-        ), ranked AS (
-          SELECT
-            *,
-            ROW_NUMBER() OVER (
-              PARTITION BY aggregate_id
-              ORDER BY occurred_at DESC, event_rowid DESC
-            ) AS identity_rank
-          FROM normalized
         ), identity_counts AS (
           SELECT skill_id, COUNT(DISTINCT aggregate_id) AS aggregate_count
           FROM normalized
           GROUP BY skill_id
+        ), aggregates AS (
+          SELECT
+            aggregate_id, MAX(aggregate_count) AS aggregate_count,
+            COUNT(*) AS total,
+            SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-7 days') THEN 1 ELSE 0 END) AS recent7,
+            SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-30 days') THEN 1 ELSE 0 END) AS recent30,
+            COUNT(DISTINCT session_id || char(0) || turn_id) AS turns,
+            COUNT(DISTINCT session_id) AS threads,
+            SUM(CASE WHEN evidence = 'otel' THEN 1 ELSE 0 END) AS direct,
+            SUM(CASE WHEN evidence != 'otel' THEN 1 ELSE 0 END) AS inferred,
+            MIN(occurred_at) AS first_time, MAX(occurred_at) AS last_time
+          FROM normalized JOIN identity_counts USING (skill_id)
+          GROUP BY aggregate_id
+        ), latest_rows AS (
+          SELECT aggregate_id, MAX(event_rowid) AS event_rowid
+          FROM normalized JOIN aggregates USING (aggregate_id)
+          WHERE occurred_at = last_time
+          GROUP BY aggregate_id
         )
         SELECT
-          CASE
-            WHEN MAX(identity_counts.aggregate_count) > 1 THEN ranked.aggregate_id
-            ELSE MAX(CASE WHEN identity_rank = 1 THEN ranked.skill_id END)
-          END,
-          MAX(CASE WHEN identity_rank = 1 THEN skill_name END),
-          MAX(CASE WHEN identity_rank = 1 THEN NULLIF(canonical_path, '') END),
-          MAX(CASE WHEN identity_rank = 1 THEN scope END),
-          COUNT(*),
-          SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-7 days') THEN 1 ELSE 0 END),
-          SUM(CASE WHEN julianday(occurred_at) >= julianday('now', '-30 days') THEN 1 ELSE 0 END),
-          COUNT(DISTINCT session_id || char(0) || turn_id),
-          COUNT(DISTINCT session_id),
-          COUNT(*) - COUNT(DISTINCT session_id || char(0) || turn_id),
-          SUM(CASE WHEN evidence = 'otel' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN evidence != 'otel' THEN 1 ELSE 0 END),
-          MIN(occurred_at),
-          MAX(occurred_at)
-        FROM ranked
-        JOIN identity_counts USING (skill_id)
-        GROUP BY aggregate_id
-        ORDER BY COUNT(*) DESC, lower(MAX(CASE WHEN identity_rank = 1 THEN skill_name END)), aggregate_id;
+          CASE WHEN aggregate_count > 1 THEN aggregate_id ELSE latest.skill_id END,
+          latest.skill_name, NULLIF(latest.canonical_path, ''), latest.scope,
+          total, recent7, recent30, turns, threads, total - turns,
+          direct, inferred, first_time, last_time
+        FROM aggregates JOIN latest_rows USING (aggregate_id)
+        JOIN \(summariesTable) AS latest ON latest.rowid = latest_rows.event_rowid
+        ORDER BY total DESC, lower(latest.skill_name), aggregate_id;
         """
         var statement: OpaquePointer?
         try prepare(db, sql, &statement)

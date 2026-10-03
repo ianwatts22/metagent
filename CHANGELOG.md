@@ -16,6 +16,8 @@ AGENTS.md for the release procedure.
 - Inventory refreshes read shared skill bundles once, with complete statistics
   and script references for per-skill projections, and count plain text faster
   without changing Unicode statistics.
+- Usage summaries spend less time sorting history while preserving counts,
+  renamed skill identities, and timestamp ties.
 
 ## v0.9.2 — 2026-10-02
 

@@ -1041,6 +1041,69 @@ final class SkillUsageTests: XCTestCase {
         )
     }
 
+    func testSnapshotGroupingKeepsHistoricalCollisionsAndLatestTimestampTies() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try MetagentCore.refreshSkillUsage(options: fixture.options)
+        try fixture.executeSQL("""
+        INSERT INTO skill_usage_events (
+          event_id, skill_id, skill_name, canonical_path, scope, occurred_at,
+          session_id, turn_id, cwd, evidence, invocation_kind, confidence,
+          source_path, call_id
+        ) VALUES
+          ('a-old', 'shared', 'Old Alpha', '/fixture/alpha', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-35 days'),
+           's1', 't1', '', 'inferred', 'read', 'high', '', ''),
+          ('b', 'shared', 'Beta', '/fixture/beta', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-8 days'),
+           's1', 't1', '', 'otel', 'read', 'high', '', ''),
+          ('a-tie-first', 'renamed', 'Before tie', '/fixture/alpha', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           's2', 't1', '', 'inferred', 'read', 'high', '', ''),
+          ('a-tie-last', 'latest', 'Alpha', '/fixture/alpha', 'global',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           's2', 't1', '', 'otel', 'read', 'high', '', ''),
+          ('a-later-insert', 'older', 'Not latest', '/fixture/alpha', 'project',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-8 days'),
+           's1', 't2', '', 'otel', 'read', 'high', '', ''),
+          ('unpathed', 'shared', 'Unknown', '', 'unknown',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           's1', 't1', '', 'otel', 'read', 'high', '', ''),
+          ('plugin-old', 'plugin:fixture:skill', 'Old plugin', '/fixture/v1', 'plugin',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 days'),
+           's1', 't1', '', 'inferred', 'read', 'high', '', ''),
+          ('plugin-new', 'plugin:fixture:skill', 'Plugin', '/fixture/alpha', 'plugin',
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'),
+           's2', 't1', '', 'otel', 'read', 'high', '', '');
+        """)
+        let snapshot = try XCTUnwrap(MetagentCore.loadSkillUsageSnapshot(databasePath: fixture.database.path))
+        XCTAssertEqual(snapshot.totalInvocations, 8)
+        XCTAssertEqual(snapshot.summaries.map(\.id), [
+            "path:/fixture/alpha", "plugin:fixture:skill", "path:/fixture/beta", "id:shared",
+        ])
+        let alpha = try XCTUnwrap(snapshot.summaries.first)
+        XCTAssertEqual(alpha.skillName, "Alpha")
+        XCTAssertEqual(alpha.canonicalPath, "/fixture/alpha")
+        XCTAssertEqual(alpha.scope, "global")
+        XCTAssertEqual(alpha.totalInvocations, 4)
+        XCTAssertEqual(alpha.invocations7d, 2)
+        XCTAssertEqual(alpha.invocations30d, 3)
+        XCTAssertEqual(alpha.activeTurns, 3)
+        XCTAssertEqual(alpha.distinctThreads, 2)
+        XCTAssertEqual(alpha.repeatInvocations, 1)
+        XCTAssertEqual(alpha.directInvocations, 2)
+        XCTAssertEqual(alpha.inferredInvocations, 2)
+        let plugin = try XCTUnwrap(snapshot.summaries.first { $0.id == "plugin:fixture:skill" })
+        XCTAssertEqual(plugin.skillName, "Plugin")
+        XCTAssertEqual(plugin.canonicalPath, alpha.canonicalPath)
+        XCTAssertEqual(plugin.scope, "plugin")
+        XCTAssertEqual(plugin.totalInvocations, 2)
+        XCTAssertEqual(plugin.activeTurns, 2)
+        XCTAssertEqual(plugin.distinctThreads, 2)
+        XCTAssertEqual(plugin.repeatInvocations, 0)
+        XCTAssertNil(snapshot.summaries.last?.canonicalPath)
+    }
+
     func testDefersAnIncompleteFinalRecordUntilItIsTerminated() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

@@ -201,6 +201,16 @@ Tests compare every ASCII byte, whitespace and CRLF boundaries, and Unicode
 fallbacks against the original counting expressions. Both ASCII and Unicode
 full-inventory fixtures include filesystem reads and script reference evidence.
 
+Usage summaries aggregate counts before selecting the most recent identity,
+instead of ranking and sorting display metadata for every historical event.
+The latest timestamp wins, with the highest rowid breaking timestamp ties.
+Collision-safe summary IDs still consider every historical skill identity;
+plugin identities remain separate even when their latest path matches another
+skill. The same query serves the retained previous parser generation during
+rebuild. Tests cover out-of-order insertion, timestamp ties, historical name
+collisions, empty paths, plugin version paths, all usage counters, and ordering.
+No stored events, schema, parser generation, or launch-cache format changes.
+
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests
 but do not execute the filesystem benchmarks. `scripts/verify.sh --release`
