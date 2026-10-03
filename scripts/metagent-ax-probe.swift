@@ -107,6 +107,26 @@ private struct FilterMeasurement {
     let contentReadyMilliseconds: Double
 }
 
+/// A valid Reload sample starts enabled and observes our work leave readiness.
+/// An unavailable AXEnabled attribute alone is not proof of a disabled control.
+private struct RefreshReadinessTransition {
+    private(set) var transitionObserved = false
+
+    init(initiallyEnabled: Bool?) throws {
+        guard initiallyEnabled == true else {
+            throw ProbeError.state("Reload is not enabled; wait for existing app work to finish.")
+        }
+    }
+
+    mutating func observe(controlExists: Bool, enabled: Bool?) -> Bool {
+        if !controlExists || enabled == false {
+            transitionObserved = true
+            return false
+        }
+        return enabled == true && transitionObserved
+    }
+}
+
 private func monotonicMilliseconds() -> Double {
     Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000
 }
@@ -720,21 +740,21 @@ private final class AccessibilityProbe {
         guard let control = try findReloadControl(window) else {
             throw ProbeError.state("Reload is not currently available; wait for existing app work to finish.")
         }
+        var readiness = try RefreshReadinessTransition(
+            initiallyEnabled: try boolAttribute(control, kAXEnabledAttribute)
+        )
         let timer = MonotonicTimer()
         try performPress(control, description: "Reload")
-        var transitionObserved = false
         try waitUntil("Reload to leave and return to its enabled ready state") {
             guard let current = try self.findReloadControl(window) else {
-                transitionObserved = true
-                return false
+                return readiness.observe(controlExists: false, enabled: nil)
             }
-            if try self.boolAttribute(current, kAXEnabledAttribute) != true {
-                transitionObserved = true
-                return false
-            }
-            return transitionObserved
+            return readiness.observe(
+                controlExists: true,
+                enabled: try self.boolAttribute(current, kAXEnabledAttribute)
+            )
         }
-        guard transitionObserved else {
+        guard readiness.transitionObserved else {
             throw ProbeError.state("Reload returned ready without an observed disabled/missing transition.")
         }
         return timer.elapsedMilliseconds
@@ -1286,6 +1306,7 @@ private func selfTest() throws {
     }
     try sentinelTraversalSelfTest()
     try controlTraversalSelfTest()
+    try refreshReadinessSelfTest()
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {
         throw ProbeError.state("JSON self-test payload is invalid.")
@@ -1378,6 +1399,34 @@ private func controlTraversalSelfTest() throws {
     )
     guard similarIdentifier == nil else {
         throw ProbeError.state("Exact control lookup accepted a prefix-only match.")
+    }
+}
+
+private func refreshReadinessSelfTest() throws {
+    for initiallyEnabled: Bool? in [false, nil] {
+        do {
+            _ = try RefreshReadinessTransition(initiallyEnabled: initiallyEnabled)
+            throw ProbeError.state("Reload accepted an initially disabled or unknown control.")
+        } catch ProbeError.state(let message) {
+            guard message == "Reload is not enabled; wait for existing app work to finish." else {
+                throw ProbeError.state(message)
+            }
+        }
+    }
+    var noWork = try RefreshReadinessTransition(initiallyEnabled: true)
+    guard !noWork.observe(controlExists: true, enabled: true),
+          !noWork.observe(controlExists: true, enabled: nil),
+          !noWork.observe(controlExists: true, enabled: true),
+          !noWork.transitionObserved
+    else { throw ProbeError.state("Reload became ready without an observed work transition.") }
+
+    for controlExists in [true, false] {
+        var work = try RefreshReadinessTransition(initiallyEnabled: true)
+        guard !work.observe(controlExists: controlExists, enabled: controlExists ? false : nil),
+              work.transitionObserved,
+              !work.observe(controlExists: true, enabled: nil),
+              work.observe(controlExists: true, enabled: true)
+        else { throw ProbeError.state("Reload lost its disabled/missing-to-enabled transition.") }
     }
 }
 

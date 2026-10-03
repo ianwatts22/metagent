@@ -57,6 +57,23 @@ swift test \
   -Xswiftc -DDEBUG \
   --filter projectRowIndexPerformanceProxy
 
+# Full Projects row preparation includes filesystem identity and link evidence.
+# Keep both ordinary and projection-heavy fixtures in the aggregate XCTest
+# report; these component metrics do not stand in for installed-app AX latency.
+swift test \
+  --disable-sandbox \
+  --configuration release \
+  -Xswiftc -DDEBUG \
+  --filter NavigationComponentPerformanceTests 2>&1 | tee -a "$performance_log"
+
+# Catch a return to fixed-tick subprocess completion. Kernel-restricted hosts
+# skip this timing rail, not the ordinary subprocess correctness tests.
+METAGENT_RUN_SUBPROCESS_PERFORMANCE_TESTS=1 swift test \
+  --disable-sandbox \
+  --configuration release \
+  -Xswiftc -DDEBUG \
+  --filter SubprocessTests.testPerformanceImmediateSubprocesses
+
 # Preserve saved dismissal fingerprints while keeping their repeated Overview
 # and notification rendering work free of per-byte Foundation formatting.
 swift test \

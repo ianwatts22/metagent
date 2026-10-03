@@ -7,8 +7,16 @@ import UniformTypeIdentifiers
 func projectStatusesByCanonicalRoot(
     _ projects: [ProjectStatus]
 ) -> [String: [ProjectStatus]] {
+    var canonicalizer = SkillPathCanonicalizer()
+    return projectStatusesByCanonicalRoot(projects, canonicalizer: &canonicalizer)
+}
+
+private func projectStatusesByCanonicalRoot(
+    _ projects: [ProjectStatus],
+    canonicalizer: inout SkillPathCanonicalizer
+) -> [String: [ProjectStatus]] {
     Dictionary(grouping: projects) {
-        standardizedDirectoryPath($0.root)
+        canonicalizer.canonicalPath($0.root)
     }
 }
 
@@ -44,17 +52,20 @@ struct ProjectDirectoryRow: Identifiable {
     /// rather than mixing in with the genuinely smallest repositories.
     var codeLines: Int { codebaseSize?.codeLines ?? -1 }
 
-    init(
+    private init(
         directory: DirectoryFilterOption,
         matchingProjects: [ProjectStatus],
         mcpCount: Int,
         matchingDoctorIssues: [DoctorIssue],
-        codebaseSizes: [String: CodebaseSizeReport]
+        codebaseSizes: [String: CodebaseSizeReport],
+        globalRootKey: String,
+        canonicalizer: inout SkillPathCanonicalizer
     ) {
         root = directory.root
-        isGlobal = isGlobalRoot(directory.root)
+        let canonicalRoot = canonicalizer.canonicalPath(directory.root)
+        isGlobal = canonicalRoot == globalRootKey
         name = isGlobal ? "Global" : directory.name
-        codebaseSize = codebaseSizes[standardizedDirectoryPath(directory.root)]
+        codebaseSize = codebaseSizes[canonicalRoot]
         self.mcpCount = mcpCount
 
         var skillIDs = Set<String>()
@@ -67,22 +78,22 @@ struct ProjectDirectoryRow: Identifiable {
             for skill in project.skills {
                 skillIDs.insert(skill.canonicalPath.isEmpty
                     ? "\(skill.name):\(skill.location)"
-                    : standardizedDirectoryPath(skill.canonicalPath))
+                    : canonicalizer.canonicalPath(skill.canonicalPath))
                 switch skill.location {
                 case "agents":
                     hasAgentSkills = true
                     hasPersonalSkills = hasPersonalSkills || skill.manager != "skills-cli"
                     if skill.representation == "canonical" {
-                        agentsPaths.insert(standardizedDirectoryPath(
+                        agentsPaths.insert(canonicalizer.canonicalPath(
                             skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
                         ))
                     }
                 case "codex" where skill.representation == "canonical" && skill.authority != "codex-system":
-                    codexPaths.insert(standardizedDirectoryPath(
+                    codexPaths.insert(canonicalizer.canonicalPath(
                         skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
                     ))
                 case "claude" where skill.representation == "canonical":
-                    claudePaths.insert(standardizedDirectoryPath(
+                    claudePaths.insert(canonicalizer.canonicalPath(
                         skill.canonicalPath.isEmpty ? skill.path : skill.canonicalPath
                     ))
                 default:
@@ -114,32 +125,59 @@ struct ProjectDirectoryRow: Identifiable {
         codebaseSizes: [String: CodebaseSizeReport],
         selectedProjectRoot: String?
     ) -> [ProjectDirectoryRow] {
+        var canonicalizer = SkillPathCanonicalizer()
+        return rows(
+            projects: projects,
+            mcpHealth: mcpHealth,
+            doctorIssues: doctorIssues,
+            codebaseSizes: codebaseSizes,
+            selectedProjectRoot: selectedProjectRoot,
+            canonicalizer: &canonicalizer
+        )
+    }
+
+    /// One synchronous snapshot may compare a root or bundle through several
+    /// indexes and representations. Resolve each raw path once for that build,
+    /// then discard the cache; later body evaluations observe retargeted links.
+    static func rows(
+        projects: [ProjectStatus],
+        mcpHealth: MCPHealthSnapshot,
+        doctorIssues: [DoctorIssue],
+        codebaseSizes: [String: CodebaseSizeReport],
+        selectedProjectRoot: String?,
+        canonicalizer: inout SkillPathCanonicalizer
+    ) -> [ProjectDirectoryRow] {
+        let selectedRootKey = canonicalizer.canonicalPath(selectedProjectRoot)
         let directories = directoryFilterOptions(
-            projects: projects
+            projects: projects,
+            canonicalizer: &canonicalizer
         )
         .filter { directory in
-            guard let selectedProjectRoot else { return true }
-            return standardizedDirectoryPath(directory.root) == standardizedDirectoryPath(selectedProjectRoot)
+            guard let selectedRootKey else { return true }
+            return directory.root == selectedRootKey
         }
 
-        let projectsByRoot = projectStatusesByCanonicalRoot(projects)
+        let projectsByRoot = projectStatusesByCanonicalRoot(projects, canonicalizer: &canonicalizer)
         let doctorIssuesByRoot = Dictionary(grouping: doctorIssues.compactMap { issue in
-            issue.projectRoot.map { (standardizedDirectoryPath($0), issue) }
+            issue.projectRoot.map { (canonicalizer.canonicalPath($0), issue) }
         }, by: \.0).mapValues { $0.map(\.1) }
         let mcpNamesByRoot = mcpHealth.servers.reduce(into: [String: Set<String>]()) { namesByRoot, server in
             for projectState in server.projectStates {
                 namesByRoot[projectState.path, default: []].insert(server.name)
             }
         }
+        let globalRootKey = canonicalizer.canonicalPath(NSHomeDirectory())
 
         return directories.map { directory in
-            let canonicalRoot = standardizedDirectoryPath(directory.root)
+            let canonicalRoot = canonicalizer.canonicalPath(directory.root)
             return ProjectDirectoryRow(
                 directory: directory,
                 matchingProjects: projectsByRoot[canonicalRoot] ?? [],
                 mcpCount: mcpNamesByRoot[directory.root]?.count ?? 0,
                 matchingDoctorIssues: doctorIssuesByRoot[canonicalRoot] ?? [],
-                codebaseSizes: codebaseSizes
+                codebaseSizes: codebaseSizes,
+                globalRootKey: globalRootKey,
+                canonicalizer: &canonicalizer
             )
         }
     }

@@ -4,6 +4,31 @@ import MetagentCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The view default is also the first presentation's order. Explicit Table
+/// sorting, including an empty order, takes precedence until the existing
+/// appearance/view-change reset supplies another default.
+func skillTableSortOrder(
+    for view: SkillTableView,
+    requested: [KeyPathComparator<SkillTableRow>]? = nil
+) -> [KeyPathComparator<SkillTableRow>] {
+    if let requested { return requested }
+    return switch view {
+    case .summary:
+        [KeyPathComparator(\SkillTableRow.invocations30d, order: .reverse)]
+    case .review:
+        [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
+    case .duplicates:
+        [
+            KeyPathComparator(\SkillTableRow.overlapSortValue),
+            KeyPathComparator(\SkillTableRow.skillName),
+        ]
+    case .published, .inventory:
+        [KeyPathComparator(\SkillTableRow.skillName)]
+    case .usage:
+        [KeyPathComparator(\SkillTableRow.totalInvocations, order: .reverse)]
+    }
+}
+
 enum UsageFilter: String, CaseIterable, Identifiable {
     case all
     case observed

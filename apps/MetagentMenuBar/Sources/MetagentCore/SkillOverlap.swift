@@ -37,16 +37,7 @@ extension MetagentCore {
         _ skills: [SkillInventoryItem],
         canonicalize: (String) -> String
     ) -> [SkillOverlapGroup] {
-        let canonicalSkills = Dictionary(
-            skills
-                .filter { $0.representation != "projection" }
-                .map { (canonicalize($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
-            uniquingKeysWith: preferredOverlapItem
-        ).map { CanonicalOverlapSkill(path: $0.key, item: $0.value) }
-
-        return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.item.name) })
-            .values
-            .filter { $0.count > 1 }
+        eligibleOverlapGroups(skills, canonicalize: canonicalize)
             .compactMap(makeOverlapGroup)
             .sorted {
                 if $0.kind != $1.kind {
@@ -55,11 +46,47 @@ extension MetagentCore {
                 return $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
             }
     }
+
+    // Overview needs only the group count. Content, fingerprints, and pairwise
+    // similarity classify an eligible group but never change whether it exists.
+    static func countSkillOverlapGroups(_ skills: [SkillInventoryItem]) -> Int {
+        countSkillOverlapGroups(skills, canonicalize: canonicalExistingPath)
+    }
+
+    static func countSkillOverlapGroups(
+        _ skills: [SkillInventoryItem],
+        canonicalize: (String) -> String
+    ) -> Int {
+        eligibleOverlapGroups(skills, canonicalize: canonicalize).count
+    }
 }
 
 private struct CanonicalOverlapSkill {
     let path: String
     let item: SkillInventoryItem
+}
+
+private func eligibleOverlapGroups(
+    _ skills: [SkillInventoryItem],
+    canonicalize: (String) -> String
+) -> [[CanonicalOverlapSkill]] {
+    let canonicalSkills = Dictionary(
+        skills
+            .filter { $0.representation != "projection" }
+            .map { (canonicalize($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
+        uniquingKeysWith: preferredOverlapItem
+    ).map { CanonicalOverlapSkill(path: $0.key, item: $0.value) }
+
+    return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.item.name) })
+        .values
+        .filter { group in
+            guard group.count > 1 else { return false }
+            // Managed versions of one plugin belong to its plugin manager.
+            // Distinct authorities, standalone copies, and cross-system groups
+            // remain actionable in both detailed analysis and Overview counts.
+            let identities = group.compactMap { managedPluginIdentity(for: $0.item) }
+            return identities.count != group.count || Set(identities).count != 1
+        }
 }
 
 private struct ComparableSkillDocument {
@@ -76,17 +103,6 @@ private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> Ski
         return $0.item.path < $1.item.path
     }
     guard let first = skills.first else { return nil }
-
-    // Two versions of the same skill can coexist inside one plugin's managed
-    // cache. The plugin manager owns that lifecycle, so asking a user to choose
-    // and remove one here is both noisy and unsafe. Distinct plugin authorities,
-    // standalone copies, and cross-system groups remain actionable.
-    let managedPluginIdentities = skills.compactMap { managedPluginIdentity(for: $0.item) }
-    if managedPluginIdentities.count == skills.count,
-       Set(managedPluginIdentities).count == 1
-    {
-        return nil
-    }
 
     // These documents are local to this invocation. A later refresh still
     // rereads them, including same-path edits and formerly missing files.

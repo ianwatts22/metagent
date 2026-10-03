@@ -3,6 +3,42 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillPublicationGitTests: XCTestCase {
+    /// Opt-in component timings. Setup is deliberately outside inspection and
+    /// preview measurements; the remote is a disposable local bare repository.
+    func testPerformanceLocalPublicationStages() throws {
+        guard ProcessInfo.processInfo.environment["METAGENT_RUN_SUBPROCESS_PERFORMANCE_TESTS"] == "1" else {
+            return
+        }
+        for iteration in 0..<3 {
+            let start = ProcessInfo.processInfo.systemUptime
+            let fixture = try GitPublicationFixture()
+            defer { fixture.remove() }
+            try fixture.commit()
+            try fixture.configureBareRemote()
+            let setupEnd = ProcessInfo.processInfo.systemUptime
+            let status = fixture.inspect()
+            let inspectEnd = ProcessInfo.processInfo.systemUptime
+            XCTAssertEqual(status.state, .matchesKnownUpstream)
+            try fixture.writeSkill("A safe public update.")
+            let previewStart = ProcessInfo.processInfo.systemUptime
+            let preview = fixture.preparePublish()
+            let previewEnd = ProcessInfo.processInfo.systemUptime
+            XCTAssertTrue(preview.isReady, preview.blocker ?? "")
+            let result = fixture.publish(preview, message: "Publish fixture update")
+            let publishEnd = ProcessInfo.processInfo.systemUptime
+            XCTAssertEqual(result.outcome, .published)
+            let row: [String: Any] = [
+                "iteration": iteration,
+                "fixture_seconds": setupEnd - start,
+                "inspect_seconds": inspectEnd - setupEnd,
+                "preview_seconds": previewEnd - previewStart,
+                "publish_seconds": publishEnd - previewEnd,
+            ]
+            let data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+            print("METAGENT_PUBLICATION_TIMING \(String(decoding: data, as: UTF8.self))")
+        }
+    }
+
     func testPublishScreensExactOutgoingCheckoutContent() throws {
         let unsafeFiles = [
             ("notes.txt", "token = abcdefghijklmnopqrstuvwxyz123456"),

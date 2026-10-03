@@ -192,6 +192,43 @@ struct SkillSystemHealthTests {
         #expect(health.usageCoverage == .partial(progress: 0.4))
     }
 
+    @Test("duplicate counts match detailed analysis in each scope, including managed plugin versions")
+    func duplicateCountsRespectScopeAndManagedVersions() {
+        let globalRoot = "/tmp/health-count-global"
+        let firstRoot = "/tmp/health-count-first"
+        let secondRoot = "/tmp/health-count-second"
+        let firstPlugin = pluginSkill(name: "managed", path: "\(globalRoot)/plugins/1/managed", bodyTokens: 100)
+        let secondPlugin = pluginSkill(name: "managed", path: "\(globalRoot)/plugins/2/managed", bodyTokens: 100)
+        var crossSystem = pluginSkill(name: "shared", path: "\(globalRoot)/claude/shared", bodyTokens: 100)
+        crossSystem.manager = "claude-plugin"
+        crossSystem.originKind = "claude-plugin"
+        let projects = [
+            project(root: globalRoot, skills: [
+                skill(name: "shared", root: globalRoot, scope: "global"),
+                firstPlugin, secondPlugin, crossSystem,
+            ]),
+            project(root: firstRoot, skills: [
+                skill(name: "shared", root: firstRoot, scope: "project"),
+                skill(name: "project-only", root: firstRoot, scope: "project"),
+                skill(name: "shared", root: firstRoot, scope: "project", representation: "projection"),
+            ]),
+            project(root: secondRoot, skills: [
+                skill(name: "project-only", root: secondRoot, scope: "project"),
+            ]),
+        ]
+        let scopes: [(SkillSystemHealthScope, Int)] = [
+            (.all, 2), (.global(root: globalRoot), 1),
+            (.project(root: firstRoot), 0), (.project(root: secondRoot), 0),
+        ]
+        for (scope, expectedCount) in scopes {
+            let scopedSkills = canonicalHealthSkills(projects: projects, scope: scope).map(\.skill)
+            let fullCount = MetagentCore.detectSkillOverlaps(scopedSkills).count
+            let health = MetagentCore.skillSystemHealth(projects: projects, usage: .empty, scope: scope)
+            #expect(fullCount == expectedCount)
+            #expect(health.duplicateGroupCount == fullCount)
+        }
+    }
+
     @Test("dormant project directories drop out of adoption rates but stay in inventory totals")
     func dormantProjectsAreNotRated() {
         let now = ISO8601DateFormatter().date(from: "2026-07-24T12:00:00Z")!

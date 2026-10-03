@@ -16,7 +16,7 @@ final class SkillOverlapTests: XCTestCase {
             body: "Use the demo workflow. First inspect the project. Then run the bundled demo tool and verify the result."
         )
 
-        let groups = MetagentCore.detectSkillOverlaps([
+        let groups = matchingOverlaps([
             makeSkill(path: standalone.path, scope: "global", manager: "local"),
             makeSkill(path: plugin.path, scope: "plugin", manager: "codex-plugin"),
         ])
@@ -35,23 +35,23 @@ final class SkillOverlapTests: XCTestCase {
             makeSkill(path: global.path, scope: "global", manager: "local"),
             makeSkill(path: project.path, scope: "project", manager: "local"),
         ]
-        let original = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        let original = try XCTUnwrap(matchingOverlaps(skills).first)
         XCTAssertTrue(original.members.contains(where: \.suggestedRemoval))
         try "print('custom')".write(to: project.appendingPathComponent("script.py"), atomically: true, encoding: .utf8)
-        let customized = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        let customized = try XCTUnwrap(matchingOverlaps(skills).first)
         XCTAssertFalse(customized.members.contains(where: \.suggestedRemoval))
         XCTAssertNotEqual(original.members.last?.contentFingerprint, customized.members.last?.contentFingerprint)
         try "print('custom')".write(to: global.appendingPathComponent("script.py"), atomically: true, encoding: .utf8)
-        XCTAssertTrue(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
+        XCTAssertTrue(matchingOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: project.appendingPathComponent("script.py").path)
-        XCTAssertFalse(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
+        XCTAssertFalse(matchingOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
     }
 
     func testSemanticWhitespaceCannotTriggerAutomaticRemoval() throws {
         let root = try fixtureRoot("semantic-whitespace")
         let global = try writeSkill(root: root, relativePath: "global", body: "```python\nif ready:\n    launch()\n    stop()\n```")
         let project = try writeSkill(root: root, relativePath: "project", body: "```python\nif ready:\n    launch()\nstop()\n```")
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: global.path, scope: "global", manager: "local"),
             makeSkill(path: project.path, scope: "project", manager: "local"),
         ]).first)
@@ -70,14 +70,14 @@ final class SkillOverlapTests: XCTestCase {
         for directory in [global, project] {
             try Data(repeating: 0, count: 16 * 1024 * 1024 + 1).write(to: directory.appendingPathComponent("asset.bin"))
         }
-        let oversized = MetagentCore.detectSkillOverlaps(skills)[0]
+        let oversized = matchingOverlaps(skills)[0]
         XCTAssertFalse(oversized.members.contains(where: \.suggestedRemoval))
         XCTAssertTrue(oversized.members.allSatisfy { $0.contentFingerprint == nil })
         for directory in [global, project] {
             try FileManager.default.removeItem(at: directory.appendingPathComponent("asset.bin"))
             try FileManager.default.createSymbolicLink(atPath: directory.appendingPathComponent("linked.md").path, withDestinationPath: "SKILL.md")
         }
-        XCTAssertFalse(MetagentCore.detectSkillOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
+        XCTAssertFalse(matchingOverlaps(skills)[0].members.contains(where: \.suggestedRemoval))
     }
 
     func testDuplicateSkillsInsideOneCodexPluginSystemAreIgnored() throws {
@@ -86,7 +86,7 @@ final class SkillOverlapTests: XCTestCase {
         let first = try writeSkill(root: root, relativePath: "plugin-a/demo", body: body)
         let second = try writeSkill(root: root, relativePath: "plugin-b/demo", body: body)
 
-        let groups = MetagentCore.detectSkillOverlaps([
+        let groups = matchingOverlaps([
             makeSkill(path: first.path, scope: "plugin", manager: "codex-plugin"),
             makeSkill(path: second.path, scope: "plugin", manager: "codex-plugin"),
         ])
@@ -113,7 +113,7 @@ final class SkillOverlapTests: XCTestCase {
         var secondPlugin = makeSkill(path: second.path, scope: "global", manager: "claude")
         secondPlugin.authority = "demo@vendor"
 
-        let groups = MetagentCore.detectSkillOverlaps([firstPlugin, secondPlugin])
+        let groups = matchingOverlaps([firstPlugin, secondPlugin])
 
         XCTAssertTrue(groups.isEmpty)
     }
@@ -135,7 +135,7 @@ final class SkillOverlapTests: XCTestCase {
         var secondPlugin = makeSkill(path: second.path, scope: "plugin", manager: "codex-plugin")
         secondPlugin.authority = "second@vendor"
 
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             firstPlugin,
             secondPlugin,
         ]).first)
@@ -150,7 +150,7 @@ final class SkillOverlapTests: XCTestCase {
         let global = try writeSkill(root: root, relativePath: "global/demo", body: body)
         let project = try writeSkill(root: root, relativePath: "project/demo", body: body)
 
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: global.path, scope: "global", manager: "local"),
             makeSkill(path: project.path, scope: "project", manager: "local"),
         ]).first)
@@ -164,7 +164,7 @@ final class SkillOverlapTests: XCTestCase {
                 atomically: true,
                 encoding: .utf8
             )
-        let changed = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let changed = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: global.path, scope: "global", manager: "local"),
             makeSkill(path: project.path, scope: "project", manager: "local"),
         ]).first)
@@ -182,7 +182,7 @@ final class SkillOverlapTests: XCTestCase {
             body: "Translate nautical charts into a compact weather briefing for an ocean crossing."
         )
 
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: globalOne.path, scope: "global", manager: "local"),
             makeSkill(path: globalTwo.path, scope: "global", manager: "local"),
             makeSkill(path: plugin.path, scope: "plugin", manager: "codex-plugin"),
@@ -205,7 +205,7 @@ final class SkillOverlapTests: XCTestCase {
             body: "Run api_token=secret demo verify."
         )
 
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: first.path, scope: "global", manager: "local"),
             makeSkill(path: second.path, scope: "global", manager: "local"),
         ]).first)
@@ -222,7 +222,7 @@ final class SkillOverlapTests: XCTestCase {
         projection.canonicalPath = skill.path
         projection.representation = "projection"
 
-        XCTAssertTrue(MetagentCore.detectSkillOverlaps([canonical, projection]).isEmpty)
+        XCTAssertTrue(matchingOverlaps([canonical, projection]).isEmpty)
     }
 
     func testCanonicalizationWorkIsLinearInInventorySize() throws {
@@ -244,6 +244,47 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(resolved, skills.map(\.path))
         XCTAssertEqual(groups.count, 8)
         XCTAssertTrue(groups.allSatisfy { $0.members.count == 24 })
+
+        var countResolved: [String] = []
+        let count = MetagentCore.countSkillOverlapGroups(skills + [projection]) { path in
+            countResolved.append(path)
+            return path
+        }
+        XCTAssertEqual(countResolved, skills.map(\.path))
+        XCTAssertEqual(count, groups.count)
+    }
+
+    func testCountKeepsNormalizedNamesCrossSystemPluginsAndUnknownAuthorities() throws {
+        let root = try fixtureRoot("count-eligibility")
+        let codex = SkillInventoryItem.fixture(
+            name: " Demo ", path: root.appendingPathComponent("codex").path,
+            originKind: "codex-plugin", scope: "plugin", manager: "codex-plugin",
+            authority: " Vendor/Plugin "
+        )
+        let claude = SkillInventoryItem.fixture(
+            name: "demo", path: root.appendingPathComponent("claude").path,
+            originKind: "claude-plugin", scope: "plugin", manager: "claude-plugin",
+            authority: "vendor/plugin"
+        )
+        // Same authority is suppressed only inside the same plugin system.
+        XCTAssertEqual(matchingOverlaps([codex, claude]).count, 1)
+        var codexVersion = codex
+        codexVersion.path = root.appendingPathComponent("codex-version").path
+        codexVersion.canonicalPath = codexVersion.path
+        codexVersion.authority = "vendor/plugin"
+        XCTAssertTrue(matchingOverlaps([codex, codexVersion]).isEmpty)
+
+        for authority in ["unknown", "", " \n"] {
+            var first = codex
+            var second = codexVersion
+            first.authority = authority
+            second.authority = authority
+            XCTAssertEqual(matchingOverlaps([first, second]).count, 1)
+        }
+        var unrelated = claude
+        unrelated.name = "another skill"
+        XCTAssertTrue(matchingOverlaps([codex, unrelated]).isEmpty)
+        XCTAssertTrue(matchingOverlaps([]).isEmpty)
     }
 
     func testCanonicalAliasesKeepPreferredRepresentativeAndOriginalTieOrder() throws {
@@ -257,7 +298,7 @@ final class SkillOverlapTests: XCTestCase {
         var laterPlugin = makeSkill(path: alias.path, scope: "plugin", manager: "codex-plugin")
         laterPlugin.authority = "later-plugin"
 
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: alias.path, scope: "global", manager: "local"),
             firstPlugin,
             laterPlugin,
@@ -274,7 +315,7 @@ final class SkillOverlapTests: XCTestCase {
         let root = try fixtureRoot("provider-normalization")
         let first = try writeSkill(root: root, relativePath: "one", body: "Read .agents/skills/demo/SKILL.md.\nThen verify.")
         let second = try writeSkill(root: root, relativePath: "two", body: "Read .claude/skills/demo/SKILL.md.  Then verify.")
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps([
+        let group = try XCTUnwrap(matchingOverlaps([
             makeSkill(path: first.path, scope: "global", manager: "local"),
             makeSkill(path: second.path, scope: "global", manager: "local"),
         ]).first)
@@ -291,14 +332,14 @@ final class SkillOverlapTests: XCTestCase {
             makeSkill(path: first.path, scope: "global", manager: "local"),
             makeSkill(path: missing.path, scope: "global", manager: "local"),
         ]
-        let initial = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        let initial = try XCTUnwrap(matchingOverlaps(skills).first)
         XCTAssertEqual(initial.kind, .sameName)
         XCTAssertEqual(initial.similarity, 0)
 
         _ = try writeSkill(root: root, relativePath: "two", body: "Shared instructions.")
-        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills).first?.kind, .exactDuplicate)
+        XCTAssertEqual(matchingOverlaps(skills).first?.kind, .exactDuplicate)
         _ = try writeSkill(root: root, relativePath: "two", body: "Changed at the same path.")
-        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills).first?.kind, .sameName)
+        XCTAssertEqual(matchingOverlaps(skills).first?.kind, .sameName)
     }
 
     func testMixedPluginsKeepPerMemberSuggestionsAndPairMaximum() throws {
@@ -318,7 +359,7 @@ final class SkillOverlapTests: XCTestCase {
             let path = try writeSkill(root: root, relativePath: name, body: body)
             return makeSkill(path: path.path, scope: scope, manager: manager)
         }
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        let group = try XCTUnwrap(matchingOverlaps(skills).first)
 
         XCTAssertEqual(group.kind, .pluginReplacement)
         XCTAssertEqual(group.similarity, 1)
@@ -326,7 +367,7 @@ final class SkillOverlapTests: XCTestCase {
             root.appendingPathComponent("global-a").path,
             root.appendingPathComponent("global-b").path,
         ]))
-        XCTAssertEqual(MetagentCore.detectSkillOverlaps(skills.reversed()), [group])
+        XCTAssertEqual(matchingOverlaps(skills.reversed()), [group])
     }
 
     func testSymlinkRetargetIsObservedBetweenCalls() throws {
@@ -339,10 +380,10 @@ final class SkillOverlapTests: XCTestCase {
             makeSkill(path: first.path, scope: "global", manager: "local"),
             makeSkill(path: alias.path, scope: "global", manager: "local"),
         ]
-        XCTAssertTrue(MetagentCore.detectSkillOverlaps(skills).isEmpty)
+        XCTAssertTrue(matchingOverlaps(skills).isEmpty)
         try FileManager.default.removeItem(at: alias)
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: second)
-        let group = try XCTUnwrap(MetagentCore.detectSkillOverlaps(skills).first)
+        let group = try XCTUnwrap(matchingOverlaps(skills).first)
         XCTAssertEqual(group.kind, .exactDuplicate)
         XCTAssertEqual(Set(group.members.map(\.canonicalPath)), Set([first.path, second.path]))
     }
@@ -673,6 +714,18 @@ final class SkillOverlapTests: XCTestCase {
         XCTAssertEqual(blocks[0].text, "print(\"tilde\")")
         XCTAssertEqual(blocks[1].kind, .code(language: "markdown"))
         XCTAssertEqual(blocks[1].text, "```nested\ncontent\n```")
+    }
+
+    // Run count equality through the detailed fixtures too, including changed,
+    // missing, oversized, linked, aliased, and retargeted bundles.
+    private func matchingOverlaps(
+        _ skills: [SkillInventoryItem],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> [SkillOverlapGroup] {
+        let groups = MetagentCore.detectSkillOverlaps(skills)
+        XCTAssertEqual(MetagentCore.countSkillOverlapGroups(skills), groups.count, file: file, line: line)
+        return groups
     }
 
     private func fixtureRoot(_ name: String) throws -> URL {

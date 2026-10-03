@@ -208,6 +208,24 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"filter_press_return_to_semantic_content_ready_ms"', source)
         self.assertIn('"sort_input_to_ax_content_ready_ms"', source)
 
+    def test_reload_starts_enabled_and_requires_an_observed_work_transition(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        measurement = source.split("func measureRefresh(window:", 1)[1].split(
+            "func terminate(", 1
+        )[0]
+
+        self.assertLess(
+            measurement.index("var readiness = try RefreshReadinessTransition("),
+            measurement.index('try performPress(control, description: "Reload")'),
+        )
+        self.assertIn("initiallyEnabled: try boolAttribute(control, kAXEnabledAttribute)", measurement)
+        self.assertIn("readiness.observe(controlExists: false, enabled: nil)", measurement)
+        self.assertIn("guard readiness.transitionObserved", measurement)
+        # The compiled --self-test exercises the production state machine:
+        # initial false/nil, no-op, unknown attributes, and disabled/missing work.
+        self.assertIn("try refreshReadinessSelfTest()", source)
+        self.assertIn("return enabled == true && transitionObserved", source)
+
     @unittest.skipUnless(sys.platform == "darwin", "native AX probe is macOS-only")
     def test_probe_compiles_and_its_platform_independent_self_test_passes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

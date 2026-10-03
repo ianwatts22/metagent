@@ -163,6 +163,56 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastGroups, preflight)
     }
 
+    func testPerformanceOverviewDuplicateGroupCount() throws {
+        try measureOverviewDuplicateGroupCount(detailed: false)
+    }
+
+    func testPerformanceOverviewDuplicateGroupCountDetailedProxy() throws {
+        try measureOverviewDuplicateGroupCount(detailed: true)
+    }
+
+    private func measureOverviewDuplicateGroupCount(detailed: Bool) throws {
+        guard runsPerformanceTests else { return }
+        let report = try overviewHealthPortfolio()
+        let skills = canonicalHealthSkills(projects: report.projects, scope: .all).map(\.skill)
+        let fullGroups = MetagentCore.detectSkillOverlaps(skills)
+        XCTAssertEqual(skills.count, 192)
+        XCTAssertEqual(fullGroups.count, 8)
+        XCTAssertTrue(fullGroups.allSatisfy { $0.members.count == 24 })
+        XCTAssertEqual(MetagentCore.countSkillOverlapGroups(skills), fullGroups.count)
+        // This compares only the count-producing component of Overview, not
+        // live GUI latency or idle energy. Both use the same discovered fixture.
+        let count: () -> Int = detailed
+            ? { MetagentCore.detectSkillOverlaps(skills).count }
+            : { MetagentCore.countSkillOverlapGroups(skills) }
+        var measuredCount = 0
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measuredCount = count()
+        }
+        XCTAssertEqual(measuredCount, fullGroups.count)
+    }
+
+    func testPerformanceSkillSystemHealthPortfolio() throws {
+        guard runsPerformanceTests else { return }
+        let report = try overviewHealthPortfolio()
+        let now = Date(timeIntervalSince1970: 1_784_851_200)
+        let expected = MetagentCore.skillSystemHealth(projects: report.projects, usage: .empty, now: now)
+        XCTAssertEqual(expected.skillCount, 192)
+        XCTAssertEqual(expected.duplicateGroupCount, 8)
+        var measured: SkillSystemHealth?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = MetagentCore.skillSystemHealth(projects: report.projects, usage: .empty, now: now)
+        }
+        XCTAssertEqual(measured, expected)
+    }
+
+    private func overviewHealthPortfolio() throws -> SkillScanReport {
+        let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
+        return try MetagentCore.scanSkills(options: SkillScanOptions(
+            roots: [fixture.path], maxDepth: 2, respectConfiguredIgnores: false
+        ))
+    }
+
     func testPerformanceConfiguredAndHomeInventoryDiscovery() throws {
         guard runsPerformanceTests else { return }
         let home = try makeTemporaryRoot(prefix: "metagent-performance-app-refresh")

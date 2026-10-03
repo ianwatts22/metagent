@@ -7,7 +7,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
   `.agents`, Codex, and Claude, including per-skill and whole-container links;
 - Doctor analysis of the same portfolio;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
-  with discovery excluded from the measured work;
+  metadata-only Overview counts with identical group eligibility, and full
+  Overview health aggregation, with discovery excluded from the measured work;
 - dual configured-root and pruned shallow-home inventory discovery;
 - codebase measurement across 251 tracked files and 10,000 source/test lines;
 - cold usage backfill across 10 session files and 300 observed skill reads;
@@ -92,6 +93,18 @@ render benchmark and is not evidence of input-to-present latency.
 The attention fingerprint proxy compares the old per-byte formatting with the
 current encoder and requires identical results, preserving saved dismissals.
 Neither proxy measures the complete SwiftUI interaction or settled idle cost.
+
+Projects row preparation also has ordinary and projection-heavy native fixtures,
+including real directory aliases and Claude-link evidence. These component
+metrics remain separate from installed-app navigation. The immediate-subprocess
+rail runs 40 short commands to catch fixed completion delays; unavailable kernel
+process events skip only this timing check, not subprocess correctness coverage.
+
+For local publishing stage diagnostics, enable
+`METAGENT_RUN_SUBPROCESS_PERFORMANCE_TESTS=1` and select
+`SkillPublicationGitTests.testPerformanceLocalPublicationStages`. It measures
+fixture setup, inspection, preview, and commit/push separately using a disposable
+local bare remote. It is not a GitHub, authentication, or network-latency test.
 
 The native interaction probe services the main run loop while waiting for app
 termination, launch completion, and exact-PID registration. AppKit's
@@ -412,7 +425,10 @@ content, tables, and outlines; asking for lazy cell children can itself create
 offscreen hosting views and distort latency and retained-memory measurements.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
-enabled ready state and then return. A refresh that finishes too quickly for
+initially enabled ready state and then return. Initially disabled or unknown
+controls are rejected before pressing, so already-running work cannot be
+misreported as a manual Reload. An unknown AXEnabled attribute alone does not
+prove a work transition. A refresh that finishes too quickly for
 that transition to be observed fails the scenario rather than inventing a
 completion duration.
 
@@ -479,6 +495,11 @@ The budget checker rejects before/after memory artifacts from different
 process launches, executables, builds, channels, or OS versions. It compares
 median `malloc.allocated_mib`, which is the live heap; it does not substitute
 RSS or process-lifetime peak.
+
+Efficiency CPU budgets accept the current schema v3 sampler and retained schema
+v2 captures. Their CPU fields and monotonic interval contract are unchanged;
+v3 adds net-change and regression reporting for shared usage progress. Unknown
+schema versions still fail validation rather than silently assuming compatibility.
 
 Combine whatever artifacts a scenario produced:
 

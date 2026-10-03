@@ -110,6 +110,68 @@ public final class MCPAuthenticationCancellation: @unchecked Sendable {
     }
 }
 
+/// Short-lived commands should complete when the kernel reports their exit,
+/// not at the next polling tick. Registration can lose a race with an already
+/// exited child, or fail on a restricted host; those cases retain polling.
+final class SubprocessExitWaiter {
+    private let processID: pid_t
+    private var queue: Int32 = -1
+
+    var usesEventWaiting: Bool { queue >= 0 }
+
+    init(processID: pid_t, queueFactory: () -> Int32 = kqueue) {
+        self.processID = processID
+        let descriptor = queueFactory()
+        guard descriptor >= 0 else { return }
+        guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
+            close(descriptor)
+            return
+        }
+        var change = kevent(
+            ident: UInt(processID), filter: Int16(EVFILT_PROC),
+            flags: UInt16(EV_ADD | EV_ONESHOT), fflags: UInt32(NOTE_EXIT),
+            data: 0, udata: nil
+        )
+        guard kevent(descriptor, &change, 1, nil, 0, nil) == 0 else {
+            close(descriptor)
+            return
+        }
+        queue = descriptor
+    }
+
+    deinit {
+        if queue >= 0 { close(queue) }
+    }
+
+    /// True means NOTE_EXIT was received for this exact owned child. The
+    /// caller may then reap it with waitpid, including the tiny exit/reap race.
+    func wait(upTo interval: TimeInterval) -> Bool {
+        guard interval > 0 else { return false }
+        guard queue >= 0 else {
+            Thread.sleep(forTimeInterval: min(interval, 0.05))
+            return false
+        }
+        // TimeInterval permits infinity and very large values. Bound only an
+        // individual kernel wait, not the caller's timeout policy or deadline.
+        let boundedInterval = min(interval, 86_400)
+        let seconds = Int(boundedInterval)
+        let nanoseconds = Int(min((boundedInterval - Double(seconds)) * 1_000_000_000, 999_999_999))
+        var timeout = timespec(tv_sec: seconds, tv_nsec: nanoseconds)
+        var event = kevent()
+        let count = kevent(queue, nil, 0, &event, 1, &timeout)
+        if count == 0 || (count < 0 && errno == EINTR) { return false }
+        guard count == 1, event.flags & UInt16(EV_ERROR) == 0,
+              event.ident == UInt(processID), event.filter == Int16(EVFILT_PROC),
+              event.fflags & UInt32(NOTE_EXIT) != 0
+        else {
+            close(queue)
+            queue = -1
+            return false
+        }
+        return true
+    }
+}
+
 func runSubprocess(
     executable: URL,
     arguments: [String],
@@ -200,33 +262,41 @@ func runSubprocess(
     try outputHandle.close()
     try errorHandle.close()
 
-    let deadline = Date().addingTimeInterval(timeout)
-    var nextOutputObservation = Date()
+    let exitWaiter = SubprocessExitWaiter(processID: processID)
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    var nextOutputObservation = ProcessInfo.processInfo.systemUptime + 0.05
     var waitStatus: Int32 = 0
     func waitForExit(_ options: Int32) -> pid_t {
-        if let cancellation {
-            return cancellation.waitForExit(processID, status: &waitStatus, options: options)
-        }
-        return waitpid(processID, &waitStatus, options)
+        var result: pid_t
+        repeat {
+            if let cancellation {
+                result = cancellation.waitForExit(processID, status: &waitStatus, options: options)
+            } else {
+                result = waitpid(processID, &waitStatus, options)
+            }
+        } while options == 0 && result == -1 && errno == EINTR
+        return result
     }
     var exited = waitForExit(WNOHANG) == processID
-    while !exited && Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.05)
-        if let outputObserver, Date() >= nextOutputObservation {
+    while !exited && ProcessInfo.processInfo.systemUptime < deadline {
+        let now = ProcessInfo.processInfo.systemUptime
+        let observationDeadline = outputObserver == nil ? deadline : nextOutputObservation
+        let reportedExit = exitWaiter.wait(upTo: min(deadline, observationDeadline) - now)
+        if let outputObserver, ProcessInfo.processInfo.systemUptime >= nextOutputObservation {
             outputObserver(
                 (try? Data(contentsOf: outputURL)) ?? Data(),
                 (try? Data(contentsOf: errorURL)) ?? Data()
             )
-            nextOutputObservation = Date().addingTimeInterval(0.25)
+            nextOutputObservation = ProcessInfo.processInfo.systemUptime + 0.25
         }
-        exited = waitForExit(WNOHANG) == processID
+        exited = waitForExit(reportedExit ? 0 : WNOHANG) == processID
     }
     let timedOut = !exited
     if timedOut {
         kill(-processID, SIGTERM)
-        let terminationDeadline = Date().addingTimeInterval(2)
+        let terminationDeadline = ProcessInfo.processInfo.systemUptime + 2
         var processGroupAlive = isProcessGroupAlive(processID)
-        while processGroupAlive && Date() < terminationDeadline {
+        while processGroupAlive && ProcessInfo.processInfo.systemUptime < terminationDeadline {
             Thread.sleep(forTimeInterval: 0.05)
             if !exited {
                 exited = waitForExit(WNOHANG) == processID
