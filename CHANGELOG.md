@@ -3,6 +3,31 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
+## v0.9.2 — 2026-10-02
+
+- Background history progress stays in the toolbar, with details on click,
+  instead of a banner across every page.
+- Skills uses a compact view dropdown and one filter menu, with clearer
+  grouping and an archive button that no longer truncates its label.
+
+## v0.9.1 — 2026-10-02
+
+- Skill menus keep everyday actions up front and group publishing and advanced
+  tools into smaller submenus.
+- A compact publishing dialog puts folder selection first, with optional
+  details and a clear handoff to Published after copying.
+
+## v0.9.0 — 2026-10-02
+
+- Publish editable project skills as well as personal skills, and remember the
+  last successfully used publishing folder for the next skill.
+- Publishing setup can create a local repository, reuse existing destinations,
+  and expose install links without configuring the same skill twice.
+- Safer publishing reviews the exact outgoing Git content and preserves usable
+  retries. Skill removal and mirroring have tighter filesystem safeguards.
+- Incomplete usage indexing stays visibly provisional, and shared inventory
+  models preserve project metadata more reliably.
+
 ## v0.8.1 — 2026-09-07
 
 - Refreshes keep existing metrics and duplicate results visible while new data

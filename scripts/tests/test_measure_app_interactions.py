@@ -94,7 +94,7 @@ class MeasureAppInteractionsScriptTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('"metagent.skills.view.summary"', script)
+        self.assertIn('"metagent.skills.view-selector"', script)
         self.assertIn('contentReadyPrefix("Skills")', script)
         skills_cycle = script.split("private func runSkillsCycle", 1)[1].split(
             "private func runRefresh", 1

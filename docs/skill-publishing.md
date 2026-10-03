@@ -5,8 +5,11 @@ The durable source is [.agents/skills/metagent/SKILL.md](../.agents/skills/metag
 
 ## Publishing selected skills from the app
 
-In **Skills → Published**, choose one canonical `~/.agents/skills` skill and a
-separate Git checkout. If you do not have one, **Create publishing folder**
+In **Skills**, use **Publishing → Prepare for Publishing…** on an editable canonical skill in either
+`~/.agents/skills` or a project's `.agents/skills`, then choose a separate Git
+checkout. Each skill is configured individually; multiple skills can publish
+to the same checkout. Installed packages and runtime copies must be published
+from their editable canonical source. If you do not have a checkout, **Use Default Folder**
 creates `~/public-agent-setup` and initializes a local Git repository on `main`,
 then selects it. An empty existing folder can be initialized, and a valid
 standalone repository at that path can be reused. Other nonempty folders,
@@ -14,8 +17,12 @@ files, and symlinks are left untouched. Setup does not stage or commit files,
 create a GitHub repository, or push. Before using **Publish**, connect a GitHub
 remote and make the initial commit and push with upstream tracking. The existing
 Publish action requires an established remote branch; setup does not bypass it.
-Previous destinations can be reused. **Start
-Local Mirroring** checks the bundle and copies only that skill to
+The last repository successfully used for local mirroring becomes the default
+for the next skill, including after restarting the app. **Change…** offers
+recent folders and **Choose Folder…** for a different destination; blocked
+attempts leave the default unchanged. **Details** holds the optional destination
+folder name, full paths, and nonblocking findings. Blocking findings stay visible.
+**Copy Skill** checks the bundle and copies only that skill to
 `skills/<destination-name>`; source-file changes continue to mirror one way.
 The broader private skills directory is never exported. Stopping mirroring
 leaves the last copy in place. Nothing commits, pushes, changes repository
@@ -27,9 +34,10 @@ and destination bundles block mirroring; external targets are left untouched.
 
 Each card separates **mirror state** from an explicit **Check Git Status**:
 
-Once mirroring is configured, the skill's context menu disables duplicate setup
-and offers **Manage Publishing…**, **Copy Install Command**, and **Copy skills.sh
-Link**. Copy actions read the current Git origin, including repository renames.
+After starting a copy, the app opens **Published**. Once mirroring is configured,
+the skill's **Publishing** submenu offers **Manage Publishing…**, **Open GitHub**,
+**Copy Install Command**, and **Copy skills.sh Link**, instead of duplicate setup.
+Link actions read the current Git origin, including repository renames.
 These are destination links, not proof of public visibility or indexing. The
 Published card also has **Copy Link**. A check that matches the known upstream
 disables Publish as **Up to date**; a new mirror snapshot or another Git status

@@ -240,6 +240,7 @@ struct InventorySection: View {
     private var activeAdvancedFilterCount: Int {
         var count = hiddenSources == [.notInstalled] ? 0 : 1
         if scopeFilter != .all { count += 1 }
+        if usageFilter != .all { count += 1 }
         return count
     }
 
@@ -250,51 +251,58 @@ struct InventorySection: View {
     @ViewBuilder
     private func toolbarControls(countText: String) -> some View {
         SkillViewSelector(selection: selectedViewBinding)
-        CountChip(text: countText)
         if selectedView != .published, selectedView != .duplicates {
-            filterControls
+            filterControls()
+        }
+        Spacer(minLength: 0)
+        CountChip(text: countText)
+        if !model.archivedSkills.isEmpty, selectedView != .duplicates {
+            archivedSkillsMenu
         }
     }
 
     @ViewBuilder
-    private var filterControls: some View {
+    private func filterControls(searchWidth: CGFloat = 220) -> some View {
         GlassSearchField(
             placeholder: "Search",
             text: $query,
-            width: 150,
+            width: searchWidth,
             accessibilityIdentifier: "metagent.skills.search"
         )
 
-        // Usage is the question this app exists to answer, so it stays in the
-        // open alongside search and grouping.
         GlassSelectionMenu(
-            title: "Usage",
-            selection: $usageFilter,
-            options: Array(UsageFilter.allCases),
-            optionTitle: { $0.title },
-            width: 158
+            title: "Group",
+            selection: groupingBinding,
+            options: Array(SkillGrouping.allCases),
+            optionTitle: { $0 == .none ? "Group: None" : "Group: \($0.title)" },
+            width: 168,
+            systemImage: "rectangle.3.group"
         )
-        .accessibilityIdentifier("metagent.skills.usage-filter")
-
-        if selectedView != .duplicates {
-            GlassSelectionMenu(
-                title: "Group",
-                selection: groupingBinding,
-                options: Array(SkillGrouping.allCases),
-                optionTitle: { $0.title },
-                width: 150
-            )
-            .help("Group the current Skills view. Groups can be expanded or collapsed and apply across every view.")
-        }
+        .help("Group skills by source, location, or upstream")
 
         Menu {
+            Section("Usage") {
+                ForEach(UsageFilter.allCases) { filter in
+                    Button {
+                        usageFilter = filter
+                        selection.removeAll()
+                    } label: {
+                        if usageFilter == filter {
+                            Label(filter.title, systemImage: "checkmark")
+                        } else {
+                            Text(filter.title)
+                        }
+                    }
+                }
+            }
+
             Picker("Location", selection: $scopeFilter) {
                 ForEach(SkillScopeFilter.allCases) { scope in
                     Text(scope.title).tag(scope)
                 }
             }
 
-            Section("Visible sources") {
+            Menu("Sources") {
                 Button("Show All Sources") {
                     hiddenSourceRaw = ""
                     selection.removeAll()
@@ -310,6 +318,14 @@ struct InventorySection: View {
                     )
                 }
             }
+            Divider()
+            Button("Reset Filters") {
+                usageFilter = .all
+                scopeFilter = .all
+                hiddenSourceRaw = SkillSourceCategory.notInstalled.rawValue
+                selection.removeAll()
+            }
+            .disabled(activeAdvancedFilterCount == 0)
         } label: {
             GlassMenuLabel(
                 title: advancedFilterTitle,
@@ -317,12 +333,11 @@ struct InventorySection: View {
                 width: activeAdvancedFilterCount == 0 ? 112 : 128
             )
         }
-        .help("Location and which skill sources are visible")
+        .help("Filter by usage, location, and source")
         .buttonStyle(.plain)
-
-        if !model.archivedSkills.isEmpty {
-            archivedSkillsMenu
-        }
+        .accessibilityLabel("Filters")
+        .accessibilityValue(usageFilter.title)
+        .accessibilityIdentifier("metagent.skills.filters")
     }
 
     /// Appears only while something is set aside, so the toolbar carries no
@@ -342,13 +357,18 @@ struct InventorySection: View {
                 NSWorkspace.shared.open(MetagentCore.archivedSkillsRoot())
             }
         } label: {
-            GlassMenuLabel(
-                title: "Archived · \(model.archivedSkills.count)",
-                systemImage: "archivebox",
-                width: 128
-            )
+            GlassMenuLabel(title: nil, systemImage: "archivebox", width: 36, showsChevron: false)
+                .overlay(alignment: .topTrailing) {
+                    Text("\(model.archivedSkills.count)")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .allowsHitTesting(false)
+                }
         }
-        .help("Skills set aside in Metagent's Archived Skills folder. No agent runtime sees them until restored.")
+        .help("\(model.archivedSkills.count) archived skills. Open to restore a skill or show the archive in Finder.")
+        .accessibilityLabel("Archived skills")
+        .accessibilityValue("\(model.archivedSkills.count)")
         .buttonStyle(.plain)
     }
 
@@ -379,7 +399,6 @@ struct InventorySection: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     toolbarControls(countText: countText)
-                    Spacer(minLength: 0)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -387,10 +406,13 @@ struct InventorySection: View {
                         SkillViewSelector(selection: selectedViewBinding)
                         CountChip(text: countText)
                         Spacer(minLength: 0)
+                        if !model.archivedSkills.isEmpty, selectedView != .duplicates {
+                            archivedSkillsMenu
+                        }
                     }
                     if selectedView != .published, selectedView != .duplicates {
                         HStack(spacing: 8) {
-                            filterControls
+                            filterControls(searchWidth: 160)
                             Spacer(minLength: 0)
                         }
                     }
@@ -402,7 +424,7 @@ struct InventorySection: View {
                     model: model,
                     availableSkills: cachedRows
                         .compactMap(\.inventory)
-                        .filter(model.isPrimaryPublishableSkill)
+                        .filter { skillPublicationUnavailableReason($0.skill) == nil }
                         .sorted {
                             $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
                         },
@@ -580,7 +602,9 @@ struct InventorySection: View {
             SkillIconEditorView(model: model, row: row)
         }
         .sheet(item: $publicationTarget) { row in
-            SkillPublicationSetupSheet(model: model, row: row)
+            SkillPublicationSetupSheet(model: model, row: row) {
+                selectedViewRaw = SkillTableView.published.rawValue
+            }
         }
     }
 
@@ -655,7 +679,11 @@ struct InventorySection: View {
             }
     }
 
-    private func copyPublicationLink(record: SkillPublicationRecord, catalog: SkillPublicationCatalog, command: Bool) {
+    private enum PublicationLinkAction {
+        case openRepository, copyInstallCommand, copySkillsLink
+    }
+
+    private func usePublicationLink(record: SkillPublicationRecord, catalog: SkillPublicationCatalog, action: PublicationLinkAction) {
         Task {
             // Resolve origin at the time of the user's request, so repository
             // renames do not keep producing cached install URLs.
@@ -664,13 +692,17 @@ struct InventorySection: View {
             }.value
             guard let links = status.links else {
                 let alert = NSAlert()
-                alert.messageText = "Install link unavailable"
+                alert.messageText = "Publishing link unavailable"
                 alert.informativeText = "Use Manage Publishing → Check Git Status. A valid GitHub origin and mirrored SKILL.md are required."
                 alert.runModal()
                 return
             }
+            if action == .openRepository {
+                NSWorkspace.shared.open(links.repositoryURL)
+                return
+            }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(command ? links.installCommand : links.skillsURL.absoluteString, forType: .string)
+            NSPasteboard.general.setString(action == .copyInstallCommand ? links.installCommand : links.skillsURL.absoluteString, forType: .string)
         }
     }
 
@@ -685,73 +717,85 @@ struct InventorySection: View {
             Button("View Skill", systemImage: "doc.text.magnifyingglass") {
                 viewedSkill = inventory
             }
-            Button("Get Info", systemImage: "info.circle") {
-                inspectedSkill = inventory
-            }
-            Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
-                scoreAnalysisSkill = inventory
-            }
-            if let record = activeSkillPublication(for: inventory.canonicalPath, in: model.publicationSnapshot) {
-                Button("Publishing configured", systemImage: "checkmark.circle") {}
-                    .disabled(true)
-                Button("Manage Publishing…", systemImage: "shippingbox.and.arrow.backward") {
-                    selectedViewRaw = SkillTableView.published.rawValue
-                }
-                if let catalog = model.publicationSnapshot.catalogs.first(where: { $0.id == record.catalogID }) {
-                    Button("Copy Install Command", systemImage: "doc.on.doc") {
-                        copyPublicationLink(record: record, catalog: catalog, command: true)
-                    }
-                    Button("Copy skills.sh Link", systemImage: "link") {
-                        copyPublicationLink(record: record, catalog: catalog, command: false)
-                    }
-                }
-            } else {
-                Button("Publish…", systemImage: "shippingbox.and.arrow.backward") {
-                    publicationTarget = inventory
-                }
-                .disabled(!model.isPrimaryPublishableSkill(inventory))
-            }
-            Button(
-                inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
-                systemImage: "photo.badge.plus"
-            ) {
-                iconTarget = inventory
-            }
-            .disabled(!inventory.canEditIcon)
-            Divider()
         }
-        Button("Show in Finder", systemImage: "folder") {
-            openSkillDirectories(openableURLs)
-        }
-        .disabled(openableURLs.isEmpty)
-        Button("Open SKILL.md", systemImage: "doc.text") {
-            openSkillFiles(skillFiles)
-        }
-        .disabled(skillFiles.isEmpty)
         Button("Open in Editor", systemImage: "chevron.left.forwardslash.chevron.right") {
             openSkillDirectoriesInEditor(openableURLs, skillFiles: skillFiles)
         }
         .disabled(openableURLs.isEmpty)
-        Divider()
-        let reviewableRows = contextRows.compactMap(\.inventory)
-        Button(
-            reviewableRows.count > 1
-                ? "Review \(reviewableRows.count) with Codex…"
-                : "Review with Codex…",
-            systemImage: "cloud"
-        ) {
-            pendingConfirmation = .codexReview(reviewableRows)
+        Button("Show in Finder", systemImage: "folder") {
+            openSkillDirectories(openableURLs)
         }
-        .disabled(model.isRunning || model.isSkillEvaluating || reviewableRows.isEmpty)
-        Divider()
-        Button("Copy Path", systemImage: "doc.on.doc") {
-            copyPaths(contextRows)
+        .disabled(openableURLs.isEmpty)
+        if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+            Menu("Publishing") {
+                if let record = activeSkillPublication(for: inventory.canonicalPath, in: model.publicationSnapshot) {
+                    Button("Manage Publishing…", systemImage: "shippingbox.and.arrow.backward") {
+                        selectedViewRaw = SkillTableView.published.rawValue
+                    }
+                    if let catalog = model.publicationSnapshot.catalogs.first(where: { $0.id == record.catalogID }) {
+                        Divider()
+                        Button("Open GitHub", systemImage: "arrow.up.right.square") {
+                            usePublicationLink(record: record, catalog: catalog, action: .openRepository)
+                        }
+                        Button("Copy Install Command", systemImage: "doc.on.doc") {
+                            usePublicationLink(record: record, catalog: catalog, action: .copyInstallCommand)
+                        }
+                        Button("Copy skills.sh Link", systemImage: "link") {
+                            usePublicationLink(record: record, catalog: catalog, action: .copySkillsLink)
+                        }
+                    }
+                } else {
+                    let unavailableReason = skillPublicationUnavailableReason(inventory.skill)
+                    Button("Prepare for Publishing…", systemImage: "shippingbox.and.arrow.backward") {
+                        publicationTarget = inventory
+                    }
+                    .disabled(unavailableReason != nil)
+                    .help(unavailableReason ?? "Prepare this skill for publishing")
+                    if let unavailableReason {
+                        Text(unavailableReason)
+                    }
+                }
+            }
         }
-        .disabled(paths.isEmpty)
-        Button("Copy Improvement Instructions", systemImage: "wand.and.sparkles") {
-            copyToImprove(contextRows)
+        Menu("More") {
+            if contextRows.count == 1, let inventory = contextRows.first?.inventory {
+                Button("Get Info", systemImage: "info.circle") {
+                    inspectedSkill = inventory
+                }
+                Button("Score Analysis", systemImage: "chart.bar.doc.horizontal") {
+                    scoreAnalysisSkill = inventory
+                }
+                Button(
+                    inventory.skillIconPath == nil ? "Add Icon…" : "Change Icon…",
+                    systemImage: "photo.badge.plus"
+                ) {
+                    iconTarget = inventory
+                }
+                .disabled(!inventory.canEditIcon)
+                Divider()
+            }
+            let reviewableRows = contextRows.compactMap(\.inventory)
+            Button(
+                reviewableRows.count > 1 ? "Review \(reviewableRows.count) with Codex…" : "Review with Codex…",
+                systemImage: "cloud"
+            ) {
+                pendingConfirmation = .codexReview(reviewableRows)
+            }
+            .disabled(model.isRunning || model.isSkillEvaluating || reviewableRows.isEmpty)
+            Button("Open SKILL.md", systemImage: "doc.text") {
+                openSkillFiles(skillFiles)
+            }
+            .disabled(skillFiles.isEmpty)
+            Divider()
+            Button("Copy Path", systemImage: "doc.on.doc") {
+                copyPaths(contextRows)
+            }
+            .disabled(paths.isEmpty)
+            Button("Copy Improvement Instructions", systemImage: "wand.and.sparkles") {
+                copyToImprove(contextRows)
+            }
+            .disabled(paths.isEmpty)
         }
-        .disabled(paths.isEmpty)
         Divider()
         let archivableRows = contextRows.compactMap(\.inventory).filter { $0.archiveRequest != nil }
         Button(
