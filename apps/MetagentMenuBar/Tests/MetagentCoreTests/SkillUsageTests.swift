@@ -2373,7 +2373,8 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            1
+            1,
+            MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
         )
 
         let nested = fixture.sessions.appendingPathComponent("2026/08/28")
@@ -2473,7 +2474,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path),
             1,
-            "Metagent's own SQLite and launch-cache writes must not dirty the session catalog"
+            "Metagent's own writes must not dirty the session catalog: \(MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database.path))"
         )
         XCTAssertNil(
             MetagentCore.loadCachedSkillUsageSnapshot(databasePath: database.path),

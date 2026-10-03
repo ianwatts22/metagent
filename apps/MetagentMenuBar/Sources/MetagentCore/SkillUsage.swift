@@ -494,6 +494,7 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     private let lock = NSLock()
     private var baselineEventID: FSEventStreamEventId?
     private var dirty = false
+    private var invalidationDescription = "none"
 
     init(roots: [String] = [], databasePath: String? = nil) {
         self.roots = roots
@@ -506,9 +507,16 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
         return dirty
     }
 
+    var diagnostics: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "armed=\(baselineEventID != nil), dirty=\(dirty), invalidation=\(invalidationDescription)"
+    }
+
     func arm(baselineEventID: FSEventStreamEventId) {
         lock.lock()
         dirty = false
+        invalidationDescription = "none"
         self.baselineEventID = baselineEventID
         lock.unlock()
     }
@@ -547,13 +555,20 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
             || eventID == 0
             || eventID > baselineEventID)
         {
+            if !dirty {
+                let scope = eventPath.map { path in
+                    roots.contains(path) ? "root" : "non-root"
+                } ?? "missing-path"
+                invalidationDescription = "flags=0x\(String(flags, radix: 16)), event=\(eventID), baseline=\(baselineEventID), scope=\(scope)"
+            }
             dirty = true
         }
         lock.unlock()
     }
 
-    func markDirty() {
+    func markDirty(reason: String = "explicit invalidation") {
         lock.lock()
+        if !dirty { invalidationDescription = reason }
         dirty = true
         lock.unlock()
     }
@@ -619,7 +634,7 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         var hasUnwatchedExistingIdentityPath = false
         identityChangeWatchers = usageIdentityWatchPaths(roots).compactMap { path in
             guard let watcher = UsageRootChangeWatcher(path: path, queue: queue, onChange: { [state] in
-                state.markDirty()
+                state.markDirty(reason: "ancestor identity changed")
             }) else {
                 if usageRootIsMissing(path) {
                     missingIdentityPathsWithoutDescriptors.append(path)
@@ -711,6 +726,10 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         state.isDirty
     }
 
+    var diagnostics: String {
+        "watcherStarted=\(isStarted), \(state.diagnostics)"
+    }
+
     func canRetainCatalogAfterDiscovery() -> Bool {
         guard isStarted, let stream else { return false }
         // Discovery may last long enough for stream delivery latency to hide a
@@ -743,6 +762,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [UsageSourceCatalogKey: Entry] = [:]
     private var discoveryCounts: [UsageSourceCatalogKey: Int] = [:]
+    private var reuseDiagnostics: [UsageSourceCatalogKey: String] = [:]
 
     func sources(
         key: UsageSourceCatalogKey,
@@ -783,6 +803,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
                 watcher: watcher
             )
         } else {
+            reuseDiagnostics[key] = "not retained after discovery: \(watcher.diagnostics)"
             entries.removeValue(forKey: key)
         }
         lock.unlock()
@@ -805,6 +826,7 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         lock.lock()
         entries.removeAll()
         discoveryCounts.removeAll()
+        reuseDiagnostics.removeAll()
         lock.unlock()
     }
 
@@ -816,6 +838,13 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
                 count += record.value
             }
         }
+    }
+
+    func diagnostics(databasePath: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return reuseDiagnostics.filter { $0.key.databasePath == databasePath }
+            .map(\.value).sorted().joined(separator: "; ")
     }
 
     func overrideCachedSizeForTesting(databasePath: String, sourcePath: String, size: Int64) -> Bool {
@@ -840,10 +869,16 @@ private final class UsageSourceCatalogCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard maximumAgeSeconds > 0,
-              let entry = entries[key],
-              !entry.watcher.isDirty,
-              ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds
+              let entry = entries[key]
         else { return nil }
+        guard !entry.watcher.isDirty else {
+            reuseDiagnostics[key] = "invalidated before reuse: \(entry.watcher.diagnostics)"
+            return nil
+        }
+        guard ProcessInfo.processInfo.systemUptime - entry.createdAt < maximumAgeSeconds else {
+            reuseDiagnostics[key] = "catalog age expired"
+            return nil
+        }
         return entry.items
     }
 }
@@ -902,6 +937,12 @@ extension MetagentCore {
 
     static func skillUsageSourceDiscoveryCountForTesting(databasePath: String) -> Int {
         UsageSourceCatalogCache.shared.discoveryCount(
+            databasePath: standardizedUsageDatabasePath(databasePath)
+        )
+    }
+
+    static func skillUsageSourceCatalogDiagnosticsForTesting(databasePath: String) -> String {
+        UsageSourceCatalogCache.shared.diagnostics(
             databasePath: standardizedUsageDatabasePath(databasePath)
         )
     }
