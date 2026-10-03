@@ -3,7 +3,7 @@
 Metagent has an opt-in performance lane for the core work behind an app refresh:
 
 - skill discovery across 24 projects and 192 skill bundles;
-- inventory statistics for 48 Unicode/reference/script bundles represented in
+- inventory statistics for 48 ASCII or Unicode/reference/script bundles represented in
   `.agents`, Codex, and Claude, including per-skill and whole-container links;
 - Doctor analysis of the same portfolio;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
@@ -194,6 +194,12 @@ not a full Reload, input-to-present, settled-idle, or energy measurement.
 Content character/word counters use one pass without building a discarded word
 array. The reference tests retain Swift `Character` grapheme and whitespace
 semantics, including combining marks, emoji, CRLF, and Unicode separators.
+ASCII contents use a byte-counting fast path that counts CRLF as one Swift
+grapheme. Encountering any non-ASCII byte restarts with the complete Swift
+`Character` rules, including a combining mark following a long ASCII prefix.
+Tests compare every ASCII byte, whitespace and CRLF boundaries, and Unicode
+fallbacks against the original counting expressions. Both ASCII and Unicode
+full-inventory fixtures include filesystem reads and script reference evidence.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests

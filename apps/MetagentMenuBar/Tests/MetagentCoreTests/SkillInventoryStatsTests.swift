@@ -3,6 +3,19 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillInventoryStatsTests: XCTestCase {
+    func testASCIICountsMatchSwiftForEveryByteAndCRLFBoundary() {
+        let bytes = (0..<128).map { String(UnicodeScalar($0)!) }
+        let lineEndings = ["", "\r", "\n", "\r\n", "\r\r\n", "\n\r\n", "\r\n\r"]
+        let inputs = bytes + bytes.map { "left\($0)right" }
+            + lineEndings.flatMap { first in lineEndings.map { "a\(first)b\($0)c" } }
+            + [String(repeating: "ASCII words\r\n", count: 1_000) + "e\u{301} 👩🏽‍💻"]
+        for text in inputs {
+            let counts = skillTextCounts(text)
+            XCTAssertEqual(counts.characters, text.count)
+            XCTAssertEqual(counts.words, text.split(whereSeparator: \.isWhitespace).count)
+        }
+    }
+
     func testTextCountsPreserveWhitespaceAndUnicodeGraphemeSemantics() {
         let inputs = [
             "", "   \t\n\r\n", "single", " first\tsecond\nthird ",

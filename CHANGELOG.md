@@ -14,7 +14,8 @@ AGENTS.md for the release procedure.
 - Background session updates avoid walking unchanged history, inventory refreshes
   share one plugin query, and Overview does less repeated attention work.
 - Inventory refreshes read shared skill bundles once, with complete statistics
-  and script references for per-skill projections.
+  and script references for per-skill projections, and count plain text faster
+  without changing Unicode statistics.
 
 ## v0.9.2 — 2026-10-02
 

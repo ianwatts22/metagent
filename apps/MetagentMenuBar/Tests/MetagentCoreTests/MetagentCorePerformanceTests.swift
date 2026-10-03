@@ -48,12 +48,24 @@ final class MetagentCorePerformanceTests: XCTestCase {
     }
 
     func testPerformanceProjectedSkillInventory() throws {
+        try measureProjectedSkillInventory(
+            referenceLine: "Unicode café 東京 reference text with scripts/demo.py instructions.\n"
+        )
+    }
+
+    func testPerformanceASCIIProjectedSkillInventory() throws {
+        try measureProjectedSkillInventory(
+            referenceLine: "ASCII reference text with scripts/demo.py instructions and CRLF.\r\n"
+        )
+    }
+
+    private func measureProjectedSkillInventory(referenceLine: String) throws {
         guard runsPerformanceTests else { return }
         let root = try makeTemporaryRoot(prefix: "metagent-performance-projections")
         let canonical = root.appendingPathComponent(".agents/skills")
         let claude = root.appendingPathComponent(".claude/skills")
         try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
-        let reference = String(repeating: "Unicode café 東京 reference text with scripts/demo.py instructions.\n", count: 128)
+        let reference = String(repeating: referenceLine, count: 128)
         for index in 0..<48 {
             let bundle = canonical.appendingPathComponent("skill-\(index)")
             try writeSkillFixture(at: bundle, name: "skill-\(index)", body: "Run scripts/demo.py.")

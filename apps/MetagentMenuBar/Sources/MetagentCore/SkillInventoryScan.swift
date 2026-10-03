@@ -822,6 +822,24 @@ func skillTextCounts(_ text: String) -> (characters: Int, words: Int) {
     var characters = 0
     var words = 0
     var inWord = false
+    var previousWasCR = false
+    for byte in text.utf8 {
+        // ASCII has one byte per Character, except the CRLF grapheme. Any
+        // non-ASCII input uses Swift's complete grapheme/whitespace rules.
+        guard byte < 128 else { return unicodeSkillTextCounts(text) }
+        if byte != 10 || !previousWasCR { characters += 1 }
+        let whitespace = byte == 32 || (9...13).contains(byte)
+        if !whitespace, !inWord { words += 1 }
+        inWord = !whitespace
+        previousWasCR = byte == 13
+    }
+    return (characters, words)
+}
+
+private func unicodeSkillTextCounts(_ text: String) -> (characters: Int, words: Int) {
+    var characters = 0
+    var words = 0
+    var inWord = false
     for character in text {
         characters += 1
         let whitespace = character.isWhitespace
