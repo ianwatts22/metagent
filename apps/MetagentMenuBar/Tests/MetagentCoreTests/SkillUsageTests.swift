@@ -2456,6 +2456,7 @@ final class SkillUsageTests: XCTestCase {
         var options = fixture.options
         options.reusesSourceCatalog = true
         let first = try MetagentCore.refreshSkillUsage(options: options)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         try fixture.append([fixture.toolCall(callID: "second", command: "cat \(skill.path)")], to: source)
         XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
             databasePath: fixture.database.path, sourcePath: source.path,
@@ -2468,7 +2469,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertGreaterThan(changed.snapshot.processedBytes, first.snapshot.processedBytes)
         XCTAssertEqual(changed.bytesRead, changed.snapshot.processedBytes - first.snapshot.processedBytes)
         XCTAssertEqual(
-            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1,
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), settledDiscoveryCount,
             MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: fixture.database.path)
         )
         XCTAssertEqual(try MetagentCore.refreshSkillUsage(options: options).bytesRead, 0)
@@ -2529,6 +2530,7 @@ final class SkillUsageTests: XCTestCase {
             options.reusesSourceCatalog = true
             let initial = try MetagentCore.refreshSkillUsage(options: options)
             XCTAssertEqual(initial.snapshot.totalInvocations, 1)
+            let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
             let original = try String(contentsOf: source, encoding: .utf8)
             let replacement = original.replacingOccurrences(of: "first", with: "other")
             XCTAssertEqual(original.utf8.count, replacement.utf8.count)
@@ -2544,7 +2546,10 @@ final class SkillUsageTests: XCTestCase {
             XCTAssertEqual(rewritten.snapshot.totalInvocations, 1)
             XCTAssertEqual(rewritten.snapshot.summaries.map(\.skillName), ["other"])
             XCTAssertEqual(rewritten.snapshot.totalBytes, Int64(replacement.utf8.count * 2))
-            XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 2)
+            XCTAssertEqual(
+                MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+                settledDiscoveryCount + 1
+            )
         }
     }
 
@@ -2561,7 +2566,7 @@ final class SkillUsageTests: XCTestCase {
         options.reusesSourceCatalog = true
         let indexed = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(indexed.snapshot.totalInvocations, 1)
-        usleep(250_000)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         XCTAssertTrue(MetagentCore.overrideSkillUsageCachedSourceSizeForTesting(
             databasePath: fixture.database.path, sourcePath: source.path, size: 1
         ))
@@ -2569,9 +2574,16 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertEqual(stale.bytesRead, 0, "a stale EOF must not replay an indexed rollout")
         XCTAssertEqual(stale.snapshot.totalInvocations, 1)
         XCTAssertEqual(stale.snapshot.processedBytes, indexed.snapshot.processedBytes)
-        XCTAssertEqual(MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path), 1)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: fixture.database.path),
+            settledDiscoveryCount
+        )
 
         try Data().write(to: source)
+        XCTAssertTrue(MetagentCore.recordSkillUsageSourceEventForTesting(
+            databasePath: fixture.database.path, sourcePath: source.path,
+            flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        ))
         let truncated = try MetagentCore.refreshSkillUsage(options: options)
         XCTAssertEqual(truncated.snapshot.totalInvocations, 0, "real truncation must still remove stale observations")
         XCTAssertEqual(truncated.snapshot.processedBytes, 0)
@@ -2604,6 +2616,7 @@ final class SkillUsageTests: XCTestCase {
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
             1
         )
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: options)
         usleep(250_000)
         XCTAssertEqual(
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
@@ -2611,7 +2624,7 @@ final class SkillUsageTests: XCTestCase {
         )
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path),
-            1,
+            settledDiscoveryCount,
             "Metagent's own writes must not dirty the session catalog: \(MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database.path))"
         )
         XCTAssertNil(
@@ -2653,6 +2666,8 @@ final class SkillUsageTests: XCTestCase {
             1
         )
 
+        _ = try fixture.settleReusableSourceCatalog(options: options)
+
         try fixture.append([
             fixture.toolCall(callID: "growth-read", command: "cat \(firstSkill.path)")
         ], to: rollout)
@@ -2664,6 +2679,8 @@ final class SkillUsageTests: XCTestCase {
             try MetagentCore.refreshSkillUsage(options: options).snapshot.totalInvocations,
             2
         )
+
+        _ = try fixture.settleReusableSourceCatalog(options: options)
 
         let oldContents = try String(contentsOf: rollout, encoding: .utf8)
         let rewritten = oldContents.replacingOccurrences(of: "first", with: "other")
@@ -2735,13 +2752,13 @@ final class SkillUsageTests: XCTestCase {
             maxFiles: 20,
             reusesSourceCatalog: true
         )
-        _ = try MetagentCore.refreshSkillUsage(options: reusable)
+        let settledDiscoveryCount = try fixture.settleReusableSourceCatalog(options: reusable)
         _ = try MetagentCore.refreshSkillUsage(options: reusable)
         XCTAssertEqual(
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            1
+            settledDiscoveryCount
         )
 
         let expired = SkillUsageRefreshOptions(
@@ -2757,7 +2774,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            2
+            settledDiscoveryCount + 1
         )
 
         try fixture.executeSQL(
@@ -2769,7 +2786,7 @@ final class SkillUsageTests: XCTestCase {
             MetagentCore.skillUsageSourceDiscoveryCountForTesting(
                 databasePath: fixture.database.path
             ),
-            3
+            settledDiscoveryCount + 2
         )
     }
 }
@@ -2848,20 +2865,30 @@ private final class Fixture {
     }
 
     func settleReusableSourceCatalog(options: SkillUsageRefreshOptions) throws -> Int {
+        let databasePath = try XCTUnwrap(options.databasePath)
         for _ in 0..<8 {
             _ = try MetagentCore.refreshSkillUsage(options: options)
-            let discoveries = MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path)
-            usleep(250_000)
-            _ = try MetagentCore.refreshSkillUsage(options: options)
-            if MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path) == discoveries {
+            let discoveries = MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath)
+            var reused = true
+            // Two unchanged delivery windows also drain late atomic-write
+            // metadata before tests deliberately override cached metadata.
+            for _ in 0..<2 {
+                usleep(250_000)
+                _ = try MetagentCore.refreshSkillUsage(options: options)
+                if MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath) != discoveries {
+                    reused = false
+                    break
+                }
+            }
+            if reused {
                 return discoveries
             }
         }
         // This is bounded setup, not permission to rediscover forever: a
         // disabled/broken cache still fails before the behavior assertions.
         XCTFail("native catalog never established reuse: "
-            + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database.path))
-        return MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database.path)
+            + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: databasePath))
+        return MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: databasePath)
     }
 
     func makeSkill(at relativePath: String, name: String) throws -> URL {
