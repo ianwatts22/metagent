@@ -21,6 +21,47 @@ private enum ProbeError: Error, CustomStringConvertible {
     }
 }
 
+private func validateInteractiveSession(
+    available: Bool,
+    onConsole: Bool?,
+    loginComplete: Bool?,
+    screenLocked: Bool?
+) throws {
+    guard available else {
+        throw ProbeError.state("No WindowServer GUI session is available for live UI measurement.")
+    }
+    guard screenLocked != true else {
+        throw ProbeError.state("The macOS screen is locked. Unlock the Mac before measuring live UI; no app interaction was attempted.")
+    }
+    guard onConsole != false, loginComplete != false else {
+        throw ProbeError.state("The macOS login session is not active on the console. Return to this session before measuring live UI.")
+    }
+}
+
+private func requireInteractiveSession() throws {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    try validateInteractiveSession(
+        available: session != nil,
+        onConsole: session?[kCGSessionOnConsoleKey] as? Bool,
+        loginComplete: session?[kCGSessionLoginDoneKey] as? Bool,
+        // This optional system field is not a public API contract. Only an
+        // observed true blocks; absent/unknown still requires a genuine window.
+        screenLocked: session?["CGSSessionScreenIsLocked"] as? Bool
+    )
+}
+
+private func selectMainWindow<Node>(
+    _ candidates: [Node],
+    isApplication: (Node) -> Bool,
+    role: (Node) throws -> String?,
+    title: (Node) throws -> String?
+) rethrows -> Node? {
+    try candidates.first { candidate in
+        guard !isApplication(candidate), try role(candidate) == kAXWindowRole else { return false }
+        return try title(candidate) == "Metagent"
+    }
+}
+
 private struct MonotonicTimer {
     let started = DispatchTime.now().uptimeNanoseconds
 
@@ -343,7 +384,15 @@ private final class AccessibilityProbe {
         var result: AXUIElement?
         try waitUntil("the Metagent main window") {
             let windows = try self.copyAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement] ?? []
-            result = try windows.first { try self.title($0) == "Metagent" }
+            result = try selectMainWindow(
+                windows,
+                isApplication: { CFEqual($0, appElement) },
+                role: self.role,
+                title: self.title
+            )
+            if result == nil, !windows.isEmpty, windows.allSatisfy({ CFEqual($0, appElement) }) {
+                throw ProbeError.state("Accessibility returned application-equal window proxies, not a genuine AXWindow.")
+            }
             return result != nil
         }
         guard let result else { throw ProbeError.state("Metagent window disappeared.") }
@@ -1242,6 +1291,7 @@ private func run(arguments: [String]) throws -> [String: Any] {
     guard let timeout = Double(arguments[4]), timeout > 0 else {
         throw ProbeError.usage("Timeout milliseconds must be positive.")
     }
+    try requireInteractiveSession()
     let probe = try AccessibilityProbe(
         appPath: appPath,
         processName: processName,
@@ -1307,11 +1357,57 @@ private func selfTest() throws {
     try sentinelTraversalSelfTest()
     try controlTraversalSelfTest()
     try refreshReadinessSelfTest()
+    try interactiveSessionSelfTest()
+    try mainWindowSelfTest()
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {
         throw ProbeError.state("JSON self-test payload is invalid.")
     }
     print("metagent-ax-probe self-test passed")
+}
+
+private func interactiveSessionSelfTest() throws {
+    // Missing optional lock/console fields must not become a platform-specific
+    // false block. The real window gate remains authoritative in that case.
+    for lockState: Bool? in [false, nil] {
+        try validateInteractiveSession(available: true, onConsole: true, loginComplete: true, screenLocked: lockState)
+    }
+    try validateInteractiveSession(available: true, onConsole: nil, loginComplete: nil, screenLocked: nil)
+    for (available, console, login, locked): (Bool, Bool?, Bool?, Bool?) in [
+        (false, nil, nil, nil), (true, false, true, false),
+        (true, true, false, false), (true, true, true, true),
+    ] {
+        do {
+            try validateInteractiveSession(available: available, onConsole: console, loginComplete: login, screenLocked: locked)
+        } catch ProbeError.state { continue }
+        throw ProbeError.state("An unavailable, inactive or locked session bypassed UI preflight.")
+    }
+}
+
+private func mainWindowSelfTest() throws {
+    let roles: [Int: String] = [0: kAXApplicationRole, 1: kAXScrollAreaRole, 2: kAXWindowRole, 3: kAXWindowRole]
+    var titleReads: [Int] = []
+    let selected = try selectMainWindow(
+        [0, 1, 4, 2, 3],
+        isApplication: { $0 == 0 },
+        role: { roles[$0] },
+        title: { candidate in
+            guard candidate == 2 || candidate == 3 else {
+                throw ProbeError.state("Main-window selection queried a proxy or non-window title.")
+            }
+            titleReads.append(candidate)
+            return candidate == 2 ? "Other window" : "Metagent"
+        }
+    )
+    guard selected == 3, titleReads == [2, 3] else {
+        throw ProbeError.state("Main-window selection lost the genuine exact-title window.")
+    }
+    let proxy = selectMainWindow(
+        [0], isApplication: { _ in true }, role: { _ in kAXWindowRole }, title: { _ in "Metagent" }
+    )
+    guard proxy == nil else {
+        throw ProbeError.state("An application-equal proxy bypassed main-window validation.")
+    }
 }
 
 private func sentinelTraversalSelfTest() throws {

@@ -393,7 +393,15 @@ scripts/measure-app-interactions.sh \
 ```
 
 The selected app must be running with its main window open. The Codex or
-terminal host needs macOS Accessibility permission. Navigation, search, and
+terminal host needs macOS Accessibility permission, and the Mac's console
+session must be logged in and unlocked. The native probe checks session state
+before any app lifecycle or Accessibility work. It rejects a known locked or
+inactive session instead of attempting live UI measurement. The optional system
+lock field is not a public API contract:
+absent/unknown fields do not block an otherwise valid session. Independently,
+main-window lookup requires a distinct `AXWindow` with the exact expected title;
+an application proxy or another role never qualifies. No permission, lock, or
+power setting is changed to prepare a measurement. Navigation, search, and
 filter controls use exact Accessibility identifiers; the harness never falls
 back to inferred geometry or fixed screen coordinates. A cached native Swift
 probe talks to `AXUIElement` directly and applies

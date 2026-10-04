@@ -32,6 +32,9 @@ class MetagentAXProbeTests(unittest.TestCase):
         )
         self.assertIn('-- "$probe_binary"', script)
         self.assertNotIn("osascript", script)
+        self.assertIn("see the probe error above", script)
+        self.assertIn("an unlocked, active console session", script)
+        self.assertNotIn("Grant Accessibility access", script)
 
     def test_probe_hard_bounds_ax_calls_and_uses_monotonic_time(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
@@ -54,6 +57,27 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"metagent.mcps.status-filter"', source)
         self.assertIn('"metagent.plugins.show-filter"', source)
         self.assertNotIn("fixed screen", source)
+
+    def test_session_preflight_runs_before_any_app_lifecycle_or_ax_work(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        run = source.split("private func run(arguments:", 1)[1].split("private func selfTest()", 1)[0]
+
+        self.assertLess(run.index("try requireInteractiveSession()"), run.index("AccessibilityProbe("))
+        self.assertIn("CGSessionCopyCurrentDictionary()", source)
+        self.assertIn('session?["CGSSessionScreenIsLocked"] as? Bool', source)
+        self.assertIn("screenLocked != true", source)
+        self.assertIn("try interactiveSessionSelfTest()", source)
+
+    def test_main_window_requires_a_distinct_real_window_before_title_lookup(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        window = source.split("func mainWindow(", 1)[1].split("func findDescendant(", 1)[0]
+        selection = source.split("private func selectMainWindow<Node>(", 1)[1].split("private struct MonotonicTimer", 1)[0]
+
+        self.assertIn("selectMainWindow(", window)
+        self.assertIn("isApplication: { CFEqual($0, appElement) }", window)
+        self.assertLess(selection.index("!isApplication(candidate)"), selection.index("try role(candidate)"))
+        self.assertLess(selection.index("kAXWindowRole"), selection.index("try title(candidate)"))
+        self.assertIn("try mainWindowSelfTest()", source)
 
     def test_lifecycle_waits_service_appkit_events_and_validate_registered_pid(self) -> None:
         source = PROBE.read_text(encoding="utf-8")

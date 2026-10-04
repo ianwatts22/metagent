@@ -181,7 +181,7 @@ if [[ "$automation_status" == "124" ]]; then
   echo "Accessibility automation timed out after producing no progress; partial raw output remains at $raw_path." >&2
   exit 124
 elif [[ "$automation_status" != "0" ]]; then
-  echo "Accessibility automation failed. Grant Accessibility access to the terminal/Codex host, keep the Metagent window open, and retry." >&2
+  echo "Accessibility automation failed; see the probe error above. Live UI measurement requires an unlocked, active console session, Accessibility access, and a real Metagent window." >&2
   exit "$automation_status"
 fi
 
