@@ -7,6 +7,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
   `.agents`, Codex, and Claude, including per-skill and whole-container links;
 - Doctor analysis of the same portfolio, with separate full-scan and
   already-loaded-inventory measurements (the app uses the latter);
+- the actual project-analysis inventory/Doctor phase for one 192-skill project,
+  sharing one fresh inventory rather than scanning it again for Doctor;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
   metadata-only Overview counts with identical group eligibility, and full
   Overview health aggregation, with discovery excluded from the measured work;
@@ -83,6 +85,12 @@ reference-source byte limit, ignore symlink sources and pruned directories, and
 accept runtime-only source files without adding them to text statistics. The
 reference index lasts for one bundle scan; later refreshes reread same-size edits
 and symlink changes without modification-time or persistent-cache assumptions.
+
+Project analysis likewise passes its already-read project inventory to Doctor.
+The inventory and counts agree within a request; later requests still rescan
+same-size edits and changed projections. Its phase benchmark excludes MCP
+inspection, instruction discovery, usage lookup, and CLI/MCP transport, so a
+phase improvement is not a whole-request or UI latency claim.
 
 The overlap workload measures document reads, normalization, and pairwise
 similarity together. A separate deterministic test requires one canonical-path

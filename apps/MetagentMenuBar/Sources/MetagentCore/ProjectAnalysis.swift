@@ -403,8 +403,7 @@ public extension MetagentCore {
             maxDepth: 0,
             respectConfiguredIgnores: false
         )
-        let skills = try scanSkills(options: scanOptions)
-        let doctor = try doctor(options: scanOptions)
+        let (skills, doctor) = try projectSkillAudit(options: scanOptions)
         let allMCP = scanMCPHealth(
             homeDirectory: homeDirectory,
             codexExecutableOverride: codexExecutableOverride,
@@ -442,6 +441,18 @@ public extension MetagentCore {
             projectMCP: projectMCP,
             usage: usage
         )
+    }
+
+    /// Inventory and Doctor share one read for this request. A subsequent
+    /// request scans again; no filesystem state is cached across calls.
+    internal static func projectSkillAudit(
+        options: SkillScanOptions,
+        readInventory: (SkillScanOptions) throws -> SkillScanReport = {
+            try MetagentCore.scanSkills(options: $0)
+        }
+    ) throws -> (skills: SkillScanReport, doctor: DoctorReport) {
+        let skills = try readInventory(options)
+        return (skills, doctor(projects: skills.projects))
     }
 
     private static func prioritizedFindings(

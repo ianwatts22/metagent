@@ -3,6 +3,95 @@ import XCTest
 @testable import MetagentCore
 
 final class ProjectAnalysisTests: XCTestCase {
+    func testProjectSkillAuditUsesItsInventoryAndLaterRequestsRemainFresh() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-one-read")
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/first"))
+        let options = SkillScanOptions(
+            roots: [root.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+        var reads = 0
+        let audit = try MetagentCore.projectSkillAudit(options: options, readInventory: { options in
+            reads += 1
+            let inventory = try MetagentCore.scanSkills(options: options)
+            // A second scan for Doctor would see this skill, yielding counts
+            // inconsistent with the inventory returned for the same request.
+            try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/later"))
+            return inventory
+        })
+
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(audit.skills.projects.flatMap(\.skills).map(\.name), ["first"])
+        XCTAssertEqual(audit.doctor.canonicalSkillCount, 1)
+        XCTAssertEqual(audit.doctor, MetagentCore.doctor(projects: audit.skills.projects))
+
+        let later = try MetagentCore.projectSkillAudit(options: options)
+        XCTAssertEqual(later.skills.projects.flatMap(\.skills).map(\.name), ["first", "later"])
+        XCTAssertEqual(later.doctor.canonicalSkillCount, 2)
+    }
+
+    func testProjectSkillAuditPreservesCompleteIndependentDoctorFindings() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-audit-findings")
+        let bundle = try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/demo"))
+        let claude = root.appendingPathComponent(".claude/skills")
+        let codex = root.appendingPathComponent(".codex/skills")
+        for directory in [claude, codex] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/.hidden"))
+        try FileManager.default.createSymbolicLink(at: claude.appendingPathComponent("demo"), withDestinationURL: bundle)
+        try FileManager.default.createSymbolicLink(at: codex.appendingPathComponent("demo"), withDestinationURL: bundle)
+        try Data("{}".utf8).write(to: root.appendingPathComponent(".agents/.skill-lock.json"))
+        let options = SkillScanOptions(
+            roots: [root.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+
+        let expected = try MetagentCore.doctor(options: options)
+        let audit = try MetagentCore.projectSkillAudit(options: options)
+
+        XCTAssertEqual(audit.doctor, expected)
+        XCTAssertEqual(audit.doctor.canonicalSkillCount, 1)
+        XCTAssertEqual(audit.doctor.representationCount, 3)
+        XCTAssertEqual(audit.doctor.projectionCount, 2)
+        XCTAssertTrue(audit.doctor.issues.contains { $0.summary == "Legacy skills lock ignored" })
+        XCTAssertTrue(audit.doctor.issues.contains { $0.summary == "Hidden skill directory ignored" })
+        XCTAssertTrue(audit.doctor.issues.contains { $0.repairAction == .repairProjection })
+    }
+
+    func testProjectSkillAuditRereadsSameSizeEditsAndRetargetedProjections() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-analysis-audit-freshness")
+        let bundle = try writeSkillFixture(
+            at: root.appendingPathComponent(".agents/skills/demo"), description: "First fixture"
+        )
+        let other = try writeSkillFixture(
+            at: root.appendingPathComponent("outside/other"), description: "Other fixture"
+        )
+        let projection = root.appendingPathComponent(".claude/skills/demo")
+        try FileManager.default.createDirectory(at: projection.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: bundle)
+        let manifest = bundle.appendingPathComponent("SKILL.md")
+        let text = try String(contentsOf: manifest, encoding: .utf8)
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: manifest.path)
+        let options = SkillScanOptions(
+            roots: [root.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+        let first = try MetagentCore.projectSkillAudit(options: options)
+
+        let edited = text.replacingOccurrences(of: "First fixture", with: "Other fixture")
+        XCTAssertEqual(text.utf8.count, edited.utf8.count)
+        try edited.write(to: manifest, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: manifest.path)
+        try FileManager.default.removeItem(at: projection)
+        try FileManager.default.createSymbolicLink(at: projection, withDestinationURL: other)
+        let later = try MetagentCore.projectSkillAudit(options: options)
+
+        XCTAssertEqual(first.doctor.canonicalSkillCount, 1)
+        XCTAssertEqual(later.doctor.canonicalSkillCount, 2)
+        XCTAssertEqual(later.skills.projects.flatMap(\.skills).first { $0.location == "agents" }?.description, "Other fixture")
+        XCTAssertEqual(later.skills.projects.flatMap(\.skills).first { $0.location == "claude" }?.canonicalPath, canonicalProjectPath(other))
+        XCTAssertEqual(later.doctor, try MetagentCore.doctor(options: options))
+    }
+
     func testExplicitScanCanBypassConfiguredDiscoveryIgnores() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-analysis-tests")
         try writeSkillFixture(at: root.appendingPathComponent(".agents/skills/demo"), description: "Demo skill")
