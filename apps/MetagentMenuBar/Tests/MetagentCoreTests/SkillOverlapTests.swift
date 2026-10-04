@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import Darwin
 import XCTest
 @testable import MetagentCore
 
@@ -322,6 +324,237 @@ final class SkillOverlapTests: XCTestCase {
 
         XCTAssertEqual(group.kind, .sameName)
         XCTAssertEqual(group.similarity, 1)
+    }
+
+    func testIdenticalDocumentPreparationIsSharedButBundleEvidenceStaysIndependent() throws {
+        let root = try fixtureRoot("shared-document-preparation")
+        let first = try writeSkill(root: root, relativePath: "a-global", body: "Alpha shared instructions.")
+        let second = try writeSkill(root: root, relativePath: "b-global", body: "Alpha shared instructions.")
+        let project = try writeSkill(root: root, relativePath: "c-project", body: "Alpha shared instructions.")
+        try "Project customization.".write(
+            to: project.appendingPathComponent("notes.md"), atomically: true, encoding: .utf8
+        )
+        let skills = [
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "global", manager: "local"),
+            makeSkill(path: project.path, scope: "project", manager: "local"),
+        ]
+        var preparedTexts: [String] = []
+        func detect() -> [SkillOverlapGroup] {
+            MetagentCore.detectSkillOverlaps(skills, canonicalize: { $0 }) { text in
+                preparedTexts.append(text)
+                return ComparableSkillDocument(text: text)
+            }
+        }
+
+        let initial = try XCTUnwrap(detect().first)
+        XCTAssertEqual(preparedTexts.count, 1)
+        XCTAssertEqual(initial.similarity, 1)
+        XCTAssertEqual(initial.kind, .globalProject)
+        XCTAssertEqual(Set(initial.members.compactMap(\.contentFingerprint)).count, 2)
+        XCTAssertFalse(initial.members.contains(where: \.suggestedRemoval))
+
+        // A second invocation must prepare again; no path/content state persists.
+        XCTAssertEqual(detect(), [initial])
+        XCTAssertEqual(preparedTexts.count, 2)
+
+        let path = first.appendingPathComponent("SKILL.md")
+        let raw = try String(contentsOf: path, encoding: .utf8)
+        let modifiedAt = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate] as? Date
+        )
+        let changed = raw.replacingOccurrences(of: "Alpha", with: "Bravo")
+        XCTAssertEqual(raw.utf8.count, changed.utf8.count)
+        try changed.write(to: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: path.path)
+
+        let refreshed = try XCTUnwrap(detect().first)
+        XCTAssertEqual(preparedTexts.count, 4) // Two different texts, not three paths.
+        XCTAssertTrue(preparedTexts.suffix(2).contains { $0.contains("Bravo") })
+        XCTAssertNotEqual(initial.members.first?.contentFingerprint, refreshed.members.first?.contentFingerprint)
+    }
+
+    func testDocumentPreparationKeysUseExactUTF8NotNormalizedOrCanonicalEquivalentText() throws {
+        let root = try fixtureRoot("document-preparation-keys")
+        let bodies = [
+            "Read .agents/skills/demo/SKILL.md. Café instructions.",
+            "Read .claude/skills/demo/SKILL.md. Café instructions.",
+            "Read .agents/skills/demo/SKILL.md. Cafe\u{301} instructions.",
+        ]
+        let skills = try bodies.enumerated().map { index, body in
+            let path = try writeSkill(root: root, relativePath: "copy-\(index)", body: body)
+            return makeSkill(path: path.path, scope: "global", manager: "local")
+        }
+        var preparationCount = 0
+        let groups = MetagentCore.detectSkillOverlaps(skills, canonicalize: { $0 }) { text in
+            preparationCount += 1
+            return ComparableSkillDocument(text: text)
+        }
+        let group = try XCTUnwrap(groups.first)
+
+        XCTAssertEqual(preparationCount, 3)
+        XCTAssertEqual(group.similarity, 1)
+        XCTAssertEqual(group.kind, .sameName)
+        XCTAssertEqual(Set(group.members.compactMap(\.contentFingerprint)).count, 3)
+        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+    }
+
+    func testDocumentPreparationLifetimeIsOneOverlapGroup() throws {
+        let root = try fixtureRoot("document-preparation-lifetime")
+        let skills = try (0..<4).map { index in
+            let path = try writeSkill(root: root, relativePath: "copy-\(index)", body: "Shared instructions.")
+            var skill = makeSkill(path: path.path, scope: "global", manager: "local")
+            skill.name = index < 2 ? "first" : "second"
+            return skill
+        }
+        var preparationCount = 0
+        let groups = MetagentCore.detectSkillOverlaps(skills, canonicalize: { $0 }) { text in
+            preparationCount += 1
+            return ComparableSkillDocument(text: text)
+        }
+
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(preparationCount, 2)
+        XCTAssertTrue(groups.allSatisfy { $0.kind == .exactDuplicate && $0.similarity == 1 })
+    }
+
+    func testDocumentPreparationBoundsRawKeysWithoutLosingPreviouslyCachedEntries() throws {
+        let root = try fixtureRoot("document-preparation-budget")
+        let texts = (0..<17).map { index in
+            let prefix = "---\nname: demo\n---\nUnique document \(index).\n"
+            return prefix + String(repeating: "x", count: 64 * 1024 - prefix.utf8.count)
+        }
+        var skills: [SkillInventoryItem] = []
+        for (index, text) in texts.enumerated() {
+            let path = root.appendingPathComponent(String(format: "%02d", index))
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try text.write(to: path.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+            skills.append(makeSkill(path: path.path, scope: "global", manager: "local"))
+        }
+        for (name, text) in [("z-cached", texts[0]), ("z-uncached", texts[16])] {
+            let path = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try text.write(to: path.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+            skills.append(makeSkill(path: path.path, scope: "global", manager: "local"))
+        }
+        var preparationCount = 0
+        let groups = MetagentCore.detectSkillOverlaps(skills, canonicalize: { $0 }) { _ in
+            preparationCount += 1
+            return ComparableSkillDocument(text: "")
+        }
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.members.count, 19)
+        // Sixteen 64-KiB keys fill the 1-MiB budget. The earlier key remains
+        // reusable; the seventeenth text and its later copy both prepare.
+        XCTAssertEqual(preparationCount, 18)
+    }
+
+    func testOversizedPreparationKeysFallBackWithoutChangingComparison() throws {
+        let root = try fixtureRoot("document-preparation-large-key")
+        let text = String(repeating: "x", count: 1024 * 1024 + 1)
+        let skills = try ["first", "second"].map { name in
+            let path = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try text.write(to: path.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+            return makeSkill(path: path.path, scope: "global", manager: "local")
+        }
+        var preparationCount = 0
+        let groups = MetagentCore.detectSkillOverlaps(skills, canonicalize: { $0 }) { _ in
+            preparationCount += 1
+            return ComparableSkillDocument(text: "same comparison")
+        }
+
+        XCTAssertEqual(preparationCount, 2)
+        XCTAssertEqual(groups.first?.kind, .exactDuplicate)
+        XCTAssertEqual(groups.first?.similarity, 1)
+    }
+
+    func testBundleFingerprintMatchesLegacyEncodingForNestedBinaryAndExecutableEvidence() throws {
+        let root = try fixtureRoot("fingerprint-compatibility")
+        let first = try writeSkill(root: root, relativePath: "global", body: "Read current evidence.")
+        let second = try writeSkill(root: root, relativePath: "project", body: "Read current evidence.")
+        let skills = [
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "project", manager: "local"),
+        ]
+        for directory in [first, second] {
+            let nested = directory.appendingPathComponent("nested folder/évidence")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try Data((0...255).map(UInt8.init)).write(to: nested.appendingPathComponent("asset.bin"))
+            try "#!/bin/sh\nexit 0\n".write(
+                to: directory.appendingPathComponent("check.sh"), atomically: true, encoding: .utf8
+            )
+            try Data([0, 255, 13, 10]).write(to: directory.appendingPathComponent(".hidden"))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o751], ofItemAtPath: directory.appendingPathComponent("check.sh").path
+            )
+            try FileManager.default.setAttributes([.posixPermissions: 0o750], ofItemAtPath: nested.path)
+            try FileManager.default.linkItem(
+                at: nested.appendingPathComponent("asset.bin"), to: directory.appendingPathComponent("hardlink.bin")
+            )
+        }
+        func verify() throws -> SkillOverlapGroup {
+            let group = try XCTUnwrap(matchingOverlaps(skills).first)
+            for directory in [first, second] {
+                let path = directory.resolvingSymlinksInPath().standardizedFileURL.path
+                let member = try XCTUnwrap(group.members.first { $0.canonicalPath == path })
+                XCTAssertEqual(member.contentFingerprint, legacyBundleFingerprint(at: directory))
+                XCTAssertEqual(member.contentFingerprint?.count, 64)
+            }
+            return group
+        }
+
+        let initial = try verify()
+        XCTAssertTrue(initial.members.contains(where: \.suggestedRemoval))
+        // Read/write permissions are not encoded, but execute bits are.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: second.appendingPathComponent(".hidden").path
+        )
+        XCTAssertEqual(try verify(), initial)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o640], ofItemAtPath: second.appendingPathComponent("check.sh").path
+        )
+        let changed = try verify()
+        XCTAssertFalse(changed.members.contains(where: \.suggestedRemoval))
+        XCTAssertNotEqual(initial.members.last?.contentFingerprint, changed.members.last?.contentFingerprint)
+    }
+
+    func testBundleFingerprintRejectsFileDirectoryAndDanglingLinksLikeLegacy() throws {
+        let root = try fixtureRoot("fingerprint-links")
+        let first = try writeSkill(root: root, relativePath: "global", body: "Shared instructions.")
+        let second = try writeSkill(root: root, relativePath: "project", body: "Shared instructions.")
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let skills = [
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "project", manager: "local"),
+        ]
+        for target in ["SKILL.md", outside.path, "missing"] {
+            let link = second.appendingPathComponent("linked")
+            try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+            let group = try XCTUnwrap(matchingOverlaps(skills).first)
+            let member = try XCTUnwrap(group.members.first { $0.scope == "project" })
+            XCTAssertNil(legacyBundleFingerprint(at: second))
+            XCTAssertNil(member.contentFingerprint)
+            XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
+            try FileManager.default.removeItem(at: link)
+        }
+    }
+
+    func testBundleFingerprintRejectsFIFOWithoutReadingItLikeLegacy() throws {
+        let root = try fixtureRoot("fingerprint-fifo")
+        let first = try writeSkill(root: root, relativePath: "global", body: "Shared instructions.")
+        let second = try writeSkill(root: root, relativePath: "project", body: "Shared instructions.")
+        XCTAssertEqual(mkfifo(second.appendingPathComponent("pipe").path, 0o600), 0)
+        let group = try XCTUnwrap(matchingOverlaps([
+            makeSkill(path: first.path, scope: "global", manager: "local"),
+            makeSkill(path: second.path, scope: "project", manager: "local"),
+        ]).first)
+
+        XCTAssertNil(legacyBundleFingerprint(at: second))
+        XCTAssertNil(group.members.first { $0.scope == "project" }?.contentFingerprint)
+        XCTAssertFalse(group.members.contains(where: \.suggestedRemoval))
     }
 
     func testMissingDocumentsAreNotExactAndAreRecheckedOnNextCall() throws {
@@ -730,6 +963,51 @@ final class SkillOverlapTests: XCTestCase {
 
     private func fixtureRoot(_ name: String) throws -> URL {
         try makeTemporaryRoot(prefix: "metagent-overlap-\(name)")
+    }
+
+    // Frozen pre-optimization format: saved attention dismissals and removal
+    // recommendations must retain byte-for-byte fingerprints, not merely agree
+    // with another call through the new metadata path.
+    private func legacyBundleFingerprint(at root: URL) -> String? {
+        var hash = SHA256()
+        var remainingBytes = 16 * 1024 * 1024
+        var remainingEntries = 2048
+        func append(_ data: Data) {
+            var length = UInt64(data.count).bigEndian
+            withUnsafeBytes(of: &length) { hash.update(data: Data($0)) }
+            hash.update(data: data)
+        }
+        func collect(_ directory: URL, prefix: String, depth: Int = 0) throws {
+            guard depth <= 32 else { throw CocoaError(.fileReadTooLarge) }
+            let children = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            for child in children {
+                remainingEntries -= 1
+                guard remainingEntries >= 0 else { throw CocoaError(.fileReadTooLarge) }
+                let relative = prefix + child.lastPathComponent
+                let attributes = try FileManager.default.attributesOfItem(atPath: child.path)
+                let type = attributes[.type] as? FileAttributeType
+                guard type == .typeDirectory || type == .typeRegular else {
+                    throw CocoaError(.fileReadUnsupportedScheme)
+                }
+                append(Data(relative.utf8))
+                append(Data((type == .typeDirectory ? "directory" : "file").utf8))
+                let executable = ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o111
+                append(Data(String(executable).utf8))
+                if type == .typeDirectory {
+                    try collect(child, prefix: relative + "/", depth: depth + 1)
+                } else {
+                    let size = (attributes[.size] as? NSNumber)?.intValue ?? Int.max
+                    guard size <= remainingBytes else { throw CocoaError(.fileReadTooLarge) }
+                    remainingBytes -= size
+                    append(try Data(contentsOf: child))
+                }
+            }
+        }
+        do {
+            try collect(root, prefix: "")
+            return hash.finalize().map { String(format: "%02x", $0) }.joined()
+        } catch { return nil }
     }
 
     private func writeSkill(root: URL, relativePath: String, body: String) throws -> URL {

@@ -80,6 +80,16 @@ similarity together. A separate deterministic test requires one canonical-path
 resolution per non-projection input, preventing filesystem work from growing
 with the number of pairs. Documents are reread on each invocation; same-path
 edits, missing files that appear, and retargeted symlinks must remain fresh.
+Within one duplicate-name group, identical decoded UTF-8 text shares only its
+normalization and vocabulary. This state is discarded at the end of the group;
+additional raw-text keys are capped at 1 MiB, with oversized/distinct inputs
+falling back to ordinary preparation. Bundle fingerprints are still computed
+independently for every path. A narrow
+`lstat` snapshot supplies each fingerprint entry's type, executable bits, and
+regular-file size without fetching unused extended attributes. The serialized
+fingerprint format and read/entry/depth limits are unchanged. Compatibility
+tests compare the pre-optimization format across nested, hidden, binary,
+hard-linked, and executable evidence, and retain fail-closed link/FIFO handling.
 
 The dual-root discovery benchmark intentionally stops at deterministic core
 filesystem work. It does not claim to cover the external Codex plugin process,
