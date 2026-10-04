@@ -2,6 +2,78 @@ import XCTest
 @testable import MetagentCore
 
 final class SkillUsageMaintenanceTests: XCTestCase {
+    func testExternalPowerCatchUpIsFasterWithoutRemovingCooperativeLimits() {
+        let battery = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false
+        )
+        let external = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false,
+            isOnExternalPower: true
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            Double(external.maxBytes) / external.scheduleDelaySeconds,
+            10 * Double(battery.maxBytes) / battery.scheduleDelaySeconds
+        )
+        XCTAssertEqual(external.maxBytes, 32 * 1_024 * 1_024)
+        XCTAssertEqual(external.maxFiles, 48)
+        XCTAssertEqual(external.minimumDatabaseLeaseSeconds, external.scheduleDelaySeconds)
+        XCTAssertEqual(external.maximumDurationSeconds, 2)
+        XCTAssertEqual(external.throttleEveryBytes, 0)
+        XCTAssertEqual(external.throttleDelayMilliseconds, 0)
+        XCTAssertEqual(battery.throttleEveryBytes, 512 * 1_024)
+        XCTAssertEqual(battery.throttleDelayMilliseconds, 25)
+        XCTAssertEqual(external.refreshOptions().maximumDurationSeconds, 2)
+        XCTAssertEqual(external.clampedToTail(remainingBytes: 100, remainingFiles: 1)?.maximumDurationSeconds, 2)
+
+        XCTAssertEqual(
+            SkillUsageMaintenancePlan.recommended(
+                phase: .firstContinuation,
+                isEnergyConstrained: false,
+                isOnExternalPower: true
+            ),
+            SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false),
+            "external power must not enlarge foreground-adjacent launch work"
+        )
+        XCTAssertEqual(
+            SkillUsageMaintenancePlan.recommended(
+                phase: .watcherArmedCatchUp,
+                isEnergyConstrained: true,
+                isOnExternalPower: true
+            ),
+            SkillUsageMaintenancePlan.recommended(isEnergyConstrained: true),
+            "low power and thermal limits take precedence over AC power"
+        )
+    }
+
+    func testMissedDeadlinesDoNotReplayASleepBacklog() {
+        var schedule = SkillUsageMaintenanceSchedule()
+        let plan = SkillUsageMaintenancePlan.recommended(isEnergyConstrained: false)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 0), 45)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10_000), 0)
+        XCTAssertEqual(schedule.nextDueUptime, 10_000)
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 10_002), 43)
+    }
+
+    func testLateTimerDeliveryCannotShortenTheNextLeaseInterval() {
+        var schedule = SkillUsageMaintenanceSchedule()
+        schedule.recordCompletion(wasDeferred: false)
+        let plan = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp, isEnergyConstrained: false, isOnExternalPower: true
+        )
+        XCTAssertEqual(schedule.delayBeforeNextRun(plan: plan, nowUptime: 0), 12)
+        let actualStart = 12 + plan.scheduleToleranceSeconds
+        schedule.recordCompletion(wasDeferred: false, startedAtUptime: actualStart)
+        let completedAt = actualStart + 2
+        let nextStart = completedAt + schedule.delayBeforeNextRun(plan: plan, nowUptime: completedAt)
+        XCTAssertEqual(nextStart - actualStart, plan.minimumDatabaseLeaseSeconds, accuracy: 0.000_001)
+        let deadline = schedule.nextDueUptime
+        schedule.recordCompletion(wasDeferred: true, startedAtUptime: nextStart + 1)
+        XCTAssertEqual(schedule.nextDueUptime, deadline, "a deferred writer must not claim a new cadence anchor")
+    }
+
     func testFirstContinuationPreservesCurrentForegroundAdjacentBudget() {
         let plan = SkillUsageMaintenancePlan.recommended(
             phase: .firstContinuation,
@@ -159,6 +231,7 @@ final class SkillUsageMaintenanceTests: XCTestCase {
         XCTAssertEqual(options.throttleEveryBytes, 0)
         XCTAssertEqual(options.throttleDelayMilliseconds, 0)
         XCTAssertEqual(options.minimumMaintenanceIntervalSeconds, 0)
+        XCTAssertEqual(options.maximumDurationSeconds, 0)
         XCTAssertFalse(options.reusesSourceCatalog)
     }
 

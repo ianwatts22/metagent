@@ -18,7 +18,14 @@ struct AttentionItem: Identifiable {
 
     static func fingerprint(_ fields: [String]) -> String {
         let data = (try? JSONEncoder().encode(fields)) ?? Data()
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let digits = Array("0123456789abcdef".utf8)
+        var hex: [UInt8] = []
+        hex.reserveCapacity(64)
+        for byte in SHA256.hash(data: data) {
+            hex.append(digits[Int(byte >> 4)])
+            hex.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: hex, as: UTF8.self)
     }
 
     static func consolidatingDuplicates(_ items: [AttentionItem]) -> [AttentionItem] {
@@ -100,9 +107,10 @@ final class AttentionCenterStore: ObservableObject {
     }
 
     func items(doctor: [DoctorIssue], mcp: MCPHealthSnapshot, projects: [SkillProject], scope: String?) -> [AttentionItem] {
-        let scope = scope.map(standardizedDirectoryPath)
+        var canonicalizer = SkillPathCanonicalizer()
+        let scope = scope.map { canonicalizer.canonicalPath($0) }
         var result = doctor.filter {
-            $0.severity != .ok && (scope == nil || $0.projectRoot.map(standardizedDirectoryPath) == scope)
+            $0.severity != .ok && (scope == nil || canonicalizer.canonicalPath($0.projectRoot) == scope)
         }.map { issue in
             AttentionItem(
                 id: "doctor:\(issue.projectRoot ?? "global"):\(issue.id)",
@@ -112,9 +120,11 @@ final class AttentionCenterStore: ObservableObject {
                 action: .doctor(issue)
             )
         }
-        let paths = Set(projects.filter { scope == nil || standardizedDirectoryPath($0.root) == scope }.flatMap(\.skills).map {
-            $0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath
-        })
+        // The unscoped view includes every overlap; it does not need a set of
+        // every skill path on the machine just to test project membership.
+        let paths: Set<String> = scope == nil ? [] : Set(projects.filter {
+            canonicalizer.canonicalPath($0.root) == scope
+        }.flatMap(\.skills).map { $0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath })
         for group in overlaps where scope == nil || group.members.contains(where: { paths.contains($0.canonicalPath) }) {
             result.append(AttentionItem(
                 id: "duplicate:\(group.id)",

@@ -931,9 +931,9 @@ run_stage() {
     )"
     if [[ -n "$warnings" ]]; then
       local warning_count
-      warning_count="$(awk 'END { print NR }' <<<"$warnings")"
+      warning_count="$(printf '%s\n' "$warnings" | awk 'END { print NR }')"
       printf '⚠ %s · %ss · completed with warnings\n' "$label" "$((SECONDS - started_at))"
-      awk 'NR <= 5' <<<"$warnings"
+      printf '%s\n' "$warnings" | awk 'NR <= 5'
       if (( warning_count > 5 )); then
         printf '… %s more warning(s); rerun with METAGENT_VERIFY_KEEP_LOGS=1 for the full log\n' \
           "$((warning_count - 5))"

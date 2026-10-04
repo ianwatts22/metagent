@@ -9,7 +9,7 @@ struct InventorySection: View {
     @ObservedObject var rowStore: SkillTableRowStore
     let selectedProjectRoot: String?
     @State private var selection = Set<SkillTableRow.ID>()
-    @State private var sortOrder = [KeyPathComparator(\SkillTableRow.skillName)]
+    @State private var requestedSortOrder: [KeyPathComparator<SkillTableRow>]?
     @State private var query = ""
     @State private var usageFilter = UsageFilter.all
     @State private var scopeFilter = SkillScopeFilter.all
@@ -40,6 +40,17 @@ struct InventorySection: View {
 
     private var selectedView: SkillTableView {
         SkillTableView(rawValue: selectedViewRaw) ?? .summary
+    }
+
+    /// Resolve the first sort inside the installed view, where AppStorage has
+    /// its actual environment. A name-only placeholder followed by onAppear's
+    /// view default otherwise prepares two differently ordered tables.
+    private var sortOrder: [KeyPathComparator<SkillTableRow>] {
+        skillTableSortOrder(for: selectedView, requested: requestedSortOrder)
+    }
+
+    private var sortOrderBinding: Binding<[KeyPathComparator<SkillTableRow>]> {
+        Binding(get: { sortOrder }, set: { requestedSortOrder = $0 })
     }
 
     private var cachedRows: [SkillTableRow] {
@@ -494,7 +505,7 @@ struct InventorySection: View {
         }
         .onAppear {
             migrateSourceVisibilityIfNeeded()
-            sortOrder = defaultSortOrder(for: selectedView)
+            requestedSortOrder = skillTableSortOrder(for: selectedView)
             consumeDuplicateRequest()
         }
         .onChange(of: requestedDuplicateGroupID) { consumeDuplicateRequest() }
@@ -534,7 +545,7 @@ struct InventorySection: View {
             let view = SkillTableView(rawValue: rawValue) ?? .summary
             selection.formIntersection(Set(rows.map(\.id)))
             duplicateRemovalIDs.removeAll()
-            sortOrder = defaultSortOrder(for: view)
+            requestedSortOrder = skillTableSortOrder(for: view)
             consumeDuplicateRequest()
         }
         .alert(item: $pendingConfirmation) { confirmation in
@@ -629,7 +640,7 @@ struct InventorySection: View {
                     presentation.displayRows,
                     children: \.children,
                     selection: $selection,
-                    sortOrder: $sortOrder,
+                    sortOrder: sortOrderBinding,
                     columnCustomization: columnCustomization
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
@@ -648,7 +659,7 @@ struct InventorySection: View {
                 Table(
                     presentation.displayRows,
                     selection: $selection,
-                    sortOrder: $sortOrder,
+                    sortOrder: sortOrderBinding,
                     columnCustomization: columnCustomization
                 ) {
                     TableColumnForEach(skillColumnSpecs) { column in
@@ -813,26 +824,6 @@ struct InventorySection: View {
             pendingConfirmation = .removal(removableRows)
         }
         .disabled(removableRows.isEmpty)
-    }
-
-    private func defaultSortOrder(for view: SkillTableView) -> [KeyPathComparator<SkillTableRow>] {
-        switch view {
-        case .summary:
-            [KeyPathComparator(\SkillTableRow.invocations30d, order: .reverse)]
-        case .review:
-            [KeyPathComparator(\SkillTableRow.metagentScoreSortValue)]
-        case .duplicates:
-            [
-                KeyPathComparator(\SkillTableRow.overlapSortValue),
-                KeyPathComparator(\SkillTableRow.skillName),
-            ]
-        case .published:
-            [KeyPathComparator(\SkillTableRow.skillName)]
-        case .inventory:
-            [KeyPathComparator(\SkillTableRow.skillName)]
-        case .usage:
-            [KeyPathComparator(\SkillTableRow.totalInvocations, order: .reverse)]
-        }
     }
 
 }

@@ -32,6 +32,9 @@ class MetagentAXProbeTests(unittest.TestCase):
         )
         self.assertIn('-- "$probe_binary"', script)
         self.assertNotIn("osascript", script)
+        self.assertIn("see the probe error above", script)
+        self.assertIn("an unlocked, active console session", script)
+        self.assertNotIn("Grant Accessibility access", script)
 
     def test_probe_hard_bounds_ax_calls_and_uses_monotonic_time(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
@@ -54,6 +57,44 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"metagent.mcps.status-filter"', source)
         self.assertIn('"metagent.plugins.show-filter"', source)
         self.assertNotIn("fixed screen", source)
+
+    def test_session_preflight_runs_before_any_app_lifecycle_or_ax_work(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        run = source.split("private func run(arguments:", 1)[1].split("private func selfTest()", 1)[0]
+
+        self.assertLess(run.index("try requireInteractiveSession()"), run.index("AccessibilityProbe("))
+        self.assertIn("CGSessionCopyCurrentDictionary()", source)
+        self.assertIn('session?["CGSSessionScreenIsLocked"] as? Bool', source)
+        self.assertIn("screenLocked != true", source)
+        self.assertIn("try interactiveSessionSelfTest()", source)
+
+    def test_main_window_requires_a_distinct_real_window_before_title_lookup(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        window = source.split("func mainWindow(", 1)[1].split("func findDescendant(", 1)[0]
+        selection = source.split("private func selectMainWindow<Node>(", 1)[1].split("private struct MonotonicTimer", 1)[0]
+
+        self.assertIn("selectMainWindow(", window)
+        self.assertIn("isApplication: { CFEqual($0, appElement) }", window)
+        self.assertLess(selection.index("!isApplication(candidate)"), selection.index("try role(candidate)"))
+        self.assertLess(selection.index("kAXWindowRole"), selection.index("try title(candidate)"))
+        self.assertIn("try mainWindowSelfTest()", source)
+
+    def test_foreground_activation_is_explicit_and_never_restarts_the_process(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        activation = source.split("func activate(", 1)[1].split("private func copyAttribute(", 1)[0]
+        run = source.split("private func run(arguments:", 1)[1].split("private func selfTest", 1)[0]
+
+        self.assertIn("application.activate(options: [])", activation)
+        self.assertIn("application.isActive", activation)
+        self.assertNotIn("terminate", activation)
+        self.assertNotIn("launch()", activation)
+        self.assertIn("if foregroundRequested { try probe.activate(application) }", run)
+        self.assertIn('arguments.count == 6 ? arguments[5] : "false"', run)
+        self.assertIn('"foreground_requested": foregroundRequested', source)
+        self.assertLess(run.index("try probe.activate(application)"), run.index("probe.mainWindow(appElement)"))
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn("foreground=false", script)
+        self.assertIn("--foreground) foreground=true", script)
 
     def test_lifecycle_waits_service_appkit_events_and_validate_registered_pid(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
@@ -124,6 +165,8 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn("retainedIdentifier != previous", menu_measurement)
         self.assertIn("retainedIdentifier?.hasPrefix(expectedPrefix)", menu_measurement)
         self.assertIn("replacementIdentifier != previous", menu_measurement)
+        self.assertLess(menu_measurement.index("native menu preparation"), menu_measurement.index("let timer = MonotonicTimer()"))
+        self.assertIn('"menu_preparation_milliseconds": menuPreparationMilliseconds', source)
         self.assertIn("var nextReplacementSearch = 0.0", menu_measurement)
         self.assertLess(
             menu_measurement.index("nextReplacementSearch = elapsedMilliseconds"),
@@ -133,6 +176,22 @@ class MetagentAXProbeTests(unittest.TestCase):
             menu_measurement.index("let retainedIdentifier"),
             menu_measurement.index("if let replacement"),
         )
+
+    def test_menu_and_reload_predicates_do_not_expand_inventory_cells(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        lookup = source.split("func findDescendant(", 1)[1].split("func findByIdentifier(", 1)[0]
+        menu = source.split("private func menuItem(", 1)[1].split("func chooseMenuOption(", 1)[0]
+        reload = source.split("private func findReloadControl(", 1)[1].split("func measureRefresh(", 1)[0]
+
+        self.assertIn("findStructuralElement(", lookup)
+        self.assertIn("matchesElement: matches", lookup)
+        self.assertNotIn("try children(current)", lookup)
+        self.assertIn("findDescendant", menu)
+        self.assertIn("findDescendant", reload)
+        self.assertIn("try predicateTraversalSelfTest()", source)
+        self.assertIn("Predicate lookup traversed lazy content children", source)
+        self.assertIn("try menuIdentifierSelfTest()", source)
+        self.assertIn("Native menu lookup requested an unnecessary AXIdentifier", source)
 
     def test_ax_walks_are_bounded_indexed_queues(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
@@ -207,6 +266,24 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn('"filter_press_return_to_control_state_ms"', source)
         self.assertIn('"filter_press_return_to_semantic_content_ready_ms"', source)
         self.assertIn('"sort_input_to_ax_content_ready_ms"', source)
+
+    def test_reload_starts_enabled_and_requires_an_observed_work_transition(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        measurement = source.split("func measureRefresh(window:", 1)[1].split(
+            "func terminate(", 1
+        )[0]
+
+        self.assertLess(
+            measurement.index("var readiness = try RefreshReadinessTransition("),
+            measurement.index('try performPress(control, description: "Reload")'),
+        )
+        self.assertIn("initiallyEnabled: try boolAttribute(control, kAXEnabledAttribute)", measurement)
+        self.assertIn("readiness.observe(controlExists: false, enabled: nil)", measurement)
+        self.assertIn("guard readiness.transitionObserved", measurement)
+        # The compiled --self-test exercises the production state machine:
+        # initial false/nil, no-op, unknown attributes, and disabled/missing work.
+        self.assertIn("try refreshReadinessSelfTest()", source)
+        self.assertIn("return enabled == true && transitionObserved", source)
 
     @unittest.skipUnless(sys.platform == "darwin", "native AX probe is macOS-only")
     def test_probe_compiles_and_its_platform_independent_self_test_passes(self) -> None:

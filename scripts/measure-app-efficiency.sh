@@ -180,7 +180,7 @@ observed_descendant_resource_snapshot() {
     printf '0.00,0,0\n'
     return
   fi
-  pid_list="$(paste -sd, <<<"$descendants")"
+  pid_list="$(paste -sd, - <<<"$descendants")"
   ps -p "$pid_list" -o %cpu=,rss= 2>/dev/null | awk '
     { cpu += $1; rss += $2; count += 1 }
     END { printf "%.2f,%d,%d\n", cpu, rss, count }
@@ -213,8 +213,7 @@ for ((second = 1; second <= duration; second += 1)); do
   current_processed_bytes="$(processed_usage_bytes)"
   processed_delta=""
   if [[ "$previous_processed_bytes" =~ ^[0-9]+$ \
-        && "$current_processed_bytes" =~ ^[0-9]+$ \
-        && "$current_processed_bytes" -ge "$previous_processed_bytes" ]]; then
+        && "$current_processed_bytes" =~ ^[0-9]+$ ]]; then
     processed_delta=$((current_processed_bytes - previous_processed_bytes))
   fi
   if [[ "$current_processed_bytes" =~ ^[0-9]+$ ]]; then

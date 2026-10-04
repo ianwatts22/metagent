@@ -102,7 +102,7 @@ private struct SkillScriptCandidate {
     let readWarning: String?
 }
 
-private struct SkillScriptReferenceIndex {
+struct SkillScriptReferenceIndex {
     var referencedBy: [String: Set<String>] = [:]
 
     mutating func add(scriptPath: String, sourcePath: String) {
@@ -110,10 +110,13 @@ private struct SkillScriptReferenceIndex {
     }
 }
 
-func scanSkillScripts(in skillDirectory: URL) -> SkillScriptInventory {
+func scanSkillScripts(
+    in skillDirectory: URL,
+    references suppliedReferences: SkillScriptReferenceIndex? = nil
+) -> SkillScriptInventory {
     let root = skillDirectory.standardizedFileURL
     var warnings: [String] = []
-    let references = skillScriptReferences(in: root, warnings: &warnings)
+    let references = suppliedReferences ?? skillScriptReferences(in: root, warnings: &warnings)
     let candidates = skillScriptCandidates(in: root, warnings: &warnings)
     let candidatePaths = Set(candidates.map(\.relativePath))
 

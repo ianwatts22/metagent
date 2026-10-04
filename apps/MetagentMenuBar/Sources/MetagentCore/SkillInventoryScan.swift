@@ -112,9 +112,29 @@ struct SkillStats {
     var hasIconSmall = false
     var hasIconLarge = false
     var hasIconAndLogo = false
-    var iconSmallPath: String?
-    var iconLargePath: String?
+    // Keep metadata references relative to the selected representation. A
+    // canonical bundle and its projections share contents, not display paths.
+    var iconSmallReference: String?
+    var iconLargeReference: String?
     var scriptInventory: SkillScriptInventory?
+}
+
+struct SkillStatsCache {
+    private var values: [String: SkillStats] = [:]
+    private let read: (URL) -> SkillStats
+
+    init(read: @escaping (URL) -> SkillStats = skillStats) {
+        self.read = read
+    }
+
+    mutating func stats(for canonicalPath: String) -> SkillStats {
+        if let cached = values[canonicalPath] { return cached }
+        // URL-based directory enumeration may reject a symlink at its root.
+        // Read the real bundle while keeping representation paths in the item.
+        let stats = read(URL(fileURLWithPath: canonicalPath, isDirectory: true))
+        values[canonicalPath] = stats
+        return stats
+    }
 }
 
 func discoverProjectRoots(
@@ -396,7 +416,10 @@ func readCodexPluginSkills(_ plugin: CodexPlugin) -> SkillProject? {
     )
 }
 
-func readProjectSkills(root: URL) throws -> SkillProject {
+func readProjectSkills(
+    root: URL,
+    readStats: @escaping (URL) -> SkillStats = skillStats
+) throws -> SkillProject {
     let agentsSkillsDir = root.appendingPathComponent(".agents").appendingPathComponent("skills")
     let skillLock = readProjectSkillLocks(root: root)
     let dotagentsSkills = readDotagentsSkills(root: root)
@@ -405,6 +428,10 @@ func readProjectSkills(root: URL) throws -> SkillProject {
     var inventory: [SkillInventoryItem] = []
     var invalidSkillDirs: [String] = []
     var hiddenSkillDirs: [String] = []
+    // Share bundle reads only during this synchronous scan. A later scan must
+    // reread contents, permissions, icons, and symlink targets without relying
+    // on modification-time heuristics or a persistent invalidation policy.
+    var statsCache = SkillStatsCache(read: readStats)
 
     readAgentsSkills(
         skillsDir: agentsSkillsDir,
@@ -414,7 +441,8 @@ func readProjectSkills(root: URL) throws -> SkillProject {
         validSkills: &validSkills,
         inventory: &inventory,
         invalidSkillDirs: &invalidSkillDirs,
-        hiddenSkillDirs: &hiddenSkillDirs
+        hiddenSkillDirs: &hiddenSkillDirs,
+        statsCache: &statsCache
     )
 
     let canonicalAgents = Dictionary(
@@ -429,14 +457,16 @@ func readProjectSkills(root: URL) throws -> SkillProject {
         location: "codex",
         scope: scope,
         canonicalAgents: canonicalAgents,
-        inventory: &inventory
+        inventory: &inventory,
+        statsCache: &statsCache
     )
     readInventorySkills(
         skillsDir: root.appendingPathComponent(".claude").appendingPathComponent("skills"),
         location: "claude",
         scope: scope,
         canonicalAgents: canonicalAgents,
-        inventory: &inventory
+        inventory: &inventory,
+        statsCache: &statsCache
     )
 
     return SkillProject(
@@ -457,7 +487,8 @@ func readAgentsSkills(
     validSkills: inout [String],
     inventory: inout [SkillInventoryItem],
     invalidSkillDirs: inout [String],
-    hiddenSkillDirs: inout [String]
+    hiddenSkillDirs: inout [String],
+    statsCache: inout SkillStatsCache
 ) {
     guard let entries = skillContainerEntries(at: skillsDir) else {
         return
@@ -495,6 +526,7 @@ func readAgentsSkills(
             skillLock: lockEntry,
             dotagents: dotagentsEntry
         )
+        let canonicalPath = canonicalProjectPath(entry)
         inventory.append(makeSkillItem(
             name: name,
             path: entry,
@@ -505,10 +537,11 @@ func readAgentsSkills(
             authority: ownership.authority,
             mutability: projection ? "managed-read-only" : ownership.mutability,
             representation: projection ? "projection" : "canonical",
-            canonicalPath: canonicalProjectPath(entry),
+            canonicalPath: canonicalPath,
             origin: lockEntry,
             evidence: ownership,
-            symlinkedContainer: symlinkedContainer
+            symlinkedContainer: symlinkedContainer,
+            precomputedStats: statsCache.stats(for: canonicalPath)
         ))
     }
 }
@@ -518,7 +551,8 @@ func readInventorySkills(
     location: String,
     scope: String,
     canonicalAgents: [String: SkillInventoryItem],
-    inventory: inout [SkillInventoryItem]
+    inventory: inout [SkillInventoryItem],
+    statsCache: inout SkillStatsCache
 ) {
     guard fileManager.fileExists(atPath: skillsDir.path) else { return }
     collectInventorySkills(
@@ -530,7 +564,8 @@ func readInventorySkills(
         symlinkedContainer: isSymlink(skillsDir)
             || hasSymlinkedAncestor(of: skillsDir, below: projectRoot(for: skillsDir)),
         canonicalAgents: canonicalAgents,
-        inventory: &inventory
+        inventory: &inventory,
+        statsCache: &statsCache
     )
 }
 
@@ -542,7 +577,8 @@ func collectInventorySkills(
     maxDepth: Int,
     symlinkedContainer: Bool,
     canonicalAgents: [String: SkillInventoryItem],
-    inventory: inout [SkillInventoryItem]
+    inventory: inout [SkillInventoryItem],
+    statsCache: inout SkillStatsCache
 ) {
     guard depth <= maxDepth else { return }
     guard let entries = skillContainerEntries(at: dir) else {
@@ -576,7 +612,8 @@ func collectInventorySkills(
                 canonicalPath: canonicalPath,
                 origin: nil,
                 symlinkedContainer: symlinkedContainer,
-                inherited: inherited
+                inherited: inherited,
+                precomputedStats: statsCache.stats(for: canonicalPath)
             ))
             continue
         }
@@ -592,7 +629,8 @@ func collectInventorySkills(
             maxDepth: maxDepth,
             symlinkedContainer: symlinkedContainer || isSymlink(entry),
             canonicalAgents: canonicalAgents,
-            inventory: &inventory
+            inventory: &inventory,
+            statsCache: &statsCache
         )
     }
 }
@@ -611,9 +649,10 @@ func makeSkillItem(
     origin: SkillLockEntry?,
     evidence: SkillOriginEvidence? = nil,
     symlinkedContainer: Bool,
-    inherited: SkillInventoryItem? = nil
+    inherited: SkillInventoryItem? = nil,
+    precomputedStats: SkillStats? = nil
 ) -> SkillInventoryItem {
-    let stats = skillStats(path)
+    let stats = precomputedStats ?? skillStats(path)
     let recognizedEvidence = recognizedExternalSkillEvidence(
         name: name,
         path: path,
@@ -668,8 +707,8 @@ func makeSkillItem(
         hasIconSmall: stats.hasIconSmall,
         hasIconLarge: stats.hasIconLarge,
         hasIconAndLogo: stats.hasIconAndLogo,
-        iconSmallPath: stats.iconSmallPath,
-        iconLargePath: stats.iconLargePath,
+        iconSmallPath: stats.iconSmallReference.map { path.appendingPathComponent($0).standardizedFileURL.path },
+        iconLargePath: stats.iconLargeReference.map { path.appendingPathComponent($0).standardizedFileURL.path },
         scriptInventory: stats.scriptInventory
     )
 }
@@ -716,11 +755,16 @@ func frontmatterScalar(key: String, text: String) -> String? {
 }
 
 func skillStats(_ skillDir: URL) -> SkillStats {
+    let directory = skillDir.resolvingSymlinksInPath().standardizedFileURL
     var stats = SkillStats()
     var otherFolders = Set<String>()
-    readOpenAIYaml(skillDir: skillDir, stats: &stats)
-    collectSkillStats(root: skillDir, dir: skillDir, stats: &stats, otherFolders: &otherFolders)
-    stats.scriptInventory = scanSkillScripts(in: skillDir)
+    var scriptReferences = SkillScriptReferenceIndex()
+    readOpenAIYaml(skillDir: directory, stats: &stats)
+    collectSkillStats(
+        root: directory, dir: directory, stats: &stats, otherFolders: &otherFolders,
+        scriptReferences: &scriptReferences
+    )
+    stats.scriptInventory = scanSkillScripts(in: directory, references: scriptReferences)
     stats.scriptFileCount = stats.scriptInventory?.scripts.count ?? stats.scriptFileCount
     stats.tokenEstimate = estimateTokens(stats.characterCount)
     stats.skillFileTokenEstimate = estimateTokens(stats.skillFileCharacterCount)
@@ -729,7 +773,10 @@ func skillStats(_ skillDir: URL) -> SkillStats {
     return stats
 }
 
-func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolders: inout Set<String>) {
+func collectSkillStats(
+    root: URL, dir: URL, relativeDirectory: String = "", stats: inout SkillStats,
+    otherFolders: inout Set<String>, scriptReferences: inout SkillScriptReferenceIndex
+) {
     guard let entries = try? fileManager.contentsOfDirectory(
         at: dir,
         includingPropertiesForKeys: [
@@ -737,6 +784,7 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             .isRegularFileKey,
             .isSymbolicLinkKey,
             .contentModificationDateKey,
+            .fileSizeKey,
         ],
         options: [.skipsPackageDescendants]
     ) else {
@@ -744,10 +792,16 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
     }
 
     for entry in entries {
+        let relativePath = relativeDirectory.isEmpty
+            ? entry.lastPathComponent
+            : "\(relativeDirectory)/\(entry.lastPathComponent)"
         if isDirectoryOrSymlinkedDirectory(entry) {
             guard !isSymlink(entry) else { continue }
             guard !shouldPrune(name: entry.lastPathComponent) else { continue }
-            collectSkillStats(root: root, dir: entry, stats: &stats, otherFolders: &otherFolders)
+            collectSkillStats(
+                root: root, dir: entry, relativeDirectory: relativePath, stats: &stats,
+                otherFolders: &otherFolders, scriptReferences: &scriptReferences
+            )
             continue
         }
 
@@ -763,10 +817,21 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             stats.latestModifiedAt = modifiedAt
         }
         categorizeSkillFile(root: root, path: entry, stats: &stats, otherFolders: &otherFolders)
-        guard isSkillTextFile(entry) else { continue }
+        let isText = isSkillTextFile(entry)
+        let isReferenceSource = isSkillScriptReferenceSource(entry)
+            && ((try? entry.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) <= 1_048_576
+        guard isText || isReferenceSource else { continue }
         guard let text = try? String(contentsOf: entry, encoding: .utf8) else { continue }
-        let characters = text.count
-        let words = text.split(whereSeparator: \.isWhitespace).count
+        // Reuse this scan's decoded text, not a persistent cache. Runtime-only
+        // sources (for example Ruby) still contribute references but not text
+        // statistics. References keep their byte-size cap and reject symlinks.
+        if isReferenceSource {
+            for reference in explicitSkillScriptPaths(in: text) {
+                scriptReferences.add(scriptPath: reference, sourcePath: relativePath)
+            }
+        }
+        guard isText else { continue }
+        let (characters, words) = skillTextCounts(text)
         stats.textFileCount += 1
         stats.characterCount += characters
         stats.wordCount += words
@@ -777,6 +842,37 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             stats.skillFileWordCount += words
         }
     }
+}
+
+func skillTextCounts(_ text: String) -> (characters: Int, words: Int) {
+    var characters = 0
+    var words = 0
+    var inWord = false
+    var previousWasCR = false
+    for byte in text.utf8 {
+        // ASCII has one byte per Character, except the CRLF grapheme. Any
+        // non-ASCII input uses Swift's complete grapheme/whitespace rules.
+        guard byte < 128 else { return unicodeSkillTextCounts(text) }
+        if byte != 10 || !previousWasCR { characters += 1 }
+        let whitespace = byte == 32 || (9...13).contains(byte)
+        if !whitespace, !inWord { words += 1 }
+        inWord = !whitespace
+        previousWasCR = byte == 13
+    }
+    return (characters, words)
+}
+
+private func unicodeSkillTextCounts(_ text: String) -> (characters: Int, words: Int) {
+    var characters = 0
+    var words = 0
+    var inWord = false
+    for character in text {
+        characters += 1
+        let whitespace = character.isWhitespace
+        if !whitespace, !inWord { words += 1 }
+        inWord = !whitespace
+    }
+    return (characters, words)
 }
 
 func skillDescription(from skillText: String) -> String? {
@@ -845,14 +941,10 @@ func readOpenAIYaml(skillDir: URL, stats: inout SkillStats) {
     let path = skillDir.appendingPathComponent("agents").appendingPathComponent("openai.yaml")
     guard let text = try? String(contentsOf: path, encoding: .utf8) else { return }
     stats.hasOpenAIYaml = true
-    stats.iconSmallPath = yamlInterfaceValue(key: "icon_small", text: text).map {
-        skillDir.appendingPathComponent($0).standardizedFileURL.path
-    }
-    stats.iconLargePath = yamlInterfaceValue(key: "icon_large", text: text).map {
-        skillDir.appendingPathComponent($0).standardizedFileURL.path
-    }
-    stats.hasIconSmall = stats.iconSmallPath != nil
-    stats.hasIconLarge = stats.iconLargePath != nil
+    stats.iconSmallReference = yamlInterfaceValue(key: "icon_small", text: text)
+    stats.iconLargeReference = yamlInterfaceValue(key: "icon_large", text: text)
+    stats.hasIconSmall = stats.iconSmallReference != nil
+    stats.hasIconLarge = stats.iconLargeReference != nil
 }
 
 func yamlInterfaceValue(key: String, text: String) -> String? {

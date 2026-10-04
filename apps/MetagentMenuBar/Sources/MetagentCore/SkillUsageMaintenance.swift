@@ -1,11 +1,12 @@
 import Foundation
+import IOKit.ps
 
 /// The normal-power phase of a cooperative usage backfill.
 ///
 /// The first continuation stays small so launch work does not immediately turn
 /// into a long background burst. Once the filesystem watcher is armed, the app
-/// can trade fewer wakeups for a proportionally larger slice without changing
-/// the sustained byte or file rate.
+/// can select faster, time-bounded catch-up on external power. Battery and
+/// constrained operation retain their conservative byte and file rates.
 public enum SkillUsageMaintenancePhase: Sendable, Equatable {
     case firstContinuation
     case watcherArmedCatchUp
@@ -25,6 +26,7 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
     public let minimumDatabaseLeaseSeconds: TimeInterval
     public let throttleEveryBytes: Int64
     public let throttleDelayMilliseconds: Int
+    public let maximumDurationSeconds: TimeInterval
 
     /// Compatibility for the current scheduler while it migrates to the more
     /// precise `scheduleDelaySeconds` name.
@@ -43,7 +45,8 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
         scheduleDelaySeconds: TimeInterval,
         minimumDatabaseLeaseSeconds: TimeInterval,
         throttleEveryBytes: Int64 = 0,
-        throttleDelayMilliseconds: Int = 0
+        throttleDelayMilliseconds: Int = 0,
+        maximumDurationSeconds: TimeInterval = 0
     ) {
         self.maxBytes = max(1, maxBytes)
         self.maxFiles = max(1, maxFiles)
@@ -51,6 +54,7 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
         self.minimumDatabaseLeaseSeconds = max(1, minimumDatabaseLeaseSeconds)
         self.throttleEveryBytes = max(0, throttleEveryBytes)
         self.throttleDelayMilliseconds = max(0, throttleDelayMilliseconds)
+        self.maximumDurationSeconds = max(0, maximumDurationSeconds)
     }
 
     /// Compatibility initializer for callers that intentionally want one
@@ -83,6 +87,7 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
             maxFiles: maxFiles,
             throttleEveryBytes: throttleEveryBytes,
             throttleDelayMilliseconds: throttleDelayMilliseconds,
+            maximumDurationSeconds: maximumDurationSeconds,
             minimumMaintenanceIntervalSeconds: minimumDatabaseLeaseSeconds,
             reusesSourceCatalog: true
         )
@@ -92,7 +97,8 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
     /// refreshes do not use this planner and remain unthrottled.
     public static func recommended(
         phase: SkillUsageMaintenancePhase,
-        isEnergyConstrained: Bool
+        isEnergyConstrained: Bool,
+        isOnExternalPower: Bool = false
     ) -> Self {
         if isEnergyConstrained {
             return Self(
@@ -116,6 +122,15 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
                 throttleDelayMilliseconds: 25
             )
         case .watcherArmedCatchUp:
+            if isOnExternalPower {
+                return Self(
+                    maxBytes: 32 * 1_024 * 1_024,
+                    maxFiles: 48,
+                    scheduleDelaySeconds: 12,
+                    minimumDatabaseLeaseSeconds: 12,
+                    maximumDurationSeconds: 2
+                )
+            }
             return Self(
                 maxBytes: 24 * 1_024 * 1_024,
                 maxFiles: 36,
@@ -133,6 +148,14 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
         recommended(phase: .firstContinuation, isEnergyConstrained: isEnergyConstrained)
     }
 
+    /// Unknown power sources fail conservatively, including UPS/battery power.
+    public static func hasExternalPower() -> Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
+        else { return false }
+        return source as String == kIOPSACPowerValue
+    }
+
     /// Clamps a policy to the known unprocessed tail. Returning `nil` for an
     /// exhausted tail prevents a nominal one-byte/one-file plan from creating
     /// an otherwise unnecessary wakeup.
@@ -147,7 +170,8 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
             scheduleDelaySeconds: scheduleDelaySeconds,
             minimumDatabaseLeaseSeconds: minimumDatabaseLeaseSeconds,
             throttleEveryBytes: throttleEveryBytes,
-            throttleDelayMilliseconds: throttleDelayMilliseconds
+            throttleDelayMilliseconds: throttleDelayMilliseconds,
+            maximumDurationSeconds: maximumDurationSeconds
         )
     }
 }
@@ -167,12 +191,14 @@ public struct SkillUsageMaintenanceSchedule: Sendable, Equatable {
 
     public func plan(
         isEnergyConstrained: Bool,
+        isOnExternalPower: Bool = false,
         remainingBytes: Int64,
         remainingFiles: Int
     ) -> SkillUsageMaintenancePlan? {
         SkillUsageMaintenancePlan.recommended(
             phase: phase,
-            isEnergyConstrained: isEnergyConstrained
+            isEnergyConstrained: isEnergyConstrained,
+            isOnExternalPower: isOnExternalPower
         ).clampedToTail(
             remainingBytes: remainingBytes,
             remainingFiles: remainingFiles
@@ -181,20 +207,26 @@ public struct SkillUsageMaintenanceSchedule: Sendable, Equatable {
 
     /// A deferred lease never materialized the reusable catalog, so it must
     /// not advance to the larger watcher-armed phase.
-    public mutating func recordCompletion(wasDeferred: Bool) {
+    public mutating func recordCompletion(
+        wasDeferred: Bool,
+        startedAtUptime: TimeInterval? = nil
+    ) {
         guard !wasDeferred else { return }
+        // Timer tolerance can deliver this slice late. Anchor the next lease
+        // interval to its actual start, not the earlier planned deadline.
+        if let startedAtUptime { nextDueUptime = startedAtUptime }
         phase = .watcherArmedCatchUp
     }
 
     /// Returns the delay until the next absolute deadline. After a completed
-    /// slice, the next deadline advances from the prior deadline rather than
+    /// slice, the next deadline advances from its recorded start rather than
     /// from completion time; if work overran the cadence, the delay bottoms at
     /// zero rather than drifting every subsequent slice.
     public mutating func delayBeforeNextRun(
         plan: SkillUsageMaintenancePlan,
         nowUptime: TimeInterval
     ) -> TimeInterval {
-        let due = nextDueUptime.map { $0 + plan.scheduleDelaySeconds }
+        let due = nextDueUptime.map { max($0 + plan.scheduleDelaySeconds, nowUptime) }
             ?? nowUptime + plan.scheduleDelaySeconds
         nextDueUptime = due
         return max(0, due - nowUptime)
