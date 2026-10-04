@@ -149,6 +149,8 @@ struct MetagentCLI {
             try runSkillShow(Array(args.dropFirst()))
         case "remove":
             try runSkillRemoval(Array(args.dropFirst()))
+        case "sync-to-project":
+            try runProjectSkillSync(Array(args.dropFirst()))
         case "archive":
             try runSkillArchive(Array(args.dropFirst()))
         case "restore":
@@ -372,6 +374,69 @@ struct MetagentCLI {
         }
         if report.outcomes.contains(where: { !$0.succeeded }) {
             throw CLIError.message("skills remove could not complete every target")
+        }
+    }
+
+    private static func runProjectSkillSync(_ args: [String]) throws {
+        let emitJSON = args.contains("--json")
+        do {
+            var names: [String] = []
+            var root: String?
+            var apply = false
+            var json = false
+            var collection = ProjectSkillSyncCollection.agents
+            var index = 0
+            while index < args.count {
+                let argument = args[index]
+                switch argument {
+                case "--root": root = try readFlagValue("--root", args: args, index: &index)
+                case "--collection":
+                    let value = try readFlagValue("--collection", args: args, index: &index)
+                    guard let selected = ProjectSkillSyncCollection(rawValue: value) else {
+                        throw CLIError.message("--collection takes agents, codex or claude")
+                    }
+                    collection = selected
+                case "--apply": apply = true
+                case "--json": json = true
+                default:
+                    guard !argument.hasPrefix("-") else {
+                        throw CLIError.message("unknown skills sync-to-project flag: \(argument)")
+                    }
+                    names.append(argument)
+                }
+                index += 1
+            }
+            guard let root else { throw CLIError.message("skills sync-to-project requires --root with an absolute project folder") }
+            let plan = try MetagentCore.previewProjectSkillSync(projectRoot: root, skillNames: names, collection: collection)
+            if apply {
+                let report = try MetagentCore.applyProjectSkillSync(plan)
+                if json { try printJSON(report) }
+                else {
+                    print("Copied \(report.copiedNames.count), updated \(report.updatedNames.count); \(plan.items.count - plan.changeCount) unchanged.")
+                    print("Local files only. Review and commit .agents/skills and .agents/project-skills.json, then push separately for cloud checkouts.")
+                }
+            } else if json {
+                try printJSON(ProjectSkillSyncReport(applied: false, plan: plan, copiedNames: [], updatedNames: []))
+            } else {
+                print("Preview only — nothing was copied.")
+                for item in plan.items {
+                    print("\(item.name): \(item.action.rawValue) → \(item.destinationPath)")
+                    for file in item.files { print("  \(file.relativePath) (\(file.byteCount) bytes)") }
+                    for path in item.removedFiles { print("  remove obsolete copied file: \(path)") }
+                    for finding in item.findings { print("  \(finding.severity.rawValue): \(finding.message)") }
+                }
+                print("Review selected content and outside dependencies before using --apply. Local copies may appear alongside global skills. Git-ignored files will not reach cloud unless you deliberately change your project's ignore policy.")
+            }
+            if !plan.canApply {
+                if json { Foundation.exit(1) }
+                throw CLIError.message("project skill sync has blocked selections")
+            }
+        } catch {
+            if emitJSON {
+                try printJSON(["error": error.localizedDescription])
+                Foundation.exit(1)
+            }
+            throw error
         }
     }
 
@@ -1348,7 +1413,7 @@ struct MetagentCLI {
 
         Usage:
           metagent config show [--json]
-          metagent skills <list|show|duplicates|scan|repair|doctor|remove|archive|restore|archived|evaluate> [flags]
+          metagent skills <list|show|duplicates|scan|repair|doctor|sync-to-project|remove|archive|restore|archived|evaluate> [flags]
           metagent inventory [--json]
           metagent usage <status|refresh> [flags]
           metagent history <sample|show|events|coverage|backfill> [flags]
@@ -1405,6 +1470,8 @@ struct MetagentCLI {
           metagent skills repair [--apply] [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills doctor [--root PATH] [--ignore-project PATH] [--max-depth N] [--json]
           metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
+          metagent skills sync-to-project NAME [NAME...] --root PATH
+                     [--collection agents|codex|claude] [--apply] [--json]
           metagent skills archive NAME [NAME...] [--root PATH] [--apply] [--json]
           metagent skills restore NAME [NAME...] [--json]
           metagent skills archived [--json]
@@ -1418,6 +1485,10 @@ struct MetagentCLI {
         the skill into recovery state rather than deleting it outright. archive
         sets it aside in the Archived Skills folder so every agent runtime stops
         seeing it; restore puts it back exactly where it was.
+
+        sync-to-project previews selected home-level global bundles; --root is
+        required and --apply copies local project files only. Commit and push
+        separately for cloud checkouts. Existing project edits block refresh.
         """)
     }
 
