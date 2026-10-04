@@ -6,12 +6,13 @@ scenario="tabs"
 iterations=5
 iterations_explicit=false
 timeout_seconds=30
+foreground=false
 output_root=""
 
 usage() {
   printf '%s\n' 'Usage: scripts/measure-app-interactions.sh [--channel dev|prod]
        [--scenario tabs|common-interactions|skills-cycle|refresh|launch-warm|launch-cold] [--iterations COUNT]
-       [--timeout SECONDS] [--output EMPTY_DIR]
+       [--timeout SECONDS] [--foreground] [--output EMPTY_DIR]
 
 Measures Metagent through macOS Accessibility. Tab and common-interaction
 measurements report both AXSelected diagnostics and view-specific AX content-ready
@@ -21,6 +22,7 @@ sorts through exact Accessibility identifiers with no coordinate fallback.
 Refresh measurements require the Reload control to leave
 and return to its enabled ready state. Launch scenarios stop/start the selected
 channel and leave it running; launch-cold requires it to be stopped beforehand.
+Non-launch scenarios do not activate the app unless --foreground is requested.
 skills-cycle performs only Overview → Skills → Overview, with a one-second Skills
 dwell, so before/after memory captures have a reproducible view-cycle protocol.
 Existing output is never replaced.'
@@ -32,6 +34,7 @@ while (($# > 0)); do
     --scenario) scenario="$2"; shift 2 ;;
     --iterations) iterations="$2"; iterations_explicit=true; shift 2 ;;
     --timeout) timeout_seconds="$2"; shift 2 ;;
+    --foreground) foreground=true; shift ;;
     --output) output_root="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -175,7 +178,7 @@ python3 "$repo_root/scripts/run-with-inactivity-timeout.py" \
   --inactivity-timeout "$automation_inactivity_timeout_seconds" \
   --stdout "$raw_path" \
   -- "$probe_binary" \
-    "$app_path" "$process_name" "$scenario" "$iterations" "$((timeout_seconds * 1000))" \
+    "$app_path" "$process_name" "$scenario" "$iterations" "$((timeout_seconds * 1000))" "$foreground" \
   || automation_status=$?
 if [[ "$automation_status" == "124" ]]; then
   echo "Accessibility automation timed out after producing no progress; partial raw output remains at $raw_path." >&2

@@ -374,26 +374,31 @@ The interaction harness drives the installed app through macOS Accessibility:
 
 ```bash
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario tabs \
   --iterations 5 \
   --output /private/tmp/metagent-tabs-$(date +%Y%m%d-%H%M%S)
 
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario common-interactions \
   --iterations 5 \
   --output /private/tmp/metagent-common-interactions-$(date +%Y%m%d-%H%M%S)
 
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario refresh \
   --iterations 5 \
   --output /private/tmp/metagent-refresh-$(date +%Y%m%d-%H%M%S)
 ```
 
-The selected app must be running with its main window open. The Codex or
-terminal host needs macOS Accessibility permission, and the Mac's console
+The selected app must be running with its main window open. Non-launch scenarios
+leave it in the background by default. Use `--foreground` for a controlled live
+UI run: it activates the exact existing process before measured input, without
+restarting it. The raw artifact records whether activation was requested.
+Background-app menu behavior is not a valid foreground responsiveness baseline;
+an unavailable menu fails the run instead of producing partial acceptance results.
+The Codex or terminal host needs macOS Accessibility permission, and the Mac's console
 session must be logged in and unlocked. The native probe checks session state
 before any app lifecycle or Accessibility work. It rejects a known locked or
 inactive session instead of attempting live UI measurement. The optional system
@@ -438,9 +443,15 @@ slow filter. If control and content become ready together, the phases alone
 cannot distinguish menu dismissal from work that publishes both states together.
 Use a stack sample or app-side timing before attributing the delay. If content
 trails the control, investigate the app's filter/presentation work and probe
-overhead. Both exact control lookup and content-ready discovery prune inventory
-content, tables, and outlines; asking for lazy cell children can itself create
-offscreen hosting views and distort latency and retained-memory measurements.
+overhead. Exact control, menu-item, Reload, and content-ready discovery all prune
+inventory content, tables, and outlines; asking for lazy cell children can itself
+create offscreen hosting views and distort latency and retained-memory measurements.
+Native menu and menu-bar nodes are matched by role, title, and action without
+requiring AXIdentifier, which some native menu-bar items reject.
+Each menu choice has 500 ms of unmeasured preparation before reopening the menu,
+with the control reacquired afterward. This models normal think time and avoids
+pressing a replacement control during native menu dismissal. The raw artifact
+records this protocol; the measured interval still starts at option AXPress.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
 initially enabled ready state and then return. Initially disabled or unknown

@@ -79,6 +79,23 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertLess(selection.index("kAXWindowRole"), selection.index("try title(candidate)"))
         self.assertIn("try mainWindowSelfTest()", source)
 
+    def test_foreground_activation_is_explicit_and_never_restarts_the_process(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        activation = source.split("func activate(", 1)[1].split("private func copyAttribute(", 1)[0]
+        run = source.split("private func run(arguments:", 1)[1].split("private func selfTest", 1)[0]
+
+        self.assertIn("application.activate(options: [])", activation)
+        self.assertIn("application.isActive", activation)
+        self.assertNotIn("terminate", activation)
+        self.assertNotIn("launch()", activation)
+        self.assertIn("if foregroundRequested { try probe.activate(application) }", run)
+        self.assertIn('arguments.count == 6 ? arguments[5] : "false"', run)
+        self.assertIn('"foreground_requested": foregroundRequested', source)
+        self.assertLess(run.index("try probe.activate(application)"), run.index("probe.mainWindow(appElement)"))
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn("foreground=false", script)
+        self.assertIn("--foreground) foreground=true", script)
+
     def test_lifecycle_waits_service_appkit_events_and_validate_registered_pid(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
         wait = source.split("func waitUntil(", 1)[1].split("func mainWindow", 1)[0]
@@ -148,6 +165,8 @@ class MetagentAXProbeTests(unittest.TestCase):
         self.assertIn("retainedIdentifier != previous", menu_measurement)
         self.assertIn("retainedIdentifier?.hasPrefix(expectedPrefix)", menu_measurement)
         self.assertIn("replacementIdentifier != previous", menu_measurement)
+        self.assertLess(menu_measurement.index("native menu preparation"), menu_measurement.index("let timer = MonotonicTimer()"))
+        self.assertIn('"menu_preparation_milliseconds": menuPreparationMilliseconds', source)
         self.assertIn("var nextReplacementSearch = 0.0", menu_measurement)
         self.assertLess(
             menu_measurement.index("nextReplacementSearch = elapsedMilliseconds"),
@@ -157,6 +176,22 @@ class MetagentAXProbeTests(unittest.TestCase):
             menu_measurement.index("let retainedIdentifier"),
             menu_measurement.index("if let replacement"),
         )
+
+    def test_menu_and_reload_predicates_do_not_expand_inventory_cells(self) -> None:
+        source = PROBE.read_text(encoding="utf-8")
+        lookup = source.split("func findDescendant(", 1)[1].split("func findByIdentifier(", 1)[0]
+        menu = source.split("private func menuItem(", 1)[1].split("func chooseMenuOption(", 1)[0]
+        reload = source.split("private func findReloadControl(", 1)[1].split("func measureRefresh(", 1)[0]
+
+        self.assertIn("findStructuralElement(", lookup)
+        self.assertIn("matchesElement: matches", lookup)
+        self.assertNotIn("try children(current)", lookup)
+        self.assertIn("findDescendant", menu)
+        self.assertIn("findDescendant", reload)
+        self.assertIn("try predicateTraversalSelfTest()", source)
+        self.assertIn("Predicate lookup traversed lazy content children", source)
+        self.assertIn("try menuIdentifierSelfTest()", source)
+        self.assertIn("Native menu lookup requested an unnecessary AXIdentifier", source)
 
     def test_ax_walks_are_bounded_indexed_queues(self) -> None:
         source = PROBE.read_text(encoding="utf-8")
