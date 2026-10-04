@@ -38,8 +38,8 @@ metagent skills sync-to-project example --collection codex \
 `--root` is required and must identify an existing physical folder. The default
 source collection is `agents`; `--collection` takes `agents`, `codex`, or
 `claude`. The names are folder names in that collection, not ambiguous portfolio
-search results. JSON success contains `applied`, `plan`, `copiedNames`, and
-`updatedNames`. A blocked preview exits nonzero with the preview JSON; other
+search results. JSON success contains `applied`, `plan`, `copied_names`, and
+`updated_names`. A blocked preview exits nonzero with the preview JSON; other
 operation failures return one `{"error":"…"}` object. No file content or
 credential value is included in these reports.
 
@@ -74,14 +74,22 @@ Keep it with the copied bundles so later refreshes can prove ownership.
 
 A refresh is another explicit preview and copy. Identical owned bundles are a
 no-op. An updated source replaces only selected, unchanged Metagent-owned
-copies; the preview lists obsolete copied files that will disappear. Existing
+copies; the preview lists obsolete copied files that will disappear. Ownership
+hashes use file bytes and Git-preserved executable status, not local read/write
+permissions or Finder `.DS_Store` metadata. Other added files remain edits.
+Existing
 project-owned bundles, local edits (including added generated files), missing
 previously copied bundles, changed collection identities, manager-owned names,
 and invalid ownership state fail closed. Unselected bundles are never deleted
-or updated. Source, destination or manifest changes after preview invalidate
-that preview. Files are staged, rechecked, and replaced with rollback backups;
+or updated. Content, executable-status or manifest changes after preview
+invalidate that preview. Files are staged, rechecked, and replaced with rollback backups;
 if rollback cannot safely restore the original bundles, the error names the
-retained recovery folder rather than discarding it.
+retained recovery folder rather than discarding it. Concurrent Metagent copies
+into one project fail busy without waiting or creating lock files; preview
+again after the other copy completes. Ownership is bounded to 4,096 records and
+a 1 MiB manifest, so an over-capacity selection fails before installing files.
+The advisory lock coordinates Metagent copies only; unrelated tools and manual
+project writers do not become exclusive or authorized by it.
 
 ## Avoiding local duplicates
 

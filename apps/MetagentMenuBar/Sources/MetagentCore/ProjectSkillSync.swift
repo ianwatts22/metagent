@@ -96,19 +96,21 @@ public extension MetagentCore {
     /// changes a Git index, or deletes skills omitted from this preview.
     static func applyProjectSkillSync(_ preview: ProjectSkillSyncPlan) throws -> ProjectSkillSyncReport {
         guard preview.canApply else { throw projectSyncError("Resolve blocked skills before copying.") }
-        let current = try previewProjectSkillSync(
-            projectRoot: preview.projectRoot,
-            skillNames: preview.items.map(\.name),
-            globalSkillsRoot: preview.globalSkillsRoot,
-            collection: preview.collection
-        )
-        guard current == preview else {
-            throw projectSyncError("The source or project changed after preview. Preview again; nothing was copied.")
+        return try withProjectSkillSyncLock(projectRoot: preview.projectRoot) {
+            let current = try previewProjectSkillSync(
+                projectRoot: preview.projectRoot,
+                skillNames: preview.items.map(\.name),
+                globalSkillsRoot: preview.globalSkillsRoot,
+                collection: preview.collection
+            )
+            guard current == preview else {
+                throw projectSyncError("The source or project changed after preview. Preview again; nothing was copied.")
+            }
+            guard preview.changeCount > 0 else {
+                return ProjectSkillSyncReport(applied: true, plan: preview, copiedNames: [], updatedNames: [])
+            }
+            return try applyProjectSkillSyncTransaction(preview)
         }
-        guard preview.changeCount > 0 else {
-            return ProjectSkillSyncReport(applied: true, plan: preview, copiedNames: [], updatedNames: [])
-        }
-        return try applyProjectSkillSyncTransaction(preview)
     }
 }
 
@@ -150,7 +152,11 @@ extension MetagentCore {
         }
         let manifestURL = agents.appendingPathComponent(projectSyncManifestName)
         let (manifest, manifestHash) = try projectSyncManifest(at: manifestURL, under: project)
+        guard Set(manifest.skills.keys).union(names).count <= projectSyncMaximumEntries else {
+            throw projectSyncError("The selection would exceed the 4,096 project ownership record limit. Nothing was copied.")
+        }
         let lockedNames = try projectSyncManagedNames(in: project)
+        var projectedManifest = manifest
         var totalBytes = 0
         let items = names.map { name -> ProjectSkillSyncItem in
             let source = global.appendingPathComponent(name)
@@ -196,6 +202,9 @@ extension MetagentCore {
                 action = .blocked
                 findings.append(projectSyncFinding("blocked", message: error.localizedDescription))
             }
+            if [.copy, .update].contains(action), let hash = sourceBundle?.hash {
+                projectedManifest.skills[name] = .init(collection: collection, contentHash: hash)
+            }
             let sourcePaths = Set(sourceBundle?.files.map(\.path) ?? [])
             return ProjectSkillSyncItem(
                 name: name, destinationPath: destination.path, action: action,
@@ -205,6 +214,7 @@ extension MetagentCore {
                 findings: findings
             )
         }
+        _ = try projectSyncEncodedManifest(projectedManifest)
         return ProjectSkillSyncPlan(
             projectRoot: project.path, globalSkillsRoot: global.path, collection: collection,
             manifestHash: manifestHash, items: items
@@ -264,6 +274,16 @@ private func projectSyncManifest(at path: URL, under root: URL) throws -> (Proje
     return (manifest, projectSyncHash(data))
 }
 
+private func projectSyncEncodedManifest(_ manifest: ProjectSkillSyncManifest) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(manifest)
+    guard manifest.skills.count <= projectSyncMaximumEntries, data.count <= 1_024 * 1_024 else {
+        throw projectSyncError("The resulting project ownership manifest exceeds its bounded limits.")
+    }
+    return data
+}
+
 private func projectSyncManagedNames(in root: URL) throws -> Set<String> {
     // Preserve all external-manager state. Fail closed for legacy dotagents
     // declarations rather than relying on permissive TOML ownership parsing.
@@ -308,8 +328,9 @@ private func projectSyncBundle(
         for name in names {
             let relative = prefix.isEmpty ? name : "\(prefix)/\(name)"
             let path = directory.appendingPathComponent(name)
-            // Destination hashing includes every file: added generated files
-            // are project edits too, and must never disappear in an update.
+            // Finder metadata is not bundle content. Other added files,
+            // including generated project notes, still block replacement.
+            if !screening && name == ".DS_Store" { continue }
             if screening && publicationPathIsExcluded(relative) {
                 findings.append(projectSyncFinding("excluded:\(relative)", path: relative,
                     message: "Generated or repository-local content is not copied.", severity: .warning))
@@ -363,7 +384,10 @@ private func projectSyncBundle(
     }
     var hash = SHA256()
     for file in files {
-        hash.update(data: Data("\(file.path.utf8.count):\(file.path):\(file.data.count):\(file.permissions):".utf8))
+        // Git preserves the owner executable bit, not full POSIX modes.
+        // Ownership must survive e.g. a 0600 source becoming 0644 in a clone.
+        let executable = (file.permissions & 0o100) == 0 ? 0 : 1
+        hash.update(data: Data("\(file.path.utf8.count):\(file.path):\(file.data.count):\(executable):".utf8))
         hash.update(data: file.data)
     }
     return ProjectSkillSyncBundle(files: files, hash: hash.finalize().map { String(format: "%02x", $0) }.joined(), findings: findings)
@@ -388,6 +412,24 @@ private func projectSyncReadFile(_ path: URL, limit: Int) throws -> (data: Data,
     }
     guard (metadata.st_mode & 0o7000) == 0 else { throw projectSyncError("Special file permission bits are not copied.") }
     return (data, Int(metadata.st_mode & 0o777))
+}
+
+/// Advisory cross-process exclusion on the existing directory: no sidecar
+/// files or Git state are created, and a busy project fails without waiting.
+func withProjectSkillSyncLock<Result>(projectRoot: String, _ operation: () throws -> Result) throws -> Result {
+    let root = try projectSyncRoot(projectRoot)
+    guard root.path == projectRoot else { throw projectSyncError("The project root changed after preview.") }
+    let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw projectSyncError("The project could not be locked safely.") }
+    defer { Darwin.close(descriptor) }
+    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+        guard errno == EWOULDBLOCK || errno == EAGAIN else {
+            throw projectSyncError("The project does not support a safe sync lock. Nothing was copied.")
+        }
+        throw projectSyncError("Another Metagent sync is active in this project. Try again after it finishes.")
+    }
+    defer { flock(descriptor, LOCK_UN) }
+    return try operation()
 }
 
 func applyProjectSkillSyncTransaction(
@@ -456,9 +498,8 @@ func applyProjectSkillSyncTransaction(
         guard plan.items.allSatisfy({ !managedNames.contains($0.name) }) else {
             throw projectSyncError("A selected project skill became manager-owned during copying.")
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(manifest).write(to: manifestURL, options: .atomic)
+        let manifestData = try projectSyncEncodedManifest(manifest)
+        try manifestData.write(to: manifestURL, options: .atomic)
         manifestCommitted = true
         return ProjectSkillSyncReport(
             applied: true, plan: plan,

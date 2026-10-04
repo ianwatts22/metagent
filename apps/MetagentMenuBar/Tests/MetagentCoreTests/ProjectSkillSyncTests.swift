@@ -111,15 +111,70 @@ final class ProjectSkillSyncTests: XCTestCase {
         XCTAssertEqual(try fixture.preview(["demo"]).items.first?.action, .blocked)
     }
 
-    func testProjectPermissionEditsAlsoBlockRefresh() throws {
+    func testGitPortablePermissionIdentityAndFinderMetadataDoNotBlockRefresh() throws {
         let fixture = try ProjectSyncFixture()
         defer { fixture.remove() }
         _ = try fixture.skill("demo")
         _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
         let file = fixture.destination("demo/SKILL.md")
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        XCTAssertFalse(try fixture.preview(["demo"]).canApply)
+        try fixture.write(".DS_Store", in: fixture.destination("demo"), data: Data("Finder metadata fixture".utf8))
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+        let unchanged = try fixture.preview(["demo"])
+        XCTAssertEqual(unchanged.items.first?.action, .unchanged)
+        _ = try MetagentCore.applyProjectSkillSync(unchanged)
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination("demo/.DS_Store").path))
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+        XCTAssertFalse(try fixture.preview(["demo"]).canApply, "Executable-status changes remain meaningful project edits.")
+    }
+
+    func testProjectLockFailsBusyAndSerializedRetriesPreserveDistinctOwnership() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        _ = try fixture.skill("alpha")
+        _ = try fixture.skill("beta")
+        let alpha = try fixture.preview(["alpha"])
+        let staleBeta = try fixture.preview(["beta"])
+        try withProjectSkillSyncLock(projectRoot: fixture.project.path) {
+            for plan in [alpha, staleBeta] {
+                XCTAssertThrowsError(try MetagentCore.applyProjectSkillSync(plan)) { error in
+                    XCTAssertTrue(error.localizedDescription.contains("Another Metagent sync"))
+                }
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.project.appendingPathComponent(".agents").path))
+        }
+        _ = try MetagentCore.applyProjectSkillSync(alpha)
+        XCTAssertThrowsError(try MetagentCore.applyProjectSkillSync(staleBeta))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("beta").path))
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["beta"]))
+        XCTAssertEqual(try fixture.preview(["alpha", "beta"]).items.map(\.action), [.unchanged, .unchanged])
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.manifest)) as? [String: Any])
+        let skills = try XCTUnwrap(manifest["skills"] as? [String: Any])
+        XCTAssertEqual(Set(skills.keys), ["alpha", "beta"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.project.appendingPathComponent(".agents").path).sorted(), ["project-skills.json", "skills"])
+    }
+
+    func testManifestCapacityIsRejectedBeforeCopyingAndOversizeReadsStayBounded() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        _ = try fixture.skill("new-skill")
+        try FileManager.default.createDirectory(at: fixture.manifest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let entries = Dictionary(uniqueKeysWithValues: (0..<4_096).map { index in
+            ("existing-\(index)", ["collection": "agents", "contentHash": String(repeating: "0", count: 64)])
+        })
+        let bytes = try JSONSerialization.data(withJSONObject: ["version": 1, "skills": entries])
+        try bytes.write(to: fixture.manifest)
+        XCTAssertThrowsError(try fixture.preview(["new-skill"])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("ownership record limit"))
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("").path))
+        let oversized = bytes + Data(repeating: 0x20, count: 1_024 * 1_024)
+        try oversized.write(to: fixture.manifest)
+        XCTAssertThrowsError(try fixture.preview(["new-skill"]))
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), oversized)
     }
 
     func testUnknownOwnershipFieldsAndFutureManagerLockVersionsRemainUntouched() throws {
@@ -281,12 +336,19 @@ final class ProjectSkillSyncTests: XCTestCase {
         let referenceBytes = Data("Portable synthetic instructions.".utf8)
         try fixture.write("scripts/run.sh", in: selected, data: scriptBytes)
         try fixture.write("references/guide.md", in: selected, data: referenceBytes)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: selected.appendingPathComponent("SKILL.md").path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: selected.appendingPathComponent("scripts/run.sh").path)
         _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["cloud-ready"]))
         try fixture.git(["init", "--initial-branch=main", "--template="], at: fixture.project)
         try fixture.git(["add", "--", ".agents/skills/cloud-ready", ".agents/project-skills.json"], at: fixture.project)
         try fixture.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Synthetic project skills"], at: fixture.project)
         let clone = fixture.root.appendingPathComponent("fresh-cloud-checkout")
         try fixture.git(["clone", "--no-local", "--template=", fixture.project.path, clone.path], at: fixture.root)
+        let refresh = try MetagentCore.previewProjectSkillSync(projectRoot: clone.path, skillNames: ["cloud-ready"], globalSkillsRoot: fixture.global.path)
+        XCTAssertEqual(refresh.items.first?.action, .unchanged, "Git-normalized file modes must retain ownership in a fresh checkout.")
+        _ = try MetagentCore.applyProjectSkillSync(refresh)
+        let scriptPermissions = (try FileManager.default.attributesOfItem(atPath: clone.appendingPathComponent(".agents/skills/cloud-ready/scripts/run.sh").path)[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        XCTAssertEqual(scriptPermissions & 0o100, 0o100)
         try FileManager.default.removeItem(at: fixture.global)
         XCTAssertEqual(try Data(contentsOf: clone.appendingPathComponent(".agents/skills/cloud-ready/scripts/run.sh")), scriptBytes)
         XCTAssertEqual(try Data(contentsOf: clone.appendingPathComponent(".agents/skills/cloud-ready/references/guide.md")), referenceBytes)
