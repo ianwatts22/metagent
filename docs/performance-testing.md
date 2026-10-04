@@ -5,7 +5,8 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
 - skill discovery across 24 projects and 192 skill bundles;
 - inventory statistics for 48 ASCII or Unicode/reference/script bundles represented in
   `.agents`, Codex, and Claude, including per-skill and whole-container links;
-- Doctor analysis of the same portfolio;
+- Doctor analysis of the same portfolio, with separate full-scan and
+  already-loaded-inventory measurements (the app uses the latter);
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
   metadata-only Overview counts with identical group eligibility, and full
   Overview health aggregation, with discovery excluded from the measured work;
@@ -74,6 +75,14 @@ The fixtures are generated locally, contain fixed shapes and content, and do not
 read the user's portfolio, session history, network, or credentials. Fixture
 creation is outside the measured blocks except for the SQLite database creation
 that is part of a cold usage backfill.
+
+Inventory gathers script references while reading bundle text for statistics,
+avoiding a second source-directory traversal and text read. The standalone script
+inspection command still gathers its own references. Both paths keep the 1 MiB
+reference-source byte limit, ignore symlink sources and pruned directories, and
+accept runtime-only source files without adding them to text statistics. The
+reference index lasts for one bundle scan; later refreshes reread same-size edits
+and symlink changes without modification-time or persistent-cache assumptions.
 
 The overlap workload measures document reads, normalization, and pairwise
 similarity together. A separate deterministic test requires one canonical-path

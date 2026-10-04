@@ -758,9 +758,13 @@ func skillStats(_ skillDir: URL) -> SkillStats {
     let directory = skillDir.resolvingSymlinksInPath().standardizedFileURL
     var stats = SkillStats()
     var otherFolders = Set<String>()
+    var scriptReferences = SkillScriptReferenceIndex()
     readOpenAIYaml(skillDir: directory, stats: &stats)
-    collectSkillStats(root: directory, dir: directory, stats: &stats, otherFolders: &otherFolders)
-    stats.scriptInventory = scanSkillScripts(in: directory)
+    collectSkillStats(
+        root: directory, dir: directory, stats: &stats, otherFolders: &otherFolders,
+        scriptReferences: &scriptReferences
+    )
+    stats.scriptInventory = scanSkillScripts(in: directory, references: scriptReferences)
     stats.scriptFileCount = stats.scriptInventory?.scripts.count ?? stats.scriptFileCount
     stats.tokenEstimate = estimateTokens(stats.characterCount)
     stats.skillFileTokenEstimate = estimateTokens(stats.skillFileCharacterCount)
@@ -769,7 +773,10 @@ func skillStats(_ skillDir: URL) -> SkillStats {
     return stats
 }
 
-func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolders: inout Set<String>) {
+func collectSkillStats(
+    root: URL, dir: URL, relativeDirectory: String = "", stats: inout SkillStats,
+    otherFolders: inout Set<String>, scriptReferences: inout SkillScriptReferenceIndex
+) {
     guard let entries = try? fileManager.contentsOfDirectory(
         at: dir,
         includingPropertiesForKeys: [
@@ -777,6 +784,7 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             .isRegularFileKey,
             .isSymbolicLinkKey,
             .contentModificationDateKey,
+            .fileSizeKey,
         ],
         options: [.skipsPackageDescendants]
     ) else {
@@ -784,10 +792,16 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
     }
 
     for entry in entries {
+        let relativePath = relativeDirectory.isEmpty
+            ? entry.lastPathComponent
+            : "\(relativeDirectory)/\(entry.lastPathComponent)"
         if isDirectoryOrSymlinkedDirectory(entry) {
             guard !isSymlink(entry) else { continue }
             guard !shouldPrune(name: entry.lastPathComponent) else { continue }
-            collectSkillStats(root: root, dir: entry, stats: &stats, otherFolders: &otherFolders)
+            collectSkillStats(
+                root: root, dir: entry, relativeDirectory: relativePath, stats: &stats,
+                otherFolders: &otherFolders, scriptReferences: &scriptReferences
+            )
             continue
         }
 
@@ -803,8 +817,20 @@ func collectSkillStats(root: URL, dir: URL, stats: inout SkillStats, otherFolder
             stats.latestModifiedAt = modifiedAt
         }
         categorizeSkillFile(root: root, path: entry, stats: &stats, otherFolders: &otherFolders)
-        guard isSkillTextFile(entry) else { continue }
+        let isText = isSkillTextFile(entry)
+        let isReferenceSource = isSkillScriptReferenceSource(entry)
+            && ((try? entry.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) <= 1_048_576
+        guard isText || isReferenceSource else { continue }
         guard let text = try? String(contentsOf: entry, encoding: .utf8) else { continue }
+        // Reuse this scan's decoded text, not a persistent cache. Runtime-only
+        // sources (for example Ruby) still contribute references but not text
+        // statistics. References keep their byte-size cap and reject symlinks.
+        if isReferenceSource {
+            for reference in explicitSkillScriptPaths(in: text) {
+                scriptReferences.add(scriptPath: reference, sourcePath: relativePath)
+            }
+        }
+        guard isText else { continue }
         let (characters, words) = skillTextCounts(text)
         stats.textFileCount += 1
         stats.characterCount += characters

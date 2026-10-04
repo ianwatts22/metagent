@@ -32,6 +32,65 @@ final class SkillInventoryStatsTests: XCTestCase {
         }
     }
 
+    func testSharedScriptReferencesMatchIndependentScanAtContainmentAndSizeBoundaries() throws {
+        let root = try makeTemporaryRoot(prefix: "metagent-shared-reference-scan")
+        let bundle = try writeSkillFixture(
+            at: root.appendingPathComponent("demo"), body: "Run scripts/target.sh."
+        )
+        let marker = "Use scripts/target.sh.\n"
+        let exactLimit = marker + String(repeating: " ", count: 1_048_576 - marker.utf8.count)
+        let sources = [
+            ("scripts/target.sh", "#!/bin/sh\nexit 0\n"),
+            ("references/nested/guide.md", marker),
+            ("references/runtime.rb", marker),
+            ("references/exact-limit.txt", exactLimit),
+            ("references/oversized.txt", exactLimit + " "),
+            // The cap is bytes, not Swift Character count.
+            ("references/oversized-unicode.md", marker + String(repeating: "é", count: 524_288)),
+            ("node_modules/ignored.md", marker),
+            (".hidden/ignored.md", marker),
+        ]
+        for (path, text) in sources {
+            let url = bundle.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let outside = root.appendingPathComponent("outside.md")
+        try marker.write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: bundle.appendingPathComponent("references/linked.md"), withDestinationURL: outside
+        )
+        try FileManager.default.createSymbolicLink(
+            at: bundle.appendingPathComponent("references/linked-directory"), withDestinationURL: root
+        )
+        try FileManager.default.createSymbolicLink(
+            at: bundle.appendingPathComponent("scripts/linked.sh"),
+            withDestinationURL: bundle.appendingPathComponent("scripts/target.sh")
+        )
+
+        let independent = try MetagentCore.inventorySkillScripts(path: bundle.path)
+        let stats = skillStats(bundle)
+        XCTAssertEqual(stats.scriptInventory, independent)
+        XCTAssertEqual(independent.scripts.first { $0.relativePath == "scripts/target.sh" }?.referencedBy, [
+            "SKILL.md", "references/exact-limit.txt", "references/nested/guide.md", "references/runtime.rb",
+        ])
+        XCTAssertEqual(stats.textFileCount, 6, "Ruby contributes references, not text statistics; links and pruned directories contribute neither.")
+
+        // A later invocation must not retain an old reference index, even when
+        // the edited file has identical size and modification time.
+        let runtimeSource = bundle.appendingPathComponent("references/runtime.rb")
+        let date = try XCTUnwrap((try FileManager.default.attributesOfItem(atPath: runtimeSource.path))[.modificationDate] as? Date)
+        try marker.replacingOccurrences(of: "target.sh", with: "absent.sh").write(
+            to: runtimeSource, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: runtimeSource.path)
+        let refreshed = skillStats(bundle)
+        XCTAssertEqual(refreshed.scriptInventory, try MetagentCore.inventorySkillScripts(path: bundle.path))
+        XCTAssertEqual(refreshed.scriptInventory?.missingReferences, [
+            MissingSkillScriptReference(relativePath: "scripts/absent.sh", referencedBy: ["references/runtime.rb"]),
+        ])
+    }
+
     func testOneBundleReadPreservesEveryRepresentationAndContainmentResult() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-shared-stats")
         let bundle = try makeBundle(in: root)
