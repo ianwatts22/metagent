@@ -254,6 +254,13 @@ views with mock data.
 The local app uses a persistent development signature. Distribution is a
 separate mode, described below.
 
+Projects also provides **Sync Global Skills…**: select a project's destination,
+choose direct global bundles, review files and warnings, then copy. All bundle
+reads and writes run off the main actor. The copy never commits, pushes, changes
+Git settings or alters global sources. See
+[project-skill-sync.md](project-skill-sync.md) for ownership, cloud delivery and
+local duplicate limitations.
+
 ## Distribution
 
 Public downloads are a signed, notarized disk image. Updates after that first
