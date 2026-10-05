@@ -9,6 +9,10 @@ Metagent has an opt-in performance lane for the core work behind an app refresh:
   already-loaded-inventory measurements (the app uses the latter);
 - the actual project-analysis inventory/Doctor phase for one 192-skill project,
   sharing one fresh inventory rather than scanning it again for Doctor;
+- single-skill detail in a 192-bundle project, with complete output equality
+  against ordinary inventory and statistics limited to the selected bundle;
+- metadata-only project activity for 12/12, 12/120 and 120/120 requested/available
+  session directories, including the all-requested control;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
   metadata-only Overview counts with identical group eligibility, and full
   Overview health aggregation, with discovery excluded from the measured work;
@@ -78,6 +82,13 @@ read the user's portfolio, session history, network, or credentials. Fixture
 creation is outside the measured blocks except for the SQLite database creation
 that is part of a cold usage backfill.
 
+For standalone before/after probes, build each pinned package snapshot into a
+fresh scratch directory before exporting its Core archive and matching module.
+Retain source manifests, build logs, compiler arguments and artifact hashes;
+a current worktree commit and an archive hash do not prove which source was
+compiled. Use matching compiler, build backend and optimization flags, and
+compare complete outputs outside the measured interval.
+
 Inventory gathers script references while reading bundle text for statistics,
 avoiding a second source-directory traversal and text read. The standalone script
 inspection command still gathers its own references. Both paths keep the 1 MiB
@@ -99,6 +110,18 @@ Malformed or root/section-mismatched cursors are rejected after resolving the
 root, before any section reads. Item bounds are checked against the fresh
 section. This skips unrelated work without caching inventory, configuration,
 or usage across requests; page ordering, scope, and cursor format are unchanged.
+
+Single-skill inspection retains complete representation discovery, ordering,
+same-name canonical identities and manager evidence, while computing full bundle
+statistics only for the selected canonical directory. The ordinary inventory
+scanner still computes every bundle. Known ownership-signature reads remain;
+this is not a promise of zero unrelated content reads. Later details reread
+contents, ownership and projection targets without a cross-request cache.
+
+Project activity still checks the top-level session corpus for availability, but
+opens session-file metadata only for requested standardized roots. Encoded-name
+collisions retain all matching roots. Hidden/nested entry rules, dormancy cutoff
+and fresh timestamps are unchanged; transcript contents are never read.
 
 The overlap workload measures document reads, normalization, and pairwise
 similarity together. A separate deterministic test requires one canonical-path

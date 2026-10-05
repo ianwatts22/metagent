@@ -151,7 +151,7 @@ struct ProjectActivityTests {
         #expect(scan().lastActiveByRoot.isEmpty)
     }
 
-    @Test("session directory symlinks preserve the existing unavailable-activity result")
+    @Test("session directory symlinks preserve Foundation metadata behavior")
     func preservesSessionDirectorySymlinks() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture) }
@@ -165,13 +165,28 @@ struct ProjectActivityTests {
             at: sessions.appendingPathComponent(sessionDirectoryName(for: root)),
             withDestinationURL: targetSession.deletingLastPathComponent()
         )
-        // Foundation's metadata URLs for this linked-directory fixture do not
-        // supply session dates. Narrowing the scan must not change that result.
-        let expected = ProjectActivityIndex(lastActiveByRoot: [:], isAvailable: true)
-        #expect(MetagentCore.scanProjectActivity(roots: [root], sessionsDirectory: sessions) == expected)
+        // Some Foundation versions do not supply dates for these linked URLs.
+        // Preserve the platform's metadata-only result, not an assumed ability
+        // to traverse links or a platform-specific missing-date outcome.
+        func expectedIndex() -> ProjectActivityIndex {
+            let directory = sessions.appendingPathComponent(sessionDirectoryName(for: root))
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            let newest = entries.filter { $0.pathExtension == "jsonl" }
+                .compactMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+                .max()
+            return ProjectActivityIndex(
+                lastActiveByRoot: newest.map { [root: $0] } ?? [:],
+                isAvailable: true
+            )
+        }
+        #expect(MetagentCore.scanProjectActivity(roots: [root], sessionsDirectory: sessions) == expectedIndex())
         let changed = date.addingTimeInterval(100)
         try FileManager.default.setAttributes([.modificationDate: changed], ofItemAtPath: targetSession.path)
-        #expect(MetagentCore.scanProjectActivity(roots: [root], sessionsDirectory: sessions) == expected)
+        #expect(MetagentCore.scanProjectActivity(roots: [root], sessionsDirectory: sessions) == expectedIndex())
     }
 
     @Test("dormancy keeps its exact cutoff and standardized-root lookup")
