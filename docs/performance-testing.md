@@ -3,15 +3,29 @@
 Metagent has an opt-in performance lane for the core work behind an app refresh:
 
 - skill discovery across 24 projects and 192 skill bundles;
-- Doctor analysis of the same portfolio;
+- inventory statistics for 48 ASCII or Unicode/reference/script bundles represented in
+  `.agents`, Codex, and Claude, including per-skill and whole-container links;
+- Doctor analysis of the same portfolio, with separate full-scan and
+  already-loaded-inventory measurements (the app uses the latter);
+- the actual project-analysis inventory/Doctor phase for one 192-skill project,
+  sharing one fresh inventory rather than scanning it again for Doctor;
+- single-skill detail in a 192-bundle project, with complete output equality
+  against ordinary inventory and statistics limited to the selected bundle;
+- metadata-only project activity for 12/12, 12/120 and 120/120 requested/available
+  session directories, including the all-requested control;
 - duplicate-skill comparison across eight same-name groups of 24 skills each,
-  with discovery excluded from the measured work;
+  metadata-only Overview counts with identical group eligibility, and full
+  Overview health aggregation, with discovery excluded from the measured work;
 - dual configured-root and pruned shallow-home inventory discovery;
 - codebase measurement across 251 tracked files and 10,000 source/test lines;
 - cold usage backfill across 10 session files and 300 observed skill reads;
 - usage parsing across 20,000 irrelevant token/message records surrounding 40
   observed skill reads;
+- megabyte-scale Unicode outputs for successful, mismatched, and partial skill
+  reads, including the confirmation matcher rather than only irrelevant records;
 - convergence of a 36-session backlog through three bounded refresh slices.
+- a cached 15,456-session refresh after appending to one known session, with
+  appending and native event-delivery delay outside the measured block.
 
 Run it from the repository root:
 
@@ -68,11 +82,62 @@ read the user's portfolio, session history, network, or credentials. Fixture
 creation is outside the measured blocks except for the SQLite database creation
 that is part of a cold usage backfill.
 
+For standalone before/after probes, build each pinned package snapshot into a
+fresh scratch directory before exporting its Core archive and matching module.
+Retain source manifests, build logs, compiler arguments and artifact hashes;
+a current worktree commit and an archive hash do not prove which source was
+compiled. Use matching compiler, build backend and optimization flags, and
+compare complete outputs outside the measured interval.
+
+Inventory gathers script references while reading bundle text for statistics,
+avoiding a second source-directory traversal and text read. The standalone script
+inspection command still gathers its own references. Both paths keep the 1 MiB
+reference-source byte limit, ignore symlink sources and pruned directories, and
+accept runtime-only source files without adding them to text statistics. The
+reference index lasts for one bundle scan; later refreshes reread same-size edits
+and symlink changes without modification-time or persistent-cache assumptions.
+
+Project analysis likewise passes its already-read project inventory to Doctor.
+The inventory and counts agree within a request; later requests still rescan
+same-size edits and changed projections. Its phase benchmark excludes MCP
+inspection, instruction discovery, usage lookup, and CLI/MCP transport, so a
+phase improvement is not a whole-request or UI latency claim.
+
+Project detail pages load only their requested section: instructions enumerate
+instruction files; skills and Doctor scan project skills; MCP reads the current
+MCP inventory; usage scans canonical project skills and reads current usage.
+Malformed or root/section-mismatched cursors are rejected after resolving the
+root, before any section reads. Item bounds are checked against the fresh
+section. This skips unrelated work without caching inventory, configuration,
+or usage across requests; page ordering, scope, and cursor format are unchanged.
+
+Single-skill inspection retains complete representation discovery, ordering,
+same-name canonical identities and manager evidence, while computing full bundle
+statistics only for the selected canonical directory. The ordinary inventory
+scanner still computes every bundle. Known ownership-signature reads remain;
+this is not a promise of zero unrelated content reads. Later details reread
+contents, ownership and projection targets without a cross-request cache.
+
+Project activity still checks the top-level session corpus for availability, but
+opens session-file metadata only for requested standardized roots. Encoded-name
+collisions retain all matching roots. Hidden/nested entry rules, dormancy cutoff
+and fresh timestamps are unchanged; transcript contents are never read.
+
 The overlap workload measures document reads, normalization, and pairwise
 similarity together. A separate deterministic test requires one canonical-path
 resolution per non-projection input, preventing filesystem work from growing
 with the number of pairs. Documents are reread on each invocation; same-path
 edits, missing files that appear, and retargeted symlinks must remain fresh.
+Within one duplicate-name group, identical decoded UTF-8 text shares only its
+normalization and vocabulary. This state is discarded at the end of the group;
+additional raw-text keys are capped at 1 MiB, with oversized/distinct inputs
+falling back to ordinary preparation. Bundle fingerprints are still computed
+independently for every path. A narrow
+`lstat` snapshot supplies each fingerprint entry's type, executable bits, and
+regular-file size without fetching unused extended attributes. The serialized
+fingerprint format and read/entry/depth limits are unchanged. Compatibility
+tests compare the pre-optimization format across nested, hidden, binary,
+hard-linked, and executable evidence, and retain fail-closed link/FIFO handling.
 
 The dual-root discovery benchmark intentionally stops at deterministic core
 filesystem work. It does not claim to cover the external Codex plugin process,
@@ -83,6 +148,21 @@ The performance lane also runs `skillTablePresentationPerformanceProxy`
 explicitly. That deterministic model-layer proxy compares the old repeated
 filter/sort row pipeline with the shared one-pass pipeline. It is not a SwiftUI
 render benchmark and is not evidence of input-to-present latency.
+The attention fingerprint proxy compares the old per-byte formatting with the
+current encoder and requires identical results, preserving saved dismissals.
+Neither proxy measures the complete SwiftUI interaction or settled idle cost.
+
+Projects row preparation also has ordinary and projection-heavy native fixtures,
+including real directory aliases and Claude-link evidence. These component
+metrics remain separate from installed-app navigation. The immediate-subprocess
+rail runs 40 short commands to catch fixed completion delays; unavailable kernel
+process events skip only this timing check, not subprocess correctness coverage.
+
+For local publishing stage diagnostics, enable
+`METAGENT_RUN_SUBPROCESS_PERFORMANCE_TESTS=1` and select
+`SkillPublicationGitTests.testPerformanceLocalPublicationStages`. It measures
+fixture setup, inspection, preview, and commit/push separately using a disposable
+local bare remote. It is not a GitHub, authentication, or network-latency test.
 
 The native interaction probe services the main run loop while waiting for app
 termination, launch completion, and exact-PID registration. AppKit's
@@ -102,28 +182,105 @@ An explicit refresh reads at most 8 MiB or 12 session files before returning.
 If history remains, the app continues with background maintenance instead of
 waiting for another launch. The first normal-power continuation reads at most
 8 MiB or 12 files after 45 seconds. Once that continuation has built the reusable
-source catalog, catch-up consolidates three slices into one 24 MiB or 36-file
-wake every 135 seconds. The byte and file rates are unchanged, but two of every
-three repeated database, snapshot, cache, and UI update cycles disappear. Low
-Power Mode or serious thermal pressure uses 2 MiB or 4 files every 180 seconds.
+source catalog, external-power catch-up uses up to 32 MiB or 48 files every 12
+seconds, with a two-second cooperative parsing budget. The deadline is checked
+between complete records; discovery, persistence, aggregation, and one indivisible
+record can extend total refresh time. This is a 15× scheduled byte-rate ceiling
+versus the previous 24 MiB/135-second policy, not a guaranteed live throughput.
+Battery, unknown power source, or fair thermal pressure retains that previous
+24 MiB/36-file/135-second policy. Low Power Mode or serious thermal pressure uses
+2 MiB or 4 files every 180 seconds. Power and thermal state are checked again at
+timer execution, so a queued fast slice is not carried onto battery power.
 
 Production and dev builds share one SQLite lease. The normal-power lease remains
-45 seconds even during the 135-second catch-up cadence, so fewer timer wakeups do
-not lengthen cross-process exclusion. The constrained lease is 180 seconds. Only
+45 seconds during battery catch-up, and 12 seconds for external-power catch-up.
+The constrained lease is 180 seconds. Cadence is measured start-to-start, matching
+the monotonic scheduler rather than adding each slice's work time to its delay. Only
 one process performs a maintenance slice in each lease interval; an explicit
 user refresh is never deferred. Deadlines use monotonic uptime and advance from
-the prior deadline so slice duration does not reduce sustained throughput.
+the actual slice start, not completion, so work time and timer jitter do not
+silently shorten the next lease interval or reduce sustained throughput. Missed
+deadlines are rebased after sleep rather than replayed in a busy retry loop.
 Maintenance timers allow roughly one-ninth of their interval as tolerance, up
 to 30 seconds, so macOS can coalesce wakeups.
-Within each background slice, normal maintenance yields for 25 milliseconds
+Within each battery or first-continuation slice, maintenance yields for 25 milliseconds
 after each 512 KiB and constrained maintenance yields for 50 milliseconds after
 each 256 KiB. This adds cooperative pacing between parsed records without
 throttling explicit user refreshes or reducing the amount of history each
-maintenance wake processes.
-This keeps the current index moving toward complete coverage without restoring
-the old sustained full-core parser loop. The app still prioritizes the most
-recent session files, and an explicit refresh remains immediate; the slower
-cadence primarily affects convergence of old retained history.
+maintenance wake processes. Healthy AC catch-up uses its two-second parsing
+budget, byte/file caps, background priority, and between-slice cadence instead
+of intra-slice sleeps: macOS can stretch short background sleeps far beyond
+their requested duration, spending the parsing budget without doing work.
+The whole discovery/parse/persistence operation also has one process-shared
+lock, preventing a slower app/helper refresh from overwriting a newer cursor.
+Background work yields on contention; explicit refreshes wait off the UI thread.
+Each locked refresh reuses one SQLite connection across its file slices, avoiding
+repeated page-cache loss and WAL-watcher teardown. The connection is closed before
+the refresh lock is released; subsequent launch-cache generation checks reopen
+the database path so an old inode cannot hide a database replacement.
+Delayed creation notices for an already-owned state directory are ignored only
+while its device, inode, and birth time still match; real replacement, removal,
+rename, and cloned-directory events still invalidate the catalog.
+The watcher synchronously flushes daemon-buffered startup events before capturing
+its event watermark, then starts discovery. Changes after that watermark still
+invalidate; ancestor identity changes during startup are never cleared by arming.
+For a reusable maintenance catalog, metadata-only events on up to 256 known
+JSONL files refresh those entries without another recursive walk. Reuse flushes
+and drains the native stream before consuming changed paths. Unknown files,
+creation, removal, rename, directory or symlink changes, event loss, and queue
+overflow require full discovery. Events arriving during metadata reads remain
+pending for the next refresh. Canonical event paths match fixed macOS aliases
+without changing stored checkpoint paths. Explicit foreground refreshes still
+force discovery; the 15-minute catalog lifetime remains unchanged.
+Changed files with multiple hard links also require discovery: the native event
+may name only one alias, but all aliases must refresh their rewrite fingerprints.
+All writers must use the updated implementation for this protection to apply.
+No parser-generation bump or history reset is needed for this policy change.
+Cached discovery metadata older than a saved cursor is verified on disk before
+deciding a source was truncated. This prevents a growing rollout from being
+replayed while preserving real truncation and replacement detection.
+The app still prioritizes the most recent session files, stops maintenance when
+complete, and keeps explicit refreshes unthrottled. The release-mode bounded AC
+slice fixture reports actual advanced bytes, wall time, CPU, and peak memory
+separately from the scheduled rate; running-app measurements remain the
+authority for live throughput and foreground responsiveness.
+
+Inventory reloads collect plugin status and enabled plugin skills from one Codex
+query. A query failure is shared by both consumers, while Claude inventory
+remains available. This removes a duplicate subprocess, not the need to rescan
+local skill contents or perform explicitly enabled plugin updates.
+
+Within one synchronous project scan, representations of the same canonical
+bundle share one content/statistics read. That read uses the resolved directory:
+URL-based enumeration can reject a per-skill symlink at its root and otherwise
+silently omit text statistics and script-reference evidence. Display names,
+ownership, projection paths, and icon paths remain representation-specific.
+Icon references are resolved against each displayed path, not copied from the
+first representation. Independent same-named bundles do not share statistics.
+The cache is discarded when the scan returns; later scans reread same-size edits
+with unchanged modification dates, script hashes, and retargeted projections.
+Deterministic tests require one bundle read per canonical identity and retain
+the existing inner-symlink containment rules. This is a core inventory benchmark,
+not a full Reload, input-to-present, settled-idle, or energy measurement.
+Content character/word counters use one pass without building a discarded word
+array. The reference tests retain Swift `Character` grapheme and whitespace
+semantics, including combining marks, emoji, CRLF, and Unicode separators.
+ASCII contents use a byte-counting fast path that counts CRLF as one Swift
+grapheme. Encountering any non-ASCII byte restarts with the complete Swift
+`Character` rules, including a combining mark following a long ASCII prefix.
+Tests compare every ASCII byte, whitespace and CRLF boundaries, and Unicode
+fallbacks against the original counting expressions. Both ASCII and Unicode
+full-inventory fixtures include filesystem reads and script reference evidence.
+
+Usage summaries aggregate counts before selecting the most recent identity,
+instead of ranking and sorting display metadata for every historical event.
+The latest timestamp wins, with the highest rowid breaking timestamp ties.
+Collision-safe summary IDs still consider every historical skill identity;
+plugin identities remain separate even when their latest path matches another
+skill. The same query serves the retained previous parser generation during
+rebuild. Tests cover out-of-order insertion, timestamp ties, historical name
+collisions, empty paths, plugin version paths, all usage counters, and ordering.
+No stored events, schema, parser generation, or launch-cache format changes.
 
 These tests return immediately unless `METAGENT_RUN_PERFORMANCE_TESTS=1`, which
 the script sets. Normal `scripts/verify.sh --fast` runs still compile the tests
@@ -143,6 +300,12 @@ the same test order rather than comparing one isolated test with a suite run.
 
 The XCTest lane measures bounded core operations. Use the process sampler for
 idle and whole-app behavior after installing and starting the selected channel:
+
+Usage throughput is the net change in the shared database's processed-byte
+counter. The summary separately reports forward bytes, regressed bytes, and
+regression sample count; a replay/reset loss is never silently discarded. This
+counter includes every writer and changing source membership, so compare source
+checkpoints as well when attributing a regression to one app.
 
 ```bash
 scripts/measure-app-efficiency.sh \
@@ -259,26 +422,39 @@ The interaction harness drives the installed app through macOS Accessibility:
 
 ```bash
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario tabs \
   --iterations 5 \
   --output /private/tmp/metagent-tabs-$(date +%Y%m%d-%H%M%S)
 
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario common-interactions \
   --iterations 5 \
   --output /private/tmp/metagent-common-interactions-$(date +%Y%m%d-%H%M%S)
 
 scripts/measure-app-interactions.sh \
-  --channel dev \
+  --channel dev --foreground \
   --scenario refresh \
   --iterations 5 \
   --output /private/tmp/metagent-refresh-$(date +%Y%m%d-%H%M%S)
 ```
 
-The selected app must be running with its main window open. The Codex or
-terminal host needs macOS Accessibility permission. Navigation, search, and
+The selected app must be running with its main window open. Non-launch scenarios
+leave it in the background by default. Use `--foreground` for a controlled live
+UI run: it activates the exact existing process before measured input, without
+restarting it. The raw artifact records whether activation was requested.
+Background-app menu behavior is not a valid foreground responsiveness baseline;
+an unavailable menu fails the run instead of producing partial acceptance results.
+The Codex or terminal host needs macOS Accessibility permission, and the Mac's console
+session must be logged in and unlocked. The native probe checks session state
+before any app lifecycle or Accessibility work. It rejects a known locked or
+inactive session instead of attempting live UI measurement. The optional system
+lock field is not a public API contract:
+absent/unknown fields do not block an otherwise valid session. Independently,
+main-window lookup requires a distinct `AXWindow` with the exact expected title;
+an application proxy or another role never qualifies. No permission, lock, or
+power setting is changed to prepare a measurement. Navigation, search, and
 filter controls use exact Accessibility identifiers; the harness never falls
 back to inferred geometry or fixed screen coordinates. A cached native Swift
 probe talks to `AXUIElement` directly and applies
@@ -315,12 +491,21 @@ slow filter. If control and content become ready together, the phases alone
 cannot distinguish menu dismissal from work that publishes both states together.
 Use a stack sample or app-side timing before attributing the delay. If content
 trails the control, investigate the app's filter/presentation work and probe
-overhead. Both exact control lookup and content-ready discovery prune inventory
-content, tables, and outlines; asking for lazy cell children can itself create
-offscreen hosting views and distort latency and retained-memory measurements.
+overhead. Exact control, menu-item, Reload, and content-ready discovery all prune
+inventory content, tables, and outlines; asking for lazy cell children can itself
+create offscreen hosting views and distort latency and retained-memory measurements.
+Native menu and menu-bar nodes are matched by role, title, and action without
+requiring AXIdentifier, which some native menu-bar items reject.
+Each menu choice has 500 ms of unmeasured preparation before reopening the menu,
+with the control reacquired afterward. This models normal think time and avoids
+pressing a replacement control during native menu dismissal. The raw artifact
+records this protocol; the measured interval still starts at option AXPress.
 
 Reload is stronger: a valid sample must observe the Reload control leave its
-enabled ready state and then return. A refresh that finishes too quickly for
+initially enabled ready state and then return. Initially disabled or unknown
+controls are rejected before pressing, so already-running work cannot be
+misreported as a manual Reload. An unknown AXEnabled attribute alone does not
+prove a work transition. A refresh that finishes too quickly for
 that transition to be observed fails the scenario rather than inventing a
 completion duration.
 
@@ -387,6 +572,11 @@ The budget checker rejects before/after memory artifacts from different
 process launches, executables, builds, channels, or OS versions. It compares
 median `malloc.allocated_mib`, which is the live heap; it does not substitute
 RSS or process-lifetime peak.
+
+Efficiency CPU budgets accept the current schema v3 sampler and retained schema
+v2 captures. Their CPU fields and monotonic interval contract are unchanged;
+v3 adds net-change and regression reporting for shared usage progress. Unknown
+schema versions still fail validation rather than silently assuming compatibility.
 
 Combine whatever artifacts a scenario produced:
 

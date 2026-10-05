@@ -173,7 +173,7 @@ public extension MetagentCore {
             let days = Calendar.current.dateComponents([.day], from: updatedDate, to: now).day ?? 0
             return max(0, days) / 7
         }
-        let overlaps = detectSkillOverlaps(scopedSkills)
+        let duplicateGroupCount = countSkillOverlapGroups(scopedSkills)
 
         return SkillSystemHealth(
             skillCount: scopedSkills.count,
@@ -198,7 +198,7 @@ public extension MetagentCore {
                 p75Weeks: nearestRank(knownAges, percentile: 0.75),
                 unknownCount: scopedSkills.count - knownAges.count
             ),
-            duplicateGroupCount: overlaps.count
+            duplicateGroupCount: duplicateGroupCount
         )
     }
 }

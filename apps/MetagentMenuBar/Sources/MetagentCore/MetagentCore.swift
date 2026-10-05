@@ -125,7 +125,12 @@ public enum MetagentCore {
         return try scanSkills(options: options, config: config)
     }
 
-    static func scanSkills(options: SkillScanOptions, config: MetagentConfig, home: URL = homeURL()) throws -> SkillScanReport {
+    static func scanSkills(
+        options: SkillScanOptions,
+        config: MetagentConfig,
+        home: URL = homeURL(),
+        readStats: @escaping (URL) -> SkillStats = skillStats
+    ) throws -> SkillScanReport {
         let rootPaths = options.roots.isEmpty ? config.roots : options.roots
         let maxDepth = options.maxDepth ?? config.maxDepth
         let configuredIgnores = options.respectConfiguredIgnores ? config.ignoreProjects : []
@@ -151,7 +156,7 @@ public enum MetagentCore {
         let projects = try projectRoots
             .sorted()
             .filter { !options.roots.isEmpty || !isInsideGitLinkedWorktree(URL(fileURLWithPath: $0)) }
-            .map { try readProjectSkills(root: URL(fileURLWithPath: $0)) }
+            .map { try readProjectSkills(root: URL(fileURLWithPath: $0), readStats: readStats) }
             .filter { hasProjectInventorySurface($0)
                 || hasProjectMCPConfiguration(URL(fileURLWithPath: $0.root))
                 || configuredProjects.contains($0.root) }
@@ -216,8 +221,12 @@ public enum MetagentCore {
     }
 
     public static func scanCodexPlugins() throws -> SkillScanReport {
-        let plugins = try installedCodexPlugins()
-        let projects = plugins.compactMap(readCodexPluginSkills).sorted { $0.root < $1.root }
+        codexPluginSkillReport(try allCodexPlugins())
+    }
+
+    static func codexPluginSkillReport(_ plugins: [CodexPlugin]) -> SkillScanReport {
+        let projects = plugins.filter { $0.installed && $0.enabled }
+            .compactMap(readCodexPluginSkills).sorted { $0.root < $1.root }
         return SkillScanReport(projects: projects)
     }
 

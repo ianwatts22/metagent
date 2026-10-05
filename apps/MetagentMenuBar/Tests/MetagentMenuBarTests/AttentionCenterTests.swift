@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MetagentCore
 import Testing
@@ -61,6 +62,31 @@ import Testing
 @Test func attentionFingerprintDoesNotConfuseConcatenatedFields() {
     #expect(AttentionItem.fingerprint(["ab", "c"]) != AttentionItem.fingerprint(["a", "bc"]))
     #expect(AttentionItem.fingerprint(["same"]) == AttentionItem.fingerprint(["same"]))
+}
+
+@Test func attentionFingerprintsRemainCompatibleWithSavedDismissals() {
+    for fields in [[], [""], ["ab", "c"], ["a", "bc"], ["雪", "🙂", "quote\"", "line\nbreak"]] {
+        #expect(AttentionItem.fingerprint(fields) == legacyAttentionFingerprint(fields))
+    }
+}
+
+@Test func attentionFingerprintPerformanceProxy() {
+    guard ProcessInfo.processInfo.environment["METAGENT_PERFORMANCE_TESTS"] == "1" else { return }
+    let fields = (0..<1_000).map { ["doctor:\($0)", "Repair the projection", "warning", "雪🙂"] }
+    let before = ProcessInfo.processInfo.systemUptime
+    let legacy = fields.map(legacyAttentionFingerprint)
+    let legacySeconds = ProcessInfo.processInfo.systemUptime - before
+    let after = ProcessInfo.processInfo.systemUptime
+    let current = fields.map(AttentionItem.fingerprint)
+    let currentSeconds = ProcessInfo.processInfo.systemUptime - after
+    #expect(current == legacy)
+    #expect(currentSeconds < legacySeconds * 0.5)
+    print("Attention fingerprint proxy: legacy=\(legacySeconds * 1_000)ms current=\(currentSeconds * 1_000)ms")
+}
+
+private func legacyAttentionFingerprint(_ fields: [String]) -> String {
+    let data = (try? JSONEncoder().encode(fields)) ?? Data()
+    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
 @MainActor

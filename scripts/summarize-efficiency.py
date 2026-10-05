@@ -173,7 +173,7 @@ def summarize(
     ) / 100
     high_cpu_bursts = active_bursts(samples, high_cpu_threshold)
     result: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "channel": channel,
         "pid": pid,
         "samples": len(samples),
@@ -236,24 +236,36 @@ def summarize(
             ),
         },
     }
-    sampled_usage_bytes = sum(
-        sample.processed_usage_delta_bytes or 0 for sample in samples
-    )
-    if processed_usage_bytes is None and any(
-        sample.processed_usage_delta_bytes is not None for sample in samples
-    ):
-        processed_usage_bytes = sampled_usage_bytes
+    # Prefer absolute counters so older captures that omitted negative deltas
+    # still reveal replay/reset losses. Keep the previous valid counter across
+    # temporarily unavailable database samples.
+    usage_deltas: list[int | None] = []
+    previous_usage_bytes: int | None = None
+    for sample in samples:
+        delta = sample.processed_usage_delta_bytes
+        if sample.processed_usage_bytes is not None:
+            if previous_usage_bytes is not None:
+                delta = sample.processed_usage_bytes - previous_usage_bytes
+            previous_usage_bytes = sample.processed_usage_bytes
+        usage_deltas.append(delta)
+    observed_deltas = [delta for delta in usage_deltas if delta is not None]
+    if processed_usage_bytes is None and observed_deltas:
+        processed_usage_bytes = sum(observed_deltas)
     if processed_usage_bytes is not None:
         processed_mib = processed_usage_bytes / 1_048_576
         progress: dict[str, object] = {
             "scope": "shared_database_global",
             "global_processed_usage_mib": processed_mib,
             "global_processed_usage_mib_per_second": processed_mib / total_seconds,
+            "processed_counter_semantics": "net_change",
+            "global_forward_usage_mib": sum(max(delta, 0) for delta in observed_deltas) / 1_048_576,
+            "global_regressed_usage_mib": -sum(min(delta, 0) for delta in observed_deltas) / 1_048_576,
+            "global_regression_sample_count": sum(delta < 0 for delta in observed_deltas),
         }
         progress_samples = [
-            (sample, interval)
-            for sample, interval in zip(samples, intervals)
-            if (sample.processed_usage_delta_bytes or 0) > 0
+            (delta, interval)
+            for delta, interval in zip(usage_deltas, intervals)
+            if (delta or 0) > 0
         ]
         progress["global_progress_sample_count"] = len(progress_samples)
         progress_seconds = sum(interval for _, interval in progress_samples)
@@ -262,7 +274,7 @@ def summarize(
             progress_seconds / total_seconds * 100
         )
         progress["largest_global_progress_interval_mib"] = max(
-            (sample.processed_usage_delta_bytes or 0) for sample in samples
+            max(delta or 0, 0) for delta in usage_deltas
         ) / 1_048_576
         result["global_usage_progress"] = progress
     return result
@@ -342,6 +354,10 @@ def text_summary(result: dict[str, object]) -> str:
             "global_processed_usage_mib_per_second: "
             f"{progress['global_processed_usage_mib_per_second']:.4f}"
         )
+        lines.append("global_processed_usage_counter_semantics: net_change")
+        lines.append(f"global_forward_usage_mib: {progress['global_forward_usage_mib']:.2f}")
+        lines.append(f"global_regressed_usage_mib: {progress['global_regressed_usage_mib']:.2f}")
+        lines.append(f"global_regression_sample_count: {progress['global_regression_sample_count']}")
         lines.append(
             f"global_usage_progress_sample_count: {progress['global_progress_sample_count']}"
         )

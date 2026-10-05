@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 public enum SkillOverlapKind: String, Codable, Equatable, Sendable {
     case pluginReplacement = "plugin_replacement"
@@ -35,25 +36,30 @@ extension MetagentCore {
     // The resolver seam lets tests guard this independently of machine speed.
     static func detectSkillOverlaps(
         _ skills: [SkillInventoryItem],
-        canonicalize: (String) -> String
+        canonicalize: (String) -> String,
+        prepareDocument: (String) -> ComparableSkillDocument = ComparableSkillDocument.init
     ) -> [SkillOverlapGroup] {
-        let canonicalSkills = Dictionary(
-            skills
-                .filter { $0.representation != "projection" }
-                .map { (canonicalize($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
-            uniquingKeysWith: preferredOverlapItem
-        ).map { CanonicalOverlapSkill(path: $0.key, item: $0.value) }
-
-        return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.item.name) })
-            .values
-            .filter { $0.count > 1 }
-            .compactMap(makeOverlapGroup)
+        eligibleOverlapGroups(skills, canonicalize: canonicalize)
+            .compactMap { makeOverlapGroup($0, prepareDocument: prepareDocument) }
             .sorted {
                 if $0.kind != $1.kind {
                     return overlapPriority($0.kind) < overlapPriority($1.kind)
                 }
                 return $0.skillName.localizedCaseInsensitiveCompare($1.skillName) == .orderedAscending
             }
+    }
+
+    // Overview needs only the group count. Content, fingerprints, and pairwise
+    // similarity classify an eligible group but never change whether it exists.
+    static func countSkillOverlapGroups(_ skills: [SkillInventoryItem]) -> Int {
+        countSkillOverlapGroups(skills, canonicalize: canonicalExistingPath)
+    }
+
+    static func countSkillOverlapGroups(
+        _ skills: [SkillInventoryItem],
+        canonicalize: (String) -> String
+    ) -> Int {
+        eligibleOverlapGroups(skills, canonicalize: canonicalize).count
     }
 }
 
@@ -62,13 +68,76 @@ private struct CanonicalOverlapSkill {
     let item: SkillInventoryItem
 }
 
-private struct ComparableSkillDocument {
-    let exactText: String
-    let comparableText: String
-    let words: Set<String>
+private func eligibleOverlapGroups(
+    _ skills: [SkillInventoryItem],
+    canonicalize: (String) -> String
+) -> [[CanonicalOverlapSkill]] {
+    let canonicalSkills = Dictionary(
+        skills
+            .filter { $0.representation != "projection" }
+            .map { (canonicalize($0.canonicalPath.isEmpty ? $0.path : $0.canonicalPath), $0) },
+        uniquingKeysWith: preferredOverlapItem
+    ).map { CanonicalOverlapSkill(path: $0.key, item: $0.value) }
+
+    return Dictionary(grouping: canonicalSkills, by: { normalizedSkillName($0.item.name) })
+        .values
+        .filter { group in
+            guard group.count > 1 else { return false }
+            // Managed versions of one plugin belong to its plugin manager.
+            // Distinct authorities, standalone copies, and cross-system groups
+            // remain actionable in both detailed analysis and Overview counts.
+            let identities = group.compactMap { managedPluginIdentity(for: $0.item) }
+            return identities.count != group.count || Set(identities).count != 1
+        }
 }
 
-private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> SkillOverlapGroup? {
+struct ComparableSkillDocument {
+    let comparableText: String
+    let words: Set<String>
+
+    init(text: String) {
+        let exactText = text
+            .replacingOccurrences(
+                of: #"\.(agents|claude|codex|cursor|github|gemini|kiro|opencode|pi|qoder|rovodev|trae|trae-cn)/skills/"#,
+                with: ".provider/skills/",
+                options: .regularExpression
+            )
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        comparableText = exactText.lowercased()
+        words = Set(comparableText.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+}
+
+private struct OverlapDocumentPreparationCache {
+    private let maximumKeyBytes = 1024 * 1024
+    private var remainingKeyBytes = 1024 * 1024
+    private var documents: [Data: ComparableSkillDocument] = [:]
+
+    mutating func document(
+        for text: String,
+        prepare: (String) -> ComparableSkillDocument
+    ) -> ComparableSkillDocument {
+        // Limit additional raw-text storage, not what content may be compared.
+        // Large/distinct documents retain the ordinary uncached behavior.
+        let byteCount = text.utf8.count
+        guard byteCount <= maximumKeyBytes else { return prepare(text) }
+        let key = Data(text.utf8)
+        if let document = documents[key] { return document }
+        let document = prepare(text)
+        if byteCount <= remainingKeyBytes {
+            documents[key] = document
+            remainingKeyBytes -= byteCount
+        }
+        return document
+    }
+}
+
+private func makeOverlapGroup(
+    _ unorderedSkills: [CanonicalOverlapSkill],
+    prepareDocument: (String) -> ComparableSkillDocument
+) -> SkillOverlapGroup? {
     let skills = unorderedSkills.sorted {
         if overlapMemberPriority($0.item) != overlapMemberPriority($1.item) {
             return overlapMemberPriority($0.item) < overlapMemberPriority($1.item)
@@ -77,20 +146,13 @@ private func makeOverlapGroup(_ unorderedSkills: [CanonicalOverlapSkill]) -> Ski
     }
     guard let first = skills.first else { return nil }
 
-    // Two versions of the same skill can coexist inside one plugin's managed
-    // cache. The plugin manager owns that lifecycle, so asking a user to choose
-    // and remove one here is both noisy and unsafe. Distinct plugin authorities,
-    // standalone copies, and cross-system groups remain actionable.
-    let managedPluginIdentities = skills.compactMap { managedPluginIdentity(for: $0.item) }
-    if managedPluginIdentities.count == skills.count,
-       Set(managedPluginIdentities).count == 1
-    {
-        return nil
+    // Every path is still read. Only the pure normalization of identical text
+    // is shared within this group; bundle fingerprints remain path-specific.
+    // Nothing survives this call, so edits and retargeted links stay fresh.
+    var documentsByText = OverlapDocumentPreparationCache()
+    let documents = skills.map {
+        comparableSkillDocument(at: $0.path, prepared: &documentsByText, prepareDocument: prepareDocument)
     }
-
-    // These documents are local to this invocation. A later refresh still
-    // rereads them, including same-path edits and formerly missing files.
-    let documents = skills.map { comparableSkillDocument(at: $0.path) }
     let bundles = skills.map { exactBundleFingerprint(at: $0.path) }
     var allPairSimilarity = 0.0
     var pluginStandaloneSimilarity = 0.0
@@ -177,20 +239,30 @@ private func exactBundleFingerprint(at directoryPath: String) -> String? {
             remainingEntries -= 1
             guard remainingEntries >= 0 else { throw CocoaError(.fileReadTooLarge) }
             let relative = prefix + child.lastPathComponent
-            let attributes = try FileManager.default.attributesOfItem(atPath: child.path)
-            let type = attributes[.type] as? FileAttributeType
-            guard type == .typeDirectory || type == .typeRegular else {
+            // The fingerprint uses only type, execute bits and regular-file
+            // size. Foundation's full attributes also query extended attributes
+            // that do not participate in this format. lstat retains the
+            // no-follow check for unsupported links and special entries.
+            var metadata = stat()
+            guard lstat(child.path, &metadata) == 0 else {
+                let code = errno
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            let type = metadata.st_mode & S_IFMT
+            guard type == S_IFDIR || type == S_IFREG else {
                 throw CocoaError(.fileReadUnsupportedScheme)
             }
             append(Data(relative.utf8))
-            append(Data((type == .typeDirectory ? "directory" : "file").utf8))
-            let executable = ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o111
+            append(Data((type == S_IFDIR ? "directory" : "file").utf8))
+            let executable = Int(metadata.st_mode & 0o111)
             append(Data(String(executable).utf8))
-            if type == .typeDirectory {
+            if type == S_IFDIR {
                 try collect(child, prefix: relative + "/", depth: depth + 1)
             } else {
-                let size = (attributes[.size] as? NSNumber)?.intValue ?? Int.max
-                guard size <= remainingBytes else { throw CocoaError(.fileReadTooLarge) }
+                guard metadata.st_size >= 0, metadata.st_size <= remainingBytes else {
+                    throw CocoaError(.fileReadTooLarge)
+                }
+                let size = Int(metadata.st_size)
                 remainingBytes -= size
                 append(try Data(contentsOf: child))
             }
@@ -202,21 +274,16 @@ private func exactBundleFingerprint(at directoryPath: String) -> String? {
     } catch { return nil }
 }
 
-private func comparableSkillDocument(at directoryPath: String) -> ComparableSkillDocument? {
+private func comparableSkillDocument(
+    at directoryPath: String,
+    prepared: inout OverlapDocumentPreparationCache,
+    prepareDocument: (String) -> ComparableSkillDocument
+) -> ComparableSkillDocument? {
     let path = URL(fileURLWithPath: directoryPath).appendingPathComponent("SKILL.md")
     guard let text = try? String(contentsOf: path, encoding: .utf8) else { return nil }
-    let exactText = text
-        .replacingOccurrences(
-            of: #"\.(agents|claude|codex|cursor|github|gemini|kiro|opencode|pi|qoder|rovodev|trae|trae-cn)/skills/"#,
-            with: ".provider/skills/",
-            options: .regularExpression
-        )
-        .components(separatedBy: .whitespacesAndNewlines)
-        .filter { !$0.isEmpty }
-        .joined(separator: " ")
-    let comparableText = exactText.lowercased()
-    let words = Set(comparableText.split { !$0.isLetter && !$0.isNumber }.map(String.init))
-    return ComparableSkillDocument(exactText: exactText, comparableText: comparableText, words: words)
+    // Exact decoded UTF-8 keys do not collapse canonical-equivalent strings or
+    // normalized vocabulary. Every path is read before this bounded lookup.
+    return prepared.document(for: text, prepare: prepareDocument)
 }
 
 private func documentSimilarity(_ left: ComparableSkillDocument?, _ right: ComparableSkillDocument?) -> Double {

@@ -13,8 +13,30 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
+SUMMARY_SPEC = importlib.util.spec_from_file_location(
+    "summarize_efficiency_for_budgets", SCRIPT.parent / "summarize-efficiency.py"
+)
+assert SUMMARY_SPEC and SUMMARY_SPEC.loader
+SUMMARY_MODULE = importlib.util.module_from_spec(SUMMARY_SPEC)
+sys.modules[SUMMARY_SPEC.name] = SUMMARY_MODULE
+SUMMARY_SPEC.loader.exec_module(SUMMARY_MODULE)
+
 
 class CheckAppPerformanceBudgetsTests(unittest.TestCase):
+    def efficiency(self) -> dict:
+        return SUMMARY_MODULE.summarize(
+            [
+                SUMMARY_MODULE.ProcessSample(1, 0.4, 1024, 2),
+                SUMMARY_MODULE.ProcessSample(2, 0.8, 1024, 2),
+                SUMMARY_MODULE.ProcessSample(3, 0, 1024, 2),
+            ],
+            channel="dev",
+            pid=4242,
+            active_cpu_threshold=2,
+            processed_usage_bytes=None,
+            provenance={"scenario": "settled-idle-overview"},
+        )
+
     def memory(self, allocated_mib: float, scenario: str) -> dict:
         return {
             "schema_version": 2,
@@ -90,6 +112,58 @@ class CheckAppPerformanceBudgetsTests(unittest.TestCase):
         self.assertFalse(informational["evaluations"][0]["evaluated"])
         self.assertEqual(informational["violations"], [])
         self.assertEqual(len(enforced["violations"]), 1)
+
+    def test_accepts_actual_current_efficiency_summary_and_legacy_cpu_shape(self) -> None:
+        summary = self.efficiency()
+        self.assertEqual(summary["schema_version"], 3)
+        for version in (2, 3):
+            with self.subTest(schema_version=version):
+                artifact = {**summary, "schema_version": version}
+                observed, gaps = MODULE.observed_metrics(
+                    interactions=None,
+                    efficiency=artifact,
+                    memory_before=None,
+                    memory_after=None,
+                )
+                self.assertAlmostEqual(observed["settled_overview_average_cpu_percent"], 0.4)
+                self.assertEqual(observed["settled_overview_p95_cpu_percent"], 0.8)
+                self.assertEqual(observed["settled_overview_high_cpu_bursts_over_1s"], 0)
+                self.assertEqual(gaps, [])
+
+    def test_efficiency_compatibility_still_rejects_unknown_versions_and_clocks(self) -> None:
+        summary = self.efficiency()
+        invalid_artifacts = [
+            {**summary, "schema_version": version} for version in (None, 1, 4, "3")
+        ] + [
+            {**summary, "schema_version": version, "measurement": measurement}
+            for version in (2, 3)
+            for measurement in (None, {}, {"sample_interval_clock": "wall"})
+        ]
+        for artifact in invalid_artifacts:
+            with self.subTest(artifact=artifact):
+                with self.assertRaisesRegex(ValueError, "monotonic sample intervals"):
+                    MODULE.observed_metrics(
+                        interactions=None,
+                        efficiency=artifact,
+                        memory_before=None,
+                        memory_after=None,
+                    )
+
+    def test_current_efficiency_summary_still_requires_settled_overview_and_threshold(self) -> None:
+        summary = self.efficiency()
+        invalid_artifacts = [
+            {**summary, "provenance": {"scenario": "active-usage-backfill"}},
+            {**summary, "cpu": {**summary["cpu"], "high_cpu_threshold_percent": 10}},
+        ]
+        for artifact in invalid_artifacts:
+            with self.subTest(artifact=artifact):
+                with self.assertRaises(ValueError):
+                    MODULE.observed_metrics(
+                        interactions=None,
+                        efficiency=artifact,
+                        memory_before=None,
+                        memory_after=None,
+                    )
 
     def test_common_interaction_budget_uses_worst_truthful_ax_ready_p95(self) -> None:
         observed, gaps = MODULE.observed_metrics(

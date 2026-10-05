@@ -47,6 +47,67 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.projects.flatMap(\.skills).count, 192)
     }
 
+    func testPerformanceProjectedSkillInventory() throws {
+        try measureProjectedSkillInventory(
+            referenceLine: "Unicode café 東京 reference text with scripts/demo.py instructions.\n"
+        )
+    }
+
+    func testPerformanceASCIIProjectedSkillInventory() throws {
+        try measureProjectedSkillInventory(
+            referenceLine: "ASCII reference text with scripts/demo.py instructions and CRLF.\r\n"
+        )
+    }
+
+    private func measureProjectedSkillInventory(referenceLine: String) throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-projections")
+        let canonical = root.appendingPathComponent(".agents/skills")
+        let claude = root.appendingPathComponent(".claude/skills")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let reference = String(repeating: referenceLine, count: 128)
+        for index in 0..<48 {
+            let bundle = canonical.appendingPathComponent("skill-\(index)")
+            try writeSkillFixture(at: bundle, name: "skill-\(index)", body: "Run scripts/demo.py.")
+            for directory in ["references", "scripts", "agents"] {
+                try FileManager.default.createDirectory(
+                    at: bundle.appendingPathComponent(directory), withIntermediateDirectories: true
+                )
+            }
+            for document in 0..<6 {
+                try reference.write(
+                    to: bundle.appendingPathComponent("references/guide-\(document).md"),
+                    atomically: true, encoding: .utf8
+                )
+            }
+            try "#!/usr/bin/env python3\nprint('fixture')\n".write(
+                to: bundle.appendingPathComponent("scripts/demo.py"), atomically: true, encoding: .utf8
+            )
+            try "interface:\n  icon_small: ./assets/icon.svg\n".write(
+                to: bundle.appendingPathComponent("agents/openai.yaml"), atomically: true, encoding: .utf8
+            )
+            try FileManager.default.createSymbolicLink(
+                at: claude.appendingPathComponent("skill-\(index)"), withDestinationURL: bundle
+            )
+        }
+        let codex = root.appendingPathComponent(".codex")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: codex.appendingPathComponent("skills"), withDestinationURL: canonical
+        )
+        let expected = try assertLatencyBudget("projected skill inventory", seconds: 4) {
+            try readProjectSkills(root: root)
+        }
+        XCTAssertEqual(expected.validSkills.count, 48)
+        XCTAssertEqual(expected.skills.count, 144)
+        XCTAssertTrue(expected.skills.allSatisfy { $0.scriptInventory?.scripts.count == 1 })
+        var measured: SkillProject?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = try! readProjectSkills(root: root)
+        }
+        XCTAssertEqual(measured, expected)
+    }
+
     func testPerformanceDoctorPortfolioAudit() throws {
         guard runsPerformanceTests else { return }
         let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
@@ -75,6 +136,53 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.failureCount, 0)
     }
 
+    func testPerformanceDoctorPreloadedInventoryAudit() throws {
+        guard runsPerformanceTests else { return }
+        let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
+        let options = SkillScanOptions(
+            roots: [fixture.path], maxDepth: 2, respectConfiguredIgnores: false
+        )
+        let inventory = try MetagentCore.scanSkills(options: options)
+        let expected = try MetagentCore.doctor(options: options)
+        XCTAssertEqual(inventory.projects.count, 24)
+        XCTAssertEqual(expected.canonicalSkillCount, 192)
+        XCTAssertEqual(expected.failureCount, 0)
+        let preflight = assertLatencyBudget("Doctor preloaded inventory audit", seconds: 0.5) {
+            MetagentCore.doctor(projects: inventory.projects)
+        }
+        XCTAssertEqual(preflight, expected)
+        var lastReport: DoctorReport?
+
+        // This is the app's Doctor path: discovery has already completed.
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            lastReport = MetagentCore.doctor(projects: inventory.projects)
+        }
+
+        XCTAssertEqual(lastReport, expected)
+    }
+
+    func testPerformanceProjectAnalysisSkillAudit() throws {
+        guard runsPerformanceTests else { return }
+        let fixture = try makeSkillPortfolio(projectCount: 1, skillsPerProject: 192)
+        let project = fixture.appendingPathComponent("group-0/project-0")
+        let options = SkillScanOptions(
+            roots: [project.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+        let inventory = try MetagentCore.scanSkills(options: options)
+        let doctor = try MetagentCore.doctor(options: options)
+        XCTAssertEqual(doctor.canonicalSkillCount, 192)
+        var measured: (skills: SkillScanReport, doctor: DoctorReport)?
+
+        // This is the actual project-analysis inventory/Doctor phase, not the
+        // full request's MCP, instruction, usage, or transport work.
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = try! MetagentCore.projectSkillAudit(options: options)
+        }
+
+        XCTAssertEqual(measured?.skills, inventory)
+        XCTAssertEqual(measured?.doctor, doctor)
+    }
+
     func testPerformanceSkillOverlapPortfolio() throws {
         guard runsPerformanceTests else { return }
         // Shared skill names across projects exercise the pairwise comparison
@@ -100,6 +208,56 @@ final class MetagentCorePerformanceTests: XCTestCase {
         }
 
         XCTAssertEqual(lastGroups, preflight)
+    }
+
+    func testPerformanceOverviewDuplicateGroupCount() throws {
+        try measureOverviewDuplicateGroupCount(detailed: false)
+    }
+
+    func testPerformanceOverviewDuplicateGroupCountDetailedProxy() throws {
+        try measureOverviewDuplicateGroupCount(detailed: true)
+    }
+
+    private func measureOverviewDuplicateGroupCount(detailed: Bool) throws {
+        guard runsPerformanceTests else { return }
+        let report = try overviewHealthPortfolio()
+        let skills = canonicalHealthSkills(projects: report.projects, scope: .all).map(\.skill)
+        let fullGroups = MetagentCore.detectSkillOverlaps(skills)
+        XCTAssertEqual(skills.count, 192)
+        XCTAssertEqual(fullGroups.count, 8)
+        XCTAssertTrue(fullGroups.allSatisfy { $0.members.count == 24 })
+        XCTAssertEqual(MetagentCore.countSkillOverlapGroups(skills), fullGroups.count)
+        // This compares only the count-producing component of Overview, not
+        // live GUI latency or idle energy. Both use the same discovered fixture.
+        let count: () -> Int = detailed
+            ? { MetagentCore.detectSkillOverlaps(skills).count }
+            : { MetagentCore.countSkillOverlapGroups(skills) }
+        var measuredCount = 0
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measuredCount = count()
+        }
+        XCTAssertEqual(measuredCount, fullGroups.count)
+    }
+
+    func testPerformanceSkillSystemHealthPortfolio() throws {
+        guard runsPerformanceTests else { return }
+        let report = try overviewHealthPortfolio()
+        let now = Date(timeIntervalSince1970: 1_784_851_200)
+        let expected = MetagentCore.skillSystemHealth(projects: report.projects, usage: .empty, now: now)
+        XCTAssertEqual(expected.skillCount, 192)
+        XCTAssertEqual(expected.duplicateGroupCount, 8)
+        var measured: SkillSystemHealth?
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = MetagentCore.skillSystemHealth(projects: report.projects, usage: .empty, now: now)
+        }
+        XCTAssertEqual(measured, expected)
+    }
+
+    private func overviewHealthPortfolio() throws -> SkillScanReport {
+        let fixture = try makeSkillPortfolio(projectCount: 24, skillsPerProject: 8)
+        return try MetagentCore.scanSkills(options: SkillScanOptions(
+            roots: [fixture.path], maxDepth: 2, respectConfiguredIgnores: false
+        ))
     }
 
     func testPerformanceConfiguredAndHomeInventoryDiscovery() throws {
@@ -382,6 +540,57 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport?.hasMore, false)
     }
 
+    func testPerformanceRoutineUsageAppendRefresh() throws {
+        guard runsPerformanceTests else { return }
+        MetagentCore.resetSkillUsageSourceCatalogForTesting()
+        defer { MetagentCore.resetSkillUsageSourceCatalogForTesting() }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-routine-usage")
+        let sessions = root.appendingPathComponent("sessions")
+        let database = root.appendingPathComponent("usage.sqlite").path
+        _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database
+        ))
+        var paths: [String] = []
+        for index in 0..<15_456 {
+            let source = sessions.appendingPathComponent("2026/08/\(index % 28 + 1)/rollout-\(index).jsonl")
+            try write("", to: source)
+            paths.append(source.path)
+        }
+        try seedCompletedUsageSources(paths, database: database)
+        let options = SkillUsageRefreshOptions(
+            sessionRoots: [sessions.path], databasePath: database,
+            reusesSourceCatalog: true
+        )
+        _ = try MetagentCore.refreshSkillUsage(options: options)
+        let activeSource = URL(fileURLWithPath: paths[0])
+        let record = Data((performanceJSONLine(type: "event_msg", payload: [
+            "type": "token_count", "info": ["total_token_usage": ["input_tokens": 1]]
+        ]) + "\n").utf8)
+        let optionsForMeasurement = measureOptions
+        optionsForMeasurement.invocationOptions = [.manuallyStart]
+        var lastReport: SkillUsageRefreshReport?
+        measure(metrics: performanceMetrics, options: optionsForMeasurement) {
+            // Appending and allowing native watcher delivery are preparation,
+            // not part of the CPU/wall cost of the subsequent refresh.
+            let handle = try! FileHandle(forWritingTo: activeSource)
+            try! handle.seekToEnd()
+            try! handle.write(contentsOf: record)
+            try! handle.close()
+            usleep(300_000)
+            startMeasuring()
+            lastReport = try! MetagentCore.refreshSkillUsage(options: options)
+        }
+        XCTAssertEqual(lastReport?.snapshot.totalFiles, paths.count)
+        XCTAssertEqual(lastReport?.filesRead, 1)
+        XCTAssertEqual(lastReport?.bytesRead, Int64(record.count))
+        XCTAssertEqual(lastReport?.hasMore, false)
+        XCTAssertEqual(
+            MetagentCore.skillUsageSourceDiscoveryCountForTesting(databasePath: database), 2,
+            "only database setup and initial catalog discovery may walk the retained tree: "
+                + MetagentCore.skillUsageSourceCatalogDiagnosticsForTesting(databasePath: database)
+        )
+    }
+
     func testPerformanceUsageContinuationReusesOneDiscoveryAcrossSevenSlices() throws {
         guard runsPerformanceTests else { return }
         MetagentCore.resetSkillUsageSourceCatalogForTesting()
@@ -451,6 +660,100 @@ final class MetagentCorePerformanceTests: XCTestCase {
         )
         XCTAssertEqual(reports.last?.snapshot.totalFiles, sourceCount)
         XCTAssertEqual(reports.last?.snapshot.completedFiles, sourceCount)
+    }
+
+    func testPerformanceExternalPowerUsageSlice() throws {
+        guard runsPerformanceTests else { return }
+        let root = try makeTemporaryRoot(prefix: "metagent-performance-external-power")
+        let sessions = root.appendingPathComponent("sessions")
+        try writeUsageNoise(
+            minimumBytes: 64 * 1_024 * 1_024,
+            to: sessions.appendingPathComponent("rollout-large.jsonl")
+        )
+        let plan = SkillUsageMaintenancePlan.recommended(
+            phase: .watcherArmedCatchUp,
+            isEnergyConstrained: false,
+            isOnExternalPower: true
+        )
+        // Allow XCTest's unreported calibration invocations as well as the
+        // requested samples, just like the other cold-store benchmarks.
+        let databases = (0..<25).map {
+            root.appendingPathComponent("usage-\($0).sqlite").path
+        }
+        // Prime each disposable store/catalog outside the measured slice. No
+        // real session history or user database participates in this fixture.
+        for database in databases {
+            _ = try MetagentCore.refreshSkillUsage(options: SkillUsageRefreshOptions(
+                sessionRoots: [sessions.path], databasePath: database,
+                maxBytes: 1, maxFiles: 1, reusesSourceCatalog: true
+            ))
+        }
+        func runSlice(database: String) throws -> SkillUsageRefreshReport {
+            var options = plan.refreshOptions(databasePath: database)
+            options.sessionRoots = [sessions.path]
+            return try MetagentCore.refreshSkillUsage(options: options)
+        }
+        let preflight = try assertLatencyBudget("bounded AC backfill slice", seconds: 4) {
+            try runSlice(database: databases[0])
+        }
+        XCTAssertGreaterThan(preflight.processedBytesAdvanced, 0)
+        XCTAssertLessThanOrEqual(preflight.bytesRead, plan.maxBytes)
+        XCTAssertTrue(preflight.hasMore)
+        var iteration = 1
+        var reports: [SkillUsageRefreshReport] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            reports.append(try! runSlice(database: databases[iteration]))
+            iteration += 1
+        }
+        print("[Metagent performance] bounded AC slice bytes: \(reports.map(\.processedBytesAdvanced)); cadence: \(plan.scheduleDelaySeconds)s")
+        XCTAssertTrue(reports.allSatisfy { $0.processedBytesAdvanced > 0 && !$0.wasDeferred && $0.warnings.isEmpty })
+    }
+
+    func testPerformanceLargePendingReadOutputs() throws {
+        guard runsPerformanceTests else { return }
+        let pending = (0..<30).map { index in
+            let skill = ParsedSkillIdentity(
+                id: "fixture:\(index)", name: "large-output-\(index)", confirmationName: "large-output-\(index)",
+                canonicalPath: "/fixture/\(index)", scope: "project"
+            )
+            return ParsedUsageEvent(
+                id: "fixture-read-\(index)", skill: skill, occurredAt: "2026-10-01T10:00:00Z",
+                sessionID: "fixture", turnID: "turn", cwd: "/fixture",
+                sourcePath: "/fixture/session.jsonl", callID: "read"
+            )
+        }
+        let noise = String(repeating: "Unicode fixture café 東京 without frontmatter.\n", count: 25_000)
+        // Exercise successful, mismatched, and frontmatter-free outputs, not
+        // merely the irrelevant-record fast path. Preparation is unmeasured.
+        let outputs = [noise + "name: 'large-output-0'\n", noise + "name: another-skill\n", noise]
+        let records = try outputs.map { output in
+            try JSONSerialization.data(withJSONObject: [
+                "type": "response_item", "timestamp": "2026-10-01T10:00:00Z",
+                "payload": ["type": "function_call_output", "call_id": "read", "output": output]
+            ])
+        }
+        func decodeOutputs() -> [Int] {
+            records.map { record in
+                var state = UsageSourceState()
+                state.pendingEvents = ["read": pending]
+                var cache: [String: ParsedSkillIdentity] = [:]
+                var events: [ParsedUsageEvent] = []
+                var runs: [ParsedAgentRun] = []
+                SkillUsageRecordDecoder().parseLine(
+                    record, lineOffset: 0, sourcePath: "/fixture/session.jsonl", state: &state,
+                    identityCache: &cache, events: &events, runs: &runs
+                )
+                return events.count
+            }
+        }
+        XCTAssertEqual(assertLatencyBudget("large pending-read outputs", seconds: 1) {
+            decodeOutputs()
+        }, [1, 0, 30])
+        var result: [Int] = []
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            result = decodeOutputs()
+        }
+        XCTAssertEqual(result, [1, 0, 30])
     }
 
     func testPerformanceUsageSnapshotAggregation() throws {

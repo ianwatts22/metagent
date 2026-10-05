@@ -474,6 +474,28 @@ public extension MetagentCore {
         maxBodyCharacters: Int = 20_000,
         now: Date = Date()
     ) throws -> SkillDetail {
+        try getSkillDetail(
+            path: path,
+            includeBody: includeBody,
+            maxBodyCharacters: maxBodyCharacters,
+            now: now,
+            readInventory: { root, directory in
+                try skillDetailInventory(root: root, directory: directory)
+            },
+            loadUsage: { loadSkillUsageSnapshot() ?? .empty }
+        )
+    }
+}
+
+extension MetagentCore {
+    static func getSkillDetail(
+        path: String,
+        includeBody: Bool = true,
+        maxBodyCharacters: Int = 20_000,
+        now: Date = Date(),
+        readInventory: (URL, URL) throws -> SkillScanReport,
+        loadUsage: () -> SkillUsageSnapshot
+    ) throws -> SkillDetail {
         let directory = try resolveSkillDirectory(path)
         let document = try loadSkillDocument(at: directory.path)
 
@@ -481,13 +503,7 @@ public extension MetagentCore {
         var match: SkillInventoryItem?
         var variants: [SkillInventoryItem] = []
         if let root = inferredSkillProjectRoot(directory) {
-            let report = try? scanSkills(
-                options: SkillScanOptions(
-                    roots: [root.path],
-                    maxDepth: 0,
-                    respectConfiguredIgnores: false
-                )
-            )
+            let report = try? readInventory(root, directory)
             let flattened = (report?.projects ?? []).flatMap { project in
                 project.skills.map { (project.root, $0) }
             }
@@ -498,7 +514,7 @@ public extension MetagentCore {
             }
         }
 
-        let usageSnapshot = loadSkillUsageSnapshot() ?? .empty
+        let usageSnapshot = loadUsage()
         let index = SkillUsageIndex(snapshot: usageSnapshot)
         let summary = match.flatMap { index.summary(for: $0) }
             ?? index.summary(forCanonicalPath: directory.path)
@@ -567,6 +583,28 @@ public extension MetagentCore {
             },
             score: score?.score,
             grade: score?.grade.rawValue
+        )
+    }
+
+    /// Detail needs complete contents only for the selected canonical bundle.
+    /// Keep ordinary discovery, ordering and ownership for every representation:
+    /// the first canonical match may have a different name from the requested
+    /// alias, and same-name canonical identities still determine clarity.
+    /// Unselected statistics are deliberately empty and never become detail
+    /// fields; this report is not a general-purpose inventory snapshot.
+    static func skillDetailInventory(
+        root: URL,
+        directory: URL,
+        config: MetagentConfig? = nil,
+        readStats: @escaping (URL) -> SkillStats = skillStats
+    ) throws -> SkillScanReport {
+        let target = canonicalExistingPath(directory.path)
+        return try scanSkills(
+            options: SkillScanOptions(
+                roots: [root.path], maxDepth: 0, respectConfiguredIgnores: false
+            ),
+            config: try config ?? loadUserConfig(),
+            readStats: { $0.path == target ? readStats($0) : SkillStats() }
         )
     }
 }

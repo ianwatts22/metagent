@@ -127,6 +127,28 @@ class SummarizeEfficiencyTests(unittest.TestCase):
         self.assertEqual(cpu["high_cpu_bursts_over_one_second"], 1)
         self.assertAlmostEqual(cpu["longest_high_cpu_burst_seconds"], 1.2)
 
+    def test_reports_net_progress_and_losses_even_in_legacy_capture(self) -> None:
+        mib = 1_048_576
+        samples = [
+            MODULE.ProcessSample(1, 0, 1024, 1, 10 * mib, 0),
+            MODULE.ProcessSample(2, 0, 1024, 1, 20 * mib, 10 * mib),
+            MODULE.ProcessSample(3, 0, 1024, 1),  # Database temporarily busy.
+            MODULE.ProcessSample(4, 0, 1024, 1, 13 * mib),  # Old sampler hid loss.
+            MODULE.ProcessSample(5, 0, 1024, 1, 16 * mib, 3 * mib),
+        ]
+        result = MODULE.summarize(
+            samples, channel="dev", pid=42, active_cpu_threshold=1,
+            processed_usage_bytes=None,
+        )
+        progress = result["global_usage_progress"]
+        self.assertEqual(progress["global_processed_usage_mib"], 6)
+        self.assertEqual(progress["global_processed_usage_mib_per_second"], 1.2)
+        self.assertEqual(progress["global_forward_usage_mib"], 13)
+        self.assertEqual(progress["global_regressed_usage_mib"], 7)
+        self.assertEqual(progress["global_regression_sample_count"], 1)
+        self.assertEqual(progress["global_progress_sample_count"], 2)
+        self.assertIn("global_regression_sample_count: 1", MODULE.text_summary(result))
+
     def test_isolated_high_sample_is_not_a_sustained_burst(self) -> None:
         result = MODULE.summarize(
             [

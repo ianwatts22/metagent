@@ -5,6 +5,7 @@ import Foundation
 private let maximumTraversalElements = 8_192
 private let replacementSearchIntervalMilliseconds = 100.0
 private let heartbeatIntervalMilliseconds = 1_000.0
+private let menuPreparationMilliseconds = 500.0
 private let reloadHelp = "Rescan skills, Doctor findings, and MCP configuration, and continue indexing session history"
 
 private enum ProbeError: Error, CustomStringConvertible {
@@ -18,6 +19,47 @@ private enum ProbeError: Error, CustomStringConvertible {
         case let .usage(message), let .accessibility(message), let .timeout(message), let .state(message):
             return message
         }
+    }
+}
+
+private func validateInteractiveSession(
+    available: Bool,
+    onConsole: Bool?,
+    loginComplete: Bool?,
+    screenLocked: Bool?
+) throws {
+    guard available else {
+        throw ProbeError.state("No WindowServer GUI session is available for live UI measurement.")
+    }
+    guard screenLocked != true else {
+        throw ProbeError.state("The macOS screen is locked. Unlock the Mac before measuring live UI; no app interaction was attempted.")
+    }
+    guard onConsole != false, loginComplete != false else {
+        throw ProbeError.state("The macOS login session is not active on the console. Return to this session before measuring live UI.")
+    }
+}
+
+private func requireInteractiveSession() throws {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    try validateInteractiveSession(
+        available: session != nil,
+        onConsole: session?[kCGSessionOnConsoleKey] as? Bool,
+        loginComplete: session?[kCGSessionLoginDoneKey] as? Bool,
+        // This optional system field is not a public API contract. Only an
+        // observed true blocks; absent/unknown still requires a genuine window.
+        screenLocked: session?["CGSSessionScreenIsLocked"] as? Bool
+    )
+}
+
+private func selectMainWindow<Node>(
+    _ candidates: [Node],
+    isApplication: (Node) -> Bool,
+    role: (Node) throws -> String?,
+    title: (Node) throws -> String?
+) rethrows -> Node? {
+    try candidates.first { candidate in
+        guard !isApplication(candidate), try role(candidate) == kAXWindowRole else { return false }
+        return try title(candidate) == "Metagent"
     }
 }
 
@@ -65,12 +107,13 @@ private func waitWithAppKitEvents(
     throw ProbeError.timeout("Timed out after \(Int(timeoutMilliseconds))ms waiting for \(description).\(detail)")
 }
 
-/// Navigation/filter controls live outside inventory content, and readiness
-/// identifiers belong to content containers, never their cells. Both lookups
+/// Controls and menu items live outside inventory content, and readiness
+/// identifiers belong to content containers, never their cells. Every lookup
 /// must avoid AX children that instantiate lazy offscreen hosting views.
 private func findStructuralElement<Node>(
     _ root: Node,
     matchesIdentifier: (String?) -> Bool,
+    matchesElement: (Node) throws -> Bool = { _ in false },
     maximumVisited: Int = maximumTraversalElements,
     identifier: (Node) throws -> String?,
     role: (Node) throws -> String?,
@@ -81,13 +124,19 @@ private func findStructuralElement<Node>(
     while cursor < pending.count, cursor < maximumVisited {
         let current = pending[cursor]
         cursor += 1
-        let currentIdentifier = try identifier(current)
+        let currentRole = try role(current)
+        // Native menu-bar items can reject AXIdentifier. Their role, title,
+        // and action identify the option; menu nodes cannot be inventory content.
+        let isMenu = currentRole == kAXMenuBarRole || currentRole == kAXMenuBarItemRole
+            || currentRole == kAXMenuRole || currentRole == kAXMenuItemRole
+        let currentIdentifier = isMenu
+            ? nil : try identifier(current)
         if matchesIdentifier(currentIdentifier) { return current }
+        if try matchesElement(current) { return current }
         if let currentIdentifier,
            currentIdentifier.hasPrefix("metagent."),
            currentIdentifier.contains(".content.")
         { continue }
-        let currentRole = try role(current)
         if currentRole == kAXTableRole || currentRole == kAXOutlineRole { continue }
         pending.append(contentsOf: try children(current))
     }
@@ -105,6 +154,26 @@ private struct FilterMeasurement {
     let pressCallMilliseconds: Double
     let controlReadyMilliseconds: Double
     let contentReadyMilliseconds: Double
+}
+
+/// A valid Reload sample starts enabled and observes our work leave readiness.
+/// An unavailable AXEnabled attribute alone is not proof of a disabled control.
+private struct RefreshReadinessTransition {
+    private(set) var transitionObserved = false
+
+    init(initiallyEnabled: Bool?) throws {
+        guard initiallyEnabled == true else {
+            throw ProbeError.state("Reload is not enabled; wait for existing app work to finish.")
+        }
+    }
+
+    mutating func observe(controlExists: Bool, enabled: Bool?) -> Bool {
+        if !controlExists || enabled == false {
+            transitionObserved = true
+            return false
+        }
+        return enabled == true && transitionObserved
+    }
 }
 
 private func monotonicMilliseconds() -> Double {
@@ -223,6 +292,15 @@ private final class AccessibilityProbe {
         return element
     }
 
+    func activate(_ application: NSRunningApplication) throws {
+        if !application.isActive, !application.activate(options: []) {
+            throw ProbeError.state("The exact Metagent process refused foreground activation; no measured input was sent.")
+        }
+        try waitUntil("the exact Metagent process to become foreground") {
+            application.isActive
+        }
+    }
+
     private func copyAttribute(_ element: AXUIElement, _ attribute: String) throws -> Any? {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
@@ -323,7 +401,15 @@ private final class AccessibilityProbe {
         var result: AXUIElement?
         try waitUntil("the Metagent main window") {
             let windows = try self.copyAttribute(appElement, kAXWindowsAttribute) as? [AXUIElement] ?? []
-            result = try windows.first { try self.title($0) == "Metagent" }
+            result = try selectMainWindow(
+                windows,
+                isApplication: { CFEqual($0, appElement) },
+                role: self.role,
+                title: self.title
+            )
+            if result == nil, !windows.isEmpty, windows.allSatisfy({ CFEqual($0, appElement) }) {
+                throw ProbeError.state("Accessibility returned application-equal window proxies, not a genuine AXWindow.")
+            }
             return result != nil
         }
         guard let result else { throw ProbeError.state("Metagent window disappeared.") }
@@ -335,15 +421,15 @@ private final class AccessibilityProbe {
         maximumVisited: Int = maximumTraversalElements,
         matches: (AXUIElement) throws -> Bool
     ) throws -> AXUIElement? {
-        var pending = [root]
-        var cursor = 0
-        while cursor < pending.count, cursor < maximumVisited {
-            let current = pending[cursor]
-            cursor += 1
-            if try matches(current) { return current }
-            pending.append(contentsOf: try children(current))
-        }
-        return nil
+        try findStructuralElement(
+            root,
+            matchesIdentifier: { _ in false },
+            matchesElement: matches,
+            maximumVisited: maximumVisited,
+            identifier: identifier,
+            role: role,
+            children: children
+        )
     }
 
     func findByIdentifier(_ root: AXUIElement, identifier expected: String) throws -> AXUIElement? {
@@ -485,8 +571,16 @@ private final class AccessibilityProbe {
         expectedContentState: String,
         measured: Bool
     ) throws -> FilterMeasurement? {
+        let previousControl = try waitForIdentifier(window, identifier: controlIdentifier)
+        if try value(previousControl) == option { return nil }
+        // AX content can update while native menu dismissal is still tracking.
+        // Model normal think time outside the measured option-press interval,
+        // then reacquire the control rather than using a pre-settle reference.
+        let preparation = MonotonicTimer()
+        try waitUntil("native menu preparation") {
+            preparation.elapsedMilliseconds >= menuPreparationMilliseconds
+        }
         let control = try waitForIdentifier(window, identifier: controlIdentifier)
-        if try value(control) == option { return nil }
         try performPress(control, description: "\(section) filter")
         let item = try menuItem(appElement, name: option)
         let content = try contentElement(window, section: section)
@@ -720,21 +814,21 @@ private final class AccessibilityProbe {
         guard let control = try findReloadControl(window) else {
             throw ProbeError.state("Reload is not currently available; wait for existing app work to finish.")
         }
+        var readiness = try RefreshReadinessTransition(
+            initiallyEnabled: try boolAttribute(control, kAXEnabledAttribute)
+        )
         let timer = MonotonicTimer()
         try performPress(control, description: "Reload")
-        var transitionObserved = false
         try waitUntil("Reload to leave and return to its enabled ready state") {
             guard let current = try self.findReloadControl(window) else {
-                transitionObserved = true
-                return false
+                return readiness.observe(controlExists: false, enabled: nil)
             }
-            if try self.boolAttribute(current, kAXEnabledAttribute) != true {
-                transitionObserved = true
-                return false
-            }
-            return transitionObserved
+            return readiness.observe(
+                controlExists: true,
+                enabled: try self.boolAttribute(current, kAXEnabledAttribute)
+            )
         }
-        guard transitionObserved else {
+        guard readiness.transitionObserved else {
             throw ProbeError.state("Reload returned ready without an observed disabled/missing transition.")
         }
         return timer.elapsedMilliseconds
@@ -1069,6 +1163,7 @@ private func runCommonInteractions(
         "navigation_button_count": try probe.navigationButtonCount(window),
         "samples": samples,
         "skipped_sections": skippedSections,
+        "menu_preparation_milliseconds": menuPreparationMilliseconds,
         "coverage_gaps": [
             "AX content-ready proves SwiftUI exposed the destination state through Accessibility; it does not observe the first painted or composited pixel."
         ] + skippedSections.map {
@@ -1210,18 +1305,24 @@ private func runLaunch(
 }
 
 private func run(arguments: [String]) throws -> [String: Any] {
-    guard arguments.count == 5 else {
-        throw ProbeError.usage("Expected app path, process name, scenario, iterations, and timeout milliseconds.")
+    guard arguments.count == 5 || arguments.count == 6 else {
+        throw ProbeError.usage("Expected app path, process name, scenario, iterations, timeout milliseconds, and optional foreground boolean.")
     }
     let appPath = arguments[0]
     let processName = arguments[1]
     let scenario = arguments[2]
+    let foregroundArgument = arguments.count == 6 ? arguments[5] : "false"
+    guard foregroundArgument == "true" || foregroundArgument == "false" else {
+        throw ProbeError.usage("Foreground must be true or false.")
+    }
+    let foregroundRequested = foregroundArgument == "true"
     guard let iterations = Int(arguments[3]), iterations > 0 else {
         throw ProbeError.usage("Iterations must be a positive integer.")
     }
     guard let timeout = Double(arguments[4]), timeout > 0 else {
         throw ProbeError.usage("Timeout milliseconds must be positive.")
     }
+    try requireInteractiveSession()
     let probe = try AccessibilityProbe(
         appPath: appPath,
         processName: processName,
@@ -1234,6 +1335,7 @@ private func run(arguments: [String]) throws -> [String: Any] {
         guard let application = try probe.runningApplication() else {
             throw ProbeError.state("The exact app process is not running.")
         }
+        if foregroundRequested { try probe.activate(application) }
         let appElement = try probe.applicationElement(for: application)
         let window = try probe.mainWindow(appElement)
         switch scenario {
@@ -1261,6 +1363,7 @@ private func run(arguments: [String]) throws -> [String: Any] {
         // Keep the artifact contract stable; the driver records the native implementation.
         "automation": "macos_accessibility",
         "automation_driver": "native_swift_axui_element",
+        "foreground_requested": foregroundRequested,
     ].merging(result) { _, new in new }
 }
 
@@ -1286,11 +1389,60 @@ private func selfTest() throws {
     }
     try sentinelTraversalSelfTest()
     try controlTraversalSelfTest()
+    try predicateTraversalSelfTest()
+    try menuIdentifierSelfTest()
+    try refreshReadinessSelfTest()
+    try interactiveSessionSelfTest()
+    try mainWindowSelfTest()
     let object: [String: Any] = ["schema_version": 1, "self_test": true]
     guard JSONSerialization.isValidJSONObject(object) else {
         throw ProbeError.state("JSON self-test payload is invalid.")
     }
     print("metagent-ax-probe self-test passed")
+}
+
+private func interactiveSessionSelfTest() throws {
+    // Missing optional lock/console fields must not become a platform-specific
+    // false block. The real window gate remains authoritative in that case.
+    for lockState: Bool? in [false, nil] {
+        try validateInteractiveSession(available: true, onConsole: true, loginComplete: true, screenLocked: lockState)
+    }
+    try validateInteractiveSession(available: true, onConsole: nil, loginComplete: nil, screenLocked: nil)
+    for (available, console, login, locked): (Bool, Bool?, Bool?, Bool?) in [
+        (false, nil, nil, nil), (true, false, true, false),
+        (true, true, false, false), (true, true, true, true),
+    ] {
+        do {
+            try validateInteractiveSession(available: available, onConsole: console, loginComplete: login, screenLocked: locked)
+        } catch ProbeError.state { continue }
+        throw ProbeError.state("An unavailable, inactive or locked session bypassed UI preflight.")
+    }
+}
+
+private func mainWindowSelfTest() throws {
+    let roles: [Int: String] = [0: kAXApplicationRole, 1: kAXScrollAreaRole, 2: kAXWindowRole, 3: kAXWindowRole]
+    var titleReads: [Int] = []
+    let selected = try selectMainWindow(
+        [0, 1, 4, 2, 3],
+        isApplication: { $0 == 0 },
+        role: { roles[$0] },
+        title: { candidate in
+            guard candidate == 2 || candidate == 3 else {
+                throw ProbeError.state("Main-window selection queried a proxy or non-window title.")
+            }
+            titleReads.append(candidate)
+            return candidate == 2 ? "Other window" : "Metagent"
+        }
+    )
+    guard selected == 3, titleReads == [2, 3] else {
+        throw ProbeError.state("Main-window selection lost the genuine exact-title window.")
+    }
+    let proxy = selectMainWindow(
+        [0], isApplication: { _ in true }, role: { _ in kAXWindowRole }, title: { _ in "Metagent" }
+    )
+    guard proxy == nil else {
+        throw ProbeError.state("An application-equal proxy bypassed main-window validation.")
+    }
 }
 
 private func sentinelTraversalSelfTest() throws {
@@ -1378,6 +1530,86 @@ private func controlTraversalSelfTest() throws {
     )
     guard similarIdentifier == nil else {
         throw ProbeError.state("Exact control lookup accepted a prefix-only match.")
+    }
+}
+
+private func predicateTraversalSelfTest() throws {
+    // Open menus may be nested below toolbar controls after a lazy table in
+    // breadth-first order. Missing/replaced menus must not expand that table.
+    for (contentIdentifier, contentRole): (String?, String?) in [
+        ("metagent.skills.content.loading", kAXGroupRole),
+        ("metagent.skills.content.ready.fixture", kAXOutlineRole),
+        ("metagent.mcps.content.ready.fixture", kAXGroupRole),
+        (nil, kAXTableRole), (nil, kAXOutlineRole),
+    ] {
+        for targetPresent in [false, true] {
+            for maximumVisited in [1, maximumTraversalElements] {
+                let result = try findStructuralElement(
+                    0,
+                    matchesIdentifier: { _ in false },
+                    matchesElement: { $0 == 4 && targetPresent },
+                    maximumVisited: maximumVisited,
+                    identifier: { $0 == 1 ? contentIdentifier : nil },
+                    role: { $0 == 1 ? contentRole : kAXGroupRole },
+                    children: { node in
+                        switch node {
+                        case 0: return [1, 2]
+                        case 1: throw ProbeError.state("Predicate lookup traversed lazy content children.")
+                        case 2: return [3]
+                        case 3: return [4]
+                        default: return []
+                        }
+                    }
+                )
+                let expected = targetPresent && maximumVisited > 1 ? 4 : nil
+                guard result == expected else {
+                    throw ProbeError.state("Predicate lookup lost a nested menu or exceeded its traversal bound.")
+                }
+            }
+        }
+    }
+}
+
+private func menuIdentifierSelfTest() throws {
+    let result = try findStructuralElement(
+        0,
+        matchesIdentifier: { _ in false },
+        matchesElement: { $0 == 4 },
+        identifier: { node in
+            guard node == 0 else { throw ProbeError.state("Native menu lookup requested an unnecessary AXIdentifier.") }
+            return nil
+        },
+        role: { [kAXWindowRole, kAXMenuBarRole, kAXMenuBarItemRole, kAXMenuRole, kAXMenuItemRole][$0] },
+        children: { $0 < 4 ? [$0 + 1] : [] }
+    )
+    guard result == 4 else { throw ProbeError.state("Native menu lookup lost its role/title/action predicate.") }
+}
+
+private func refreshReadinessSelfTest() throws {
+    for initiallyEnabled: Bool? in [false, nil] {
+        do {
+            _ = try RefreshReadinessTransition(initiallyEnabled: initiallyEnabled)
+            throw ProbeError.state("Reload accepted an initially disabled or unknown control.")
+        } catch ProbeError.state(let message) {
+            guard message == "Reload is not enabled; wait for existing app work to finish." else {
+                throw ProbeError.state(message)
+            }
+        }
+    }
+    var noWork = try RefreshReadinessTransition(initiallyEnabled: true)
+    guard !noWork.observe(controlExists: true, enabled: true),
+          !noWork.observe(controlExists: true, enabled: nil),
+          !noWork.observe(controlExists: true, enabled: true),
+          !noWork.transitionObserved
+    else { throw ProbeError.state("Reload became ready without an observed work transition.") }
+
+    for controlExists in [true, false] {
+        var work = try RefreshReadinessTransition(initiallyEnabled: true)
+        guard !work.observe(controlExists: controlExists, enabled: controlExists ? false : nil),
+              work.transitionObserved,
+              !work.observe(controlExists: true, enabled: nil),
+              work.observe(controlExists: true, enabled: true)
+        else { throw ProbeError.state("Reload lost its disabled/missing-to-enabled transition.") }
     }
 }
 

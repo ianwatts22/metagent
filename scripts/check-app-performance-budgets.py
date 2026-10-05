@@ -143,14 +143,14 @@ def observed_metrics(
         measurement = efficiency.get("measurement", {})
         if (
             (
-                efficiency.get("schema_version") != 2
+                efficiency.get("schema_version") not in (2, 3)
                 or not isinstance(measurement, dict)
                 or measurement.get("sample_interval_clock") != "monotonic"
             )
             and not allow_scenario_mismatch
         ):
             raise ValueError(
-                "efficiency budgets require schema v2 with monotonic sample intervals"
+                "efficiency budgets require schema v2 or v3 with monotonic sample intervals"
             )
         provenance = efficiency.get("provenance", {})
         scenario = provenance.get("scenario") if isinstance(provenance, dict) else None

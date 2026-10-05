@@ -154,13 +154,13 @@ func standardizedDirectoryPath(_ path: String) -> String {
     return url.path
 }
 
-/// Revision-local path normalization for Skills row construction.
+/// Build-local path normalization for Skills and Projects row construction.
 ///
-/// Resolving symlinks touches the filesystem. Skills row construction compares
-/// the same paths in several indexes, so keeping one cache for the complete
-/// detached build makes each distinct raw path pay that cost at most once.
-/// Rows retain the resulting immutable keys; SwiftUI filtering, sorting, and
-/// identity never call this resolver.
+/// Resolving symlinks touches the filesystem. Sharing one context across the
+/// indexes in a build makes each distinct raw path pay that cost at most once.
+/// Skills builds run detached and retain immutable keys for filtering; Projects
+/// discard this cache after each synchronous row build. Neither reuses path
+/// evidence across builds, so retargeted links stay fresh.
 struct SkillPathCanonicalizer {
     typealias Resolver = (String) -> String
 
@@ -270,11 +270,19 @@ struct DirectoryFilterOption: Identifiable {
 func directoryFilterOptions(
     projects: [ProjectStatus]
 ) -> [DirectoryFilterOption] {
+    var canonicalizer = SkillPathCanonicalizer()
+    return directoryFilterOptions(projects: projects, canonicalizer: &canonicalizer)
+}
+
+func directoryFilterOptions(
+    projects: [ProjectStatus],
+    canonicalizer: inout SkillPathCanonicalizer
+) -> [DirectoryFilterOption] {
     var namesByRoot: [String: String] = [:]
     for project in projects {
         let isPluginProject = !project.skills.isEmpty && project.skills.allSatisfy { $0.location == "plugin" }
         guard !isPluginProject else { continue }
-        namesByRoot[standardizedDirectoryPath(project.root)] = project.name
+        namesByRoot[canonicalizer.canonicalPath(project.root)] = project.name
     }
     return namesByRoot.map { DirectoryFilterOption(root: $0.key, name: $0.value) }
         .sorted { left, right in
