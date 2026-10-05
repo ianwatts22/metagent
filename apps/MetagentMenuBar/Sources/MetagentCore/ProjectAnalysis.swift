@@ -360,18 +360,75 @@ public extension MetagentCore {
         codexExecutableOverride: URL? = nil,
         generatedAt: Date = Date()
     ) throws -> ProjectAnalysisDetailPage {
-        let snapshot = try projectAnalysisSnapshot(
+        try projectAnalysisDetailPage(
             root: root,
+            section: section,
+            cursor: cursor,
+            limit: limit,
             homeDirectory: homeDirectory,
             codexExecutableOverride: codexExecutableOverride,
             generatedAt: generatedAt
         )
-        let items = detailItems(for: section, snapshot: snapshot)
+    }
+
+    internal static func projectAnalysisDetailPage(
+        root: String,
+        section: ProjectAnalysisSection,
+        cursor: String? = nil,
+        limit: Int = 25,
+        homeDirectory: URL? = nil,
+        codexExecutableOverride: URL? = nil,
+        generatedAt: Date = Date(),
+        readInstructions: (URL) -> [ProjectInstructionFile] = {
+            projectInstructionFiles(at: $0)
+        },
+        readInventory: (SkillScanOptions) throws -> SkillScanReport = {
+            try scanSkills(options: $0)
+        },
+        readMCP: (URL, URL?, URL?, Date) -> MCPHealthSnapshot = {
+            projectMCPHealth(root: $0, homeDirectory: $1, codexExecutableOverride: $2, generatedAt: $3)
+        },
+        readUsage: () -> SkillUsageSnapshot? = { loadSkillUsageSnapshot() }
+    ) throws -> ProjectAnalysisDetailPage {
+        let rootURL = try resolveProjectRoot(root)
+        // Shape/scope failures need no section reads. Item bounds still require
+        // the current section, so later edits keep their existing semantics.
         let offset = try detailOffset(
             cursor,
             section: section,
-            root: snapshot.root.path
+            root: rootURL.path
         )
+        let scanOptions = SkillScanOptions(
+            roots: [rootURL.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+        let items: [ProjectAnalysisDetailItem]
+        switch section {
+        case .instructions:
+            items = readInstructions(rootURL).map(ProjectAnalysisDetailItem.instruction)
+        case .skills:
+            items = try readInventory(scanOptions).projects.flatMap(\.skills)
+                .sorted()
+                .map(ProjectAnalysisDetailItem.skill)
+        case .doctor:
+            let skills = try readInventory(scanOptions)
+            items = doctor(projects: skills.projects).issues
+                .filter { $0.severity != .ok }
+                .map(ProjectAnalysisDetailItem.doctor)
+        case .mcp:
+            items = readMCP(rootURL, homeDirectory, codexExecutableOverride, generatedAt)
+                .projectOnly(at: rootURL.path).servers
+                .map(ProjectAnalysisDetailItem.mcp)
+        case .usage:
+            let skills = try readInventory(scanOptions)
+            items = projectUsageAnalysis(skills: skills, snapshot: readUsage() ?? .empty).summaries
+                .sorted {
+                    if $0.invocations30d != $1.invocations30d {
+                        return $0.invocations30d > $1.invocations30d
+                    }
+                    return $0.skillName.localizedStandardCompare($1.skillName) == .orderedAscending
+                }
+                .map(ProjectAnalysisDetailItem.usage)
+        }
         let boundedLimit = min(max(limit, 1), 100)
         guard offset <= items.count else {
             throw projectAnalysisError("detail cursor is beyond the available \(section.rawValue) items")
@@ -379,11 +436,11 @@ public extension MetagentCore {
         let end = min(offset + boundedLimit, items.count)
         let pageItems = Array(items[offset..<end])
         let nextCursor = end < items.count
-            ? detailCursor(root: snapshot.root.path, section: section, offset: end)
+            ? detailCursor(root: rootURL.path, section: section, offset: end)
             : nil
 
         return ProjectAnalysisDetailPage(
-            root: snapshot.root.path,
+            root: rootURL.path,
             generatedAt: generatedAt,
             section: section,
             items: pageItems,
@@ -404,33 +461,18 @@ public extension MetagentCore {
             respectConfiguredIgnores: false
         )
         let (skills, doctor) = try projectSkillAudit(options: scanOptions)
-        let allMCP = scanMCPHealth(
+        let allMCP = projectMCPHealth(
+            root: rootURL,
             homeDirectory: homeDirectory,
             codexExecutableOverride: codexExecutableOverride,
-            additionalProjectPaths: [rootURL.path],
-            projectInventoryPaths: [rootURL.path],
-            observedAt: generatedAt
+            generatedAt: generatedAt
         )
         let applicableMCP = MCPHealthSnapshot(
             servers: allMCP.servers.compactMap { $0.scoped(to: rootURL.path) },
             observedAt: allMCP.observedAt
         )
         let projectMCP = allMCP.projectOnly(at: rootURL.path)
-        let canonicalSkillPaths = Set(skills.projects.flatMap(canonicalInventorySkills).map {
-            URL(fileURLWithPath: $0.canonicalPath).standardizedFileURL.path
-        })
-        let usageSnapshot = loadSkillUsageSnapshot() ?? .empty
-        let usage = ProjectUsageAnalysis(
-            summaries: usageSnapshot.summaries.filter { summary in
-                guard let canonicalPath = summary.canonicalPath else { return false }
-                return canonicalSkillPaths.contains(
-                    URL(fileURLWithPath: canonicalPath).standardizedFileURL.path
-                )
-            },
-            isBackfillComplete: usageSnapshot.isBackfillComplete,
-            coverageStartedAt: usageSnapshot.coverageStartedAt,
-            lastUpdatedAt: usageSnapshot.lastUpdatedAt
-        )
+        let usage = projectUsageAnalysis(skills: skills, snapshot: loadSkillUsageSnapshot() ?? .empty)
 
         return ProjectAnalysisSnapshot(
             root: rootURL,
@@ -440,6 +482,41 @@ public extension MetagentCore {
             applicableMCP: applicableMCP,
             projectMCP: projectMCP,
             usage: usage
+        )
+    }
+
+    private static func projectMCPHealth(
+        root: URL,
+        homeDirectory: URL?,
+        codexExecutableOverride: URL?,
+        generatedAt: Date
+    ) -> MCPHealthSnapshot {
+        scanMCPHealth(
+            homeDirectory: homeDirectory,
+            codexExecutableOverride: codexExecutableOverride,
+            additionalProjectPaths: [root.path],
+            projectInventoryPaths: [root.path],
+            observedAt: generatedAt
+        )
+    }
+
+    private static func projectUsageAnalysis(
+        skills: SkillScanReport,
+        snapshot: SkillUsageSnapshot
+    ) -> ProjectUsageAnalysis {
+        let canonicalSkillPaths = Set(skills.projects.flatMap(canonicalInventorySkills).map {
+            URL(fileURLWithPath: $0.canonicalPath).standardizedFileURL.path
+        })
+        return ProjectUsageAnalysis(
+            summaries: snapshot.summaries.filter { summary in
+                guard let canonicalPath = summary.canonicalPath else { return false }
+                return canonicalSkillPaths.contains(
+                    URL(fileURLWithPath: canonicalPath).standardizedFileURL.path
+                )
+            },
+            isBackfillComplete: snapshot.isBackfillComplete,
+            coverageStartedAt: snapshot.coverageStartedAt,
+            lastUpdatedAt: snapshot.lastUpdatedAt
         )
     }
 
@@ -530,35 +607,6 @@ public extension MetagentCore {
             "Check the \(server.name) command or endpoint configured for \(server.client.displayName)."
         case .configured, .disabled:
             "Review the \(server.name) configuration in \(server.client.displayName)."
-        }
-    }
-
-    private static func detailItems(
-        for section: ProjectAnalysisSection,
-        snapshot: ProjectAnalysisSnapshot
-    ) -> [ProjectAnalysisDetailItem] {
-        switch section {
-        case .instructions:
-            snapshot.instructions.map(ProjectAnalysisDetailItem.instruction)
-        case .skills:
-            snapshot.skills.projects.flatMap(\.skills)
-                .sorted()
-                .map(ProjectAnalysisDetailItem.skill)
-        case .doctor:
-            snapshot.doctor.issues
-                .filter { $0.severity != .ok }
-                .map(ProjectAnalysisDetailItem.doctor)
-        case .mcp:
-            snapshot.projectMCP.servers.map(ProjectAnalysisDetailItem.mcp)
-        case .usage:
-            snapshot.usage.summaries
-                .sorted {
-                    if $0.invocations30d != $1.invocations30d {
-                        return $0.invocations30d > $1.invocations30d
-                    }
-                    return $0.skillName.localizedStandardCompare($1.skillName) == .orderedAscending
-                }
-                .map(ProjectAnalysisDetailItem.usage)
         }
     }
 

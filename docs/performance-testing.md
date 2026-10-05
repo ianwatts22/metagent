@@ -92,6 +92,14 @@ same-size edits and changed projections. Its phase benchmark excludes MCP
 inspection, instruction discovery, usage lookup, and CLI/MCP transport, so a
 phase improvement is not a whole-request or UI latency claim.
 
+Project detail pages load only their requested section: instructions enumerate
+instruction files; skills and Doctor scan project skills; MCP reads the current
+MCP inventory; usage scans canonical project skills and reads current usage.
+Malformed or root/section-mismatched cursors are rejected after resolving the
+root, before any section reads. Item bounds are checked against the fresh
+section. This skips unrelated work without caching inventory, configuration,
+or usage across requests; page ordering, scope, and cursor format are unchanged.
+
 The overlap workload measures document reads, normalization, and pairwise
 similarity together. A separate deterministic test requires one canonical-path
 resolution per non-projection input, preventing filesystem work from growing
