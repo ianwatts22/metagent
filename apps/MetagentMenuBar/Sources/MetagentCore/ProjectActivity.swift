@@ -54,13 +54,17 @@ public extension MetagentCore {
             return .unavailable
         }
 
+        let standardizedRoots = roots.map(standardizedActivityPath)
+        let requestedDirectoryNames = Set(standardizedRoots.map(sessionDirectoryName(for:)))
         let newestByDirectoryName = sessionDirectories.reduce(into: [String: Date]()) { newest, directory in
+            // The top-level corpus decides availability, but unrelated projects
+            // do not need their session-file metadata opened for this request.
+            guard requestedDirectoryNames.contains(directory.lastPathComponent) else { return }
             guard let modifiedAt = newestSessionDate(in: directory) else { return }
             newest[directory.lastPathComponent] = modifiedAt
         }
 
-        let lastActiveByRoot = roots.reduce(into: [String: Date]()) { activity, root in
-            let standardizedRoot = standardizedActivityPath(root)
+        let lastActiveByRoot = standardizedRoots.reduce(into: [String: Date]()) { activity, standardizedRoot in
             guard let modifiedAt = newestByDirectoryName[sessionDirectoryName(for: standardizedRoot)] else {
                 return
             }

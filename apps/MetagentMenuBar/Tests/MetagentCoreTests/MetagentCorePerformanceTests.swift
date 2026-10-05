@@ -161,6 +161,28 @@ final class MetagentCorePerformanceTests: XCTestCase {
         XCTAssertEqual(lastReport, expected)
     }
 
+    func testPerformanceProjectAnalysisSkillAudit() throws {
+        guard runsPerformanceTests else { return }
+        let fixture = try makeSkillPortfolio(projectCount: 1, skillsPerProject: 192)
+        let project = fixture.appendingPathComponent("group-0/project-0")
+        let options = SkillScanOptions(
+            roots: [project.path], maxDepth: 0, respectConfiguredIgnores: false
+        )
+        let inventory = try MetagentCore.scanSkills(options: options)
+        let doctor = try MetagentCore.doctor(options: options)
+        XCTAssertEqual(doctor.canonicalSkillCount, 192)
+        var measured: (skills: SkillScanReport, doctor: DoctorReport)?
+
+        // This is the actual project-analysis inventory/Doctor phase, not the
+        // full request's MCP, instruction, usage, or transport work.
+        measure(metrics: performanceMetrics, options: measureOptions) {
+            measured = try! MetagentCore.projectSkillAudit(options: options)
+        }
+
+        XCTAssertEqual(measured?.skills, inventory)
+        XCTAssertEqual(measured?.doctor, doctor)
+    }
+
     func testPerformanceSkillOverlapPortfolio() throws {
         guard runsPerformanceTests else { return }
         // Shared skill names across projects exercise the pairwise comparison
