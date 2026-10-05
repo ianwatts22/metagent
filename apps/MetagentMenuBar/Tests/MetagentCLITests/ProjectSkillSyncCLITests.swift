@@ -15,9 +15,10 @@ final class ProjectSkillSyncCLITests: XCTestCase {
         try Data("---\nname: demo\ndescription: Synthetic CLI regression fixture.\n---\n".utf8)
             .write(to: source.appendingPathComponent("SKILL.md"))
         try Data("SYNTHETIC_FIXTURE_ONLY=yes\n".utf8).write(to: source.appendingPathComponent(".env"))
-        let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let helper = packageRoot.appendingPathComponent(".build/debug/metagent")
+        let helper = Bundle(for: ProjectSkillSyncCLITests.self).bundleURL
+            .deletingLastPathComponent().appendingPathComponent("metagent")
+        _ = try XCTUnwrap(FileManager.default.isExecutableFile(atPath: helper.path) ? helper : nil,
+                      "SwiftPM must build the helper beside the active test bundle.")
         for format in [[], ["--json"]] {
             let result = try runSubprocess(executable: URL(fileURLWithPath: "/usr/bin/env"), arguments: [
                 "-i", "PATH=/usr/bin:/bin", "HOME=\(syntheticHome.path)", helper.path,
