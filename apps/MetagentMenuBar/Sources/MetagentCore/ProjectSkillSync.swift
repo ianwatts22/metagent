@@ -494,16 +494,19 @@ private func withProjectSkillSyncDirectoryLock<Result>(projectRoot: String,
 
 func applyProjectSkillSyncTransaction(
     _ plan: ProjectSkillSyncPlan,
-    beforeManifestCommit: (() throws -> Void)? = nil
+    beforeManifestCommit: (() throws -> Void)? = nil,
+    afterManifestCommit: (() throws -> Void)? = nil
 ) throws -> ProjectSkillSyncReport {
     try applyProjectSkillSyncTransaction(plan,
-        in: ProjectSkillSyncDirectory(URL(fileURLWithPath: plan.projectRoot)), beforeManifestCommit: beforeManifestCommit)
+        in: ProjectSkillSyncDirectory(URL(fileURLWithPath: plan.projectRoot)),
+        beforeManifestCommit: beforeManifestCommit, afterManifestCommit: afterManifestCommit)
 }
 
 private func applyProjectSkillSyncTransaction(
     _ plan: ProjectSkillSyncPlan,
     in projectDirectory: ProjectSkillSyncDirectory,
-    beforeManifestCommit: (() throws -> Void)? = nil
+    beforeManifestCommit: (() throws -> Void)? = nil,
+    afterManifestCommit: (() throws -> Void)? = nil
 ) throws -> ProjectSkillSyncReport {
     let project = URL(fileURLWithPath: plan.projectRoot)
     guard try projectDirectory.identity == plan.projectIdentity,
@@ -527,6 +530,14 @@ private func applyProjectSkillSyncTransaction(
               try agents.isNamed(".agents", in: projectDirectory), try skills.isNamed("skills", in: agents),
               try stage.isNamed(stageName, in: agents) else {
             throw projectSyncError("The project directories changed during copying. Preview again; replacement directories were not modified.")
+        }
+    }
+    func validateBackups() throws {
+        for name in backedUp {
+            guard try projectSyncBundle(in: backups.child(name), screening: false).hash
+                    == plan.items.first(where: { $0.name == name })?.destinationHash else {
+                throw projectSyncError("An original project skill changed in recovery during copying.")
+            }
         }
     }
     do {
@@ -580,18 +591,29 @@ private func applyProjectSkillSyncTransaction(
         }
         let manifestData = try projectSyncEncodedManifest(manifest)
         try validateScope()
+        try validateBackups()
         try agents.writeAtomically(projectSyncManifestName, data: manifestData)
         manifestCommitted = true
+        try afterManifestCommit?()
         try validateScope()
-        return ProjectSkillSyncReport(
+        let report = ProjectSkillSyncReport(
             applied: true, plan: plan,
             copiedNames: plan.items.filter { $0.action == .copy }.map(\.name),
             updatedNames: plan.items.filter { $0.action == .update }.map(\.name)
         )
+        // An editor may still hold the original file open after its bundle
+        // moves into backup. Recheck all originals immediately before cleanup.
+        try validateBackups()
+        try agents.removeTree(stageName, expectedIdentity: stageIdentity)
+        cleanup = false
+        return report
     } catch {
         if manifestCommitted {
-            let location = agents.currentPath() ?? projectDirectory.currentPath() ?? plan.projectRoot
-            throw projectSyncError("The copy committed to the original project directories, but their locations changed. Review \(location) before retrying.")
+            cleanup = false
+            let manifestLocation = agents.currentPath() ?? "the retained .agents directory"
+            let copiesLocation = skills.currentPath() ?? "the retained skills directory"
+            let recovery = stage.currentPath() ?? "the retained recovery directory (\(stageName))"
+            throw projectSyncError("The copy committed, but final validation stopped: \(error.localizedDescription) Ownership manifest directory: \(manifestLocation). Copied skills: \(copiesLocation). Recovery bundles: \(recovery). Review these locations before retrying.")
         }
         // No data is hard-deleted during rollback: our just-installed copies
         // return to staging before the original project bundles are restored.

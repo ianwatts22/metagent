@@ -98,6 +98,12 @@ a 1 MiB manifest, so an over-capacity selection fails before installing files.
 The advisory lock coordinates Metagent copies only; unrelated tools and manual
 project writers do not become exclusive or authorized by it.
 
+Original bundles are rechecked before manifest commit and immediately before
+recovery cleanup, including edits through an already-open file handle. A late
+detected edit retains recovery content. If final validation fails after commit,
+the operation reports that the copy committed and names the retained manifest,
+copied-skills and recovery directories separately; do not blindly retry it.
+
 ## Avoiding local duplicates
 
 Ordinary Git tracking does not provide a portable “GitHub-only, never local”
