@@ -39,8 +39,9 @@ metagent skills sync-to-project example --collection codex \
 source collection is `agents`; `--collection` takes `agents`, `codex`, or
 `claude`. The names are folder names in that collection, not ambiguous portfolio
 search results. JSON success contains `applied`, `plan`, `copied_names`, and
-`updated_names`. A blocked preview exits nonzero with the preview JSON; other
-operation failures return one `{"error":"…"}` object. No file content or
+`updated_names`. A blocked preview (including with `--apply`) exits nonzero
+with the preview JSON; other operation failures return one `{"error":"…"}`
+object. No file content or
 credential value is included in these reports.
 
 ## What reaches cloud
@@ -82,7 +83,10 @@ project-owned bundles, local edits (including added generated files), missing
 previously copied bundles, changed collection identities, manager-owned names,
 and invalid ownership state fail closed. Unselected bundles are never deleted
 or updated. Content, executable-status or manifest changes after preview
-invalidate that preview. Files are staged, rechecked, and replaced with rollback backups;
+invalidate that preview. Replacing the physical project or source collection at
+the same path also invalidates it; directory identities exist only in the
+ephemeral preview, never the portable ownership manifest. Files are staged,
+rechecked, and replaced with rollback backups;
 if rollback cannot safely restore the original bundles, the error names the
 retained recovery folder rather than discarding it. Concurrent Metagent copies
 into one project fail busy without waiting or creating lock files; preview

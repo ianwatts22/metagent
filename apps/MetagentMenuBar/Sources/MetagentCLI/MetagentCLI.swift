@@ -408,7 +408,7 @@ struct MetagentCLI {
             }
             guard let root else { throw CLIError.message("skills sync-to-project requires --root with an absolute project folder") }
             let plan = try MetagentCore.previewProjectSkillSync(projectRoot: root, skillNames: names, collection: collection)
-            if apply {
+            if apply && plan.canApply {
                 let report = try MetagentCore.applyProjectSkillSync(plan)
                 if json { try printJSON(report) }
                 else {

@@ -7,13 +7,44 @@ struct ProjectSkillSyncDestination: Identifiable {
     var id: String { root }
 }
 
+@MainActor
+final class ProjectSkillSyncCollectionLoader: ObservableObject {
+    @Published private(set) var names: [String] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var error: String?
+    private var generation = UUID()
+
+    func load(_ collection: ProjectSkillSyncCollection,
+              scan: @escaping @Sendable (ProjectSkillSyncCollection) async throws -> [String] = { collection in
+                  try await Task.detached(priority: .userInitiated) {
+                      try MetagentCore.globalProjectSyncSkillNames(collection: collection)
+                  }.value
+              }) async {
+        guard !Task.isCancelled else { return }
+        let request = UUID()
+        generation = request
+        isLoading = true
+        names = []
+        error = nil
+        defer { if generation == request { isLoading = false } }
+        do {
+            let result = try await scan(collection)
+            guard !Task.isCancelled, generation == request else { return }
+            names = result
+        } catch {
+            guard !Task.isCancelled, generation == request else { return }
+            self.error = error.localizedDescription
+        }
+    }
+}
+
 /// Explicit, action-time reads only. No portfolio scan, automatic mirroring,
 /// or bundle I/O on the main actor.
 struct ProjectSkillSyncView: View {
     @ObservedObject var model: MetagentModel
     let projectRoot: String
     @Environment(\.dismiss) private var dismiss
-    @State private var names: [String] = []
+    @StateObject private var collectionLoader = ProjectSkillSyncCollectionLoader()
     @State private var selection = Set<String>()
     @State private var search = ""
     @State private var preview: ProjectSkillSyncPlan?
@@ -21,6 +52,7 @@ struct ProjectSkillSyncView: View {
     @State private var error: String?
     @State private var completion: String?
     @State private var collection = ProjectSkillSyncCollection.agents
+    private var isBusy: Bool { busy || collectionLoader.isLoading }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -32,7 +64,7 @@ struct ProjectSkillSyncView: View {
                         .help(projectRoot)
                 }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(isBusy)
             }
             Text("Copy selected bundles for fresh and cloud checkouts. Nothing is committed or pushed; local agents may show both copies.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -46,13 +78,13 @@ struct ProjectSkillSyncView: View {
                 Text("Review private content and outside dependencies before copying. This check is not a complete security or portability audit; instructions are never rewritten.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Change selection") { self.preview = nil; error = nil }.disabled(busy)
+                    Button("Change selection") { self.preview = nil; error = nil }.disabled(isBusy)
                     Spacer()
                     Button(preview.changeCount == 0 ? "Confirm unchanged" : "Copy \(preview.changeCount) skills") {
                         apply(preview)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(busy || model.isRunning || !preview.canApply)
+                    .disabled(isBusy || model.isRunning || !preview.canApply)
                     .accessibilityIdentifier("metagent.project-skills.copy")
                 }
             } else {
@@ -61,13 +93,13 @@ struct ProjectSkillSyncView: View {
                         Text("~/\(value.relativePath)").tag(value)
                     }
                 }
-                .disabled(busy)
+                .disabled(isBusy)
                 TextField("Search global skills", text: $search)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("metagent.project-skills.search")
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(names.filter { search.isEmpty || $0.localizedCaseInsensitiveContains(search) }, id: \.self) { name in
+                        ForEach(collectionLoader.names.filter { search.isEmpty || $0.localizedCaseInsensitiveContains(search) }, id: \.self) { name in
                             Toggle(name, isOn: Binding(
                                 get: { selection.contains(name) },
                                 set: { selected in
@@ -75,9 +107,9 @@ struct ProjectSkillSyncView: View {
                                 }
                             ))
                             .toggleStyle(.checkbox)
-                            .disabled(busy || (!selection.contains(name) && selection.count >= 32))
+                            .disabled(isBusy || (!selection.contains(name) && selection.count >= 32))
                         }
-                        if names.isEmpty && !busy {
+                        if collectionLoader.names.isEmpty && !isBusy {
                             Text("No direct global bundles found in ~/\(collection.relativePath). Linked projections, built-in system skills and plugin runtime copies are excluded; choose their canonical collection instead.")
                                 .foregroundStyle(.secondary)
                         }
@@ -88,17 +120,17 @@ struct ProjectSkillSyncView: View {
                     Spacer()
                     Button("Preview files") { makePreview() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(busy || selection.isEmpty)
+                        .disabled(isBusy || selection.isEmpty)
                         .accessibilityIdentifier("metagent.project-skills.preview")
                 }
             }
-            if busy { ProgressView().controlSize(.small) }
-            if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
+            if isBusy { ProgressView().controlSize(.small) }
+            if let error = error ?? collectionLoader.error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
         }
         .padding(24)
         .frame(width: 660, height: 560)
-        .task(id: collection) { selection = []; preview = nil; await loadNames() }
-        .interactiveDismissDisabled(busy)
+        .task(id: collection) { selection = []; preview = nil; error = nil; await collectionLoader.load(collection) }
+        .interactiveDismissDisabled(isBusy)
         .accessibilityIdentifier("metagent.project-skills.sheet")
     }
 
@@ -132,19 +164,6 @@ struct ProjectSkillSyncView: View {
                 }
             }.padding(4)
         }
-    }
-
-    @MainActor private func loadNames() async {
-        busy = true
-        names = []
-        error = nil
-        defer { busy = false }
-        let selectedCollection = collection
-        do {
-            names = try await Task.detached(priority: .userInitiated) {
-                try MetagentCore.globalProjectSyncSkillNames(collection: selectedCollection)
-            }.value
-        } catch { self.error = error.localizedDescription }
     }
 
     @MainActor private func makePreview() {

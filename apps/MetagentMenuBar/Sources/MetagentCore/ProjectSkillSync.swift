@@ -30,11 +30,19 @@ public struct ProjectSkillSyncItem: Codable, Equatable, Sendable, Identifiable {
 public struct ProjectSkillSyncPlan: Encodable, Equatable, Sendable {
     public let projectRoot: String
     public let globalSkillsRoot: String
+    public let projectIdentity: ProjectSkillSyncDirectoryIdentity
+    public let globalIdentity: ProjectSkillSyncDirectoryIdentity
     public let collection: ProjectSkillSyncCollection
     public let manifestHash: String?
     public let items: [ProjectSkillSyncItem]
     public var canApply: Bool { !items.isEmpty && items.allSatisfy { $0.action != .blocked } }
     public var changeCount: Int { items.filter { [.copy, .update].contains($0.action) }.count }
+}
+
+/// Ephemeral preview identity, never written into the portable ownership file.
+public struct ProjectSkillSyncDirectoryIdentity: Encodable, Equatable, Sendable {
+    public let device: UInt64
+    public let inode: UInt64
 }
 
 public struct ProjectSkillSyncReport: Encodable, Equatable, Sendable {
@@ -96,7 +104,7 @@ public extension MetagentCore {
     /// changes a Git index, or deletes skills omitted from this preview.
     static func applyProjectSkillSync(_ preview: ProjectSkillSyncPlan) throws -> ProjectSkillSyncReport {
         guard preview.canApply else { throw projectSyncError("Resolve blocked skills before copying.") }
-        return try withProjectSkillSyncLock(projectRoot: preview.projectRoot) {
+        return try withProjectSkillSyncLock(projectRoot: preview.projectRoot, expectedIdentity: preview.projectIdentity) {
             let current = try previewProjectSkillSync(
                 projectRoot: preview.projectRoot,
                 skillNames: preview.items.map(\.name),
@@ -141,6 +149,8 @@ extension MetagentCore {
         }
         let project = try projectSyncRoot(projectRoot)
         let global = try projectSyncRoot(globalSkillsRoot)
+        let projectIdentity = try projectSyncIdentity(project)
+        let globalIdentity = try projectSyncIdentity(global)
         guard project != global, !global.path.hasPrefix(project.path + "/"),
               !project.path.hasPrefix(global.path + "/") else {
             throw projectSyncError("The project and global skills collection must be separate folders.")
@@ -216,7 +226,8 @@ extension MetagentCore {
         }
         _ = try projectSyncEncodedManifest(projectedManifest)
         return ProjectSkillSyncPlan(
-            projectRoot: project.path, globalSkillsRoot: global.path, collection: collection,
+            projectRoot: project.path, globalSkillsRoot: global.path,
+            projectIdentity: projectIdentity, globalIdentity: globalIdentity, collection: collection,
             manifestHash: manifestHash, items: items
         )
     }
@@ -416,12 +427,18 @@ private func projectSyncReadFile(_ path: URL, limit: Int) throws -> (data: Data,
 
 /// Advisory cross-process exclusion on the existing directory: no sidecar
 /// files or Git state are created, and a busy project fails without waiting.
-func withProjectSkillSyncLock<Result>(projectRoot: String, _ operation: () throws -> Result) throws -> Result {
+func withProjectSkillSyncLock<Result>(projectRoot: String,
+    expectedIdentity: ProjectSkillSyncDirectoryIdentity? = nil,
+    _ operation: () throws -> Result
+) throws -> Result {
     let root = try projectSyncRoot(projectRoot)
     guard root.path == projectRoot else { throw projectSyncError("The project root changed after preview.") }
     let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     guard descriptor >= 0 else { throw projectSyncError("The project could not be locked safely.") }
     defer { Darwin.close(descriptor) }
+    if let expectedIdentity, try projectSyncIdentity(descriptor: descriptor) != expectedIdentity {
+        throw projectSyncError("The project directory changed after preview. Preview again; nothing was copied.")
+    }
     guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
         guard errno == EWOULDBLOCK || errno == EAGAIN else {
             throw projectSyncError("The project does not support a safe sync lock. Nothing was copied.")
@@ -437,6 +454,9 @@ func applyProjectSkillSyncTransaction(
     beforeManifestCommit: (() throws -> Void)? = nil
 ) throws -> ProjectSkillSyncReport {
     let project = URL(fileURLWithPath: plan.projectRoot)
+    guard try projectSyncIdentity(project) == plan.projectIdentity else {
+        throw projectSyncError("The project directory changed after preview. Preview again; nothing was copied.")
+    }
     let agents = project.appendingPathComponent(".agents")
     let skills = agents.appendingPathComponent("skills")
     let manifestURL = agents.appendingPathComponent(projectSyncManifestName)
@@ -533,6 +553,21 @@ func applyProjectSkillSyncTransaction(
 
 private func projectSyncHash(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func projectSyncIdentity(_ directory: URL) throws -> ProjectSkillSyncDirectoryIdentity {
+    let descriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw projectSyncError("A preview directory could not be opened safely.") }
+    defer { Darwin.close(descriptor) }
+    return try projectSyncIdentity(descriptor: descriptor)
+}
+
+private func projectSyncIdentity(descriptor: CInt) throws -> ProjectSkillSyncDirectoryIdentity {
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR else {
+        throw projectSyncError("A preview directory identity could not be read safely.")
+    }
+    return ProjectSkillSyncDirectoryIdentity(device: UInt64(truncatingIfNeeded: metadata.st_dev), inode: UInt64(metadata.st_ino))
 }
 
 private func projectSyncDirectoryNames(_ directory: URL, limit: Int) throws -> [String] {

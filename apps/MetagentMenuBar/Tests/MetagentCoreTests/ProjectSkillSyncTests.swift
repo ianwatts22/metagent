@@ -311,6 +311,29 @@ final class ProjectSkillSyncTests: XCTestCase {
         }
     }
 
+    func testPhysicalDirectoryReplacementInvalidatesOtherwiseIdenticalPreview() throws {
+        for target in ["project", "global"] {
+            let fixture = try ProjectSyncFixture()
+            defer { fixture.remove() }
+            _ = try fixture.skill("demo")
+            let plan = try fixture.preview(["demo"])
+            let original = target == "project" ? fixture.project : fixture.global
+            let retained = fixture.root.appendingPathComponent("retained-\(target)")
+            try FileManager.default.moveItem(at: original, to: retained)
+            try FileManager.default.copyItem(at: retained, to: original)
+            let replacement = try fixture.preview(["demo"])
+            XCTAssertEqual(replacement.items, plan.items, "Content checks alone must not grant permission to a replacement directory.")
+            XCTAssertNotEqual(replacement, plan)
+            XCTAssertThrowsError(try MetagentCore.applyProjectSkillSync(plan))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.project.appendingPathComponent(".agents").path))
+            if target == "project" {
+                XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: retained.path).isEmpty)
+            }
+            _ = try MetagentCore.applyProjectSkillSync(replacement)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination("demo/SKILL.md").path))
+        }
+    }
+
     func testInvalidSelectionOverlapAndFileLimitsAreBounded() throws {
         let fixture = try ProjectSyncFixture()
         defer { fixture.remove() }
