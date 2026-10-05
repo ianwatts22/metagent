@@ -334,6 +334,70 @@ final class ProjectSkillSyncTests: XCTestCase {
         }
     }
 
+    func testMidCopyDirectorySwapLeavesReplacementUntouchedAndRollsBackOriginal() throws {
+        for (target, owned) in [("project", false), ("project", true), ("agents", true), ("skills", true)] {
+            let fixture = try ProjectSyncFixture()
+            defer { fixture.remove() }
+            let source = try fixture.skill("demo")
+            if owned { _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"])) }
+            let originalBytes = owned ? try Data(contentsOf: fixture.destination("demo/SKILL.md")) : nil
+            let originalManifest = owned ? try Data(contentsOf: fixture.manifest) : nil
+            try fixture.write("updated.md", in: source, data: Data("Synthetic source update.".utf8))
+            let plan = try fixture.preview(["demo"])
+            let original = target == "project" ? fixture.project
+                : fixture.project.appendingPathComponent(target == "agents" ? ".agents" : ".agents/skills")
+            let snapshot = fixture.root.appendingPathComponent("pre-apply-snapshot")
+            let retained = fixture.root.appendingPathComponent("retained-\(target)")
+            try FileManager.default.copyItem(at: original, to: snapshot)
+            XCTAssertThrowsError(try applyProjectSkillSyncTransaction(plan, beforeManifestCommit: {
+                try FileManager.default.moveItem(at: original, to: retained)
+                try FileManager.default.moveItem(at: snapshot, to: original)
+            }))
+            if owned {
+                XCTAssertEqual(try Data(contentsOf: fixture.destination("demo/SKILL.md")), originalBytes)
+                XCTAssertEqual(try Data(contentsOf: fixture.manifest), originalManifest)
+                let retainedSkill = retained.appendingPathComponent(
+                    target == "project" ? ".agents/skills/demo" : target == "agents" ? "skills/demo" : "demo")
+                XCTAssertEqual(try Data(contentsOf: retainedSkill.appendingPathComponent("SKILL.md")), originalBytes)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: retainedSkill.appendingPathComponent("updated.md").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("demo/updated.md").path))
+            } else {
+                XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.project.path).isEmpty)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: retained.appendingPathComponent(".agents/skills/demo").path))
+            }
+        }
+    }
+
+    func testRootSwapWithConcurrentEditKeepsRecoveryInTheRetainedOriginal() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill("demo")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+        let originalBytes = try Data(contentsOf: fixture.destination("demo/SKILL.md"))
+        let snapshot = fixture.root.appendingPathComponent("snapshot")
+        let retained = fixture.root.appendingPathComponent("retained-project")
+        try FileManager.default.copyItem(at: fixture.project, to: snapshot)
+        try fixture.write("updated.md", in: source, data: Data("Synthetic source update.".utf8))
+        let plan = try fixture.preview(["demo"])
+        XCTAssertThrowsError(try applyProjectSkillSyncTransaction(plan, beforeManifestCommit: {
+            try FileManager.default.moveItem(at: fixture.project, to: retained)
+            try FileManager.default.moveItem(at: snapshot, to: fixture.project)
+            try fixture.write("concurrent.md", in: retained.appendingPathComponent(".agents/skills/demo"),
+                              data: Data("Preserve concurrent edits.".utf8))
+        })) { error in
+            XCTAssertTrue(error.localizedDescription.contains("recovery bundles remain"))
+            XCTAssertTrue(error.localizedDescription.contains(retained.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestBefore)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("demo/updated.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retained.appendingPathComponent(".agents/skills/demo/concurrent.md").path))
+        let agents = retained.appendingPathComponent(".agents")
+        let recovery = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: agents.path)
+            .first { $0.hasPrefix(".metagent-project-skills-") })
+        XCTAssertEqual(try Data(contentsOf: agents.appendingPathComponent("\(recovery)/backup/demo/SKILL.md")), originalBytes)
+    }
+
     func testInvalidSelectionOverlapAndFileLimitsAreBounded() throws {
         let fixture = try ProjectSyncFixture()
         defer { fixture.remove() }

@@ -87,6 +87,10 @@ invalidate that preview. Replacing the physical project or source collection at
 the same path also invalidates it; directory identities exist only in the
 ephemeral preview, never the portable ownership manifest. Files are staged,
 rechecked, and replaced with rollback backups;
+staging, installation, manifest commit, rollback and cleanup stay relative to
+the verified directory descriptors, so a checkout swap cannot redirect writes
+into its replacement. A mid-copy directory change stops the operation; recovery
+content is reported at its current retained path if concurrent edits prevent rollback.
 if rollback cannot safely restore the original bundles, the error names the
 retained recovery folder rather than discarding it. Concurrent Metagent copies
 into one project fail busy without waiting or creating lock files; preview
