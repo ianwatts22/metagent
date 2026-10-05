@@ -590,8 +590,8 @@ private func applyProjectSkillSyncTransaction(
         )
     } catch {
         if manifestCommitted {
-            let location = projectDirectory.currentPath() ?? plan.projectRoot
-            throw projectSyncError("The copy committed to the original project, but its path changed. Review \(location) before retrying.")
+            let location = agents.currentPath() ?? projectDirectory.currentPath() ?? plan.projectRoot
+            throw projectSyncError("The copy committed to the original project directories, but their locations changed. Review \(location) before retrying.")
         }
         // No data is hard-deleted during rollback: our just-installed copies
         // return to staging before the original project bundles are restored.

@@ -89,10 +89,9 @@ ephemeral preview, never the portable ownership manifest. Files are staged,
 rechecked, and replaced with rollback backups;
 staging, installation, manifest commit, rollback and cleanup stay relative to
 the verified directory descriptors, so a checkout swap cannot redirect writes
-into its replacement. A mid-copy directory change stops the operation; recovery
-content is reported at its current retained path if concurrent edits prevent rollback.
-if rollback cannot safely restore the original bundles, the error names the
-retained recovery folder rather than discarding it. Concurrent Metagent copies
+into its replacement. A mid-copy directory change stops the operation; if
+rollback cannot safely restore the original bundles, the error names the
+retained recovery folder at its current path rather than discarding it. Concurrent Metagent copies
 into one project fail busy without waiting or creating lock files; preview
 again after the other copy completes. Ownership is bounded to 4,096 records and
 a 1 MiB manifest, so an over-capacity selection fails before installing files.
