@@ -219,6 +219,7 @@ struct ProjectsSection: View {
     let selectedProjectRoot: String?
     @State private var searchText = ""
     @State private var sortOrder = [KeyPathComparator(\ProjectDirectoryRow.name)]
+    @State private var skillSyncDestination: ProjectSkillSyncDestination?
 
     private var allRows: [ProjectDirectoryRow] {
         ProjectDirectoryRow.rows(
@@ -258,6 +259,10 @@ struct ProjectsSection: View {
                 )
                 CountChip(text: "\(allRows.count) directories")
                 Spacer(minLength: 8)
+                Button("Sync Global Skills…", systemImage: "square.and.arrow.down") {
+                    chooseSkillSyncProject()
+                }
+                .accessibilityIdentifier("metagent.projects.sync-global-skills")
             }
 
             if rows.isEmpty {
@@ -319,6 +324,11 @@ struct ProjectsSection: View {
                         Button("Open", systemImage: "folder") {
                             model.openProjectRoot(root)
                         }
+                        if !isGlobalRoot(root) {
+                            Button("Sync Global Skills…", systemImage: "square.and.arrow.down") {
+                                skillSyncDestination = ProjectSkillSyncDestination(root: root)
+                            }
+                        }
                     }
                 }
                 .accessibilityIdentifier(readyIdentifier)
@@ -328,6 +338,24 @@ struct ProjectsSection: View {
             model.refreshCodebaseSizes()
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .sheet(item: $skillSyncDestination) { destination in
+            ProjectSkillSyncView(model: model, projectRoot: destination.root)
+        }
+    }
+
+    private func chooseSkillSyncProject() {
+        if let selectedProjectRoot, !isGlobalRoot(selectedProjectRoot) {
+            skillSyncDestination = ProjectSkillSyncDestination(root: selectedProjectRoot)
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the project to receive global skills"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let root = panel.url?.path {
+            skillSyncDestination = ProjectSkillSyncDestination(root: root)
+        }
     }
 }
 

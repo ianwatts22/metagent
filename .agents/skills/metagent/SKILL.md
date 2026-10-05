@@ -40,6 +40,8 @@ metagent skills list [--root PATH | --global] [--sort KEY] [--order asc|desc] \
   [--no-descriptions] [--json]
 metagent skills show PATH [--no-body] [--max-body-chars N] [--json]
 metagent skills duplicates [--root PATH | --global] [--json]
+metagent skills sync-to-project NAME [NAME...] --root PATH \
+  [--collection agents|codex|claude] [--apply] [--json]
 metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
 ```
 
@@ -69,6 +71,17 @@ without a second scanner: `analyze_project`, `get_project_analysis_details`,
 to real project roots; request `kind: all` when global and plugin installation
 roots are intentionally in scope. Expected errors remain MCP errors and carry a
 structured JSON body.
+
+For cloud checkouts, `sync-to-project` previews explicitly selected global
+bundles before copying into the project's `.agents/skills`. It reads only the
+chosen home-level collection, not `--global` portfolio inventory; linked
+projections and runtime/plugin copies are excluded. Review selected files and
+portability/private-content warnings before the human authorizes `--apply`.
+Copied availability is not proof of runtime portability. Existing project
+edits or manager ownership block refresh; unselected bundles stay untouched.
+Copying never commits, pushes, or changes Git settings. Commit the chosen
+bundles and `.agents/project-skills.json` separately for cloud delivery. Local
+duplicates are expected unless the user manages their own sparse checkout.
 
 ## Skill Lifecycle Permission
 
