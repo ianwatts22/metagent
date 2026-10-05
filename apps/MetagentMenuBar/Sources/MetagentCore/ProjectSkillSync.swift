@@ -30,11 +30,19 @@ public struct ProjectSkillSyncItem: Codable, Equatable, Sendable, Identifiable {
 public struct ProjectSkillSyncPlan: Encodable, Equatable, Sendable {
     public let projectRoot: String
     public let globalSkillsRoot: String
+    public let projectIdentity: ProjectSkillSyncDirectoryIdentity
+    public let globalIdentity: ProjectSkillSyncDirectoryIdentity
     public let collection: ProjectSkillSyncCollection
     public let manifestHash: String?
     public let items: [ProjectSkillSyncItem]
     public var canApply: Bool { !items.isEmpty && items.allSatisfy { $0.action != .blocked } }
     public var changeCount: Int { items.filter { [.copy, .update].contains($0.action) }.count }
+}
+
+/// Ephemeral preview identity, never written into the portable ownership file.
+public struct ProjectSkillSyncDirectoryIdentity: Encodable, Equatable, Sendable {
+    public let device: UInt64
+    public let inode: UInt64
 }
 
 public struct ProjectSkillSyncReport: Encodable, Equatable, Sendable {
@@ -96,7 +104,7 @@ public extension MetagentCore {
     /// changes a Git index, or deletes skills omitted from this preview.
     static func applyProjectSkillSync(_ preview: ProjectSkillSyncPlan) throws -> ProjectSkillSyncReport {
         guard preview.canApply else { throw projectSyncError("Resolve blocked skills before copying.") }
-        return try withProjectSkillSyncLock(projectRoot: preview.projectRoot) {
+        return try withProjectSkillSyncDirectoryLock(projectRoot: preview.projectRoot, expectedIdentity: preview.projectIdentity) { directory in
             let current = try previewProjectSkillSync(
                 projectRoot: preview.projectRoot,
                 skillNames: preview.items.map(\.name),
@@ -109,7 +117,7 @@ public extension MetagentCore {
             guard preview.changeCount > 0 else {
                 return ProjectSkillSyncReport(applied: true, plan: preview, copiedNames: [], updatedNames: [])
             }
-            return try applyProjectSkillSyncTransaction(preview)
+            return try applyProjectSkillSyncTransaction(preview, in: directory)
         }
     }
 }
@@ -141,6 +149,8 @@ extension MetagentCore {
         }
         let project = try projectSyncRoot(projectRoot)
         let global = try projectSyncRoot(globalSkillsRoot)
+        let projectIdentity = try projectSyncIdentity(project)
+        let globalIdentity = try projectSyncIdentity(global)
         guard project != global, !global.path.hasPrefix(project.path + "/"),
               !project.path.hasPrefix(global.path + "/") else {
             throw projectSyncError("The project and global skills collection must be separate folders.")
@@ -216,7 +226,8 @@ extension MetagentCore {
         }
         _ = try projectSyncEncodedManifest(projectedManifest)
         return ProjectSkillSyncPlan(
-            projectRoot: project.path, globalSkillsRoot: global.path, collection: collection,
+            projectRoot: project.path, globalSkillsRoot: global.path,
+            projectIdentity: projectIdentity, globalIdentity: globalIdentity, collection: collection,
             manifestHash: manifestHash, items: items
         )
     }
@@ -260,6 +271,10 @@ private func projectSyncManifest(at path: URL, under root: URL) throws -> (Proje
     }
     guard fileManager.fileExists(atPath: path.path) else { return (ProjectSkillSyncManifest(), nil) }
     let data = try projectSyncReadFile(path, limit: 1_024 * 1_024).data
+    return try projectSyncDecodedManifest(data)
+}
+
+private func projectSyncDecodedManifest(_ data: Data) throws -> (ProjectSkillSyncManifest, String?) {
     guard let document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(document.keys) == ["version", "skills"],
           let records = document["skills"] as? [String: [String: Any]],
@@ -272,6 +287,11 @@ private func projectSyncManifest(at path: URL, under root: URL) throws -> (Proje
         throw projectSyncError("The project ownership manifest is invalid or uses an unsupported version.")
     }
     return (manifest, projectSyncHash(data))
+}
+
+private func projectSyncManifest(in directory: ProjectSkillSyncDirectory) throws -> (ProjectSkillSyncManifest, String?) {
+    guard try directory.metadata(projectSyncManifestName) != nil else { return (ProjectSkillSyncManifest(), nil) }
+    return try projectSyncDecodedManifest(directory.read(projectSyncManifestName, limit: 1_024 * 1_024).data)
 }
 
 private func projectSyncEncodedManifest(_ manifest: ProjectSkillSyncManifest) throws -> Data {
@@ -299,6 +319,23 @@ private func projectSyncManagedNames(in root: URL) throws -> Set<String> {
     }
     guard fileManager.fileExists(atPath: lock.path) else { return [] }
     let data = try projectSyncReadFile(lock, limit: 1_024 * 1_024).data
+    return try projectSyncManagedNames(data: data)
+}
+
+private func projectSyncManagedNames(in project: ProjectSkillSyncDirectory, agents: ProjectSkillSyncDirectory) throws -> Set<String> {
+    for name in ["agents.toml", "agents.lock"] {
+        guard try project.metadata(name) == nil else {
+            throw projectSyncError("This project has external skill-manager declarations (\(name)). Reconcile ownership before syncing.")
+        }
+    }
+    guard try agents.metadata(".skill-lock.json") == nil else {
+        throw projectSyncError("This project has external skill-manager declarations (.agents/.skill-lock.json). Reconcile ownership before syncing.")
+    }
+    guard try project.metadata("skills-lock.json") != nil else { return [] }
+    return try projectSyncManagedNames(data: project.read("skills-lock.json", limit: 1_024 * 1_024).data)
+}
+
+private func projectSyncManagedNames(data: Data) throws -> Set<String> {
     guard let document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           let version = document["version"] as? Int, version == 1 else {
         throw projectSyncError("The project Skills CLI lock must use the supported version 1 format.")
@@ -314,20 +351,26 @@ private func projectSyncBundle(
           (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
         throw projectSyncError("A physical skill bundle directory is required.")
     }
+    return try projectSyncBundle(in: ProjectSkillSyncDirectory(root), screening: screening, maximumBytes: maximumBytes)
+}
+
+private func projectSyncBundle(
+    in root: ProjectSkillSyncDirectory, screening: Bool,
+    maximumBytes: Int = publicationMaximumBundleBytes
+) throws -> ProjectSkillSyncBundle {
     var files: [ProjectSkillSyncBundle.File] = []
     var findings: [SkillPublishFinding] = []
     var entriesVisited = 0
     var bytes = 0
-    func walk(_ directory: URL, prefix: String, depth: Int) throws {
+    func walk(_ directory: ProjectSkillSyncDirectory, prefix: String, depth: Int) throws {
         guard depth <= 32 else { throw projectSyncError("The skill bundle exceeds the directory depth limit.") }
-        let names = try projectSyncDirectoryNames(directory, limit: projectSyncMaximumEntries - entriesVisited)
+        let names = try directory.names(limit: projectSyncMaximumEntries - entriesVisited)
         entriesVisited += names.count
         guard entriesVisited <= projectSyncMaximumEntries else {
             throw projectSyncError("The skill bundle exceeds the 4,096 entry limit.")
         }
         for name in names {
             let relative = prefix.isEmpty ? name : "\(prefix)/\(name)"
-            let path = directory.appendingPathComponent(name)
             // Finder metadata is not bundle content. Other added files,
             // including generated project notes, still block replacement.
             if !screening && name == ".DS_Store" { continue }
@@ -336,14 +379,14 @@ private func projectSyncBundle(
                     message: "Generated or repository-local content is not copied.", severity: .warning))
                 continue
             }
-            guard isUnsymlinkedDescendant(path, of: root) else {
-                throw projectSyncError("\(relative) is linked; bundle links must be replaced with regular bundled content.")
+            guard let metadata = try directory.metadata(name) else {
+                throw projectSyncError("A bundled entry disappeared while copying.")
             }
-            if (try path.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                try walk(path, prefix: relative, depth: depth + 1)
+            if (metadata.st_mode & S_IFMT) == S_IFDIR {
+                try walk(directory.child(name), prefix: relative, depth: depth + 1)
                 continue
             }
-            let file = try projectSyncReadFile(path, limit: min(publicationMaximumFileBytes, maximumBytes - bytes))
+            let file = try directory.read(name, limit: min(publicationMaximumFileBytes, maximumBytes - bytes))
             bytes += file.data.count
             guard bytes <= maximumBytes else {
                 throw projectSyncError("The skill bundle exceeds the 50 MiB limit.")
@@ -398,6 +441,10 @@ private func projectSyncBundle(
 private func projectSyncReadFile(_ path: URL, limit: Int) throws -> (data: Data, permissions: Int) {
     let descriptor = Darwin.open(path.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
     guard descriptor >= 0 else { throw projectSyncError("A bundled file could not be opened safely.") }
+    return try projectSyncReadFile(descriptor: descriptor, limit: limit)
+}
+
+func projectSyncReadFile(descriptor: CInt, limit: Int) throws -> (data: Data, permissions: Int) {
     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     defer { try? handle.close() }
     var metadata = stat()
@@ -416,55 +463,96 @@ private func projectSyncReadFile(_ path: URL, limit: Int) throws -> (data: Data,
 
 /// Advisory cross-process exclusion on the existing directory: no sidecar
 /// files or Git state are created, and a busy project fails without waiting.
-func withProjectSkillSyncLock<Result>(projectRoot: String, _ operation: () throws -> Result) throws -> Result {
+func withProjectSkillSyncLock<Result>(projectRoot: String,
+    expectedIdentity: ProjectSkillSyncDirectoryIdentity? = nil,
+    _ operation: () throws -> Result
+) throws -> Result {
+    try withProjectSkillSyncDirectoryLock(projectRoot: projectRoot, expectedIdentity: expectedIdentity) { _ in
+        try operation()
+    }
+}
+
+private func withProjectSkillSyncDirectoryLock<Result>(projectRoot: String,
+    expectedIdentity: ProjectSkillSyncDirectoryIdentity?,
+    _ operation: (ProjectSkillSyncDirectory) throws -> Result
+) throws -> Result {
     let root = try projectSyncRoot(projectRoot)
     guard root.path == projectRoot else { throw projectSyncError("The project root changed after preview.") }
-    let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-    guard descriptor >= 0 else { throw projectSyncError("The project could not be locked safely.") }
-    defer { Darwin.close(descriptor) }
-    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+    let directory = try ProjectSkillSyncDirectory(root)
+    if let expectedIdentity, try directory.identity != expectedIdentity {
+        throw projectSyncError("The project directory changed after preview. Preview again; nothing was copied.")
+    }
+    guard flock(directory.descriptor, LOCK_EX | LOCK_NB) == 0 else {
         guard errno == EWOULDBLOCK || errno == EAGAIN else {
             throw projectSyncError("The project does not support a safe sync lock. Nothing was copied.")
         }
         throw projectSyncError("Another Metagent sync is active in this project. Try again after it finishes.")
     }
-    defer { flock(descriptor, LOCK_UN) }
-    return try operation()
+    defer { flock(directory.descriptor, LOCK_UN) }
+    return try operation(directory)
 }
 
 func applyProjectSkillSyncTransaction(
     _ plan: ProjectSkillSyncPlan,
-    beforeManifestCommit: (() throws -> Void)? = nil
+    beforeManifestCommit: (() throws -> Void)? = nil,
+    afterManifestCommit: (() throws -> Void)? = nil
+) throws -> ProjectSkillSyncReport {
+    try applyProjectSkillSyncTransaction(plan,
+        in: ProjectSkillSyncDirectory(URL(fileURLWithPath: plan.projectRoot)),
+        beforeManifestCommit: beforeManifestCommit, afterManifestCommit: afterManifestCommit)
+}
+
+private func applyProjectSkillSyncTransaction(
+    _ plan: ProjectSkillSyncPlan,
+    in projectDirectory: ProjectSkillSyncDirectory,
+    beforeManifestCommit: (() throws -> Void)? = nil,
+    afterManifestCommit: (() throws -> Void)? = nil
 ) throws -> ProjectSkillSyncReport {
     let project = URL(fileURLWithPath: plan.projectRoot)
-    let agents = project.appendingPathComponent(".agents")
-    let skills = agents.appendingPathComponent("skills")
-    let manifestURL = agents.appendingPathComponent(projectSyncManifestName)
-    let stage = agents.appendingPathComponent(".metagent-project-skills-\(UUID().uuidString)")
+    guard try projectDirectory.identity == plan.projectIdentity,
+          try projectSyncIdentity(project) == plan.projectIdentity else {
+        throw projectSyncError("The project directory changed after preview. Preview again; nothing was copied.")
+    }
+    let agents = try projectDirectory.child(".agents", create: true)
+    let skills = try agents.child("skills", create: true)
+    let stageName = ".metagent-project-skills-\(UUID().uuidString)"
+    let stage = try agents.child(stageName, create: true, mode: 0o700)
+    let stageIdentity = try stage.identity
     var installed: [String] = []
     var backedUp: [String] = []
     var manifestCommitted = false
     var cleanup = true
-    try projectSyncDirectoryDestination(agents, under: project)
-    try projectSyncDirectoryDestination(skills, under: project)
-    try fileManager.createDirectory(at: skills, withIntermediateDirectories: true)
-    guard isUnsymlinkedDescendant(stage, of: project) else { throw projectSyncError("The staging path became linked.") }
-    try fileManager.createDirectory(at: stage.appendingPathComponent("new"), withIntermediateDirectories: true)
-    defer { if cleanup && isUnsymlinkedDescendant(stage, of: project) { try? fileManager.removeItem(at: stage) } }
+    defer { if cleanup { try? agents.removeTree(stageName, expectedIdentity: stageIdentity) } }
+    let staged = try stage.child("new", create: true)
+    let backups = try stage.child("backup", create: true)
+    func validateScope() throws {
+        guard try projectSyncIdentity(project) == plan.projectIdentity,
+              try agents.isNamed(".agents", in: projectDirectory), try skills.isNamed("skills", in: agents),
+              try stage.isNamed(stageName, in: agents) else {
+            throw projectSyncError("The project directories changed during copying. Preview again; replacement directories were not modified.")
+        }
+    }
+    func validateBackups() throws {
+        for name in backedUp {
+            guard try projectSyncBundle(in: backups.child(name), screening: false).hash
+                    == plan.items.first(where: { $0.name == name })?.destinationHash else {
+                throw projectSyncError("An original project skill changed in recovery during copying.")
+            }
+        }
+    }
     do {
-        var (manifest, _) = try projectSyncManifest(at: manifestURL, under: project)
+        try validateScope()
+        var (manifest, _) = try projectSyncManifest(in: agents)
+        let global = try ProjectSkillSyncDirectory(URL(fileURLWithPath: plan.globalSkillsRoot))
+        guard try global.identity == plan.globalIdentity else { throw projectSyncError("The source collection changed after preview.") }
         for item in plan.items where [.copy, .update].contains(item.action) {
-            let source = URL(fileURLWithPath: plan.globalSkillsRoot).appendingPathComponent(item.name)
-            let bundle = try projectSyncBundle(at: source, screening: true)
+            let bundle = try projectSyncBundle(in: global.child(item.name), screening: true)
             guard bundle.hash == item.sourceHash, !bundle.findings.contains(where: { $0.severity == .blocking }) else {
                 throw projectSyncError("The source changed while preparing the copy. Preview again.")
             }
-            let target = stage.appendingPathComponent("new/\(item.name)")
+            let target = try staged.child(item.name, create: true)
             for file in bundle.files {
-                let path = target.appendingPathComponent(file.path)
-                try fileManager.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try file.data.write(to: path, options: .withoutOverwriting)
-                try fileManager.setAttributes([.posixPermissions: file.permissions], ofItemAtPath: path.path)
+                try target.write(file.path, data: file.data, permissions: file.permissions)
             }
             manifest.skills[item.name] = .init(collection: plan.collection, contentHash: bundle.hash)
         }
@@ -473,58 +561,77 @@ func applyProjectSkillSyncTransaction(
             collection: plan.collection
         )
         guard rechecked == plan else { throw projectSyncError("The source or project changed while preparing the copy. Preview again.") }
-        try fileManager.createDirectory(at: stage.appendingPathComponent("backup"), withIntermediateDirectories: true)
+        try validateScope()
         for item in plan.items where [.copy, .update].contains(item.action) {
-            let destination = skills.appendingPathComponent(item.name)
-            guard isUnsymlinkedDescendant(destination, of: project) else { throw projectSyncError("A destination became linked.") }
+            try validateScope()
             if item.action == .update {
-                guard try projectSyncBundle(at: destination, screening: false).hash == item.destinationHash else {
+                guard try projectSyncBundle(in: skills.child(item.name), screening: false).hash == item.destinationHash else {
                     throw projectSyncError("A project skill changed before replacement.")
                 }
-                try fileManager.moveItem(at: destination, to: stage.appendingPathComponent("backup/\(item.name)"))
+                try skills.move(item.name, to: backups, as: item.name)
                 backedUp.append(item.name)
+                guard try projectSyncBundle(in: backups.child(item.name), screening: false).hash == item.destinationHash else {
+                    throw projectSyncError("A project skill changed while moving it to recovery. Its changed content will be restored.")
+                }
             }
-            try fileManager.moveItem(at: stage.appendingPathComponent("new/\(item.name)"), to: destination)
+            try staged.move(item.name, to: skills, as: item.name)
             installed.append(item.name)
         }
-        guard try projectSyncManifest(at: manifestURL, under: project).1 == plan.manifestHash else {
+        guard try projectSyncManifest(in: agents).1 == plan.manifestHash else {
             throw projectSyncError("The ownership manifest changed during copying.")
         }
         try beforeManifestCommit?()
-        guard try projectSyncManifest(at: manifestURL, under: project).1 == plan.manifestHash else {
+        try validateScope()
+        guard try projectSyncManifest(in: agents).1 == plan.manifestHash else {
             throw projectSyncError("The ownership manifest changed before commit.")
         }
-        let managedNames = try projectSyncManagedNames(in: project)
+        let managedNames = try projectSyncManagedNames(in: projectDirectory, agents: agents)
         guard plan.items.allSatisfy({ !managedNames.contains($0.name) }) else {
             throw projectSyncError("A selected project skill became manager-owned during copying.")
         }
         let manifestData = try projectSyncEncodedManifest(manifest)
-        try manifestData.write(to: manifestURL, options: .atomic)
+        try validateScope()
+        try validateBackups()
+        try agents.writeAtomically(projectSyncManifestName, data: manifestData)
         manifestCommitted = true
-        return ProjectSkillSyncReport(
+        try afterManifestCommit?()
+        try validateScope()
+        let report = ProjectSkillSyncReport(
             applied: true, plan: plan,
             copiedNames: plan.items.filter { $0.action == .copy }.map(\.name),
             updatedNames: plan.items.filter { $0.action == .update }.map(\.name)
         )
+        // An editor may still hold the original file open after its bundle
+        // moves into backup. Recheck all originals immediately before cleanup.
+        try validateBackups()
+        try agents.removeTree(stageName, expectedIdentity: stageIdentity)
+        cleanup = false
+        return report
     } catch {
+        if manifestCommitted {
+            cleanup = false
+            let manifestLocation = agents.currentPath() ?? "the retained .agents directory"
+            let copiesLocation = skills.currentPath() ?? "the retained skills directory"
+            let recovery = stage.currentPath() ?? "the retained recovery directory (\(stageName))"
+            throw projectSyncError("The copy committed, but final validation stopped: \(error.localizedDescription) Ownership manifest directory: \(manifestLocation). Copied skills: \(copiesLocation). Recovery bundles: \(recovery). Review these locations before retrying.")
+        }
         // No data is hard-deleted during rollback: our just-installed copies
         // return to staging before the original project bundles are restored.
         if !manifestCommitted {
             do {
                 for name in installed.reversed() {
-                    let destination = skills.appendingPathComponent(name)
-                    guard isUnsymlinkedDescendant(destination, of: project),
-                          try projectSyncBundle(at: destination, screening: false).hash == plan.items.first(where: { $0.name == name })?.sourceHash else {
+                    guard try projectSyncBundle(in: skills.child(name), screening: false).hash == plan.items.first(where: { $0.name == name })?.sourceHash else {
                         throw projectSyncError("A rollback path changed; retaining recovery content.")
                     }
-                    try fileManager.moveItem(at: destination, to: stage.appendingPathComponent("new/\(name)"))
+                    try skills.move(name, to: staged, as: name)
                 }
                 for name in backedUp.reversed() {
-                    try fileManager.moveItem(at: stage.appendingPathComponent("backup/\(name)"), to: skills.appendingPathComponent(name))
+                    try backups.move(name, to: skills, as: name)
                 }
             } catch {
                 cleanup = false
-                throw projectSyncError("Copying stopped; recovery bundles remain at \(stage.path). Review the project before retrying.")
+                let recovery = stage.currentPath() ?? "the retained project directory descriptor (\(stageName))"
+                throw projectSyncError("Copying stopped; recovery bundles remain at \(recovery). Review the project before retrying.")
             }
         }
         throw error
@@ -533,6 +640,21 @@ func applyProjectSkillSyncTransaction(
 
 private func projectSyncHash(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func projectSyncIdentity(_ directory: URL) throws -> ProjectSkillSyncDirectoryIdentity {
+    let descriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw projectSyncError("A preview directory could not be opened safely.") }
+    defer { Darwin.close(descriptor) }
+    return try projectSyncIdentity(descriptor: descriptor)
+}
+
+func projectSyncIdentity(descriptor: CInt) throws -> ProjectSkillSyncDirectoryIdentity {
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFDIR else {
+        throw projectSyncError("A preview directory identity could not be read safely.")
+    }
+    return ProjectSkillSyncDirectoryIdentity(device: UInt64(truncatingIfNeeded: metadata.st_dev), inode: UInt64(metadata.st_ino))
 }
 
 private func projectSyncDirectoryNames(_ directory: URL, limit: Int) throws -> [String] {
@@ -559,6 +681,6 @@ private func projectSyncFinding(_ id: String, path: String? = nil, message: Stri
                         message: message, remediation: "Review the selected bundle and project before copying.")
 }
 
-private func projectSyncError(_ message: String) -> NSError {
+func projectSyncError(_ message: String) -> NSError {
     NSError(domain: "MetagentProjectSkillSync", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
 }

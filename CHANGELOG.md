@@ -3,7 +3,12 @@
 Notable changes per released version. Versions are git tags (`vX.Y.Z`); see
 AGENTS.md for the release procedure.
 
-## v0.10.0 — 2026-10-02
+## v0.10.0 — 2026-10-04
+
+- Copy selected global skills into a project's skills folder for cloud checkouts,
+  with file previews, protected project edits, and explicit manual refreshes.
+- Project detail pages, single-skill inspection, and scoped project activity
+  skip unrelated bundle reads and session-folder work without stale caches.
 
 - History catches up faster when plugged in, with short bounded slices and
   conservative battery, Low Power Mode, and thermal limits.
