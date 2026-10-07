@@ -262,6 +262,13 @@ Git settings or alters global sources. See
 [project-skill-sync.md](project-skill-sync.md) for ownership, cloud delivery and
 local duplicate limitations.
 
+Skills has an **Update Skills** button that runs `npx skills update --global`
+and `npx skills update --project` in every known project with a
+`skills-lock.json`. The Skills CLI cannot list outdated skills without
+updating them, so the button shows an orange reminder dot when the last
+successful run is more than two days old (or it has never run from Metagent).
+Per-scope results appear in the output panel and the button's tooltip.
+
 ## Distribution
 
 Public downloads are a signed, notarized disk image. Updates after that first

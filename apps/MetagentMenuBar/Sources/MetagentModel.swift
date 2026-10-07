@@ -93,6 +93,12 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var isPluginInventoryRefreshing = false
     @Published private(set) var pluginUpdateReport: PluginUpdateReport?
     @Published private(set) var isUpdatingPlugins = false
+    @Published private(set) var skillsUpdateReport: SkillsCLIUpdateReport?
+    @Published private(set) var isUpdatingSkills = false
+    @Published private(set) var lastSkillsUpdateAt: Date? = {
+        let stored = UserDefaults.standard.double(forKey: MetagentModel.skillsUpdateLastRunKey)
+        return stored > 0 ? Date(timeIntervalSince1970: stored) : nil
+    }()
     @Published private(set) var mcpHealth = MCPHealthSnapshot()
     @Published private(set) var isMCPRefreshing = false
     @Published private(set) var authenticatingMCPServerID: String?
@@ -965,6 +971,46 @@ final class MetagentModel: ObservableObject {
             if report.updatedCount > 0 {
                 // Versions moved, so the plugin list and any plugin-provided
                 // skills are stale; one scheduled refresh reconciles both.
+                refreshStatus()
+            }
+        }
+    }
+
+    nonisolated static let skillsUpdateLastRunKey = "metagent.skills.update.last-run.v1"
+
+    /// No Skills CLI command reports what is outdated, so the reminder is
+    /// time-based: due once the last successful run is older than the policy.
+    var isSkillsUpdateDue: Bool {
+        SkillsCLIUpdatePolicy.isDue(lastRun: lastSkillsUpdateAt)
+    }
+
+    /// `npx skills update` for global skills and every known project with a
+    /// Skills CLI lock.
+    func updateSkills() {
+        guard !isUpdatingSkills else { return }
+        isUpdatingSkills = true
+        let roots = projects.map(\.root)
+        Task {
+            let report = await Task.detached(priority: .utility) {
+                MetagentCore.updateSkillsCLISkills(projectRoots: roots)
+            }.value
+            skillsUpdateReport = report
+            isUpdatingSkills = false
+            lastOutputWasFailure = report.failedCount > 0
+            lastOutputTitle = report.failedCount > 0 ? "Some skill updates failed" : "Update skills"
+            lastOutputLines = report.outcomes.isEmpty
+                ? [report.summary]
+                : report.outcomes.map { outcome in
+                    let scope = outcome.isGlobal ? "Global" : outcome.root
+                    return "\(scope): \(outcome.summary)"
+                }
+            showsRawOutput = false
+            if report.outcomes.contains(where: \.succeeded) {
+                lastSkillsUpdateAt = report.finishedAt
+                UserDefaults.standard.set(
+                    report.finishedAt.timeIntervalSince1970,
+                    forKey: Self.skillsUpdateLastRunKey
+                )
                 refreshStatus()
             }
         }

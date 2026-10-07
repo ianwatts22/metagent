@@ -58,6 +58,32 @@ public struct ProjectSkillSyncReport: Encodable, Equatable, Sendable {
     }
 }
 
+/// How a global bundle relates to the selected project. Matching is by skill
+/// folder name across every project collection, so a project that already
+/// carries a skill (copied by hand, installed by a manager, or projected for
+/// one agent) never gets a second copy offered.
+public struct ProjectSkillSyncCandidate: Equatable, Sendable, Identifiable {
+    public enum Status: Equatable, Sendable {
+        /// Not in the project yet; selectable.
+        case available
+        /// An earlier Metagent copy in `.agents/skills`; selectable to refresh.
+        case metagentCopy
+        /// Already present under these project collections; not offered.
+        case inProject(locations: [ProjectSkillSyncCollection], sameSkillFile: Bool)
+    }
+    public var id: String { name }
+    public let name: String
+    public let status: Status
+    public init(name: String, status: Status) {
+        self.name = name
+        self.status = status
+    }
+    public var isInProject: Bool {
+        if case .inProject = status { return true }
+        return false
+    }
+}
+
 /// Portable project ownership only. Never persist absolute source/home paths,
 /// accounts, lockfile contents or the user's other selected projects here.
 private struct ProjectSkillSyncManifest: Codable {
@@ -85,6 +111,15 @@ public extension MetagentCore {
         let root = homeURL().appendingPathComponent(collection.relativePath)
         guard fileManager.fileExists(atPath: root.path) else { return [] }
         return try projectSyncSkillNames(in: root)
+    }
+
+    static func projectSkillSyncCandidates(
+        projectRoot: String,
+        collection: ProjectSkillSyncCollection = .agents
+    ) throws -> [ProjectSkillSyncCandidate] {
+        let root = homeURL().appendingPathComponent(collection.relativePath)
+        guard fileManager.fileExists(atPath: root.path) else { return [] }
+        return try projectSkillSyncCandidates(projectRoot: projectRoot, globalSkillsRoot: root, collection: collection)
     }
 
     static func previewProjectSkillSync(
@@ -134,6 +169,39 @@ extension MetagentCore {
                 && isUnsymlinkedDescendant(skill, of: root)
                 && (try? skill.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
                 && (try? skill.appendingPathComponent("SKILL.md").resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+    }
+
+    static func projectSkillSyncCandidates(
+        projectRoot: String,
+        globalSkillsRoot: URL,
+        collection: ProjectSkillSyncCollection
+    ) throws -> [ProjectSkillSyncCandidate] {
+        let names = try projectSyncSkillNames(in: globalSkillsRoot)
+        let project = try projectSyncRoot(projectRoot)
+        let manifestURL = project.appendingPathComponent(".agents").appendingPathComponent(projectSyncManifestName)
+        // An unreadable manifest only loses the refresh affordance; preview
+        // still fails closed on it before anything is copied.
+        let owned = (try? projectSyncManifest(at: manifestURL, under: project))?.0.skills ?? [:]
+        return names.map { name in
+            let locations = ProjectSkillSyncCollection.allCases.filter { location in
+                let path = project.appendingPathComponent(location.relativePath).appendingPathComponent(name)
+                return fileManager.fileExists(atPath: path.path) || isFilesystemSymlink(path)
+            }
+            if locations.isEmpty {
+                return ProjectSkillSyncCandidate(name: name, status: .available)
+            }
+            if locations == [.agents], owned[name]?.collection == collection {
+                return ProjectSkillSyncCandidate(name: name, status: .metagentCopy)
+            }
+            let source = globalSkillsRoot.appendingPathComponent(name).appendingPathComponent("SKILL.md")
+            let sourceData = try? Data(contentsOf: source)
+            let same = locations.contains { location in
+                let path = project.appendingPathComponent(location.relativePath)
+                    .appendingPathComponent(name).appendingPathComponent("SKILL.md")
+                return sourceData != nil && (try? Data(contentsOf: path)) == sourceData
+            }
+            return ProjectSkillSyncCandidate(name: name, status: .inProject(locations: locations, sameSkillFile: same))
         }
     }
 

@@ -270,6 +270,7 @@ struct InventorySection: View {
         if !model.archivedSkills.isEmpty, selectedView != .duplicates {
             archivedSkillsMenu
         }
+        SkillsUpdateButton(model: model)
     }
 
     @ViewBuilder
@@ -420,6 +421,7 @@ struct InventorySection: View {
                         if !model.archivedSkills.isEmpty, selectedView != .duplicates {
                             archivedSkillsMenu
                         }
+                        SkillsUpdateButton(model: model)
                     }
                     if selectedView != .published, selectedView != .duplicates {
                         HStack(spacing: 8) {
@@ -872,5 +874,58 @@ struct SkillsMenuSection: View {
             Spacer()
         }
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// Runs `npx skills update` for global and project skills. The Skills CLI
+/// cannot report what is outdated without updating, so the button carries a
+/// reminder dot once the last successful run is older than the policy.
+struct SkillsUpdateButton: View {
+    @ObservedObject var model: MetagentModel
+
+    var body: some View {
+        Button {
+            model.updateSkills()
+        } label: {
+            if model.isUpdatingSkills {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating…")
+                }
+            } else {
+                Label("Update Skills", systemImage: "arrow.down.circle")
+                    .overlay(alignment: .topTrailing) {
+                        if model.isSkillsUpdateDue {
+                            Circle().fill(.orange).frame(width: 7, height: 7).offset(x: 4, y: -3)
+                        }
+                    }
+            }
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .disabled(model.isUpdatingSkills)
+        .help(helpText)
+        .accessibilityIdentifier("metagent.skills.update")
+        .accessibilityValue(model.isSkillsUpdateDue ? "Update due" : "Up to date")
+    }
+
+    private var helpText: String {
+        var lines = ["Run npx skills update for global skills and every project with a skills-lock.json."]
+        if let last = model.lastSkillsUpdateAt {
+            lines.append("Last run \(last.formatted(.relative(presentation: .named))).")
+        } else {
+            lines.append("Never run from Metagent.")
+        }
+        if model.isSkillsUpdateDue {
+            lines.append("Due: more than 2 days since the last update.")
+        }
+        if let report = model.skillsUpdateReport {
+            lines.append(report.summary + ":")
+            lines += report.outcomes.map { outcome in
+                let scope = outcome.isGlobal ? "Global" : URL(fileURLWithPath: outcome.root).lastPathComponent
+                return "\(outcome.succeeded ? "" : "Failed · ")\(scope): \(outcome.summary)"
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
