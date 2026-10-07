@@ -72,6 +72,10 @@ for shell_script in "$repo_root"/scripts/*.sh; do
 done
 }
 
+verify_site_middleware() {
+node --test "$repo_root/edge/adoption.test.mjs"
+}
+
 verify_notarization_auth() (
   unset \
     METAGENT_NOTARY_PROFILE \
@@ -953,6 +957,7 @@ run_stage() {
 run_fast_lane() {
   run_stage "Shell syntax" "<5s" verify_shell_syntax
   run_stage "Notarization auth routing" "<5s" verify_notarization_auth
+  run_stage "Site adoption middleware" "<5s" verify_site_middleware
   run_stage "Swift build" "<10s incremental" verify_swift_build
   swift_built=true
   run_stage "Swift tests" "<30s" verify_swift_tests
