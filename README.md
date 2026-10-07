@@ -26,7 +26,7 @@ expose the same Swift core to terminals and agents.
 
 ## Quick install
 
-1. Download the latest signed and notarized [Metagent DMG](https://github.com/ianwatts22/metagent/releases/latest/download/Metagent.dmg).
+1. Download the latest signed and notarized [Metagent DMG](https://metagent.sh/download/).
 2. Open the DMG and drag Metagent into Applications.
 3. Open Metagent. Future production updates arrive through Sparkle.
 
@@ -218,6 +218,11 @@ and broad count ranges. They never contain skill names or content, file paths,
 account details, prompts, logs, or screen recordings. A random install ID keeps
 events from one installation together without an account or identity lookup.
 Turn off **Share anonymous usage data** in Settings to stop all app analytics.
+
+The metagent.sh site separately logs two anonymous server-side events: daily
+Sparkle update checks (app version and country) and download requests (platform,
+referring site, and country). It stores no IP addresses or user agents; see
+[docs/adoption-metrics.md](docs/adoption-metrics.md).
 
 Optional Codex review is separate from analytics. It sends the selected skill
 and bounded project context to OpenAI only after explicit confirmation.
