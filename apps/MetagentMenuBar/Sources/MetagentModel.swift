@@ -130,6 +130,9 @@ final class MetagentModel: ObservableObject {
     private let fileManager = FileManager.default
     private var statusRefreshGeneration = 0
     private var statusRefreshQueued = false
+    private var doctorReportIssues: [DoctorIssue] = []
+    private var projectSkillFollowIssues: [DoctorIssue] = []
+    private var isFollowingProjectSkills = false
     private var skillRemovalQueues: [String: [[SkillRemovalRequest]]] = [:]
     private var activeSkillRemovalKeys = Set<String>()
     private(set) var completedSkillRemovalIDs = Set<String>()
@@ -266,6 +269,7 @@ final class MetagentModel: ObservableObject {
     private func startWatchingSkillRoots() {
         var paths = [
             homeURL().appendingPathComponent(".agents/skills").path,
+            homeURL().appendingPathComponent(".codex/skills").path,
             homeURL().appendingPathComponent(".claude/skills").path,
             homeURL().appendingPathComponent(".codex/plugins/cache").path,
         ]
@@ -1912,9 +1916,7 @@ final class MetagentModel: ObservableObject {
             }
             applyDoctorReport(DoctorReport(issues: issues))
         } else {
-            doctorIssues = []
-            warningCount = 0
-            failureCount = 0
+            applyDoctorReport(DoctorReport(issues: []))
         }
 
         if (scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess) && doctor.isSuccess {
@@ -1922,6 +1924,7 @@ final class MetagentModel: ObservableObject {
             statusText = "\(repoCount) locations, \(skillCount) skills"
             systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
             recordHistory(trigger: hasCapturedHistory ? .refresh : .launch)
+            followSyncedProjectSkills()
         } else {
             recordFailureOutput(
                 title: "Status check failed",
@@ -2001,9 +2004,67 @@ final class MetagentModel: ObservableObject {
     }
 
     private func applyDoctorReport(_ report: DoctorReport) {
-        doctorIssues = report.issues
-        warningCount = report.warningCount
-        failureCount = report.failureCount
+        doctorReportIssues = report.issues
+        publishDoctorIssues()
+    }
+
+    /// Doctor findings and synced-skill follow findings arrive separately;
+    /// either one landing republishes the combined attention list.
+    private func publishDoctorIssues() {
+        let combined = DoctorReport(issues: doctorReportIssues + projectSkillFollowIssues)
+        doctorIssues = combined.issues
+        warningCount = combined.warningCount
+        failureCount = combined.failureCount
+    }
+
+    /// Skills synced into projects follow their global source. This runs after
+    /// each successful status refresh, off the main actor; only projects with
+    /// `.agents/project-skills.json` do any bundle I/O. Updated copies end in
+    /// one more refresh whose follow pass finds them unchanged, so it settles.
+    private func followSyncedProjectSkills() {
+        guard !isFollowingProjectSkills else { return }
+        let roots = projects
+            .filter { $0.root != NSHomeDirectory() && !$0.skills.contains { $0.location == "plugin" } }
+            .map(\.root)
+        isFollowingProjectSkills = true
+        Task {
+            let report = await Task.detached(priority: .utility) {
+                MetagentCore.refreshSyncedProjectSkills(projectRoots: roots)
+            }.value
+            isFollowingProjectSkills = false
+            projectSkillFollowIssues = Self.followIssues(report)
+            publishDoctorIssues()
+            if !lastOutputWasFailure, !isRunning {
+                systemImage = problemCount == 0 ? "checkmark.circle" : "exclamationmark.triangle"
+            }
+            if report.updatedCount > 0 { refreshStatus() }
+        }
+    }
+
+    nonisolated private static func followIssues(_ report: ProjectSkillFollowReport) -> [DoctorIssue] {
+        report.projects.flatMap { project -> [DoctorIssue] in
+            let projectName = URL(fileURLWithPath: project.projectRoot).lastPathComponent
+            if let error = project.error {
+                return [DoctorIssue(
+                    severity: .warning,
+                    message: "Synced skills in \(projectName) cannot follow their global sources: \(error)",
+                    summary: "\(projectName): synced skill updates paused",
+                    projectRoot: project.projectRoot,
+                    category: .project,
+                    guidance: "Restore a valid .agents/project-skills.json. Metagent leaves the project untouched until it can read it."
+                )]
+            }
+            return project.blocked.map { issue in
+                DoctorIssue(
+                    severity: .warning,
+                    message: "Synced skill \(issue.name) in \(projectName) is not following its global source: \(issue.reason)",
+                    summary: "\(issue.name): synced project copy paused",
+                    projectRoot: project.projectRoot,
+                    category: .skills,
+                    guidance: "The project copy is untouched. Resolve the reason to resume updates (for a local edit, restore the last synced version), or delete its entry in .agents/project-skills.json to keep the copy as a project-owned skill."
+                )
+            }
+        }
     }
 
     private func updateInventorySummary() {

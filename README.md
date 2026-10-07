@@ -99,7 +99,8 @@ prints the recovery path rather than deleting them outright.
 To include selected global skills in cloud project checkouts, use
 `metagent skills sync-to-project NAME [NAME...] --root /absolute/project` or
 **Sync Global Skills…** in the app's Projects view. It previews complete bundles
-and copies only after confirmation; commit/push remain separate.
+and copies only after confirmation; copied skills then follow their global
+source automatically unless locally edited. Commit/push remain separate.
 [Project skill sync](docs/project-skill-sync.md) explains source collections,
 safe refreshes, conflicts and local duplicate limitations.
 

@@ -25,8 +25,10 @@ public struct ProjectSkillSyncItem: Codable, Equatable, Sendable, Identifiable {
     public let findings: [SkillPublishFinding]
 }
 
-/// A preview is a snapshot, not ongoing permission to mirror. Apply rechecks
-/// every selected bundle and ownership record before it changes the project.
+/// A preview is a snapshot. Apply rechecks every selected bundle and ownership
+/// record before it changes the project. Ongoing updates come from the
+/// ownership manifest: `refreshSyncedProjectSkills` previews and applies each
+/// recorded skill on its own through this same path.
 public struct ProjectSkillSyncPlan: Encodable, Equatable, Sendable {
     public let projectRoot: String
     public let globalSkillsRoot: String
@@ -233,6 +235,19 @@ extension MetagentCore {
     }
 }
 
+/// The skills a project's ownership manifest records, with their source
+/// collection. Callers check the manifest exists first; a missing one is empty.
+func projectSyncOwnedSkills(projectRoot: String) throws -> [(name: String, collection: ProjectSkillSyncCollection)] {
+    let project = try projectSyncRoot(projectRoot)
+    let agents = project.appendingPathComponent(".agents")
+    try projectSyncDirectoryDestination(agents, under: project)
+    let (manifest, _) = try projectSyncManifest(at: agents.appendingPathComponent(projectSyncManifestName), under: project)
+    return manifest.skills.keys.sorted().compactMap { name in
+        manifest.skills[name].map { (name, $0.collection) }
+    }
+}
+
+let projectSyncManifestRelativePath = ".agents/project-skills.json"
 private let projectSyncManifestName = "project-skills.json"
 private let projectSyncMaximumEntries = 4_096
 private let projectSyncMaximumTotalBytes = 100 * 1_024 * 1_024
@@ -486,7 +501,8 @@ private func withProjectSkillSyncDirectoryLock<Result>(projectRoot: String,
         guard errno == EWOULDBLOCK || errno == EAGAIN else {
             throw projectSyncError("The project does not support a safe sync lock. Nothing was copied.")
         }
-        throw projectSyncError("Another Metagent sync is active in this project. Try again after it finishes.")
+        throw projectSyncError("Another Metagent sync is active in this project. Try again after it finishes.",
+                               code: projectSyncBusyErrorCode)
     }
     defer { flock(directory.descriptor, LOCK_UN) }
     return try operation(directory)
@@ -681,6 +697,15 @@ private func projectSyncFinding(_ id: String, path: String? = nil, message: Stri
                         message: message, remediation: "Review the selected bundle and project before copying.")
 }
 
-func projectSyncError(_ message: String) -> NSError {
-    NSError(domain: "MetagentProjectSkillSync", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+private let projectSyncErrorDomain = "MetagentProjectSkillSync"
+private let projectSyncBusyErrorCode = 2
+
+func projectSyncError(_ message: String, code: Int = 1) -> NSError {
+    NSError(domain: projectSyncErrorDomain, code: code, userInfo: [NSLocalizedDescriptionKey: message])
+}
+
+/// Another Metagent copy holds the project lock; a later attempt may succeed.
+func isProjectSyncBusy(_ error: Error) -> Bool {
+    let error = error as NSError
+    return error.domain == projectSyncErrorDomain && error.code == projectSyncBusyErrorCode
 }

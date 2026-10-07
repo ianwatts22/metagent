@@ -1,8 +1,11 @@
 # Project skill sync
 
 Copy chosen global skill bundles into a project's `.agents/skills` so a fresh
-or cloud checkout has the same files. This is a local, explicit copy operation,
-not public skill publishing or continuous background mirroring.
+or cloud checkout has the same files. The first copy is an explicit, reviewed
+operation; after that, each copied skill follows its global source (see
+[Staying up to date](#staying-up-to-date)). Copies are real files, never
+symlinks, because cloud checkouts need committed content. This is not public
+skill publishing.
 
 ## App
 
@@ -33,6 +36,10 @@ metagent skills sync-to-project git-hygiene deployment-workflow \
 # Select direct Codex global bundles explicitly, not plugin/runtime copies.
 metagent skills sync-to-project example --collection codex \
   --root /absolute/path/to/project
+
+# Check every recorded skill against its global source; --apply updates them.
+metagent skills sync-to-project --follow --root /absolute/path/to/project --json
+metagent skills sync-to-project --follow --root /absolute/path/to/project --apply
 ```
 
 `--root` is required and must identify an existing physical folder. The default
@@ -43,6 +50,13 @@ search results. JSON success contains `applied`, `plan`, `copied_names`, and
 with the preview JSON; other operation failures return one `{"error":"…"}`
 object. No file content or
 credential value is included in these reports.
+
+`--follow` takes no skill names or `--collection`: the project's ownership
+manifest supplies both. `--root` may repeat. JSON contains `applied` and one
+`projects` entry per root that has a manifest, with `updated_names`, `blocked`
+(`name` and `reason`), `deferred_names` (another Metagent copy was active) and
+an `error` when the manifest could not be read. Blocked skills or an unreadable
+manifest exit nonzero after printing the report.
 
 ## What reaches cloud
 
@@ -66,15 +80,41 @@ paths and global-skill references are visible portability warnings, not proof
 that all dependencies were found. Review the selected content for private
 accounts, internal context and unrecognized secrets before committing it.
 
+## Staying up to date
+
+Every skill recorded in `.agents/project-skills.json` follows its global
+source. After each successful status refresh, the app previews each recorded
+skill on its own and applies only clean updates through the same copy path as
+the sheet, with every check below. Editing a global skill in `~/.agents/skills`,
+`~/.codex/skills` or `~/.claude/skills` triggers that refresh automatically.
+The app follows projects in its inventory; for other checkouts, run
+`metagent skills sync-to-project --follow --apply`. Only projects with an
+ownership manifest do any bundle reads.
+
+A skill that cannot update is left untouched and reported in the Attention
+Center, while the project's other skills still update:
+
+- **Local edits** pause updates for that skill. Restore the last synced version
+  to resume, or delete its manifest entry to keep the copy as a project-owned
+  skill.
+- **Credential findings** in the global source block the copy until removed.
+- **A deleted global source** never deletes the project copy.
+- **A missing project copy** is not re-created.
+
+If another Metagent copy is active in the project, the skill is skipped quietly
+and retried on the next refresh. Updated files are local changes like any
+other: review, commit and push them to reach cloud checkouts.
+
 ## Refresh and conflicts
 
 The portable `.agents/project-skills.json` file records only a format version,
 skill folder names, source collection identifiers and content hashes. It
 contains no absolute home/source paths, account mappings, or private overlays.
-Keep it with the copied bundles so later refreshes can prove ownership.
+Keep it with the copied bundles so later refreshes can prove ownership; each
+entry is also the subscription that keeps that skill up to date.
 
-A refresh is another explicit preview and copy. Identical owned bundles are a
-no-op. An updated source replaces only selected, unchanged Metagent-owned
+A manual refresh is another explicit preview and copy. Identical owned bundles
+are a no-op. An updated source replaces only selected, unchanged Metagent-owned
 copies; the preview lists obsolete copied files that will disappear. Ownership
 hashes use file bytes and Git-preserved executable status, not local read/write
 permissions or Finder `.DS_Store` metadata. Other added files remain edits.
