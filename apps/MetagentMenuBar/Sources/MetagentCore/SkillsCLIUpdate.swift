@@ -93,7 +93,7 @@ extension MetagentCore {
 
 /// Strips ANSI escape sequences and spinner line clears from CLI output.
 func skillsCLIPlainOutput(_ output: String) -> String {
-    output.replacingOccurrences(of: #"\u{1B}\[[0-9;?]*[A-Za-z]"#, with: "", options: .regularExpression)
+    output.replacingOccurrences(of: #"\u001B\[[0-9;?]*[A-Za-z]"#, with: "", options: .regularExpression)
 }
 
 /// Prefers the CLI's own result lines ("✓ All global skills are up to date",
