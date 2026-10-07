@@ -104,8 +104,8 @@ public extension MetagentCore {
             guard usageIndexIsComplete else { return }
             try store.setMetadata(historyBackfillVersionKey, String(historyBackfillVersion))
         }
-        let archiveRoot = removalArchive ?? homeURL().standardizedFileURL
-            .appendingPathComponent("Library/Application Support/Metagent/Removed Skills")
+        let archiveRoot = removalArchive ?? metagentDataDirectory()
+            .appendingPathComponent("Removed Skills")
         let gitLifetimes = gitSkillLifetimes(projects: projects)
         let archiveRemovals = reconstructedRemovals(archive: archiveRoot)
         let installed = reconstructedInstalls(

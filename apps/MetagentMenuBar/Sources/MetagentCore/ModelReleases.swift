@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// A Metagent-authored finding about a skill. Advisories are distinct from
 /// evaluator deductions: they carry management context Metagent itself
@@ -335,11 +338,11 @@ extension MetagentCore {
     // MARK: - Private
 
     private static func modelReleaseCachePath() -> URL {
-        homeURL().appendingPathComponent("Library/Application Support/Metagent/model-releases-v1.json")
+        metagentDataDirectory().appendingPathComponent("model-releases-v1.json")
     }
 
     private static func modelReleaseAffirmationPath() -> URL {
-        homeURL().appendingPathComponent("Library/Application Support/Metagent/model-release-affirmations-v1.json")
+        metagentDataDirectory().appendingPathComponent("model-release-affirmations-v1.json")
     }
 
     private static func modelReleaseEncoder() -> JSONEncoder {

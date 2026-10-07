@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(IOKit)
 import IOKit.ps
+#endif
 
 /// The normal-power phase of a cooperative usage backfill.
 ///
@@ -150,10 +152,14 @@ public struct SkillUsageMaintenancePlan: Sendable, Equatable {
 
     /// Unknown power sources fail conservatively, including UPS/battery power.
     public static func hasExternalPower() -> Bool {
+        #if canImport(IOKit)
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
         else { return false }
         return source as String == kIOPSACPowerValue
+        #else
+        return linuxHasExternalPower()
+        #endif
     }
 
     /// Clamps a policy to the known unprocessed tail. Returning `nil` for an

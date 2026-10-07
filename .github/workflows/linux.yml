@@ -1,0 +1,110 @@
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The headless core, CLI, and MCP server must keep building and passing their
+  # tests on Linux, where cloud agent containers run. The SwiftUI app and its
+  # tests are left out of the package on Linux.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: swift:6.2-jammy
+      # An init process reaps orphaned grandchildren, as a real host does; the
+      # process-group cleanup tests depend on that.
+      options: --init
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install git
+        run: apt-get update -qq && apt-get install -y -qq git
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: apps/MetagentMenuBar/.build
+          key: swiftpm-linux-jammy-${{ hashFiles('apps/MetagentMenuBar/Package.swift', 'apps/MetagentMenuBar/Package.resolved') }}
+          restore-keys: swiftpm-linux-jammy-
+
+      - name: Run tests
+        working-directory: apps/MetagentMenuBar
+        run: swift test
+
+      - name: Build release helper
+        run: ./scripts/build-linux-cli.sh --output "$RUNNER_TEMP/metagent"
+
+      - name: Smoke test release helper
+        run: |
+          "$RUNNER_TEMP/metagent" analyze --root "$GITHUB_WORKSPACE" --json > /dev/null
+          ./scripts/smoke-mcp-stdio.sh "$RUNNER_TEMP/metagent"
+
+  # Release binaries link against musl through Swift's Static Linux SDK so they
+  # carry no shared-library dependencies (no glibc floor, no libcurl).
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      # The Static Linux SDK must match the toolchain exactly; keep this tag in
+      # step with scripts/install-static-linux-sdk.sh.
+      image: swift:6.2.4-jammy
+      options: --init
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Static Linux SDK
+        run: ./scripts/install-static-linux-sdk.sh
+
+      - name: Build static helper
+        run: ./scripts/build-linux-cli.sh --static --output "$RUNNER_TEMP/metagent"
+
+      - name: Check it has no dynamic dependencies
+        run: |
+          if ldd "$RUNNER_TEMP/metagent" 2>&1 | grep -q '=>'; then
+            ldd "$RUNNER_TEMP/metagent"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metagent-static
+          path: ${{ runner.temp }}/metagent
+
+  # The static helper must run on a libc it was not built against.
+  static-alpine:
+    needs: static
+    runs-on: ubuntu-24.04
+    container: alpine:3.22
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: metagent-static
+          path: bin
+
+      - name: Smoke test on Alpine
+        run: |
+          apk add --no-cache bash coreutils grep
+          chmod +x bin/metagent
+          bin/metagent analyze --root "$GITHUB_WORKSPACE" --json > /dev/null
+          ./scripts/smoke-mcp-stdio.sh bin/metagent

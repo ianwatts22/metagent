@@ -1,4 +1,8 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 public enum SkillPublishReadinessStatus: String, Codable, Sendable {
@@ -1168,9 +1172,7 @@ private func publicationFinding(
 }
 
 private func skillPublicationStorePath() -> URL {
-    homeURL().appendingPathComponent(
-        "Library/Application Support/Metagent/skill-publications-v1.json"
-    )
+    metagentDataDirectory().appendingPathComponent("skill-publications-v1.json")
 }
 
 private func primaryPublicationSkillsRoot() -> URL {

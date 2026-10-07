@@ -1,6 +1,16 @@
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 public enum SkillOverlapKind: String, Codable, Equatable, Sendable {
     case pluginReplacement = "plugin_replacement"

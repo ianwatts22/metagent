@@ -298,11 +298,18 @@ struct SkillHistoryState: Sendable, Equatable {
 /// moved within a volume. This is what makes a rename provable rather than
 /// guessed from similar-looking content.
 func directoryIdentity(_ path: String) -> String? {
+    #if canImport(Darwin)
     guard let values = try? URL(fileURLWithPath: path)
         .resourceValues(forKeys: [.fileResourceIdentifierKey]),
         let identifier = values.fileResourceIdentifier
     else { return nil }
     return String(describing: identifier)
+    #else
+    // corelibs Foundation does not provide fileResourceIdentifier.
+    var info = stat()
+    guard stat(path, &info) == 0 else { return nil }
+    return "\(info.st_dev):\(info.st_ino)"
+    #endif
 }
 
 public extension MetagentCore {
@@ -488,8 +495,8 @@ final class SkillHistoryStore {
         if let path {
             self.path = URL(fileURLWithPath: path)
         } else {
-            self.path = homeURL().standardizedFileURL
-                .appendingPathComponent("Library/Application Support/Metagent/history.sqlite")
+            self.path = metagentDataDirectory()
+                .appendingPathComponent("history.sqlite")
         }
         try fileManager.createDirectory(
             at: self.path.deletingLastPathComponent(),

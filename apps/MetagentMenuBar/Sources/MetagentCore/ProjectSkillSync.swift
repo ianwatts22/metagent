@@ -1,5 +1,15 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 public enum ProjectSkillSyncCollection: String, Codable, CaseIterable, Sendable {
@@ -439,7 +449,7 @@ private func projectSyncBundle(
 /// O_NOFOLLOW and a bounded read prevent linked leafs and a file growing after
 /// stat from bypassing the copy limit. No FIFOs, devices, or sockets are read.
 private func projectSyncReadFile(_ path: URL, limit: Int) throws -> (data: Data, permissions: Int) {
-    let descriptor = Darwin.open(path.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    let descriptor = LibC.open(path.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
     guard descriptor >= 0 else { throw projectSyncError("A bundled file could not be opened safely.") }
     return try projectSyncReadFile(descriptor: descriptor, limit: limit)
 }
@@ -643,9 +653,9 @@ private func projectSyncHash(_ data: Data) -> String {
 }
 
 private func projectSyncIdentity(_ directory: URL) throws -> ProjectSkillSyncDirectoryIdentity {
-    let descriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    let descriptor = LibC.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     guard descriptor >= 0 else { throw projectSyncError("A preview directory could not be opened safely.") }
-    defer { Darwin.close(descriptor) }
+    defer { LibC.close(descriptor) }
     return try projectSyncIdentity(descriptor: descriptor)
 }
 

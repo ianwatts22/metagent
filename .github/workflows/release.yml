@@ -245,3 +245,77 @@ jobs:
       - name: Remove temporary notarization key
         if: always()
         run: rm -f "$RUNNER_TEMP/notary-api-key.p8"
+
+  # Headless helper (CLI + MCP server) for Linux hosts and cloud agent
+  # containers. Built on Ubuntu 22.04 so the binary runs on glibc 2.35+.
+  linux-cli:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      # Pinned to match scripts/install-static-linux-sdk.sh.
+      image: swift:6.2.4-jammy
+      options: --init
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install release tooling
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq curl gpg
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            > /etc/apt/sources.list.d/github-cli.list
+          apt-get update -qq
+          apt-get install -y -qq gh
+
+      - name: Test
+        working-directory: apps/MetagentMenuBar
+        run: swift test
+
+      - name: Install Static Linux SDK
+        run: ./scripts/install-static-linux-sdk.sh
+
+      - name: Build helper
+        run: ./scripts/build-linux-cli.sh --static --output "artifacts/metagent"
+
+      - name: Smoke test helper
+        run: |
+          artifacts/metagent analyze --root "$GITHUB_WORKSPACE" --json > /dev/null
+          ./scripts/smoke-mcp-stdio.sh artifacts/metagent
+
+      - name: Package
+        run: |
+          archive="metagent-linux-${{ matrix.arch }}.tar.gz"
+          tar -czf "artifacts/$archive" -C artifacts metagent
+          (cd artifacts && sha256sum "$archive" > "$archive.sha256" && cat "$archive.sha256")
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          archive="metagent-linux-${{ matrix.arch }}.tar.gz"
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "artifacts/$archive" "artifacts/$archive.sha256" \
+            --repo "$GITHUB_REPOSITORY" --clobber

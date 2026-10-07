@@ -145,10 +145,7 @@ extension MetagentCore {
     /// the history backfill treats that folder as evidence of permanent
     /// removal, and an archived skill is expected back.
     public static func archivedSkillsRoot() -> URL {
-        homeURL()
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("Metagent")
+        metagentDataDirectory()
             .appendingPathComponent("Archived Skills")
     }
 

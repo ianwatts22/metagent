@@ -1,6 +1,14 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+#if canImport(ImageIO)
 import ImageIO
+#endif
 import SQLite3
 
 struct SkillLock: Decodable {
@@ -1300,10 +1308,7 @@ final class SkillInventoryCache {
     private let path: URL
 
     init(path: URL? = nil) throws {
-        self.path = path ?? homeURL()
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("Metagent")
+        self.path = path ?? metagentDataDirectory()
             .appendingPathComponent("inventory.sqlite")
         try fileManager.createDirectory(at: self.path.deletingLastPathComponent(), withIntermediateDirectories: true)
     }

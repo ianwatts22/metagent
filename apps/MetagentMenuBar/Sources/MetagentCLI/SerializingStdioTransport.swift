@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 import Logging
 import MCP
@@ -60,6 +66,7 @@ actor SerializingStdioTransport: Transport {
         let continuation = self.continuation
         let framer = self.framer
         let onReadEvent = self.onReadEvent
+        #if canImport(Darwin)
         input.readabilityHandler = { handle in
             onReadEvent?()
             let data = handle.availableData
@@ -75,6 +82,35 @@ actor SerializingStdioTransport: Transport {
                 continuation.yield(message)
             }
         }
+        #else
+        // swift-corelibs-foundation does not deliver a readability event when
+        // a pipe reaches EOF, so the helper would never notice its client
+        // leaving. A dedicated thread blocked in read(2) sees EOF directly and
+        // still costs no wakeups while stdin is idle.
+        let inputFileDescriptor = input.fileDescriptor
+        let reader = Thread {
+            var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+            while true {
+                let count = buffer.withUnsafeMutableBytes {
+                    systemRead(inputFileDescriptor, $0.baseAddress, $0.count)
+                }
+                if count < 0, errno == EINTR { continue }
+                guard !framer.isFinished else { return }
+                onReadEvent?()
+                guard count > 0 else {
+                    if framer.finish() {
+                        continuation.finish()
+                    }
+                    return
+                }
+                for message in framer.append(Data(buffer[0..<count])) {
+                    continuation.yield(message)
+                }
+            }
+        }
+        reader.name = "metagent.mcp.stdin"
+        reader.start()
+        #endif
     }
 
     func disconnect() async {
@@ -132,7 +168,7 @@ actor SerializingStdioTransport: Transport {
         while offset < data.count {
             try Task.checkCancellation()
             let written = data.withUnsafeBytes { bytes in
-                Darwin.write(
+                systemWrite(
                     fileDescriptor,
                     bytes.baseAddress!.advanced(by: offset),
                     bytes.count - offset
@@ -222,12 +258,18 @@ private final class FileDescriptorWriteWaiter: @unchecked Sendable {
 private final class NewlineMessageFramer: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = Data()
-    private var isFinished = false
+    private var finished = false
+
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
+    }
 
     func append(_ data: Data) -> [Data] {
         lock.lock()
         defer { lock.unlock() }
-        guard !isFinished else { return [] }
+        guard !finished else { return [] }
 
         pending.append(data)
         var messages: [Data] = []
@@ -245,9 +287,19 @@ private final class NewlineMessageFramer: @unchecked Sendable {
     func finish() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !isFinished else { return false }
-        isFinished = true
+        guard !finished else { return false }
+        finished = true
         pending.removeAll(keepingCapacity: false)
         return true
     }
 }
+
+#if canImport(Darwin)
+private let systemWrite = Darwin.write
+#elseif canImport(Glibc)
+private let systemRead = Glibc.read
+private let systemWrite = Glibc.write
+#else
+private let systemRead = Musl.read
+private let systemWrite = Musl.write
+#endif

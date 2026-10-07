@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// All copy writes are relative to retained directory descriptors, not a
@@ -7,12 +13,12 @@ final class ProjectSkillSyncDirectory {
     let descriptor: CInt
 
     init(_ url: URL) throws {
-        descriptor = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        descriptor = LibC.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { throw projectSyncError("A sync directory could not be opened safely.") }
     }
 
     private init(descriptor: CInt) { self.descriptor = descriptor }
-    deinit { Darwin.close(descriptor) }
+    deinit { LibC.close(descriptor) }
 
     var identity: ProjectSkillSyncDirectoryIdentity { get throws { try projectSyncIdentity(descriptor: descriptor) } }
 
@@ -46,7 +52,7 @@ final class ProjectSkillSyncDirectory {
         let fresh = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fresh >= 0 else { throw projectSyncError("A sync directory could not be enumerated.") }
         guard let handle = fdopendir(fresh) else {
-            Darwin.close(fresh)
+            LibC.close(fresh)
             throw projectSyncError("A sync directory could not be enumerated.")
         }
         defer { closedir(handle) }
@@ -90,7 +96,7 @@ final class ProjectSkillSyncDirectory {
         try validate(name)
         try destination.validate(target)
         // Never replace a concurrently created target, even an empty folder.
-        guard renameatx_np(descriptor, name, destination.descriptor, target, UInt32(RENAME_EXCL)) == 0 else {
+        guard renameAtExclusive(descriptor, name, destination.descriptor, target) == 0 else {
             throw projectSyncError("A copy destination changed or a bundle could not be moved safely.")
         }
     }
@@ -126,9 +132,7 @@ final class ProjectSkillSyncDirectory {
 
     /// For recovery messages only; never used to route a filesystem mutation.
     func currentPath() -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { return nil }
-        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        pathForDescriptor(descriptor)
     }
 
     private func validate(_ name: String) throws {

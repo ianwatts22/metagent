@@ -1,5 +1,13 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+#if canImport(CoreServices)
 import CoreServices
+#endif
 import Foundation
 import SQLite3
 
@@ -440,7 +448,7 @@ private func usageDirectoryIdentity(_ path: String) -> String? {
     guard lstat(path, &metadata) == 0,
           metadata.st_mode & S_IFMT == S_IFDIR
     else { return nil }
-    return "\(metadata.st_dev):\(metadata.st_ino):\(metadata.st_birthtimespec.tv_sec):\(metadata.st_birthtimespec.tv_nsec)"
+    return "\(metadata.st_dev):\(metadata.st_ino):\(creationTime(metadata).tv_sec):\(creationTime(metadata).tv_nsec)"
 }
 
 private func usagePathContainsMutableSymlink(_ path: String) -> Bool {
@@ -617,11 +625,12 @@ private final class UsageSourceCatalogWatcherState: @unchecked Sendable {
     }
 }
 
+#if canImport(Darwin)
 private final class UsageRootChangeWatcher: @unchecked Sendable {
     private let source: DispatchSourceFileSystemObject
 
     init?(path: String, queue: DispatchQueue, onChange: @escaping @Sendable () -> Void) {
-        let descriptor = Darwin.open(path, O_EVTONLY | O_CLOEXEC)
+        let descriptor = LibC.open(path, O_EVTONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
@@ -629,7 +638,7 @@ private final class UsageRootChangeWatcher: @unchecked Sendable {
             queue: queue
         )
         source.setEventHandler(handler: onChange)
-        source.setCancelHandler { Darwin.close(descriptor) }
+        source.setCancelHandler { LibC.close(descriptor) }
         source.resume()
     }
 
@@ -637,6 +646,15 @@ private final class UsageRootChangeWatcher: @unchecked Sendable {
         source.cancel()
     }
 }
+#else
+/// Linux has no vnode delete/rename source; callers treat a missing watcher as
+/// unwatchable and decline catalog reuse.
+private final class UsageRootChangeWatcher: @unchecked Sendable {
+    init?(path: String, queue: DispatchQueue, onChange: @escaping @Sendable () -> Void) {
+        return nil
+    }
+}
+#endif
 
 private func armUsageSourceCatalogWatcherState(
     _ state: UsageSourceCatalogWatcherState,
@@ -655,6 +673,7 @@ private func armUsageSourceCatalogWatcherState(
     }
 }
 
+#if canImport(CoreServices)
 private final class UsageSourceCatalogWatcher: @unchecked Sendable {
     private let state: UsageSourceCatalogWatcherState
     private let queue = DispatchQueue(label: "com.ianwatts.metagent.usage-source-catalog")
@@ -809,6 +828,27 @@ private final class UsageSourceCatalogWatcher: @unchecked Sendable {
         state.handle(flags, eventID: 0, eventPath: path)
     }
 }
+#else
+/// Without FSEvents there is no passive invalidation stream, so the catalog is
+/// never reused: every refresh rediscovers sources. Correct, just not cached.
+private final class UsageSourceCatalogWatcher: @unchecked Sendable {
+    let isStarted = false
+
+    init(paths: [String], databasePath: String) {}
+
+    var isDirty: Bool { true }
+
+    var diagnostics: String { "watcherStarted=false, file events unavailable on this platform" }
+
+    func canRetainCatalogAfterDiscovery() -> Bool { false }
+
+    func markDirty() {}
+
+    func modifiedFilesForReuse() -> Set<String>? { nil }
+
+    func recordFileEventForTesting(path: String, flags: FSEventStreamEventFlags) {}
+}
+#endif
 
 private final class UsageSourceCatalogCache: @unchecked Sendable {
     static let shared = UsageSourceCatalogCache()
@@ -1062,6 +1102,16 @@ extension MetagentCore {
         )
     }
 
+    /// macOS keeps the continuation catalog alive with FSEvents; Linux has no
+    /// passive stream, so every refresh rediscovers sources instead.
+    static var skillUsageCatalogReuseIsAvailableForTesting: Bool {
+        #if canImport(CoreServices)
+        true
+        #else
+        false
+        #endif
+    }
+
     static func skillUsageSourceCatalogDiagnosticsForTesting(databasePath: String) -> String {
         UsageSourceCatalogCache.shared.diagnostics(
             databasePath: standardizedUsageDatabasePath(databasePath)
@@ -1272,8 +1322,8 @@ private final class SkillUsageStore {
         if let path {
             self.path = URL(fileURLWithPath: path)
         } else {
-            self.path = homeURL().standardizedFileURL
-                .appendingPathComponent("Library/Application Support/Metagent/usage.sqlite")
+            self.path = metagentDataDirectory()
+                .appendingPathComponent("usage.sqlite")
         }
         try fileManager.createDirectory(
             at: self.path.deletingLastPathComponent(),
@@ -1286,7 +1336,7 @@ private final class SkillUsageStore {
         // between transactions. Hold one process-shared lock for the entire
         // refresh so a slower slice cannot overwrite a newer cursor or reset.
         let lockPath = path.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
-        let lockDescriptor = Darwin.open(
+        let lockDescriptor = LibC.open(
             lockPath.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR
         )
         guard lockDescriptor >= 0 else { throw refreshLockError("open refresh lock") }
@@ -1509,7 +1559,7 @@ private final class SkillUsageStore {
     ) throws {
         let cachePath = launchCachePath
         let lockPath = cachePath.appendingPathExtension("lock")
-        let lockDescriptor = Darwin.open(
+        let lockDescriptor = LibC.open(
             lockPath.path,
             O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
             S_IRUSR | S_IWUSR
@@ -1568,7 +1618,7 @@ private final class SkillUsageStore {
         // bytes. `rename` then makes the complete private file visible
         // atomically, so readers see the old generation or the new one.
         try writePrivateLaunchCacheData(data, to: temporaryPath)
-        guard Darwin.rename(temporaryPath.path, cachePath.path) == 0 else {
+        guard LibC.rename(temporaryPath.path, cachePath.path) == 0 else {
             throw launchCacheError("replace cache")
         }
     }
@@ -1589,7 +1639,7 @@ private final class SkillUsageStore {
 
     private func loadLaunchEnvelope() throws -> SkillUsageLaunchCacheEnvelope? {
         let cachePath = launchCachePath
-        let descriptor = Darwin.open(cachePath.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let descriptor = LibC.open(cachePath.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
             throw launchCacheError("inspect cache")
@@ -1623,7 +1673,7 @@ private final class SkillUsageStore {
     }
 
     private func writePrivateLaunchCacheData(_ data: Data, to path: URL) throws {
-        let descriptor = Darwin.open(
+        let descriptor = LibC.open(
             path.path,
             O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
             S_IRUSR | S_IWUSR
@@ -1637,7 +1687,7 @@ private final class SkillUsageStore {
             guard let baseAddress = bytes.baseAddress else { return }
             var offset = 0
             while offset < bytes.count {
-                let written = Darwin.write(
+                let written = LibC.write(
                     descriptor,
                     baseAddress.advanced(by: offset),
                     bytes.count - offset
@@ -2144,15 +2194,15 @@ private final class SkillUsageStore {
         guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
         return UsageSourceMetadata(
             size: Int64(info.st_size),
-            modifiedAt: TimeInterval(info.st_mtimespec.tv_sec)
-                + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000,
+            modifiedAt: TimeInterval(modificationTime(info).tv_sec)
+                + TimeInterval(modificationTime(info).tv_nsec) / 1_000_000_000,
             fileIdentity: fileIdentity(info),
             hasMultipleLinks: info.st_nlink > 1
         )
     }
 
     private func fileIdentity(_ info: stat) -> String {
-        "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        "\(info.st_dev):\(info.st_ino):\(creationTime(info).tv_sec):\(creationTime(info).tv_nsec)"
     }
 
     private func fileIdentity(device: dev_t, fileID: UInt64, createdAt: timespec) -> String {
@@ -2294,6 +2344,7 @@ private final class SkillUsageStore {
         return true
     }
 
+#if canImport(Darwin)
     /// Darwin can return the name, type, size, timestamps, and stable file ID
     /// for a directory batch in one syscall. Walking retained session trees
     /// this way removes one `lstat` syscall and Foundation URL normalization
@@ -2305,9 +2356,9 @@ private final class SkillUsageStore {
         sources: inout [UsageSource]
     ) -> Bool {
         let directoryPath = directory.path
-        let descriptor = Darwin.open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        let descriptor = LibC.open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard descriptor >= 0 else { return false }
-        defer { Darwin.close(descriptor) }
+        defer { LibC.close(descriptor) }
 
         var attributes = attrlist()
         attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
@@ -2481,6 +2532,17 @@ private final class SkillUsageStore {
         let fileIdentity: String
         let error: UInt32
     }
+#else
+    /// getattrlistbulk is Darwin-only; Linux always takes the Foundation walk.
+    private func discoverSourcesWithBulkAttributes(
+        in directory: URL,
+        checkpoints: [String: UsageSourceCheckpoint],
+        checkpointsByIdentity: [String: UsageSourceCheckpointRecord],
+        sources: inout [UsageSource]
+    ) -> Bool {
+        false
+    }
+#endif
 
     private func appendSource(
         path: String,

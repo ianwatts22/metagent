@@ -522,13 +522,16 @@ final class SkillEvaluationTests: XCTestCase {
             restoreEnvironment("METAGENT_SANDBOX_EXEC", previousSandbox)
         }
 
-        async let pluginRecord = Task.detached {
+        // Two detached tasks rather than `async let`: awaiting an `async let`
+        // tuple of `Task.value`s trips a task-allocator abort in the Linux
+        // Swift 6.2 runtime. Both evaluators still run concurrently.
+        let pluginRecord = Task.detached {
             try MetagentCore.evaluateSkillWithPluginEval(at: skill.path, storePath: store)
-        }.value
-        async let codexRecord = Task.detached {
+        }
+        let codexRecord = Task.detached {
             try MetagentCore.reviewSkillWithCodex(at: skill.path, storePath: store)
-        }.value
-        _ = try await (pluginRecord, codexRecord)
+        }
+        _ = try await (pluginRecord.value, codexRecord.value)
         let record = try XCTUnwrap(
             MetagentCore.loadSkillEvaluationSnapshot(path: store).records.values.first
         )
