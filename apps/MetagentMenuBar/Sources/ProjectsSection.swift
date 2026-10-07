@@ -330,6 +330,15 @@ struct ProjectsSection: View {
                             }
                         }
                     }
+                    let hideable = selection.filter { !isGlobalRoot($0) }.sorted()
+                    if !hideable.isEmpty {
+                        Divider()
+                        Button(hideable.count == 1 ? "Hide Project" : "Hide \(hideable.count) Projects",
+                               systemImage: "eye.slash") {
+                            model.hideProjects(hideable)
+                        }
+                        .help("Hide this folder and everything inside it. Show it again from the eye in the project menu.")
+                    }
                 }
                 .accessibilityIdentifier(readyIdentifier)
             }

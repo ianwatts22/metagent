@@ -137,10 +137,55 @@ struct SkillStatsCache {
     }
 }
 
+/// `ignore_projects` hides a folder and everything inside it. An entry that is
+/// a scan root, or contains one, hides only that folder: hiding everything
+/// under a root you also ask to scan would be contradictory, and that is how a
+/// container such as `~/code_projects` stays out of the list while the
+/// projects inside it remain. Paths must already be canonical.
+public struct ProjectIgnoreRules: ExpressibleByArrayLiteral, Equatable, Sendable {
+    private let exact: Set<String>
+    private let subtrees: [String]
+
+    /// Every hidden folder, canonical and sorted.
+    public var entries: [String] { (Array(exact) + subtrees).sorted() }
+
+    init(_ paths: some Sequence<String>, scanRoots: Set<String>) {
+        var exact = Set<String>()
+        var subtrees: [String] = []
+        for path in Set(paths) {
+            if scanRoots.contains(where: { isSameOrDescendant($0, of: path) }) {
+                exact.insert(path)
+            } else {
+                subtrees.append(path)
+            }
+        }
+        self.exact = exact
+        self.subtrees = subtrees
+    }
+
+    public init(arrayLiteral paths: String...) {
+        self.init(paths, scanRoots: [])
+    }
+
+    public func hides(_ path: String) -> Bool {
+        exact.contains(path) || prunes(path)
+    }
+
+    /// Hidden folders whose descendants are hidden too, so discovery can skip
+    /// walking them entirely.
+    func prunes(_ path: String) -> Bool {
+        subtrees.contains { isSameOrDescendant(path, of: $0) }
+    }
+}
+
+private func isSameOrDescendant(_ path: String, of ancestor: String) -> Bool {
+    path == ancestor || path.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
+}
+
 func discoverProjectRoots(
     root: URL,
     maxDepth: Int,
-    ignoreProjects: Set<String>,
+    ignoreProjects: ProjectIgnoreRules,
     traversalPruneRoots: Set<String>,
     configuredProjectPaths: Set<String> = [],
     allowExplicitWorktree: Bool = false,
@@ -157,7 +202,7 @@ func discoverProjectRoots(
         queue.removeFirst()
         let path = canonicalProjectPath(current)
         guard visited.insert(path).inserted else { continue }
-        guard !traversalPruneRoots.contains(path) else { continue }
+        guard !traversalPruneRoots.contains(path), !ignoreProjects.prunes(path) else { continue }
 
         // A linked Git worktree repeats its repository's project-local skills.
         // Treat it as generated workspace state, not as another project. The
@@ -167,13 +212,13 @@ func discoverProjectRoots(
         }
 
         if let projectRoot = projectRootForSkillContainer(current) {
-            if !ignoreProjects.contains(projectRoot) {
+            if !ignoreProjects.hides(projectRoot) {
                 projectRoots.insert(projectRoot)
             }
             continue
         }
         if let projectRoot = projectRootForDotSkillDirectory(current) {
-            if !ignoreProjects.contains(projectRoot) {
+            if !ignoreProjects.hides(projectRoot) {
                 projectRoots.insert(projectRoot)
             }
             continue
@@ -181,7 +226,7 @@ func discoverProjectRoots(
 
         if hasKnownSkillContainer(current) || hasProjectMCPConfiguration(current)
             || configuredProjectPaths.contains(path) {
-            if !ignoreProjects.contains(path) {
+            if !ignoreProjects.hides(path) {
                 projectRoots.insert(path)
             }
         }
@@ -198,7 +243,7 @@ func discoverProjectRoots(
         for entry in entries {
             let name = entry.lastPathComponent
             if let projectRoot = projectRootForSkillContainer(entry) {
-                if !ignoreProjects.contains(projectRoot) {
+                if !ignoreProjects.hides(projectRoot) {
                     projectRoots.insert(projectRoot)
                 }
                 continue

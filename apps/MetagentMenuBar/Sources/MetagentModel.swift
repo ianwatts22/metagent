@@ -65,6 +65,14 @@ final class MetagentModel: ObservableObject {
     @Published private(set) var rootsText = "Checking roots..."
     @Published private(set) var locationSummaryText = "Checking skill locations..."
     @Published private(set) var projects: [ProjectStatus] = []
+    @Published private(set) var hiddenProjects: ProjectIgnoreRules = []
+    /// Folders unhidden since the last scan. They keep their place in the
+    /// project menu until the rescan brings their projects back.
+    @Published private(set) var unhidingProjectRoots: Set<String> = []
+    /// Quick-scanned projects from an unhide, carried over any full scan that
+    /// started before the config changed and so cannot contain them.
+    private var unhiddenProjects: [ProjectStatus] = []
+    private var unhiddenBeforeGeneration = 0
     @Published private(set) var lastOutputTitle: String?
     @Published private(set) var lastOutputLines: [String] = []
     @Published private(set) var lastOutputWasFailure = false
@@ -162,13 +170,14 @@ final class MetagentModel: ObservableObject {
 
     init(launchCacheLoader: MetagentLaunchCacheLoader = .live) {
         self.launchCacheLoader = launchCacheLoader
+        hiddenProjects = (try? MetagentCore.loadHiddenProjects()) ?? []
         applicationActivationObserver = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in self?.reconcileExternalMCPActions() }
             }
         if let snapshot = launchCacheLoader.loadInventory() {
             catalogState = .ready
-            projects = Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:)))
+            projects = withoutHiddenProjects(Self.mergeProjects(snapshot.projects.map(ProjectStatus.init(project:))))
             updateInventorySummary()
             rootsText = "cached SQLite snapshot"
             statusText = "\(repoCount) cached locations, \(skillCount) skills"
@@ -1742,7 +1751,7 @@ final class MetagentModel: ObservableObject {
             let didRefreshInventory = scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess
             if didRefreshInventory {
                 pluginInventory = pluginSnapshot
-                projects = Self.mergeProjects(refreshedProjects)
+                projects = withoutHiddenProjects(Self.mergeProjects(refreshedProjects))
                 inventoryRevision += 1
                 updateInventorySummary()
                 // Removal already collected fresh inventory. Reconcile its
@@ -1830,6 +1839,62 @@ final class MetagentModel: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: root))
     }
 
+    /// Adds the roots to `ignore_projects`, drops them and everything inside
+    /// them from the visible inventory immediately, then rescans so every
+    /// derived view agrees.
+    func hideProjects(_ roots: [String]) {
+        guard !roots.isEmpty else { return }
+        do {
+            try MetagentCore.hideProjects(roots)
+        } catch {
+            recordFailureOutput(title: "Could not hide project", sources: [("config.toml", error)])
+            return
+        }
+        reloadHiddenProjects()
+        unhidingProjectRoots.subtract(roots)
+        projects = withoutHiddenProjects(projects)
+        inventoryRevision += 1
+        bumpSkillPresentationRevision()
+        updateInventorySummary()
+        refreshStatus()
+    }
+
+    /// A full rescan can take a while, so scan just the unhidden folders and
+    /// show their projects right away; the full refresh then fills in the rest.
+    func unhideProjects(_ entries: [String]) {
+        guard !entries.isEmpty else { return }
+        do {
+            try MetagentCore.unhideProjects(entries)
+        } catch {
+            recordFailureOutput(title: "Could not show project", sources: [("config.toml", error)])
+            return
+        }
+        reloadHiddenProjects()
+        unhidingProjectRoots.formUnion(entries)
+        unhiddenBeforeGeneration = statusRefreshGeneration
+        Task {
+            let scanned = await Task.detached(priority: .userInitiated) {
+                (try? MetagentCore.scanSkills(options: SkillScanOptions(roots: entries)))?
+                    .projects.map(ProjectStatus.init(project:)) ?? []
+            }.value
+            unhiddenProjects = Self.mergeProjects(unhiddenProjects + scanned)
+            projects = withoutHiddenProjects(Self.mergeProjects(projects + scanned))
+            inventoryRevision += 1
+            bumpSkillPresentationRevision()
+            updateInventorySummary()
+            refreshStatus()
+        }
+    }
+
+    /// A scan already in flight when a folder was hidden must not bring it back.
+    private func withoutHiddenProjects(_ projects: [ProjectStatus]) -> [ProjectStatus] {
+        projects.filter { !hiddenProjects.hides(standardizedDirectoryPath($0.root)) }
+    }
+
+    private func reloadHiddenProjects() {
+        hiddenProjects = (try? MetagentCore.loadHiddenProjects()) ?? []
+    }
+
     func openConfig() {
         let configURL = homeURL()
             .appending(path: ".config")
@@ -1856,6 +1921,12 @@ final class MetagentModel: ObservableObject {
         generation: Int
     ) {
         guard generation == statusRefreshGeneration else { return }
+        reloadHiddenProjects()
+        let carriedProjects = generation <= unhiddenBeforeGeneration ? unhiddenProjects : []
+        if carriedProjects.isEmpty {
+            unhiddenProjects = []
+            unhidingProjectRoots.removeAll()
+        }
         pluginInventory = pluginSnapshot
         isPluginInventoryRefreshing = false
         autoUpdatePluginsIfDue()
@@ -1869,7 +1940,7 @@ final class MetagentModel: ObservableObject {
         isPluginInventoryAvailable = pluginScan.isSuccess
 
         if scan.isSuccess || homeScan.isSuccess || pluginScan.isSuccess {
-            projects = Self.mergeProjects(homeProjects + configuredProjects + pluginProjects)
+            projects = withoutHiddenProjects(Self.mergeProjects(homeProjects + configuredProjects + pluginProjects + carriedProjects))
             inventoryRevision += 1
             // Only release the optimistic hide when no removal is in flight.
             // Removal queues drain independently, and a refresh whose scan read

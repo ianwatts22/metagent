@@ -15,6 +15,7 @@ struct MetagentPanel: View {
     @State private var showsFailureDetails = false
     @State private var showsActivityDetails = false
     @State private var showsAttention = false
+    @State private var showsProjectPicker = false
     @ObservedObject private var attentionStore = AttentionCenterStore.shared
     @StateObject private var skillTableRows = SkillTableRowStore()
     @AppStorage(AppFeatureFlags.previewFeaturesKey) private var previewFeaturesEnabled = false
@@ -59,6 +60,7 @@ struct MetagentPanel: View {
             showsFailureDetails = false
             showsActivityDetails = false
             showsAttention = false
+            showsProjectPicker = false
         }
         .task(id: "\(model.hasHydratedLaunchCaches):\(model.inventoryRevision)") {
             guard model.hasHydratedLaunchCaches else { return }
@@ -218,31 +220,8 @@ struct MetagentPanel: View {
     }
 
     private var directoryScopeControl: some View {
-        Menu {
-            Button {
-                selectedProjectRoot = nil
-            } label: {
-                if selectedProjectRoot == nil {
-                    Label("All projects", systemImage: "checkmark")
-                } else {
-                    Text("All projects")
-                }
-            }
-            Divider()
-            ForEach(directoryOptions) { directory in
-                Button {
-                    selectedProjectRoot = directory.root
-                } label: {
-                    if selectedProjectRoot == directory.root {
-                        Label(
-                            directoryFilterLabel(directory, options: directoryOptions),
-                            systemImage: "checkmark"
-                        )
-                    } else {
-                        Text(directoryFilterLabel(directory, options: directoryOptions))
-                    }
-                }
-            }
+        Button {
+            showsProjectPicker.toggle()
         } label: {
             GlassMenuLabel(
                 title: selectedDirectoryLabel,
@@ -255,6 +234,15 @@ struct MetagentPanel: View {
         .buttonStyle(.plain)
         .help(selectedProjectRoot.map(displayUserPath) ?? "Show all projects")
         .accessibilityLabel("Project")
+        .popover(isPresented: $showsProjectPicker, arrowEdge: .bottom) {
+            ProjectScopePicker(
+                model: model,
+                selectedProjectRoot: $selectedProjectRoot,
+                directoryOptions: directoryOptions
+            ) {
+                showsProjectPicker = false
+            }
+        }
     }
 
     private var settingsControl: some View {

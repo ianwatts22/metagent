@@ -95,9 +95,9 @@ struct SettingsView: View {
             )
 
             PathListEditor(
-                title: "Ignored directories",
-                detail: "Directories skipped even when they sit under a scan root.",
-                addPrompt: "Ignore directory",
+                title: "Hidden projects",
+                detail: "Each folder and everything inside it is skipped by every scan. A folder that is or contains a scan root hides only itself. Toggle these from the eye in the project menu too.",
+                addPrompt: "Hide directory",
                 paths: $ignoreProjects
             )
 
