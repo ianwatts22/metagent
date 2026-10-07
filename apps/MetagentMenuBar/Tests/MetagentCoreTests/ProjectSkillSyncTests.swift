@@ -561,6 +561,129 @@ final class ProjectSkillSyncTests: XCTestCase {
     }
 }
 
+final class ProjectSkillFollowTests: XCTestCase {
+    func testGlobalChangeUpdatesProjectCopyAndOwnershipHashThenSettles() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill("demo")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+        try fixture.write("references/new.md", in: source, data: Data("Global update.".utf8))
+
+        let report = fixture.follow()
+        XCTAssertTrue(report.applied)
+        XCTAssertEqual(report.projects.map(\.updatedNames), [["demo"]])
+        XCTAssertFalse(report.needsAttention)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination("demo/references/new.md")), Data("Global update.".utf8))
+        let manifestAfter = try Data(contentsOf: fixture.manifest)
+        XCTAssertNotEqual(manifestAfter, manifestBefore)
+        let sourceHash = try XCTUnwrap(fixture.preview(["demo"]).items.first?.sourceHash)
+        XCTAssertTrue(String(decoding: manifestAfter, as: UTF8.self).contains(sourceHash))
+        XCTAssertFalse(String(decoding: manifestAfter, as: UTF8.self).contains(fixture.root.path))
+
+        // The refresh that follows an update must find nothing to do.
+        let settled = fixture.follow()
+        XCTAssertEqual(settled.updatedCount, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestAfter)
+    }
+
+    func testLocalEditBlocksAndLeavesProjectCopyUntouched() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill("demo")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        try fixture.write("local.md", in: fixture.destination("demo"), data: Data("Project edit.".utf8))
+        try fixture.write("global.md", in: source, data: Data("Global update.".utf8))
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+
+        let report = fixture.follow()
+        XCTAssertEqual(report.updatedCount, 0)
+        XCTAssertTrue(report.needsAttention)
+        XCTAssertEqual(report.projects.first?.blocked.map(\.name), ["demo"])
+        XCTAssertTrue(report.projects.first?.blocked.first?.reason.contains("not an unchanged Metagent copy") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination("demo/local.md").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("demo/global.md").path))
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestBefore)
+    }
+
+    func testBlockedSkillDoesNotStopOtherSkillsFromUpdating() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let alpha = try fixture.skill("alpha")
+        let beta = try fixture.skill("beta")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["alpha", "beta"]))
+        try fixture.write(".env", in: alpha, data: Data("FIXTURE_ONLY=yes".utf8))
+        try fixture.write("global.md", in: beta, data: Data("Global update.".utf8))
+
+        let report = fixture.follow()
+        XCTAssertEqual(report.projects.first?.updatedNames, ["beta"])
+        XCTAssertEqual(report.projects.first?.blocked.map(\.name), ["alpha"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("alpha/.env").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination("beta/global.md").path))
+        XCTAssertFalse(try JSONEncoder().encode(report).isEmpty)
+    }
+
+    func testDeletedGlobalSourceKeepsProjectCopyAndReportsIt() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill("demo")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        let copyBefore = try Data(contentsOf: fixture.destination("demo/SKILL.md"))
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+        try FileManager.default.removeItem(at: source)
+
+        let report = fixture.follow()
+        XCTAssertEqual(report.projects.first?.blocked.map(\.name), ["demo"])
+        XCTAssertTrue(report.projects.first?.blocked.first?.reason.contains("no longer exists") == true)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination("demo/SKILL.md")), copyBefore)
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestBefore)
+    }
+
+    func testUnchangedSkillsAndProjectsWithoutManifestWriteNothing() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        _ = try fixture.skill("demo")
+        let unsynced = fixture.root.appendingPathComponent("unsynced")
+        try FileManager.default.createDirectory(at: unsynced, withIntermediateDirectories: true)
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        let agents = fixture.project.appendingPathComponent(".agents")
+        let manifestBefore = try Data(contentsOf: fixture.manifest)
+        let modifiedBefore = try FileManager.default.attributesOfItem(atPath: fixture.destination("demo/SKILL.md").path)[.modificationDate] as? Date
+
+        let report = MetagentCore.refreshSyncedProjectSkills(projectRoots: [fixture.project.path, unsynced.path]) { _ in fixture.global.path }
+        XCTAssertEqual(report.projects.map(\.projectRoot), [fixture.project.path])
+        XCTAssertEqual(report.updatedCount, 0)
+        XCTAssertFalse(report.needsAttention)
+        XCTAssertEqual(report.projects.first?.deferredNames, [])
+        XCTAssertEqual(try Data(contentsOf: fixture.manifest), manifestBefore)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fixture.destination("demo/SKILL.md").path)[.modificationDate] as? Date, modifiedBefore)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: agents.path).sorted(), ["project-skills.json", "skills"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unsynced.appendingPathComponent(".agents").path))
+    }
+
+    func testPreviewOnlyAndBusyProjectChangeNothing() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        let source = try fixture.skill("demo")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["demo"]))
+        try fixture.write("global.md", in: source, data: Data("Global update.".utf8))
+
+        let preview = fixture.follow(apply: false)
+        XCTAssertFalse(preview.applied)
+        XCTAssertEqual(preview.projects.first?.updatedNames, ["demo"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("demo/global.md").path))
+
+        try withProjectSkillSyncLock(projectRoot: fixture.project.path) {
+            let busy = fixture.follow()
+            XCTAssertEqual(busy.projects.first?.deferredNames, ["demo"])
+            XCTAssertEqual(busy.updatedCount, 0)
+            XCTAssertFalse(busy.needsAttention, "A busy project retries on the next refresh.")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination("demo/global.md").path))
+        XCTAssertEqual(fixture.follow().projects.first?.updatedNames, ["demo"])
+    }
+}
+
 private struct ProjectSyncFixture {
     let root: URL
     let global: URL
@@ -587,6 +710,9 @@ private struct ProjectSyncFixture {
     }
     func preview(_ names: [String]) throws -> ProjectSkillSyncPlan {
         try MetagentCore.previewProjectSkillSync(projectRoot: project.path, skillNames: names, globalSkillsRoot: global.path)
+    }
+    func follow(apply: Bool = true) -> ProjectSkillFollowReport {
+        MetagentCore.refreshSyncedProjectSkills(projectRoots: [project.path], apply: apply) { _ in global.path }
     }
     func git(_ arguments: [String], at directory: URL) throws {
         let result = try runSubprocess(

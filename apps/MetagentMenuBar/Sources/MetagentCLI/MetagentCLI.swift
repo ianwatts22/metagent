@@ -381,15 +381,17 @@ struct MetagentCLI {
         let emitJSON = args.contains("--json")
         do {
             var names: [String] = []
-            var root: String?
+            var roots: [String] = []
             var apply = false
+            var follow = false
             var json = false
-            var collection = ProjectSkillSyncCollection.agents
+            var collection: ProjectSkillSyncCollection?
             var index = 0
             while index < args.count {
                 let argument = args[index]
                 switch argument {
-                case "--root": root = try readFlagValue("--root", args: args, index: &index)
+                case "--root": roots.append(try readFlagValue("--root", args: args, index: &index))
+                case "--follow": follow = true
                 case "--collection":
                     let value = try readFlagValue("--collection", args: args, index: &index)
                     guard let selected = ProjectSkillSyncCollection(rawValue: value) else {
@@ -406,8 +408,20 @@ struct MetagentCLI {
                 }
                 index += 1
             }
-            guard let root else { throw CLIError.message("skills sync-to-project requires --root with an absolute project folder") }
-            let plan = try MetagentCore.previewProjectSkillSync(projectRoot: root, skillNames: names, collection: collection)
+            if follow {
+                guard names.isEmpty, collection == nil else {
+                    throw CLIError.message("skills sync-to-project --follow takes no skill names or --collection; it follows every skill recorded in the project")
+                }
+                guard !roots.isEmpty else {
+                    throw CLIError.message("skills sync-to-project --follow requires --root with an absolute project folder")
+                }
+                try runProjectSkillFollow(roots: roots, apply: apply, json: json)
+                return
+            }
+            guard roots.count == 1, let root = roots.first else {
+                throw CLIError.message("skills sync-to-project requires one --root with an absolute project folder")
+            }
+            let plan = try MetagentCore.previewProjectSkillSync(projectRoot: root, skillNames: names, collection: collection ?? .agents)
             if apply && plan.canApply {
                 let report = try MetagentCore.applyProjectSkillSync(plan)
                 if json { try printJSON(report) }
@@ -437,6 +451,37 @@ struct MetagentCLI {
                 Foundation.exit(1)
             }
             throw error
+        }
+    }
+
+    /// Brings every recorded project copy up to its global source. Like the
+    /// selected-skill preview, it changes nothing without --apply.
+    private static func runProjectSkillFollow(roots: [String], apply: Bool, json: Bool) throws {
+        let report = MetagentCore.refreshSyncedProjectSkills(projectRoots: roots, apply: apply)
+        if json {
+            try printJSON(report)
+        } else if report.projects.isEmpty {
+            print("No synced skills are recorded in the selected project(s).")
+        } else {
+            for project in report.projects {
+                print("Project: \(project.projectRoot)")
+                if let error = project.error { print("  error: \(error)") }
+                for name in project.updatedNames { print("  \(name): \(apply ? "updated" : "update available")") }
+                for issue in project.blocked { print("  \(issue.name): blocked — \(issue.reason)") }
+                for name in project.deferredNames { print("  \(name): skipped — another Metagent copy is active; try again") }
+                if project.error == nil && project.updatedNames.isEmpty && project.blocked.isEmpty && project.deferredNames.isEmpty {
+                    print("  All synced skills match their global source.")
+                }
+            }
+            if !apply && report.updatedCount > 0 {
+                print("Preview only — nothing was copied. Run again with --apply to update these copies.")
+            } else if report.updatedCount > 0 {
+                print("Local files only. Review and commit .agents/skills and .agents/project-skills.json, then push separately for cloud checkouts.")
+            }
+        }
+        if report.needsAttention {
+            if json { Foundation.exit(1) }
+            throw CLIError.message("some synced project skills are blocked")
         }
     }
 
@@ -1472,6 +1517,8 @@ struct MetagentCLI {
           metagent skills remove NAME [NAME...] [--root PATH] [--apply] [--json]
           metagent skills sync-to-project NAME [NAME...] --root PATH
                      [--collection agents|codex|claude] [--apply] [--json]
+          metagent skills sync-to-project --follow --root PATH [--root PATH...]
+                     [--apply] [--json]
           metagent skills archive NAME [NAME...] [--root PATH] [--apply] [--json]
           metagent skills restore NAME [NAME...] [--json]
           metagent skills archived [--json]
@@ -1489,6 +1536,11 @@ struct MetagentCLI {
         sync-to-project previews selected home-level global bundles; --root is
         required and --apply copies local project files only. Commit and push
         separately for cloud checkouts. Existing project edits block refresh.
+        --follow checks every skill recorded in the project's
+        .agents/project-skills.json against its global source; with --apply it
+        updates unchanged copies. Local edits, credential findings and removed
+        sources are reported and left untouched (the app does this after each
+        refresh).
         """)
     }
 

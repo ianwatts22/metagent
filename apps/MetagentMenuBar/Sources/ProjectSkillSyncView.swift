@@ -38,8 +38,9 @@ final class ProjectSkillSyncCollectionLoader: ObservableObject {
     }
 }
 
-/// Explicit, action-time reads only. No portfolio scan, automatic mirroring,
-/// or bundle I/O on the main actor.
+/// Explicit, action-time reads only: no portfolio scan or bundle I/O on the
+/// main actor. Later updates come from the model's follow pass after each
+/// status refresh (`MetagentCore.refreshSyncedProjectSkills`), not this sheet.
 struct ProjectSkillSyncView: View {
     @ObservedObject var model: MetagentModel
     let projectRoot: String
@@ -66,12 +67,12 @@ struct ProjectSkillSyncView: View {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(isBusy)
             }
-            Text("Copy selected bundles for fresh and cloud checkouts. Nothing is committed or pushed; local agents may show both copies.")
+            Text("Copy selected bundles for fresh and cloud checkouts. Metagent keeps these copies up to date when the global skill changes; local edits pause updates for that skill. Nothing is committed or pushed; local agents may show both copies.")
                 .font(.callout).foregroundStyle(.secondary)
 
             if let completion {
                 Label(completion, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("Review the Git diff, include .agents/skills and .agents/project-skills.json in your commit, then push separately. Git-ignored files will not reach cloud. Other skills were left untouched.")
+                Text("Metagent will keep these copies up to date when the global skill changes; local edits pause updates for that skill. Review the Git diff, include .agents/skills and .agents/project-skills.json in your commit, then push separately, now and after each update. Git-ignored files will not reach cloud. Other skills were left untouched.")
                     .font(.callout)
             } else if let preview {
                 previewContent(preview)
