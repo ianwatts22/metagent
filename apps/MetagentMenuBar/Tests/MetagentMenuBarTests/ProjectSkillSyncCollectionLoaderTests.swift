@@ -8,10 +8,10 @@ import Testing
     let loader = ProjectSkillSyncCollectionLoader()
     let oldScan = SuspendedSkillCollectionScan()
     let newScan = SuspendedSkillCollectionScan()
-    let oldTask = Task { await loader.load(.agents, scan: { _ in try await oldScan.scan() }) }
+    let oldTask = Task { await loader.load(.agents, scan: { _ in try await oldScan.scan().map(available) }) }
     await oldScan.waitUntilStarted()
     oldTask.cancel()
-    let newTask = Task { await loader.load(.codex, scan: { _ in try await newScan.scan() }) }
+    let newTask = Task { await loader.load(.codex, scan: { _ in try await newScan.scan().map(available) }) }
     await newScan.waitUntilStarted()
     await oldScan.finish(.success(["old-agents-skill"]))
     await oldTask.value
@@ -30,9 +30,9 @@ func staleSameCollectionLoadCannotOverwriteLatestResult(fails: Bool) async {
     let loader = ProjectSkillSyncCollectionLoader()
     let oldScan = SuspendedSkillCollectionScan()
     let newScan = SuspendedSkillCollectionScan()
-    let oldTask = Task { await loader.load(.agents, scan: { _ in try await oldScan.scan() }) }
+    let oldTask = Task { await loader.load(.agents, scan: { _ in try await oldScan.scan().map(available) }) }
     await oldScan.waitUntilStarted()
-    let newTask = Task { await loader.load(.agents, scan: { _ in try await newScan.scan() }) }
+    let newTask = Task { await loader.load(.agents, scan: { _ in try await newScan.scan().map(available) }) }
     await newScan.waitUntilStarted()
     await newScan.finish(.success(["newest-skill"]))
     await newTask.value
@@ -45,6 +45,10 @@ func staleSameCollectionLoadCannotOverwriteLatestResult(fails: Bool) async {
     #expect(loader.names == ["newest-skill"])
     #expect(!loader.isLoading)
     #expect(loader.error == nil)
+}
+
+private func available(_ name: String) -> ProjectSkillSyncCandidate {
+    ProjectSkillSyncCandidate(name: name, status: .available)
 }
 
 private actor SuspendedSkillCollectionScan {

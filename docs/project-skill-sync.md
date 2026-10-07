@@ -19,6 +19,14 @@ skills are excluded: choose the physical canonical collection instead. A
 collection choice disambiguates same-name global bundles; an existing project
 copy cannot silently switch to another source collection.
 
+Skills the project already has are hidden from the picker: any folder of the
+same name under the project's `.agents/skills`, `.codex/skills` or
+`.claude/skills`, whoever put it there. A collapsed "already in this project"
+list names them, with their locations and whether `SKILL.md` differs from the
+global copy. The one exception is an unchanged earlier Metagent copy in
+`.agents/skills`, which stays selectable (marked "Copied · refresh") so it can
+be brought up to date.
+
 ## Helper
 
 ```bash

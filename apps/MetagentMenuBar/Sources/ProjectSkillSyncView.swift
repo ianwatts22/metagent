@@ -9,28 +9,34 @@ struct ProjectSkillSyncDestination: Identifiable {
 
 @MainActor
 final class ProjectSkillSyncCollectionLoader: ObservableObject {
-    @Published private(set) var names: [String] = []
+    typealias Scan = @Sendable (ProjectSkillSyncCollection) async throws -> [ProjectSkillSyncCandidate]
+    @Published private(set) var candidates: [ProjectSkillSyncCandidate] = []
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
     private var generation = UUID()
 
-    func load(_ collection: ProjectSkillSyncCollection,
-              scan: @escaping @Sendable (ProjectSkillSyncCollection) async throws -> [String] = { collection in
-                  try await Task.detached(priority: .userInitiated) {
-                      try MetagentCore.globalProjectSyncSkillNames(collection: collection)
-                  }.value
-              }) async {
+    var names: [String] { candidates.map(\.name) }
+
+    func load(_ collection: ProjectSkillSyncCollection, projectRoot: String) async {
+        await load(collection, scan: { collection in
+            try await Task.detached(priority: .userInitiated) {
+                try MetagentCore.projectSkillSyncCandidates(projectRoot: projectRoot, collection: collection)
+            }.value
+        })
+    }
+
+    func load(_ collection: ProjectSkillSyncCollection, scan: Scan) async {
         guard !Task.isCancelled else { return }
         let request = UUID()
         generation = request
         isLoading = true
-        names = []
+        candidates = []
         error = nil
         defer { if generation == request { isLoading = false } }
         do {
             let result = try await scan(collection)
             guard !Task.isCancelled, generation == request else { return }
-            names = result
+            candidates = result
         } catch {
             guard !Task.isCancelled, generation == request else { return }
             self.error = error.localizedDescription
@@ -53,6 +59,18 @@ struct ProjectSkillSyncView: View {
     @State private var completion: String?
     @State private var collection = ProjectSkillSyncCollection.agents
     private var isBusy: Bool { busy || collectionLoader.isLoading }
+    private var offered: [ProjectSkillSyncCandidate] { collectionLoader.candidates.filter { !$0.isInProject } }
+    private var alreadyInProject: [ProjectSkillSyncCandidate] { collectionLoader.candidates.filter(\.isInProject) }
+
+    private func matchesSearch(_ candidate: ProjectSkillSyncCandidate) -> Bool {
+        search.isEmpty || candidate.name.localizedCaseInsensitiveContains(search)
+    }
+
+    private func alreadyInProjectDescription(_ candidate: ProjectSkillSyncCandidate) -> String {
+        guard case let .inProject(locations, sameSkillFile) = candidate.status else { return candidate.name }
+        let places = locations.map(\.relativePath).joined(separator: ", ")
+        return "\(candidate.name) · \(places)\(sameSkillFile ? "" : " · SKILL.md differs from global")"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -99,19 +117,45 @@ struct ProjectSkillSyncView: View {
                     .accessibilityIdentifier("metagent.project-skills.search")
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(collectionLoader.names.filter { search.isEmpty || $0.localizedCaseInsensitiveContains(search) }, id: \.self) { name in
-                            Toggle(name, isOn: Binding(
-                                get: { selection.contains(name) },
-                                set: { selected in
-                                    if selected { selection.insert(name) } else { selection.remove(name) }
+                        ForEach(offered.filter(matchesSearch), id: \.name) { candidate in
+                            HStack(spacing: 8) {
+                                Toggle(candidate.name, isOn: Binding(
+                                    get: { selection.contains(candidate.name) },
+                                    set: { selected in
+                                        if selected { selection.insert(candidate.name) } else { selection.remove(candidate.name) }
+                                    }
+                                ))
+                                .toggleStyle(.checkbox)
+                                .disabled(isBusy || (!selection.contains(candidate.name) && selection.count >= 32))
+                                if candidate.status == .metagentCopy {
+                                    Text("Copied · refresh")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .help("Metagent copied this skill into the project earlier. Select it to bring the project copy up to date.")
                                 }
-                            ))
-                            .toggleStyle(.checkbox)
-                            .disabled(isBusy || (!selection.contains(name) && selection.count >= 32))
+                            }
                         }
-                        if collectionLoader.names.isEmpty && !isBusy {
+                        if collectionLoader.candidates.isEmpty && !isBusy {
                             Text("No direct global bundles found in ~/\(collection.relativePath). Linked projections, built-in system skills and plugin runtime copies are excluded; choose their canonical collection instead.")
                                 .foregroundStyle(.secondary)
+                        } else if offered.isEmpty && !isBusy {
+                            Text("Every global skill in ~/\(collection.relativePath) is already in this project.")
+                                .foregroundStyle(.secondary)
+                        }
+                        if !alreadyInProject.isEmpty {
+                            DisclosureGroup("\(alreadyInProject.count) already in this project, hidden") {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ForEach(alreadyInProject.filter(matchesSearch), id: \.name) { candidate in
+                                        Text(alreadyInProjectDescription(candidate))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                            }
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 6)
+                            .accessibilityIdentifier("metagent.project-skills.already-in-project")
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
@@ -129,7 +173,7 @@ struct ProjectSkillSyncView: View {
         }
         .padding(24)
         .frame(width: 660, height: 560)
-        .task(id: collection) { selection = []; preview = nil; error = nil; await collectionLoader.load(collection) }
+        .task(id: collection) { selection = []; preview = nil; error = nil; await collectionLoader.load(collection, projectRoot: projectRoot) }
         .interactiveDismissDisabled(isBusy)
         .accessibilityIdentifier("metagent.project-skills.sheet")
     }

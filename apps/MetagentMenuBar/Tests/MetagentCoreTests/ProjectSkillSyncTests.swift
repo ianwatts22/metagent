@@ -39,6 +39,31 @@ final class ProjectSkillSyncTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: selected.appendingPathComponent("SKILL.md").path))
     }
 
+    func testCandidatesHideSkillsAlreadyInAnyProjectCollection() throws {
+        let fixture = try ProjectSyncFixture()
+        defer { fixture.remove() }
+        _ = try fixture.skill("fresh")
+        _ = try fixture.skill("copied")
+        _ = try fixture.skill("same", body: "Identical.")
+        _ = try fixture.skill("edited", body: "Global body.")
+        _ = try MetagentCore.applyProjectSkillSync(fixture.preview(["copied"]))
+        try writeSkillFixture(at: fixture.project.appendingPathComponent(".claude/skills/same"), name: "same", body: "Identical.")
+        try writeSkillFixture(at: fixture.destination("edited"), name: "edited", body: "Project body.")
+        try writeSkillFixture(at: fixture.project.appendingPathComponent(".codex/skills/edited"), name: "edited", body: "Codex body.")
+
+        let candidates = try MetagentCore.projectSkillSyncCandidates(
+            projectRoot: fixture.project.path, globalSkillsRoot: fixture.global, collection: .agents
+        )
+        XCTAssertEqual(candidates.map(\.name), ["copied", "edited", "fresh", "same"])
+        XCTAssertEqual(candidates.map(\.status), [
+            .metagentCopy,
+            .inProject(locations: [.agents, .codex], sameSkillFile: false),
+            .available,
+            .inProject(locations: [.claude], sameSkillFile: true),
+        ])
+        XCTAssertEqual(candidates.filter { !$0.isInProject }.map(\.name), ["copied", "fresh"])
+    }
+
     func testRefreshIsNoOpAndUpdatesOnlySelectedUnmodifiedCopies() throws {
         let fixture = try ProjectSyncFixture()
         defer { fixture.remove() }
