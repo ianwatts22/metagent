@@ -945,6 +945,10 @@ run_stage() {
   fi
 
   printf '✗ %s · failed after %ss\n' "$label" "$((SECONDS - started_at))" >&2
+  # XCTest failures print long before the swift-testing summary that fills
+  # the tail, so surface them explicitly.
+  grep -E ': error: |error: -\[|Fatal error|Test Case .* failed|with [1-9][0-9]* failures?' "$log_file" \
+    | awk 'NR <= 40' >&2 || true
   tail -80 "$log_file" >&2
   printf 'Full log: %s\n' "$log_file" >&2
   return "$status"
