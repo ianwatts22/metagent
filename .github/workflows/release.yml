@@ -259,7 +259,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
-      image: swift:6.2-jammy
+      # Pinned to match scripts/install-static-linux-sdk.sh.
+      image: swift:6.2.4-jammy
       options: --init
     timeout-minutes: 45
 
@@ -292,8 +293,11 @@ jobs:
         working-directory: apps/MetagentMenuBar
         run: swift test
 
+      - name: Install Static Linux SDK
+        run: ./scripts/install-static-linux-sdk.sh
+
       - name: Build helper
-        run: ./scripts/build-linux-cli.sh --output "artifacts/metagent"
+        run: ./scripts/build-linux-cli.sh --static --output "artifacts/metagent"
 
       - name: Smoke test helper
         run: |

@@ -1,8 +1,10 @@
 #ifndef METAGENT_C_LINUX_SHIMS_H
 #define METAGENT_C_LINUX_SHIMS_H
 
-// Linux system calls the Swift Glibc module does not expose.
+// Linux system calls and libc details the Swift Glibc and Musl modules do
+// not expose consistently.
 
+#include <signal.h>
 #include <spawn.h>
 
 /// renameat2(RENAME_NOREPLACE): fails with EEXIST instead of replacing.
@@ -17,5 +19,13 @@ int metagent_spawn_file_actions_addclosefrom(posix_spawn_file_actions_t *actions
 
 /// pidfd_open(2); returns -1 with errno set when unsupported.
 int metagent_pidfd_open(int pid);
+
+/// Child pid and raw status from a waitid(2) result. glibc and musl spell
+/// these siginfo_t fields through different unions.
+int metagent_siginfo_pid(const siginfo_t *info);
+int metagent_siginfo_status(const siginfo_t *info);
+
+/// signal(SIGPIPE, SIG_IGN); SIG_IGN is a cast macro Swift cannot import on musl.
+void metagent_ignore_sigpipe(void);
 
 #endif

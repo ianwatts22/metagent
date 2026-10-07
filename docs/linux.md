@@ -22,9 +22,9 @@ release (x86_64 or aarch64), verifies its SHA-256, and installs to
 For a cloud agent environment, put the one-liner in the environment's setup
 script, for example `... | sh -s -- --mcp claude`.
 
-The binary links the Swift runtime and Foundation statically. It needs glibc
-2.35 or newer (Ubuntu 22.04+, Debian 12+) and `libcurl4`, which the MCP SDK's
-networking layer requires.
+Release binaries are fully static: they are built against musl with Swift's
+Static Linux SDK, so they have no shared-library dependencies and run on any
+x86_64 or aarch64 Linux, including Alpine and slim container images.
 
 ## Data directory
 
@@ -39,16 +39,18 @@ The helper behaves the same except where macOS supplies something Linux does
 not:
 
 - **Usage catalog reuse.** macOS keeps the usage-source catalog warm between
-  background refreshes with FSEvents. Linux has no passive equivalent wired
-  in yet, so every refresh rediscovers session files. Results are identical;
-  repeated refreshes over large session histories are slower.
+  background refreshes with FSEvents. Linux rediscovers session files on each
+  refresh; parsing stays incremental through the saved cursors. A refresh over
+  20,000 session files takes about a third of a second, so no watcher is used.
 - **Directory scans** use the portable Foundation walk instead of Darwin's
   `getattrlistbulk` fast path. macOS package bundles and Finder-hidden flags do
   not exist on Linux.
 - **Skill icons** are checked for a structurally valid PNG header instead of a
   full ImageIO decode.
-- **Skill evaluation** (`skills evaluate`) runs evaluators under macOS
-  `sandbox-exec`, so it is unavailable on Linux.
+- **Skill evaluation.** `--provider plugin-eval` works as on macOS.
+  `--provider codex` uses `codex` from `PATH` (or `METAGENT_CODEX`). macOS
+  also wraps Codex in a `sandbox-exec` profile; Linux has no equivalent, so
+  Codex's own `--sandbox read-only` mode is the enforcing layer.
 - **Power awareness.** Background maintenance treats a host with no battery,
   or one on mains power, as externally powered.
 
@@ -63,12 +65,17 @@ cd apps/MetagentMenuBar
 swift build --product metagent
 swift test
 
-# The release artifact: static Swift runtime, stripped.
+# Quick build: static Swift runtime, but needs glibc and libcurl at runtime.
 scripts/build-linux-cli.sh --output dist/metagent
+
+# The release artifact: fully static against musl (needs Swift 6.2.4).
+scripts/install-static-linux-sdk.sh
+scripts/build-linux-cli.sh --static --output dist/metagent
 scripts/smoke-mcp-stdio.sh dist/metagent
 ```
 
 The `Linux` GitHub workflow runs the test suite and the stdio smoke test in a
-`swift:6.2-jammy` container on every pull request. Releases attach
+`swift:6.2-jammy` container on every pull request. It also builds the static
+binary and smoke-tests it on Alpine. Releases attach
 `metagent-linux-x86_64.tar.gz` and `metagent-linux-aarch64.tar.gz`, each with a
 `.sha256` file.

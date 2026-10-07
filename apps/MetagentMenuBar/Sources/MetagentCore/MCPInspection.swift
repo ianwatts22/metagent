@@ -2,6 +2,8 @@
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 #if canImport(CoreFoundation)
 import CoreFoundation

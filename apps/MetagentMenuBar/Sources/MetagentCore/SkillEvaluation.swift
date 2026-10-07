@@ -7,6 +7,8 @@ import Crypto
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 import Foundation
 
@@ -414,11 +416,6 @@ public extension MetagentCore {
         let outputURL = temporaryDirectory.appendingPathComponent("review.json")
         try codexReviewSchema.write(to: schemaURL, atomically: true, encoding: .utf8)
         let codex = try reviewCodexExecutable()
-        let sandbox = try evaluatorExecutable(
-            name: "sandbox-exec",
-            overrideVariable: "METAGENT_SANDBOX_EXEC",
-            fallbackPaths: ["/usr/bin/sandbox-exec"]
-        )
         let reviewPrompt = try codexReviewPrompt(
             evidence: reviewEvidence,
             skillPath: skillURL.path,
@@ -426,7 +423,6 @@ public extension MetagentCore {
         )
         let workingDirectory = contextRootURL ?? reviewWorkspaceURL
         var codexArguments = [
-            codex.path,
             "exec",
             "--ephemeral",
             "--sandbox", "read-only",
@@ -445,15 +441,14 @@ public extension MetagentCore {
             "-"
         ]
         let timeout: TimeInterval = contextRootURL == nil ? 300 : 600
+        let launcher = try codexReviewLauncher(
+            temporaryDirectory: temporaryDirectory,
+            codexExecutable: codex,
+            readableRoots: contextRootURL.map { [$0, skillURL] } ?? []
+        )
         let result = try runSubprocess(
-            executable: sandbox,
-            arguments: [
-                "-p", codexReviewSandboxProfile(
-                    temporaryDirectory: temporaryDirectory,
-                    codexExecutable: codex,
-                    readableRoots: contextRootURL.map { [$0, skillURL] } ?? []
-                ),
-            ] + codexArguments,
+            executable: launcher.executable,
+            arguments: launcher.leadingArguments + codexArguments,
             currentDirectory: workingDirectory,
             standardInput: Data(reviewPrompt.utf8),
             timeout: timeout
@@ -528,11 +523,6 @@ public extension MetagentCore {
         let outputURL = temporaryDirectory.appendingPathComponent("review.json")
         try codexBatchReviewSchema.write(to: schemaURL, atomically: true, encoding: .utf8)
         let codex = try reviewCodexExecutable()
-        let sandbox = try evaluatorExecutable(
-            name: "sandbox-exec",
-            overrideVariable: "METAGENT_SANDBOX_EXEC",
-            fallbackPaths: ["/usr/bin/sandbox-exec"]
-        )
         let reviewPrompt = codexBatchReviewPrompt(
             targets: resolved.map { (skillPath: $0.skillURL.path, contextRoot: $0.contextRootURL.path) },
             workingDirectory: workingDirectory
@@ -540,17 +530,16 @@ public extension MetagentCore {
         // Exploration time scales with batch size, but sublinearly: the
         // session reuses the context it has already read.
         let timeout = min(3600, 600 + 240 * TimeInterval(targets.count - 1))
+        let launcher = try codexReviewLauncher(
+            temporaryDirectory: temporaryDirectory,
+            codexExecutable: codex,
+            readableRoots: [workingDirectory]
+                + resolved.map(\.contextRootURL)
+                + resolved.map(\.skillURL)
+        )
         let result = try runSubprocess(
-            executable: sandbox,
-            arguments: [
-                "-p", codexReviewSandboxProfile(
-                    temporaryDirectory: temporaryDirectory,
-                    codexExecutable: codex,
-                    readableRoots: [workingDirectory]
-                        + resolved.map(\.contextRootURL)
-                        + resolved.map(\.skillURL)
-                ),
-                codex.path,
+            executable: launcher.executable,
+            arguments: launcher.leadingArguments + [
                 "exec",
                 "--ephemeral",
                 "--sandbox", "read-only",
@@ -1101,6 +1090,37 @@ private func versionedNodeCandidates(at root: URL, suffix: String) -> [String] {
         .map { $0.appendingPathComponent(suffix).path }
 }
 
+/// How a Codex review process is started. macOS wraps Codex in a seatbelt
+/// profile that confines reads and writes. Linux has no `sandbox-exec`, so
+/// Codex runs directly and its own `--sandbox read-only` mode (Landlock and
+/// seccomp) is the enforcing layer; a cloud container adds its own isolation.
+private func codexReviewLauncher(
+    temporaryDirectory: URL,
+    codexExecutable: URL,
+    readableRoots: [URL]
+) throws -> SkillEvaluatorInvocation {
+    #if os(macOS)
+    let sandbox = try evaluatorExecutable(
+        name: "sandbox-exec",
+        overrideVariable: "METAGENT_SANDBOX_EXEC",
+        fallbackPaths: ["/usr/bin/sandbox-exec"]
+    )
+    return SkillEvaluatorInvocation(
+        executable: sandbox,
+        leadingArguments: [
+            "-p", codexReviewSandboxProfile(
+                temporaryDirectory: temporaryDirectory,
+                codexExecutable: codexExecutable,
+                readableRoots: readableRoots
+            ),
+            codexExecutable.path,
+        ]
+    )
+    #else
+    return SkillEvaluatorInvocation(executable: codexExecutable, leadingArguments: [])
+    #endif
+}
+
 private func reviewCodexExecutable() throws -> URL {
     if let override = ProcessInfo.processInfo.environment["METAGENT_CODEX"],
        !override.isEmpty,
@@ -1108,6 +1128,7 @@ private func reviewCodexExecutable() throws -> URL {
     {
         return URL(fileURLWithPath: override).resolvingSymlinksInPath().standardizedFileURL
     }
+    #if os(macOS)
     let bundled = URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
     if FileManager.default.isExecutableFile(atPath: bundled.path) {
         return bundled
@@ -1115,6 +1136,16 @@ private func reviewCodexExecutable() throws -> URL {
     throw skillEvaluationError(
         "The bundled Codex executable was not found; install ChatGPT.app or set METAGENT_CODEX to a native Codex executable"
     )
+    #else
+    guard let path = firstExecutableCandidate(
+        named: "codex",
+        environmentOverride: nil,
+        extraCandidates: [homeURL().appendingPathComponent(".local/bin/codex").path]
+    ) else {
+        throw skillEvaluationError("Codex was not found; install it on PATH or set METAGENT_CODEX")
+    }
+    return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+    #endif
 }
 
 private let codexReviewMaximumBytes = 1_048_576

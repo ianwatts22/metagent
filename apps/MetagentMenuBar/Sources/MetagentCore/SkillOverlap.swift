@@ -8,6 +8,8 @@ import Crypto
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 public enum SkillOverlapKind: String, Codable, Equatable, Sendable {

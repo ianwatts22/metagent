@@ -2,6 +2,8 @@
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 import Foundation
 import Logging
@@ -90,7 +92,7 @@ actor SerializingStdioTransport: Transport {
             var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
             while true {
                 let count = buffer.withUnsafeMutableBytes {
-                    Glibc.read(inputFileDescriptor, $0.baseAddress, $0.count)
+                    systemRead(inputFileDescriptor, $0.baseAddress, $0.count)
                 }
                 if count < 0, errno == EINTR { continue }
                 guard !framer.isFinished else { return }
@@ -294,6 +296,10 @@ private final class NewlineMessageFramer: @unchecked Sendable {
 
 #if canImport(Darwin)
 private let systemWrite = Darwin.write
-#else
+#elseif canImport(Glibc)
+private let systemRead = Glibc.read
 private let systemWrite = Glibc.write
+#else
+private let systemRead = Musl.read
+private let systemWrite = Musl.write
 #endif

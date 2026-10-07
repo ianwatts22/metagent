@@ -3,6 +3,9 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 import CLinuxShims
+#elseif canImport(Musl)
+import Musl
+import CLinuxShims
 #endif
 import Foundation
 #if canImport(ImageIO)
@@ -31,7 +34,7 @@ enum LibC {
     }
     @discardableResult static func kill(_ processID: pid_t, _ signal: Int32) -> Int32 { Darwin.kill(processID, signal) }
     @discardableResult static func rename(_ old: String, _ new: String) -> Int32 { Darwin.rename(old, new) }
-    #else
+    #elseif canImport(Glibc)
     @discardableResult static func open(_ path: String, _ flags: Int32) -> Int32 { Glibc.open(path, flags) }
     @discardableResult static func open(_ path: String, _ flags: Int32, _ mode: mode_t) -> Int32 { Glibc.open(path, flags, mode) }
     @discardableResult static func close(_ descriptor: Int32) -> Int32 { Glibc.close(descriptor) }
@@ -46,6 +49,21 @@ enum LibC {
     }
     @discardableResult static func kill(_ processID: pid_t, _ signal: Int32) -> Int32 { Glibc.kill(processID, signal) }
     @discardableResult static func rename(_ old: String, _ new: String) -> Int32 { Glibc.rename(old, new) }
+    #else
+    @discardableResult static func open(_ path: String, _ flags: Int32) -> Int32 { Musl.open(path, flags) }
+    @discardableResult static func open(_ path: String, _ flags: Int32, _ mode: mode_t) -> Int32 { Musl.open(path, flags, mode) }
+    @discardableResult static func close(_ descriptor: Int32) -> Int32 { Musl.close(descriptor) }
+    @discardableResult static func read(_ descriptor: Int32, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int {
+        Musl.read(descriptor, buffer, count)
+    }
+    @discardableResult static func write(_ descriptor: Int32, _ buffer: UnsafeRawPointer?, _ count: Int) -> Int {
+        Musl.write(descriptor, buffer, count)
+    }
+    @discardableResult static func poll(_ descriptors: UnsafeMutablePointer<pollfd>?, _ count: nfds_t, _ timeout: Int32) -> Int32 {
+        Musl.poll(descriptors, count, timeout)
+    }
+    @discardableResult static func kill(_ processID: pid_t, _ signal: Int32) -> Int32 { Musl.kill(processID, signal) }
+    @discardableResult static func rename(_ old: String, _ new: String) -> Int32 { Musl.rename(old, new) }
     #endif
 }
 
@@ -91,7 +109,7 @@ func disableSIGPIPE(on descriptor: Int32) -> Bool {
     #else
     // Linux has no per-descriptor switch; the headless helper ignores SIGPIPE
     // process-wide, which also covers sockets and FileHandle writes.
-    signal(SIGPIPE, SIG_IGN)
+    metagent_ignore_sigpipe()
     return true
     #endif
 }
@@ -101,7 +119,8 @@ func exitedChildInfo(_ info: siginfo_t) -> (pid: pid_t, status: Int32) {
     #if canImport(Darwin)
     return (info.si_pid, info.si_status)
     #else
-    return (info._sifields._sigchld.si_pid, info._sifields._sigchld.si_status)
+    var info = info
+    return (metagent_siginfo_pid(&info), metagent_siginfo_status(&info))
     #endif
 }
 

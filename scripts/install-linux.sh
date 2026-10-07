@@ -59,8 +59,7 @@ mkdir -p "$install_dir"
 install -m 0755 "$workdir/metagent" "$install_dir/metagent"
 
 if ! "$install_dir/metagent" --help >/dev/null 2>&1; then
-  echo "metagent install: the binary did not start. It needs glibc 2.35+ and libcurl4" >&2
-  echo "(Debian/Ubuntu: apt-get install -y libcurl4)." >&2
+  echo "metagent install: the installed binary did not start" >&2
   exit 1
 fi
 echo "Installed $install_dir/metagent"
