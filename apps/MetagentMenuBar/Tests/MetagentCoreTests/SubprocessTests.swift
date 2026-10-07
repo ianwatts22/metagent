@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import XCTest
 @testable import MetagentCore
@@ -10,6 +14,7 @@ final class SubprocessTests: XCTestCase {
         XCTAssertFalse(waiter.wait(upTo: 0.001))
     }
 
+    #if canImport(Darwin)
     func testExitEventRegistrationFailureClosesDescriptorAndRetainsPolling() throws {
         // A regular file is a valid descriptor but cannot register kqueue
         // events. This exercises the error path without exhausting resources.
@@ -83,6 +88,7 @@ final class SubprocessTests: XCTestCase {
         XCTAssertTrue(waiter.usesEventWaiting)
         XCTAssertFalse(waiter.wait(upTo: 0.001))
     }
+    #endif
 
     func testCapturesImmediateBinaryOutputAndNonzeroStatus() throws {
         let result = try runSubprocess(
@@ -216,6 +222,7 @@ final class SubprocessTests: XCTestCase {
     }
 }
 
+#if canImport(Darwin)
 private final class SubprocessTestSignalDelivery: @unchecked Sendable {
     private let thread: pthread_t
     private let lock = NSLock()
@@ -235,3 +242,4 @@ private final class SubprocessTestSignalDelivery: @unchecked Sendable {
         active = false
     }
 }
+#endif

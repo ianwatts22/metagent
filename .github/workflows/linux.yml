@@ -1,0 +1,53 @@
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The headless core, CLI, and MCP server must keep building and passing their
+  # tests on Linux, where cloud agent containers run. The SwiftUI app and its
+  # tests are left out of the package on Linux.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: swift:6.2-jammy
+      # An init process reaps orphaned grandchildren, as a real host does; the
+      # process-group cleanup tests depend on that.
+      options: --init
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install git
+        run: apt-get update -qq && apt-get install -y -qq git
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: apps/MetagentMenuBar/.build
+          key: swiftpm-linux-jammy-${{ hashFiles('apps/MetagentMenuBar/Package.swift', 'apps/MetagentMenuBar/Package.resolved') }}
+          restore-keys: swiftpm-linux-jammy-
+
+      - name: Run tests
+        working-directory: apps/MetagentMenuBar
+        run: swift test
+
+      - name: Build release helper
+        run: ./scripts/build-linux-cli.sh --output "$RUNNER_TEMP/metagent"
+
+      - name: Smoke test release helper
+        run: |
+          "$RUNNER_TEMP/metagent" analyze --root "$GITHUB_WORKSPACE" --json > /dev/null
+          ./scripts/smoke-mcp-stdio.sh "$RUNNER_TEMP/metagent"

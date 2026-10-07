@@ -864,6 +864,7 @@ final class MCPHealthTests: XCTestCase {
 
     func testClaudeInventoryReportsUnreadableProjectHistory() throws {
         let root = try makeTemporaryRoot(prefix: "metagent-mcp-tests")
+        try XCTSkipIf(geteuid() == 0, "root ignores directory permissions")
         let unreadableProject = root.appendingPathComponent("unreadable-project")
         try FileManager.default.createDirectory(at: unreadableProject, withIntermediateDirectories: true)
         try Data("""

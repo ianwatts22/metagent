@@ -194,9 +194,22 @@ For development:
 scripts/dev-app.sh
 ```
 
+## Linux and cloud containers
+
+The `metagent` CLI and MCP server also run headless on Linux, for agents in
+cloud containers and on Ubuntu hosts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ianwatts22/metagent/main/scripts/install-linux.sh | sh
+```
+
+See [docs/linux.md](docs/linux.md) for options, the data directory, and what
+differs from macOS.
+
 ## Data and privacy
 
-Metagent stores generated state outside the repository:
+Metagent stores generated state outside the repository (on Linux, under
+`~/.local/share/metagent`; `METAGENT_DATA_DIR` overrides either):
 
 - inventory: `~/Library/Application Support/Metagent/inventory.sqlite`
 - skill usage: `~/Library/Application Support/Metagent/usage.sqlite`

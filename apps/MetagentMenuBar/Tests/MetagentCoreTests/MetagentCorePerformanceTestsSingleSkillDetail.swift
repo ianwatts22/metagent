@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 @testable import MetagentCore
 
+// XCTMeasureOptions and the clock/memory metrics are macOS XCTest only.
+#if os(macOS)
 final class MetagentCorePerformanceTestsSingleSkillDetail: XCTestCase {
     func testPerformanceSingleSkillDetailInDenseProject() throws {
         guard ProcessInfo.processInfo.environment["METAGENT_RUN_PERFORMANCE_TESTS"] == "1" else { return }
@@ -60,3 +62,4 @@ final class MetagentCorePerformanceTestsSingleSkillDetail: XCTestCase {
         XCTAssertEqual(measured, expected)
     }
 }
+#endif

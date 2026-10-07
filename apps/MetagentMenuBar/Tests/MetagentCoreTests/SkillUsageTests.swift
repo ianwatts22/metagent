@@ -1,6 +1,12 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(CoreServices)
 import CoreServices
+#endif
 import SQLite3
 import XCTest
 @testable import MetagentCore
@@ -513,6 +519,10 @@ final class SkillUsageTests: XCTestCase {
             eventPath: fixture.root.appendingPathComponent("renamed-sessions").path,
             roots: [fixture.sessions.path]
         ))
+        try XCTSkipUnless(
+            MetagentCore.skillUsageCatalogReuseIsAvailableForTesting,
+            "Root identity watchers need Darwin vnode events."
+        )
         let renameSource = fixture.root.appendingPathComponent("rename-source")
         let renameDestination = fixture.root.appendingPathComponent("rename-destination")
         try FileManager.default.createDirectory(
@@ -1523,8 +1533,13 @@ final class SkillUsageTests: XCTestCase {
         ))
         XCTAssertEqual(report.snapshot.summaries.first?.scope, "global")
         XCTAssertEqual(report.snapshot.summaries.first?.canonicalPath, skill.deletingLastPathComponent().path)
+        #if os(macOS)
+        let dataDirectory = "Library/Application Support/Metagent"
+        #else
+        let dataDirectory = ".local/share/metagent"
+        #endif
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: fixture.root.appendingPathComponent("Library/Application Support/Metagent/usage.sqlite").path
+            atPath: fixture.root.appendingPathComponent("\(dataDirectory)/usage.sqlite").path
         ))
     }
 
@@ -2020,7 +2035,7 @@ final class SkillUsageTests: XCTestCase {
         XCTAssertTrue(seed.hasMore)
 
         let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
-        let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        let descriptor = LibC.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         XCTAssertGreaterThanOrEqual(descriptor, 0)
         guard descriptor >= 0 else { return }
         defer { close(descriptor) }
@@ -2066,7 +2081,7 @@ final class SkillUsageTests: XCTestCase {
             try fixture.write(records, to: rollout)
 
             let lockPath = fixture.database.resolvingSymlinksInPath().appendingPathExtension("refresh.lock")
-            let descriptor = Darwin.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            let descriptor = LibC.open(lockPath.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
             XCTAssertGreaterThanOrEqual(descriptor, 0)
             guard descriptor >= 0 else { return }
             defer { close(descriptor) }
@@ -2240,6 +2255,9 @@ final class SkillUsageTests: XCTestCase {
     }
 
     func testUsageDiscoverySkipsPackageDescendants() throws {
+        #if !os(macOS)
+        throw XCTSkip("Package bundles are a macOS Finder concept.")
+        #endif
         let fixture = try Fixture()
         defer { fixture.remove() }
         let skill = try fixture.makeSkill(at: "workspace/.agents/skills/packages", name: "packages")
@@ -2306,6 +2324,9 @@ final class SkillUsageTests: XCTestCase {
     }
 
     func testUsageDiscoveryPreservesExplicitRootsUnderSkippedAncestors() throws {
+        #if !os(macOS)
+        throw XCTSkip("Finder-hidden flags and package bundles are macOS-only.")
+        #endif
         let fixture = try Fixture()
         defer { fixture.remove() }
         let skill = try fixture.makeSkill(at: "workspace/.agents/skills/explicit", name: "explicit")
@@ -2361,9 +2382,9 @@ final class SkillUsageTests: XCTestCase {
 
         var info = stat()
         XCTAssertEqual(lstat(rollout.path, &info), 0)
-        let statIdentity = "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
-        let statModifiedAt = Double(info.st_mtimespec.tv_sec)
-            + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
+        let statIdentity = "\(info.st_dev):\(info.st_ino):\(creationTime(info).tv_sec):\(creationTime(info).tv_nsec)"
+        let statModifiedAt = Double(modificationTime(info).tv_sec)
+            + Double(modificationTime(info).tv_nsec) / 1_000_000_000
         try fixture.executeSQL(
             """
             UPDATE skill_usage_sources
@@ -2928,6 +2949,10 @@ private final class Fixture {
     }
 
     func settleReusableSourceCatalog(options: SkillUsageRefreshOptions) throws -> Int {
+        try XCTSkipUnless(
+            MetagentCore.skillUsageCatalogReuseIsAvailableForTesting,
+            "Catalog reuse needs FSEvents; this platform always rediscovers sources."
+        )
         let databasePath = try XCTUnwrap(options.databasePath)
         for _ in 0..<8 {
             _ = try MetagentCore.refreshSkillUsage(options: options)

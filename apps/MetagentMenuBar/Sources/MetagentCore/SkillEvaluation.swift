@@ -1,5 +1,13 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 public enum SkillGrade: String, Codable, CaseIterable, Sendable {
@@ -775,8 +783,8 @@ private final class SkillEvaluationStore {
     private let path: URL
 
     init(path: URL? = nil) throws {
-        self.path = path ?? homeURL()
-            .appendingPathComponent("Library/Application Support/Metagent/skill-evaluations-v1.json")
+        self.path = path ?? metagentDataDirectory()
+            .appendingPathComponent("skill-evaluations-v1.json")
         try FileManager.default.createDirectory(at: self.path.deletingLastPathComponent(), withIntermediateDirectories: true)
     }
 

@@ -1,9 +1,15 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import SQLite3
 import XCTest
 @testable import MetagentCore
 
+// XCTMeasureOptions and the clock/memory metrics are macOS XCTest only.
+#if os(macOS)
 /// Opt-in wall-clock coverage for the core paths that dominate a refresh.
 ///
 /// Keep these tests out of the normal fast lane: filesystem and subprocess
@@ -1144,9 +1150,9 @@ final class MetagentCorePerformanceTests: XCTestCase {
             free(resolvedPath)
             var info = stat()
             XCTAssertEqual(lstat(canonicalPath, &info), 0)
-            let modifiedAt = Double(info.st_mtimespec.tv_sec)
-                + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
-            let fileIdentity = "\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+            let modifiedAt = Double(modificationTime(info).tv_sec)
+                + Double(modificationTime(info).tv_nsec) / 1_000_000_000
+            let fileIdentity = "\(info.st_dev):\(info.st_ino):\(creationTime(info).tv_sec):\(creationTime(info).tv_nsec)"
             sqlite3_reset(insert)
             sqlite3_clear_bindings(insert)
             sqlite3_bind_text(insert, 1, canonicalPath, -1, transient)
@@ -1231,3 +1237,4 @@ final class MetagentCorePerformanceTests: XCTestCase {
         try contents.write(to: url, atomically: true, encoding: .utf8)
     }
 }
+#endif

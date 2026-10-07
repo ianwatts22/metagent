@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 @testable import MetagentCore
 
+// XCTMeasureOptions and the clock/memory metrics are macOS XCTest only.
+#if os(macOS)
 /// Metadata-only component measurements, not installed-app refresh latency.
 /// The class name keeps these scenarios in the existing opt-in Core filter.
 final class MetagentCorePerformanceTestsProjectActivity: XCTestCase {
@@ -70,3 +72,4 @@ final class MetagentCorePerformanceTestsProjectActivity: XCTestCase {
         XCTAssertEqual(measuredIndex, expected)
     }
 }
+#endif

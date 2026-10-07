@@ -1,6 +1,12 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(ImageIO)
 import ImageIO
+#endif
 import SQLite3
 
 extension MetagentCore {
@@ -802,10 +808,7 @@ func prepareRemovalRecovery(
     projectRoot: URL,
     skillName: String
 ) throws -> URL {
-    let recoveryRoot = homeURL()
-        .appendingPathComponent("Library")
-        .appendingPathComponent("Application Support")
-        .appendingPathComponent("Metagent")
+    let recoveryRoot = metagentDataDirectory()
         .appendingPathComponent("Removed Skills")
         .appendingPathComponent(UUID().uuidString)
     try fileManager.createDirectory(at: recoveryRoot, withIntermediateDirectories: true)

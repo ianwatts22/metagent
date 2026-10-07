@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum MCPSetupOperation: String, Codable, Sendable {
     case install
@@ -604,7 +608,7 @@ private func verifyMetagentStdioInteractively(
                 pollfd(fd: errorDescriptor, events: Int16(POLLIN), revents: 0)
             ]
             let pollResult = pollDescriptors.withUnsafeMutableBufferPointer {
-                Darwin.poll($0.baseAddress, nfds_t($0.count), 250)
+                LibC.poll($0.baseAddress, nfds_t($0.count), 250)
             }
             guard pollResult >= 0 else { break }
             guard pollResult > 0 else {
@@ -655,7 +659,7 @@ private func stopMCPVerificationProcess(_ process: Process) {
         usleep(20_000)
     }
     guard process.isRunning else { return }
-    Darwin.kill(process.processIdentifier, SIGKILL)
+    LibC.kill(process.processIdentifier, SIGKILL)
     let killDeadline = Date().addingTimeInterval(1)
     while process.isRunning && Date() < killDeadline {
         usleep(20_000)

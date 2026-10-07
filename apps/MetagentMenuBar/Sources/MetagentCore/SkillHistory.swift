@@ -488,8 +488,8 @@ final class SkillHistoryStore {
         if let path {
             self.path = URL(fileURLWithPath: path)
         } else {
-            self.path = homeURL().standardizedFileURL
-                .appendingPathComponent("Library/Application Support/Metagent/history.sqlite")
+            self.path = metagentDataDirectory()
+                .appendingPathComponent("history.sqlite")
         }
         try fileManager.createDirectory(
             at: self.path.deletingLastPathComponent(),

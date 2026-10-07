@@ -1,6 +1,12 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(ImageIO)
 import ImageIO
+#endif
 import SQLite3
 
 var fileManager: FileManager {
@@ -12,6 +18,31 @@ func homeURL() -> URL {
         return URL(fileURLWithPath: home)
     }
     return fileManager.homeDirectoryForCurrentUser
+}
+
+/// Where Metagent keeps its databases, caches, and recovery archives.
+/// `METAGENT_DATA_DIR` overrides it everywhere (for example a persistent
+/// volume in a cloud container). Otherwise macOS uses Application Support and
+/// Linux follows the XDG base-directory convention.
+func metagentDataDirectory() -> URL {
+    let environment = ProcessInfo.processInfo.environment
+    if let override = environment["METAGENT_DATA_DIR"], !override.isEmpty {
+        return URL(fileURLWithPath: override).standardizedFileURL
+    }
+    #if os(macOS)
+    return homeURL().standardizedFileURL
+        .appendingPathComponent("Library")
+        .appendingPathComponent("Application Support")
+        .appendingPathComponent("Metagent")
+    #else
+    if let dataHome = environment["XDG_DATA_HOME"], dataHome.hasPrefix("/") {
+        return URL(fileURLWithPath: dataHome).standardizedFileURL.appendingPathComponent("metagent")
+    }
+    return homeURL().standardizedFileURL
+        .appendingPathComponent(".local")
+        .appendingPathComponent("share")
+        .appendingPathComponent("metagent")
+    #endif
 }
 
 // ISO8601DateFormatter is documented as thread-safe; these are never mutated
@@ -110,6 +141,7 @@ public final class MCPAuthenticationCancellation: @unchecked Sendable {
     }
 }
 
+#if canImport(Darwin)
 /// Short-lived commands should complete when the kernel reports their exit,
 /// not at the next polling tick. Registration can lose a race with an already
 /// exited child, or fail on a restricted host; those cases retain polling.
@@ -188,10 +220,54 @@ final class SubprocessExitWaiter {
         return true
     }
 }
+#else
+/// Linux waits on a pidfd for the owned child's exit. Kernels without
+/// pidfd_open, or sandboxes that deny it, retain the polling fallback.
+final class SubprocessExitWaiter {
+    private var descriptor: Int32 = -1
+
+    var usesEventWaiting: Bool { descriptor >= 0 }
+
+    init(processID: pid_t, queueFactory: (() -> Int32)? = nil) {
+        let created = queueFactory?() ?? openProcessDescriptor(processID)
+        guard created >= 0 else { return }
+        guard fcntl(created, F_SETFD, FD_CLOEXEC) == 0 else {
+            close(created)
+            return
+        }
+        descriptor = created
+    }
+
+    deinit {
+        if descriptor >= 0 { close(descriptor) }
+    }
+
+    /// True means the pidfd became readable, so the child has exited and the
+    /// caller may reap it with waitpid.
+    func wait(upTo interval: TimeInterval) -> Bool {
+        guard interval > 0 else { return false }
+        guard descriptor >= 0 else {
+            Thread.sleep(forTimeInterval: min(interval, 0.05))
+            return false
+        }
+        let boundedInterval = min(interval, 86_400)
+        let milliseconds = Int32(max(1, (boundedInterval * 1_000).rounded(.up)))
+        var target = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        let count = poll(&target, 1, milliseconds)
+        if count == 0 || (count < 0 && errno == EINTR) { return false }
+        guard count == 1, target.revents & Int16(POLLIN) != 0 else {
+            close(descriptor)
+            descriptor = -1
+            return false
+        }
+        return true
+    }
+}
+#endif
 
 private func continuousSubprocessTime() -> TimeInterval {
     // Unlike uptime, this monotonic clock advances during system sleep.
-    Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
+    continuousClockSeconds()
 }
 
 func runSubprocess(
@@ -221,8 +297,8 @@ func runSubprocess(
     let outputHandle = try FileHandle(forWritingTo: outputURL)
     let errorHandle = try FileHandle(forWritingTo: errorURL)
 
-    var fileActions: posix_spawn_file_actions_t?
-    var attributes: posix_spawnattr_t?
+    var fileActions = makeSpawnFileActions()
+    var attributes = makeSpawnAttributes()
     try requirePosixSuccess(posix_spawn_file_actions_init(&fileActions), action: "initialize process file actions")
     defer { posix_spawn_file_actions_destroy(&fileActions) }
     try requirePosixSuccess(posix_spawnattr_init(&attributes), action: "initialize process attributes")
@@ -240,9 +316,7 @@ func runSubprocess(
         action: "redirect process errors"
     )
     if let currentDirectory {
-        let result = currentDirectory.path.withCString {
-            posix_spawn_file_actions_addchdir(&fileActions, $0)
-        }
+        let result = spawnFileActionsAddChdir(&fileActions, currentDirectory.path)
         try requirePosixSuccess(result, action: "set process working directory")
     }
     try requirePosixSuccess(
@@ -271,8 +345,8 @@ func runSubprocess(
                     executablePath,
                     &fileActions,
                     &attributes,
-                    argumentBuffer.baseAddress,
-                    environmentBuffer.baseAddress
+                    argumentBuffer.baseAddress!,
+                    environmentBuffer.baseAddress!
                 )
             }
         }

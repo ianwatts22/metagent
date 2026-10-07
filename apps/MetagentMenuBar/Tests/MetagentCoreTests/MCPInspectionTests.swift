@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import XCTest
 @testable import MetagentCore
@@ -156,7 +160,10 @@ final class MCPInspectionTests: XCTestCase {
     }
 
     func testServerThatNeverReadsInputCannotBlockCancellationDeadline() throws {
-        let request = ["jsonrpc": "2.0", "id": String(repeating: "x", count: 60_000), "method": "roots/list"]
+        // Three echoed ids still overflow the 64 KiB pipe buffer, while the
+        // fixture's single `sh -c` argument stays under Linux's 128 KiB
+        // per-argument limit (MAX_ARG_STRLEN).
+        let request = ["jsonrpc": "2.0", "id": String(repeating: "x", count: 40_000), "method": "roots/list"]
         let configuration = try fixture(responses: [request, request, request])
         let start = ContinuousClock.now
         XCTAssertThrowsError(try MCPInspectionSession(timeout: 0.2).inspect(configuration)) {

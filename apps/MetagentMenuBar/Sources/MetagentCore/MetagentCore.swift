@@ -1,6 +1,12 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(ImageIO)
 import ImageIO
+#endif
 import SQLite3
 
 struct SkillsCLIManagedRemoval {
@@ -53,11 +59,7 @@ public enum MetagentCore {
                 NSLocalizedDescriptionKey: "Icons can only be changed on a canonical editable skill directory."
             ])
         }
-        guard let imageSource = CGImageSourceCreateWithData(pngData as CFData, nil),
-              (CGImageSourceGetType(imageSource) as String?) == "public.png",
-              CGImageSourceGetCount(imageSource) == 1,
-              CGImageSourceCreateImageAtIndex(imageSource, 0, nil) != nil
-        else {
+        guard isDecodablePNG(pngData) else {
             throw NSError(domain: "MetagentSkillIcon", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "The selected icon could not be converted to PNG."
             ])

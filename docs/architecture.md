@@ -90,6 +90,16 @@ history backfill reads `Removed Skills` as evidence of permanent removal, and
 an archived skill is expected back (see
 [skill-provenance.md](skill-provenance.md), "Archiving").
 
+## Platforms
+
+`MetagentCore` and the `metagent` helper build on macOS and Linux. On Linux,
+`Package.swift` leaves out the SwiftUI app, Sparkle, and the app tests, and adds
+`swift-crypto` plus a bundled SQLite. Platform-specific system calls sit behind
+`PlatformCompatibility.swift`, `FSEventsCompatibility.swift`, and the small
+`CLinuxShims` C target; macOS keeps its original code paths. Paths shown below
+are the macOS locations; Linux uses `~/.local/share/metagent`. See
+[linux.md](linux.md).
+
 ## Helper Boundary
 
 The Swift `metagent` helper exists for non-GUI entry points:

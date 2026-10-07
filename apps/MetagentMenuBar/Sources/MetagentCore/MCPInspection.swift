@@ -1,5 +1,11 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(CoreFoundation)
 import CoreFoundation
+#endif
 import Foundation
 
 /// An ephemeral, approved configuration snapshot. Arguments and environment are never presentation data.
@@ -261,8 +267,8 @@ private final class MCPInspectionProcess {
         self.session = session
         deadline = ContinuousClock.now.advanced(by: .seconds(session.timeout))
         try session.checkCancellation()
-        var actions: posix_spawn_file_actions_t?
-        var attributes: posix_spawnattr_t?
+        var actions = makeSpawnFileActions()
+        var attributes = makeSpawnAttributes()
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw MCPInspectionError.serverFailed }
         defer { posix_spawn_file_actions_destroy(&actions) }
         guard posix_spawnattr_init(&attributes) == 0 else { throw MCPInspectionError.serverFailed }
@@ -273,8 +279,10 @@ private final class MCPInspectionProcess {
         for (source, target) in descriptors {
             guard posix_spawn_file_actions_adddup2(&actions, source, target) == 0 else { throw MCPInspectionError.serverFailed }
         }
-        guard posix_spawn_file_actions_addchdir(&actions, configuration.directory) == 0,
-              posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
+        var spawnFlags = Int32(POSIX_SPAWN_SETPGROUP)
+        guard spawnFileActionsAddChdir(&actions, configuration.directory) == 0,
+              spawnCloseUnmappedDescriptors(&actions, &spawnFlags) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(spawnFlags)) == 0,
               posix_spawnattr_setpgroup(&attributes, 0) == 0 else { throw MCPInspectionError.serverFailed }
         var args = ([configuration.executable] + configuration.arguments).map { strdup($0) }
         args.append(nil)
@@ -296,7 +304,7 @@ private final class MCPInspectionProcess {
                 throw MCPInspectionError.serverFailed
             }
         }
-        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) >= 0 else {
+        guard disableSIGPIPE(on: input.fileHandleForWriting.fileDescriptor) else {
             stop()
             throw MCPInspectionError.serverFailed
         }
@@ -332,7 +340,7 @@ private final class MCPInspectionProcess {
         var offset = 0
         while offset < data.count {
             try check()
-            let count = data.withUnsafeBytes { Darwin.write(input.fileHandleForWriting.fileDescriptor, $0.baseAddress!.advanced(by: offset), data.count - offset) }
+            let count = data.withUnsafeBytes { LibC.write(input.fileHandleForWriting.fileDescriptor, $0.baseAddress!.advanced(by: offset), data.count - offset) }
             if count > 0 { offset += count }
             else if count < 0 && (errno == EAGAIN || errno == EINTR) { try pump() }
             else { throw MCPInspectionError.serverFailed }
@@ -380,15 +388,18 @@ private final class MCPInspectionProcess {
         try check()
         var descriptors = [pollfd(fd: outputEnded ? -1 : output.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0),
                            pollfd(fd: errorsEnded ? -1 : errors.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)]
-        let result = Darwin.poll(&descriptors, 2, 50)
+        let result = LibC.poll(&descriptors, 2, 50)
         guard result >= 0 || errno == EINTR else { throw MCPInspectionError.serverFailed }
         for index in descriptors.indices where descriptors[index].revents & Int16(POLLIN | POLLHUP) != 0 {
             try drain(descriptors[index].fd, retaining: index == 0)
         }
         if exitStatus == nil {
             var info = siginfo_t()
-            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0, info.si_pid == pid {
-                exitStatus = info.si_code == CLD_EXITED ? info.si_status << 8 : info.si_status
+            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0 {
+                let child = exitedChildInfo(info)
+                if child.pid == pid {
+                    exitStatus = info.si_code == CLD_EXITED ? child.status << 8 : child.status
+                }
             }
         }
         if exitStatus != nil && !allowExit && pending.isEmpty { throw MCPInspectionError.serverFailed }
@@ -398,7 +409,7 @@ private final class MCPInspectionProcess {
         var buffer = [UInt8](repeating: 0, count: 8_192)
         while true {
             try check()
-            let count = Darwin.read(fd, &buffer, buffer.count)
+            let count = LibC.read(fd, &buffer, buffer.count)
             if count == 0 && retaining { outputEnded = true }
             if count == 0 && !retaining { errorsEnded = true }
             if count < 0 && errno != EAGAIN && errno != EINTR { throw MCPInspectionError.serverFailed }
