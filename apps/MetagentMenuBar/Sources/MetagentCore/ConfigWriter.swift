@@ -10,9 +10,51 @@ public extension MetagentCore {
     static func saveUserConfig(_ config: MetagentConfig) throws {
         try saveUserConfig(config, at: userConfigPath())
     }
+
+    /// Hides folders everywhere Metagent scans by adding them to
+    /// `ignore_projects`; a hidden folder hides every project inside it.
+    static func hideProjects(_ roots: [String]) throws {
+        try hideProjects(roots, home: homeURL())
+    }
+
+    static func loadHiddenProjects() throws -> ProjectIgnoreRules {
+        let config = try loadUserConfig()
+        return projectIgnoreRules(config.ignoreProjects, scanRoots: config.roots, home: homeURL())
+    }
+
+    /// Removes `ignore_projects` entries so those folders are scanned again.
+    static func unhideProjects(_ entries: [String]) throws {
+        try unhideProjects(entries, home: homeURL())
+    }
 }
 
 extension MetagentCore {
+    static func hideProjects(_ roots: [String], home: URL) throws {
+        var config = try loadUserConfig(home: home)
+        let existing = projectIgnoreRules(config.ignoreProjects, scanRoots: config.roots, home: home)
+        var added = Set<String>()
+        let additions = roots.filter { root in
+            let path = canonicalProjectPath(expandPath(root, home: home))
+            return !existing.hides(path) && added.insert(path).inserted
+        }
+        guard !additions.isEmpty else { return }
+        config.ignoreProjects += additions
+        try saveUserConfig(config, at: userConfigPath(home: home))
+    }
+
+    static func unhideProjects(_ entries: [String], home: URL) throws {
+        var config = try loadUserConfig(home: home)
+        let removed = Set(entries.map { canonicalProjectPath(expandPath($0, home: home)) })
+        let remaining = config.ignoreProjects.filter { !removed.contains(canonicalProjectPath(expandPath($0, home: home))) }
+        guard remaining.count != config.ignoreProjects.count else { return }
+        config.ignoreProjects = remaining
+        try saveUserConfig(config, at: userConfigPath(home: home))
+    }
+
+    private static func userConfigPath(home: URL) -> URL {
+        home.appendingPathComponent(".config/metagent/config.toml")
+    }
+
     static func saveUserConfig(_ config: MetagentConfig, at path: URL) throws {
         let existing: String
         if fileManager.fileExists(atPath: path.path) {

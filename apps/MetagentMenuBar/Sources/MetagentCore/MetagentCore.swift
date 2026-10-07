@@ -134,9 +134,11 @@ public enum MetagentCore {
         let rootPaths = options.roots.isEmpty ? config.roots : options.roots
         let maxDepth = options.maxDepth ?? config.maxDepth
         let configuredIgnores = options.respectConfiguredIgnores ? config.ignoreProjects : []
-        let ignoreProjects = Set((configuredIgnores + options.ignoreProjects).map {
-            canonicalProjectPath(expandPath($0, home: home))
-        })
+        let ignoreProjects = projectIgnoreRules(
+            configuredIgnores + options.ignoreProjects,
+            scanRoots: config.roots + options.roots,
+            home: home
+        )
         var projectRoots = Set<String>()
         let configuredProjects = configuredClaudeProjectPaths(home: home)
 
@@ -164,6 +166,15 @@ public enum MetagentCore {
         return SkillScanReport(projects: projects)
     }
 
+    /// The home folder always counts as a scan root, so hiding `~` hides only
+    /// home-level skills, never every project beneath it.
+    static func projectIgnoreRules(_ paths: [String], scanRoots: [String], home: URL) -> ProjectIgnoreRules {
+        ProjectIgnoreRules(
+            paths.map { canonicalProjectPath(expandPath($0, home: home)) },
+            scanRoots: Set((scanRoots + ["~"]).map { canonicalProjectPath(expandPath($0, home: home)) })
+        )
+    }
+
     public static func scanHomeSkills(
         maxDepth: Int = 2,
         pruningConfiguredRoots: Bool = false
@@ -184,14 +195,14 @@ public enum MetagentCore {
         config: MetagentConfig
     ) throws -> SkillScanReport {
         let normalizedHome = canonicalProjectPath(home)
-        let ignoreProjects = Set(config.ignoreProjects.map { canonicalProjectPath(expandPath($0, home: home)) })
+        let ignoreProjects = projectIgnoreRules(config.ignoreProjects, scanRoots: config.roots, home: home)
         let traversalPruneRoots = pruningConfiguredRoots
             ? Set(config.roots.map { canonicalProjectPath(expandPath($0, home: home)) })
             : []
         var projectRoots = Set<String>()
         let configuredProjects = configuredClaudeProjectPaths(home: home)
 
-        if !ignoreProjects.contains(normalizedHome) {
+        if !ignoreProjects.hides(normalizedHome) {
             for container in [".agents/skills", ".codex/skills", ".claude/skills"] {
                 if fileManager.fileExists(atPath: home.appendingPathComponent(container).path) {
                     projectRoots.insert(normalizedHome)
@@ -212,7 +223,7 @@ public enum MetagentCore {
             .sorted()
             .filter { !isInsideGitLinkedWorktree(URL(fileURLWithPath: $0)) }
             .map { try readProjectSkills(root: URL(fileURLWithPath: $0)) }
-            .filter { !ignoreProjects.contains(canonicalProjectPath(URL(fileURLWithPath: $0.root))) }
+            .filter { !ignoreProjects.hides(canonicalProjectPath(URL(fileURLWithPath: $0.root))) }
             .filter { hasProjectInventorySurface($0)
                 || hasProjectMCPConfiguration(URL(fileURLWithPath: $0.root))
                 || configuredProjects.contains($0.root) }

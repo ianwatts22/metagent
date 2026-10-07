@@ -81,6 +81,47 @@ struct ConfigWriterTests {
         #expect(try Data(contentsOf: path) == invalidUTF8)
     }
 
+    @Test("hiding projects appends new roots once and keeps other settings")
+    func hidingProjectsAppendsOnce() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metagent-hide-\(UUID().uuidString)")
+        let path = home.appendingPathComponent(".config/metagent/config.toml")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try """
+        roots = ["/scan"]
+        max_depth = 4
+        ignore_projects = ["~/already"]
+        custom_future_key = "preserve me"
+        """.write(to: path, atomically: true, encoding: .utf8)
+
+        let alreadyHidden = home.appendingPathComponent("already").path
+        try MetagentCore.hideProjects(["/scan/vendor", alreadyHidden, "/scan/vendor"], home: home)
+        try MetagentCore.hideProjects(["/scan/vendor", "/scan/vendor/inside-hidden-folder"], home: home)
+
+        let reread = try parsedConfig(at: path)
+        #expect(reread.roots == ["/scan"])
+        #expect(reread.maxDepth == 4)
+        #expect(reread.ignoreProjects == ["~/already", "/scan/vendor"])
+        #expect(try String(contentsOf: path, encoding: .utf8).contains("custom_future_key = \"preserve me\""))
+
+        try MetagentCore.unhideProjects([alreadyHidden], home: home)
+        #expect(try parsedConfig(at: path).ignoreProjects == ["/scan/vendor"])
+    }
+
+    @Test("a hidden folder hides everything inside it unless it holds a scan root")
+    func hiddenFoldersCoverDescendants() {
+        let rules = ProjectIgnoreRules(["/code", "/code/vendor", "/home"], scanRoots: ["/code", "/home"])
+
+        #expect(rules.hides("/code/vendor"))
+        #expect(rules.hides("/code/vendor/repo"))
+        #expect(rules.prunes("/code/vendor/repo"))
+        #expect(rules.hides("/code"))
+        #expect(!rules.hides("/code/app"))
+        #expect(!rules.hides("/home/notes"))
+        #expect(!rules.hides("/code/vendor-fork"))
+    }
+
     @Test("rewriting twice is stable")
     func repeatedSavesAreStable() throws {
         let path = try temporaryConfigPath()
